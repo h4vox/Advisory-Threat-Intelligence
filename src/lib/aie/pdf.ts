@@ -1,4 +1,5 @@
 import type { AttackStep, IntelAnalysis, IocHit } from "./types";
+import { decodeEntities } from "./extract";
 
 export type DocumentPrintMetadata = {
   id: string;
@@ -18,15 +19,22 @@ export type DocumentPrintMetadata = {
   analysis?: IntelAnalysis | null;
 };
 
-export function extractMainContentHtml(rawHtml: string): string {
+export function extractMainContentHtml(rawHtml: string, baseUrl?: string): string {
   if (!rawHtml || rawHtml.trim().length === 0) return "";
 
-  // If input doesn't look like full HTML, wrap as styled paragraphs
-  if (!/<(?:html|body|article|main|div)/i.test(rawHtml)) {
-    return rawHtml
-      .split(/\n\n+/)
-      .map((p) => `<p>${escapeHtml(p)}</p>`)
-      .join("\n");
+  // Check if input contains HTML markup (tags like <p>, <div>, <article>, <img>, <blockquote>, etc.)
+  const isHtml = /<[a-z][\s\S]*>/i.test(rawHtml) || /<(?:p|div|article|main|section|blockquote|img|table|h[1-6]|ul|ol|li|pre|code|a|strong|em)\b/i.test(rawHtml);
+
+  if (!isHtml) {
+    // Plain text: decode entities and wrap as styled paragraphs
+    return `
+      <div class="content-body">
+        ${decodeEntities(rawHtml)
+          .split(/\n\n+/)
+          .map((p) => `<p>${escapeHtml(p.trim())}</p>`)
+          .join("\n")}
+      </div>
+    `;
   }
 
   // Remove scripts, styles, iframes, and noisy UI elements
@@ -38,30 +46,68 @@ export function extractMainContentHtml(rawHtml: string): string {
     .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, "")
     .replace(/<(?:nav|header|footer|aside|form)\b[^<]*(?:(?!<\/(?:nav|header|footer|aside|form)>)<[^<]*)*<\/(?:nav|header|footer|aside|form)>/gi, "");
 
-  // Match main content container
+  // Match main content container if full page was provided
+  let mainBody = "";
   const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
-  if (articleMatch && articleMatch[1].length > 400) {
-    return articleMatch[1];
+  if (articleMatch && articleMatch[1].length > 300) {
+    mainBody = articleMatch[1];
   }
 
-  const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-  if (mainMatch && mainMatch[1].length > 400) {
-    return mainMatch[1];
+  if (!mainBody) {
+    const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+    if (mainMatch && mainMatch[1].length > 300) {
+      mainBody = mainMatch[1];
+    }
   }
 
-  // Match common blog post content classes
-  const postMatch = cleaned.match(/<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-content|story-content|content-area)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-  if (postMatch && postMatch[1].length > 400) {
-    return postMatch[1];
+  if (!mainBody) {
+    const postMatch = cleaned.match(
+      /<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-content|gh-content|post-body|c-blog-post|single-content|rich-text|post-full-content)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    );
+    if (postMatch && postMatch[1].length > 300) {
+      mainBody = postMatch[1];
+    }
   }
 
-  // Fallback to body content
-  const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (bodyMatch && bodyMatch[1].length > 200) {
-    return bodyMatch[1];
+  if (!mainBody) {
+    const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch && bodyMatch[1].length > 200) {
+      mainBody = bodyMatch[1];
+    } else {
+      mainBody = cleaned;
+    }
   }
 
-  return cleaned;
+  // Decode stray entities in the HTML text (like &#x2019; -> ’)
+  mainBody = decodeEntities(mainBody);
+
+  // Resolve relative images and links if baseUrl is provided
+  if (baseUrl) {
+    try {
+      const base = new URL(baseUrl);
+      mainBody = mainBody
+        .replace(/<img\b([^>]*?)\bsrc=["']([^"']+)["']/gi, (match, attrs, src) => {
+          try {
+            const abs = new URL(src, base).href;
+            return `<img${attrs}src="${abs}" loading="lazy"`;
+          } catch {
+            return match;
+          }
+        })
+        .replace(/<a\b([^>]*?)\bhref=["']([^"']+)["']/gi, (match, attrs, href) => {
+          try {
+            const abs = new URL(href, base).href;
+            return `<a${attrs}href="${abs}" target="_blank" rel="noreferrer"`;
+          } catch {
+            return match;
+          }
+        });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return mainBody;
 }
 
 function escapeHtml(str: string): string {
@@ -77,14 +123,7 @@ export function buildPristineDocumentHtml(
   rawContentOrHtml: string,
   meta: DocumentPrintMetadata,
 ): string {
-  const mainContent = extractMainContentHtml(rawContentOrHtml) || `
-    <div class="content-body">
-      ${rawContentOrHtml
-        .split(/\n\n+/)
-        .map((para) => `<p>${escapeHtml(para)}</p>`)
-        .join("\n")}
-    </div>
-  `;
+  const mainContent = extractMainContentHtml(rawContentOrHtml, meta.canonicalUrl);
 
   const iocRows = meta.iocs.slice(0, 30).map(
     (ioc) => `
@@ -398,19 +437,50 @@ export function buildPristineDocumentHtml(
     .content-body th { background: #f8fafc; font-weight: 600; }
 
     .content-body blockquote {
-      border-left: 3px solid #cbd5e1;
-      margin: 12px 0;
-      padding-left: 14px;
-      color: #475569;
+      border-left: 4px solid #0284c7;
+      background: #f8fafc;
+      margin: 14px 0;
+      padding: 12px 18px;
+      border-radius: 0 6px 6px 0;
+      color: #334155;
       font-style: italic;
     }
 
     .content-body img {
       max-width: 100%;
       height: auto;
-      border-radius: 4px;
-      margin: 10px 0;
+      border-radius: 6px;
+      margin: 16px auto;
+      display: block;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
       page-break-inside: avoid;
+    }
+
+    .content-body ul, .content-body ol {
+      margin: 10px 0 14px 24px;
+      padding: 0;
+    }
+
+    .content-body li {
+      margin-bottom: 6px;
+      line-height: 1.6;
+    }
+
+    .content-body a {
+      color: #0284c7;
+      text-decoration: underline;
+      word-break: break-word;
+    }
+
+    .content-body strong, .content-body b {
+      color: #0f172a;
+      font-weight: 600;
+    }
+
+    .content-body hr {
+      border: none;
+      border-top: 1px solid #e2e8f0;
+      margin: 24px 0;
     }
 
     /* Print Specific Rules */

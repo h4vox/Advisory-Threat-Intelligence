@@ -35,7 +35,7 @@ const RESOURCE_KINDS: { id: string; label: string }[] = [
   { id: "VULNERABILITY_ADVISORY", label: "Vulnerability Advisories" },
 ];
 
-export function LibraryPage() {
+function LibraryPage() {
   const [q, setQ] = useState("");
   const [selectedKind, setSelectedKind] = useState("ALL");
   const [previewReportId, setPreviewReportId] = useState<string | null>(null);

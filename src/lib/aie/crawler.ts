@@ -44,6 +44,7 @@ import {
   mongoUpdateCrawlJob,
   mongoUpdateSourceLastIngest,
   mongoUpsertDiscoveredResource,
+  ensureMongoIndexes,
 } from "../mongodb/repository.server";
 import { SOURCE_SEED } from "./catalog";
 
@@ -210,10 +211,20 @@ export async function executeCrawlJob(
   let skippedCount = 0;
   let newSourcesCount = 0;
   let pdfGeneratedCount = 0;
+  let sources: SourceRecord[] = [];
+  let jobFailed = false;
+  let jobErrorSummary = "";
 
   try {
+    if (isMongoConfigured()) {
+      try {
+        await ensureMongoIndexes();
+      } catch {
+        /* ignore index errors */
+      }
+    }
+
     // 1. Get enabled sources
-    let sources: SourceRecord[] = [];
     if (isMongoConfigured()) {
       try {
         const allSources = await mongoListSources();
@@ -224,28 +235,20 @@ export async function executeCrawlJob(
     }
 
     if (sources.length === 0) {
-      const dbSources = await sql<{
-        id: string;
-        name: string;
-        slug: string;
-        homepage_url: string;
-        feed_url?: string;
-        enabled: boolean;
-        trust_level: string;
-      }>`select id, name, slug, homepage_url, coalesce(feed_url, '') as feed_url, enabled, trust_level from sources where enabled = true`;
-      sources = dbSources.map((s) => ({
-        id: s.id,
-        name: s.name,
-        slug: s.slug,
-        category: "threat_feed",
-        priority: 1,
-        homepageUrl: s.homepage_url,
-        feedUrl: s.feed_url || "",
-        enabled: s.enabled,
-        trustLevel: "reputable" as const,
-        notes: "",
+      // Seed directly from SOURCE_SEED definitions with feeds
+      sources = (SOURCE_SEED as Omit<SourceRecord, "lastIngestAt">[]).map((s) => ({
+        ...s,
+        feedUrl: `${s.homepageUrl.replace(/\/+$/, "")}/feed/`,
         lastIngestAt: null,
       }));
+
+      if (isMongoConfigured()) {
+        try {
+          await mongoSeedSources(sources);
+        } catch {
+          /* ignore seed errors */
+        }
+      }
     }
 
     // Apply whitelist if configured
@@ -254,9 +257,18 @@ export async function executeCrawlJob(
     }
 
     if (isMongoConfigured()) {
-      await mongoUpdateCrawlJob(jobId, { sourceCount: sources.length });
+      try {
+        await mongoUpdateCrawlJob(jobId, { sourceCount: sources.length });
+      } catch {
+        /* ignore */
+      }
     }
-    await sql`update crawl_jobs set source_count = ${sources.length} where id = ${jobId}`;
+
+    try {
+      await sql`update crawl_jobs set source_count = ${sources.length} where id = ${jobId}`;
+    } catch {
+      /* ignore sql fallback error */
+    }
 
     // 2. Query existing storage for smart deduplication
     const storedCanonicalUrls = new Set<string>();
@@ -274,12 +286,16 @@ export async function executeCrawlJob(
       }
     }
 
-    const sqlExisting = await sql<{ canonical_url: string; text_hash: string }>`
-      select canonical_url, text_hash from reports
-    `;
-    for (const r of sqlExisting) {
-      if (r.canonical_url) storedCanonicalUrls.add(r.canonical_url);
-      if (r.text_hash) storedHashes.add(r.text_hash);
+    try {
+      const sqlExisting = await sql<{ canonical_url: string; text_hash: string }>`
+        select canonical_url, text_hash from reports
+      `;
+      for (const r of sqlExisting) {
+        if (r.canonical_url) storedCanonicalUrls.add(r.canonical_url);
+        if (r.text_hash) storedHashes.add(r.text_hash);
+      }
+    } catch {
+      /* ignore sql fallback */
     }
 
     // 3. Initialize the Priority Frontier Queue
@@ -545,7 +561,10 @@ export async function executeCrawlJob(
       let rawBytes: Uint8Array | string = current.preloadedText || "";
       let fetchedHtmlBody = "";
 
-      if (!textContent) {
+      const currentWordCount = textContent.split(/\s+/).filter(Boolean).length;
+      const needsFullArticleFetch = currentWordCount < 300;
+
+      if (needsFullArticleFetch) {
         try {
           // Polite rate limit delay
           if (config.rateLimitMs > 0) {
@@ -564,65 +583,59 @@ export async function executeCrawlJob(
           });
           clearTimeout(timeout);
 
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
+          if (res.ok) {
+            const buf = new Uint8Array(await res.arrayBuffer());
+            rawBytes = buf;
+            contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
 
-          const buf = new Uint8Array(await res.arrayBuffer());
-          rawBytes = buf;
-          contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
-
-          if (contentType.includes("pdf")) {
-            textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
-          } else {
-            const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-            fetchedHtmlBody = body;
-            const extracted = htmlToText(body);
-            textContent = extracted.text;
-            if (extracted.title && extracted.title !== "Untitled report") {
-              docTitle = extracted.title;
+            if (contentType.includes("pdf")) {
+              textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+            } else {
+              const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+              fetchedHtmlBody = body;
+              const extracted = htmlToText(body);
+              if (extracted.text && extracted.text.length > textContent.length) {
+                textContent = extracted.text;
+              }
+              if (extracted.title && extracted.title !== "Untitled report") {
+                docTitle = extracted.title;
+              }
             }
           }
         } catch (fetchErr) {
-          failedCount++;
-          const itemId = newId("itm");
-          const errMsg = fetchErr instanceof Error ? fetchErr.message : "Fetch failed";
-          const jobItem: CrawlJobItem = {
-            id: itemId,
-            jobId,
-            sourceId: current.sourceId || null,
-            url: current.url,
-            canonicalUrl: current.canonicalUrl,
-            title: current.title || "Fetch Failure",
-            classification: "OTHER",
-            decision: "FAILED",
-            reason: errMsg,
-            stage: "failed",
-            discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
-            parentUrl: current.parentUrl,
-            depth: current.depth,
-            publisher: current.publisher || current.domain,
-            discoveryPath: current.discoveryPath,
-            createdAt: new Date().toISOString(),
-          };
+          // If we already had preloadedText, keep it; otherwise track failure
+          if (!textContent) {
+            failedCount++;
+            const itemId = newId("itm");
+            const errMsg = fetchErr instanceof Error ? fetchErr.message : "Fetch failed";
+            const jobItem: CrawlJobItem = {
+              id: itemId,
+              jobId,
+              sourceId: current.sourceId || null,
+              url: current.url,
+              canonicalUrl: current.canonicalUrl,
+              title: current.title || "Fetch Failure",
+              classification: "OTHER",
+              decision: "FAILED",
+              reason: errMsg,
+              stage: "failed",
+              discoveryMethod: current.discoveryMethod,
+              discoveryQuery: "",
+              parentUrl: current.parentUrl,
+              depth: current.depth,
+              publisher: current.publisher || current.domain,
+              discoveryPath: current.discoveryPath,
+              createdAt: new Date().toISOString(),
+            };
 
-          if (isMongoConfigured()) {
-            await mongoInsertCrawlJobItem(jobItem);
+            if (isMongoConfigured()) {
+              await mongoInsertCrawlJobItem(jobItem);
+            }
+            continue;
           }
-          await sql`
-            insert into crawl_job_items (
-              id, job_id, source_id, url, canonical_url, title, classification,
-              decision, reason, discovery_method, discovery_query, depth, publisher
-            ) values (
-              ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-              ${current.title ?? 'Fetch Failure'}, 'OTHER', 'FAILED', ${errMsg},
-              ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-            )
-          `;
-          continue;
         }
       }
+
 
       // Check Content Hash Deduplication
       const textHash = sha256Hex(textContent);
@@ -719,6 +732,7 @@ export async function executeCrawlJob(
         if (isMongoConfigured()) {
           await mongoInsertCrawlJobItem(jobItem);
           await mongoUpsertDiscoveredResource({
+            id: newId("dsc"),
             canonicalUrl: current.canonicalUrl,
             url: current.url,
             sourceId: current.sourceId || null,
@@ -739,31 +753,35 @@ export async function executeCrawlJob(
           });
         }
 
-        await sql`
-          insert into crawl_job_items (
-            id, job_id, source_id, url, canonical_url, title, classification,
-            decision, reason, discovery_method, discovery_query, depth, publisher
-          ) values (
-            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-            ${docTitle}, ${qual.classification}, 'REJECTED', ${rejectMsg},
-            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-          )
-        `;
+        try {
+          await sql`
+            insert into crawl_job_items (
+              id, job_id, source_id, url, canonical_url, title, classification,
+              decision, reason, discovery_method, discovery_query, depth, publisher
+            ) values (
+              ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+              ${docTitle}, ${qual.classification}, 'REJECTED', ${rejectMsg},
+              ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+            )
+          `;
 
-        await sql`
-          insert into discovered_resources (
-            id, canonical_url, url, source_id, title, publisher, classification,
-            discovery_method, discovery_query, parent_source, source_domain,
-            content_type, status, reject_reason, quality_score
-          ) values (
-            ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
-            ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
-            '', ${current.parentSource ?? current.domain}, ${current.domain},
-            ${contentType}, 'rejected', ${rejectMsg}, ${qual.score}
-          )
-          on conflict (canonical_url) do update
-          set status = 'rejected', reject_reason = excluded.reject_reason, updated_at = now()
-        `;
+          await sql`
+            insert into discovered_resources (
+              id, canonical_url, url, source_id, title, publisher, classification,
+              discovery_method, discovery_query, parent_source, source_domain,
+              content_type, status, reject_reason, quality_score
+            ) values (
+              ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+              ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+              '', ${current.parentSource ?? current.domain}, ${current.domain},
+              ${contentType}, 'rejected', ${rejectMsg}, ${qual.score}
+            )
+            on conflict (canonical_url) do update
+            set status = 'rejected', reject_reason = excluded.reject_reason, updated_at = now()
+          `;
+        } catch {
+          /* ignore sql fallback error */
+        }
         continue;
       }
 
@@ -863,6 +881,7 @@ export async function executeCrawlJob(
             });
 
             await mongoUpsertDiscoveredResource({
+              id: newId("dsc"),
               canonicalUrl: current.canonicalUrl,
               url: current.url,
               sourceId: current.sourceId || null,
@@ -886,39 +905,43 @@ export async function executeCrawlJob(
           }
         }
 
-        // Persist to SQL store
-        await sql`
-          insert into reports (
-            id, source_id, title, url, canonical_url, published_at, content_type,
-            status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
-            extracted_text, iocs_json, ingest_origin, publisher, author,
-            classification, discovery_method, discovery_query, parent_source,
-            source_domain, version, analysis_json, raw_html
-          ) values (
-            ${reportId}, ${current.sourceId ?? 'src_dfir'}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
-            ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
-            ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
-            ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
-            ${current.publisher ?? current.domain}, ${current.publisher ?? current.domain},
-            ${qual.classification}, ${current.discoveryMethod}, '', ${current.parentSource ?? current.domain},
-            ${current.domain}, 1, ${JSON.stringify(intelAnalysis)}, ${pristineHtml}
-          )
-        `;
+        // Persist to SQL store (optional fallback)
+        try {
+          await sql`
+            insert into reports (
+              id, source_id, title, url, canonical_url, published_at, content_type,
+              status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
+              extracted_text, iocs_json, ingest_origin, publisher, author,
+              classification, discovery_method, discovery_query, parent_source,
+              source_domain, version, analysis_json, raw_html
+            ) values (
+              ${reportId}, ${current.sourceId ?? 'src_dfir'}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
+              ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
+              ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
+              ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
+              ${current.publisher ?? current.domain}, ${current.publisher ?? current.domain},
+              ${qual.classification}, ${current.discoveryMethod}, '', ${current.parentSource ?? current.domain},
+              ${current.domain}, 1, ${JSON.stringify(intelAnalysis)}, ${pristineHtml}
+            )
+          `;
 
-        await sql`
-          insert into discovered_resources (
-            id, canonical_url, url, source_id, title, publisher, classification,
-            discovery_method, discovery_query, parent_source, source_domain,
-            content_type, status, quality_score, report_id
-          ) values (
-            ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
-            ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
-            '', ${current.parentSource ?? current.domain}, ${current.domain},
-            ${contentType}, 'ingested', ${score}, ${reportId}
-          )
-          on conflict (canonical_url) do update
-          set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
-        `;
+          await sql`
+            insert into discovered_resources (
+              id, canonical_url, url, source_id, title, publisher, classification,
+              discovery_method, discovery_query, parent_source, source_domain,
+              content_type, status, quality_score, report_id
+            ) values (
+              ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+              ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+              '', ${current.parentSource ?? current.domain}, ${current.domain},
+              ${contentType}, 'ingested', ${score}, ${reportId}
+            )
+            on conflict (canonical_url) do update
+            set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
+          `;
+        } catch {
+          /* ignore SQL fallback error */
+        }
 
         const itemId = newId("itm");
         const jobItem: CrawlJobItem = {
@@ -946,17 +969,21 @@ export async function executeCrawlJob(
         if (isMongoConfigured()) {
           await mongoInsertCrawlJobItem(jobItem);
         }
-        await sql`
-          insert into crawl_job_items (
-            id, job_id, source_id, url, canonical_url, title, classification,
-            decision, reason, discovery_method, discovery_query, depth, publisher
-          ) values (
-            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-            ${docTitle}, ${qual.classification}, 'INGESTED',
-            ${`Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`},
-            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-          )
-        `;
+        try {
+          await sql`
+            insert into crawl_job_items (
+              id, job_id, source_id, url, canonical_url, title, classification,
+              decision, reason, discovery_method, discovery_query, depth, publisher
+            ) values (
+              ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+              ${docTitle}, ${qual.classification}, 'INGESTED',
+              ${`Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`},
+              ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+            )
+          `;
+        } catch {
+          /* ignore */
+        }
       } else {
         // Auto-ingest is OFF: Hold in queue with explicit state for analyst review
         skippedCount++;
@@ -986,6 +1013,7 @@ export async function executeCrawlJob(
         if (isMongoConfigured()) {
           await mongoInsertCrawlJobItem(jobItem);
           await mongoUpsertDiscoveredResource({
+            id: newId("dsc"),
             canonicalUrl: current.canonicalUrl,
             url: current.url,
             sourceId: current.sourceId || null,
@@ -1005,17 +1033,21 @@ export async function executeCrawlJob(
           });
         }
 
-        await sql`
-          insert into crawl_job_items (
-            id, job_id, source_id, url, canonical_url, title, classification,
-            decision, reason, discovery_method, discovery_query, depth, publisher
-          ) values (
-            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-            ${docTitle}, ${qual.classification}, 'AWAITING_APPROVAL',
-            'Qualified by engine; held in Discovery Queue for manual ingestion approval',
-            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-          )
-        `;
+        try {
+          await sql`
+            insert into crawl_job_items (
+              id, job_id, source_id, url, canonical_url, title, classification,
+              decision, reason, discovery_method, discovery_query, depth, publisher
+            ) values (
+              ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+              ${docTitle}, ${qual.classification}, 'AWAITING_APPROVAL',
+              'Qualified by engine; held in Discovery Queue for manual ingestion approval',
+              ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+            )
+          `;
+        } catch {
+          /* ignore */
+        }
       }
     }
 
@@ -1045,24 +1077,30 @@ export async function executeCrawlJob(
       });
     }
 
-    await sql`
-      update crawl_jobs
-      set status = 'completed', completed_at = now(),
-          discovered_count = ${discoveredCount}, qualified_count = ${qualifiedCount},
-          ingested_count = ${ingestedCount}, duplicate_count = ${duplicateCount},
-          failed_count = ${failedCount}, rejected_count = ${rejectedCount},
-          skipped_count = ${skippedCount}
-      where id = ${jobId}
-    `;
+    try {
+      await sql`
+        update crawl_jobs
+        set status = 'completed', completed_at = now(),
+            discovered_count = ${discoveredCount}, qualified_count = ${qualifiedCount},
+            ingested_count = ${ingestedCount}, duplicate_count = ${duplicateCount},
+            failed_count = ${failedCount}, rejected_count = ${rejectedCount},
+            skipped_count = ${skippedCount}
+        where id = ${jobId}
+      `;
 
-    await sql`
-      update crawl_config
-      set last_run_at = now(), next_run_at = ${nextRun}
-      where id = ${config.id}
-    `;
+      await sql`
+        update crawl_config
+        set last_run_at = now(), next_run_at = ${nextRun}
+        where id = ${config.id}
+      `;
+    } catch {
+      /* ignore sql fallback error */
+    }
   } catch (jobErr) {
     const errMsg = jobErr instanceof Error ? jobErr.message : "Crawl job error";
     console.error(`[crawler] job ${jobId} failed:`, jobErr);
+    jobFailed = true;
+    jobErrorSummary = errMsg;
     if (isMongoConfigured()) {
       await mongoUpdateCrawlJob(jobId, {
         status: "failed",
@@ -1070,71 +1108,38 @@ export async function executeCrawlJob(
         errorSummary: errMsg,
       });
     }
-    await sql`
-      update crawl_jobs
-      set status = 'failed', completed_at = now(), error_summary = ${errMsg}
-      where id = ${jobId}
-    `;
+    try {
+      await sql`
+        update crawl_jobs
+        set status = 'failed', completed_at = now(), error_summary = ${errMsg}
+        where id = ${jobId}
+      `;
+    } catch {
+      /* ignore */
+    }
   } finally {
     activeJobs.delete(jobId);
   }
 
-  const updatedRows = await sql<{
-    id: string;
-    status: CrawlJob["status"];
-    trigger_type: CrawlJob["triggerType"];
-    started_at: string | null;
-    completed_at: string | null;
-    source_count: number;
-    discovered_count: number;
-    qualified_count: number;
-    ingested_count: number;
-    duplicate_count: number;
-    failed_count: number;
-    rejected_count: number;
-    updated_count: number;
-    skipped_count: number;
-    error_summary: string;
-  }>`select * from crawl_jobs where id = ${jobId}`;
-
-  const r = updatedRows[0];
-  if (!r) {
-    return {
-      ...initialJob,
-      status: "completed",
-      completedAt: new Date().toISOString(),
-      discoveredCount,
-      evaluatedCount,
-      qualifiedCount,
-      ingestedCount,
-      duplicateCount,
-      failedCount,
-      rejectedCount,
-      skippedCount,
-      newSourcesCount,
-      pdfGeneratedCount,
-    };
-  }
-
   return {
-    id: r.id,
-    status: r.status,
-    triggerType: r.trigger_type,
-    startedAt: toIsoString(r.started_at),
-    completedAt: toIsoString(r.completed_at),
-    sourceCount: Number(r.source_count),
-    discoveredCount: Number(r.discovered_count),
+    id: jobId,
+    status: jobFailed ? "failed" : "completed",
+    triggerType,
+    startedAt: initialJob.startedAt,
+    completedAt: new Date().toISOString(),
+    sourceCount: sources.length,
+    discoveredCount,
     evaluatedCount,
-    qualifiedCount: Number(r.qualified_count),
-    ingestedCount: Number(r.ingested_count),
-    duplicateCount: Number(r.duplicate_count),
-    failedCount: Number(r.failed_count),
-    rejectedCount: Number(r.rejected_count),
-    updatedCount: Number(r.updated_count),
-    skippedCount: Number(r.skipped_count),
+    qualifiedCount,
+    ingestedCount,
+    duplicateCount,
+    failedCount,
+    rejectedCount,
+    updatedCount: 0,
+    skippedCount,
     newSourcesCount,
     pdfGeneratedCount,
-    errorSummary: r.error_summary,
+    errorSummary: jobErrorSummary,
   };
 }
 
@@ -1176,10 +1181,14 @@ export async function createAndRunCrawlJob(
     }
   }
 
-  await sql`
-    insert into crawl_jobs (id, status, trigger_type, started_at)
-    values (${id}, 'running', ${trigger}, now())
-  `;
+  try {
+    await sql`
+      insert into crawl_jobs (id, status, trigger_type, started_at)
+      values (${id}, 'running', ${trigger}, now())
+    `;
+  } catch {
+    /* ignore sql fallback error */
+  }
 
   // Start asynchronous crawl in background so the UI immediately shows "Running" status
   void executeCrawlJob(id, trigger, targetedQuery).catch((err) => {

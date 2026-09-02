@@ -116,7 +116,7 @@ export type ReportRecord = {
   citedDomains?: string[];
 };
 
-export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons" | "analysis"> & {
+export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons"> & {
   excerpt: string;
   iocCount: number;
 };

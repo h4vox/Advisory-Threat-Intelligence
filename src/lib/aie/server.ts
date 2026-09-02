@@ -37,7 +37,7 @@ import type {
   TrustLevel,
 } from "./types";
 import { getSql } from "@/lib/db";
-import { isMongoConfigured } from "../mongodb/client.server";
+import { isMongoConfigured, getThreatIntelCollection } from "../mongodb/client.server";
 import {
   mongoGetDashboardStats,
   mongoListReports,
@@ -58,6 +58,7 @@ import {
   mongoUpsertDiscoveredResource,
   mongoInsertIngestEvent,
   mongoListRecentIngestEvents,
+  ensureMongoIndexes,
 } from "../mongodb/repository.server";
 
 type SourceRow = {
@@ -165,12 +166,14 @@ function toListItem(r: ReportRow): ReportListItem {
     version: Number(r.version ?? 1),
     rawHtml: r.raw_html || "",
     pdfUrl: r.pdf_url || "",
+    analysis: parseJson<IntelAnalysis | null>(r.analysis_json, null),
   };
 }
 
 async function ensureSeeded() {
   if (isMongoConfigured()) {
     try {
+      await ensureMongoIndexes();
       await mongoSeedSources(SOURCE_SEED as SourceRecord[]);
       const existingReports = await mongoListReports();
       if (existingReports.length === 0) {
@@ -1249,29 +1252,77 @@ export const ingestDiscoveredUrl = createServerFn({ method: "POST" })
   .validator(z.object({ discoveredId: z.string() }))
   .handler(async ({ data }): Promise<IngestResult> => {
     await ensureSeeded();
-    const sql = await getSql();
-    const rows = await sql<{
-      id: string;
-      url: string;
-      canonical_url: string;
-      title: string;
-      source_id: string | null;
-      publisher: string;
-      classification: string;
-      discovery_method: string;
-    }>`select * from discovered_resources where id = ${data.discoveredId}`;
+    let canonicalUrl = "";
+    let itemTitle = "";
 
-    const item = rows[0];
-    if (!item) return { ok: false, error: "Discovered item not found" };
+    if (isMongoConfigured()) {
+      try {
+        const col = await getThreatIntelCollection();
+        const doc = await col.findOne({
+          docType: "discovered_resource",
+          $or: [
+            { id: data.discoveredId },
+            { canonicalUrl: data.discoveredId },
+            { url: data.discoveredId },
+          ],
+        });
+        if (doc) {
+          canonicalUrl = doc.canonicalUrl || doc.url;
+          itemTitle = doc.title || "";
+        }
+      } catch (err) {
+        console.warn("[mongodb] ingestDiscoveredUrl lookup:", err);
+      }
+    }
 
-    const result = await ingestUrl({ data: { url: item.canonical_url } });
+    if (!canonicalUrl) {
+      try {
+        const sql = await getSql();
+        const rows = await sql<{
+          id: string;
+          url: string;
+          canonical_url: string;
+          title: string;
+        }>`select * from discovered_resources where id = ${data.discoveredId} or canonical_url = ${data.discoveredId}`;
+        if (rows[0]) {
+          canonicalUrl = rows[0].canonical_url || rows[0].url;
+          itemTitle = rows[0].title || "";
+        }
+      } catch {
+        /* ignore sql fallback */
+      }
+    }
+
+    if (!canonicalUrl) {
+      return { ok: false, error: "Discovered item not found" };
+    }
+
+    const result = await ingestUrl({ data: { url: canonicalUrl } });
 
     if (result.ok) {
-      await sql`
-        update discovered_resources
-        set status = 'ingested', report_id = ${result.reportId}, quality_score = ${result.qualityScore}, updated_at = now()
-        where id = ${data.discoveredId}
-      `;
+      if (isMongoConfigured()) {
+        try {
+          await mongoUpsertDiscoveredResource({
+            canonicalUrl,
+            status: "ingested",
+            reportId: result.reportId,
+            qualityScore: result.qualityScore,
+          });
+        } catch (err) {
+          console.warn("[mongodb] ingestDiscoveredUrl update:", err);
+        }
+      }
+
+      try {
+        const sql = await getSql();
+        await sql`
+          update discovered_resources
+          set status = 'ingested', report_id = ${result.reportId}, quality_score = ${result.qualityScore}, updated_at = now()
+          where canonical_url = ${canonicalUrl} or id = ${data.discoveredId}
+        `;
+      } catch {
+        /* ignore sql fallback */
+      }
     }
 
     return result;

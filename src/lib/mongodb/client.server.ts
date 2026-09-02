@@ -61,40 +61,57 @@ export async function getMongoClient(): Promise<MongoClient> {
   }
 
   if (globalThis.__mongoClientPromise) {
-    return globalThis.__mongoClientPromise;
+    try {
+      const client = await globalThis.__mongoClientPromise;
+      return client;
+    } catch {
+      // Previous promise rejected; clear cache and retry
+      globalThis.__mongoClientPromise = undefined;
+    }
   }
 
-  const connectWithUri = async (targetUri: string): Promise<MongoClient> => {
+  const tryConnect = async (targetUri: string): Promise<MongoClient> => {
     const client = new MongoClient(targetUri, {
       maxPoolSize: 15,
-      minPoolSize: 2,
-      serverSelectionTimeoutMS: 8000,
-      connectTimeoutMS: 10000,
+      minPoolSize: 1,
+      serverSelectionTimeoutMS: 6000,
+      connectTimeoutMS: 8000,
+      autoSelectFamily: false,
+      tls: true,
+      tlsAllowInvalidCertificates: true,
     });
-    return client.connect();
+    return await client.connect();
   };
 
-  globalThis.__mongoClientPromise = connectWithUri(uri).catch(async (srvErr) => {
-    const isDnsSrvError =
-      srvErr instanceof Error &&
-      (srvErr.message.includes("querySrv") ||
-        srvErr.message.includes("ECONNREFUSED") ||
-        srvErr.message.includes("ENOTFOUND"));
+  const connectPromise = (async () => {
+    try {
+      return await tryConnect(uri);
+    } catch (srvErr) {
+      const isDnsOrTlsError =
+        srvErr instanceof Error &&
+        (srvErr.message.includes("querySrv") ||
+          srvErr.message.includes("ECONNREFUSED") ||
+          srvErr.message.includes("ENOTFOUND") ||
+          srvErr.message.includes("tlsv1 alert") ||
+          srvErr.message.includes("SSL alert"));
 
-    const directUri = isDnsSrvError ? getDirectSeedUri(uri) : null;
-    if (directUri) {
-      console.warn("[mongodb] DNS SRV lookup failed; switching to direct replica-set connection nodes...");
-      return connectWithUri(directUri).catch((directErr) => {
-        globalThis.__mongoClientPromise = undefined;
-        throw directErr;
-      });
+      const directUri = isDnsOrTlsError ? getDirectSeedUri(uri) : null;
+      if (directUri) {
+        console.warn("[mongodb] SRV connection failed; attempting direct replica-set seed nodes...");
+        return await tryConnect(directUri);
+      }
+      throw srvErr;
     }
+  })();
 
+  globalThis.__mongoClientPromise = connectPromise;
+
+  try {
+    return await connectPromise;
+  } catch (err) {
     globalThis.__mongoClientPromise = undefined;
-    throw srvErr;
-  });
-
-  return globalThis.__mongoClientPromise;
+    throw err;
+  }
 }
 
 export async function getMongoDb(): Promise<Db> {

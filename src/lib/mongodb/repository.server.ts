@@ -28,6 +28,8 @@ export async function ensureMongoIndexes() {
   if (indexesEnsured || !isMongoConfigured()) return;
   try {
     const col = await getThreatIntelCollection();
+    // Purge any documents with id: null to prevent E11000 duplicate key conflicts
+    await col.deleteMany({ id: null });
     await col.createIndex({ docType: 1, id: 1 }, { unique: true, background: true });
     await col.createIndex(
       { docType: 1, canonicalUrl: 1 },
@@ -106,39 +108,160 @@ export async function mongoListReports(params?: {
   classification?: string;
   resourceKind?: string;
   sourceId?: string;
+  actor?: string;
+  malware?: string;
+  tactic?: string;
+  publisher?: string;
+  minScore?: number;
+  hasIocs?: boolean;
 }): Promise<ReportListItem[]> {
   await ensureMongoIndexes();
   const col = await getThreatIntelCollection();
 
   const filter: Filter<Document> = { docType: "report" };
+  const andConditions: Filter<Document>[] = [];
 
   if (params?.classification && params.classification !== "ALL") {
-    filter.classification = params.classification;
+    andConditions.push({ classification: params.classification });
   }
 
   if (params?.resourceKind && params.resourceKind !== "ALL") {
-    filter.resourceKind = params.resourceKind;
+    const rk = params.resourceKind;
+    if (rk === "FULL_ATTACK_CHAIN") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "FULL_ATTACK_CHAIN" },
+          { classification: { $in: ["FULL_ATTACK_CHAIN", "ATTACK_CHAIN_REPORT", "INTRUSION_REPORT"] } },
+          { "analysis.attackChain.0": { $exists: true } },
+        ],
+      });
+    } else if (rk === "CAMPAIGN_INTEL") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "CAMPAIGN_INTEL" },
+          { classification: { $in: ["CAMPAIGN_INTEL", "THREAT_REPORT", "CAMPAIGN_REPORT", "GENERIC_NEWS"] } },
+        ],
+      });
+    } else if (rk === "PROCEDURE_DEEPDIVE") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "PROCEDURE_DEEPDIVE" },
+          { classification: { $in: ["PROCEDURE_DEEPDIVE", "ADVERSARY_EMULATION", "PURPLE_TEAM", "TTP_DEEPDIVE"] } },
+          { "analysis.emulation.0": { $exists: true } },
+        ],
+      });
+    } else if (rk === "MALWARE_ANALYSIS") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "MALWARE_ANALYSIS" },
+          { classification: "MALWARE_ANALYSIS" },
+          { "analysis.malware.0": { $exists: true } },
+        ],
+      });
+    } else if (rk === "DETECTION_GUIDANCE") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "DETECTION_GUIDANCE" },
+          { classification: { $in: ["DETECTION_GUIDANCE", "DETECTION_RESEARCH", "SIGMA_RULES"] } },
+          { "analysis.detections.0": { $exists: true } },
+        ],
+      });
+    } else if (rk === "VULNERABILITY_ADVISORY") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "VULNERABILITY_ADVISORY" },
+          { classification: { $in: ["VULNERABILITY_ADVISORY", "VULNERABILITY_REPORT", "CVE_EXPLOIT"] } },
+          { "extractedEntities.cves.0": { $exists: true } },
+        ],
+      });
+    } else if (rk === "THREAT_ACTOR_DOSSIER") {
+      andConditions.push({
+        $or: [
+          { resourceKind: "THREAT_ACTOR_DOSSIER" },
+          { classification: "THREAT_ACTOR_REPORT" },
+          { "analysis.threatActors.0": { $exists: true } },
+        ],
+      });
+    } else {
+      andConditions.push({ resourceKind: rk });
+    }
   }
 
   if (params?.sourceId && params.sourceId !== "ALL") {
-    filter.sourceId = params.sourceId;
+    andConditions.push({ sourceId: params.sourceId });
+  }
+
+  if (params?.actor) {
+    const actorRegex = new RegExp(params.actor.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    andConditions.push({
+      $or: [
+        { "analysis.threatActors": { $regex: actorRegex } },
+        { "extractedEntities.threatActors": { $regex: actorRegex } },
+      ],
+    });
+  }
+
+  if (params?.malware) {
+    const malwareRegex = new RegExp(params.malware.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    andConditions.push({
+      $or: [
+        { "analysis.malware": { $regex: malwareRegex } },
+        { "extractedEntities.malwareFamilies": { $regex: malwareRegex } },
+      ],
+    });
+  }
+
+  if (params?.tactic) {
+    const tacticRegex = new RegExp(params.tactic.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    andConditions.push({
+      $or: [
+        { "analysis.attackChain.tactic": { $regex: tacticRegex } },
+        { "extractedEntities.tactics": { $regex: tacticRegex } },
+      ],
+    });
+  }
+
+  if (params?.publisher && params.publisher !== "ALL") {
+    const pubRegex = new RegExp(params.publisher.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    andConditions.push({
+      $or: [
+        { publisher: { $regex: pubRegex } },
+        { sourceName: { $regex: pubRegex } },
+        { sourceDomain: { $regex: pubRegex } },
+      ],
+    });
+  }
+
+  if (typeof params?.minScore === "number" && params.minScore > 0) {
+    andConditions.push({ qualityScore: { $gte: params.minScore } });
+  }
+
+  if (params?.hasIocs) {
+    andConditions.push({ "iocs.0": { $exists: true } });
   }
 
   if (params?.q?.trim()) {
     const regex = new RegExp(params.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [
-      { title: { $regex: regex } },
-      { publisher: { $regex: regex } },
-      { sourceName: { $regex: regex } },
-      { url: { $regex: regex } },
-      { canonicalUrl: { $regex: regex } },
-      { classification: { $regex: regex } },
-      { resourceKind: { $regex: regex } },
-      { "analysis.threatActors": { $regex: regex } },
-      { "analysis.malware": { $regex: regex } },
-      { "extractedEntities.cves": { $regex: regex } },
-      { "extractedEntities.tactics": { $regex: regex } },
-    ];
+    andConditions.push({
+      $or: [
+        { title: { $regex: regex } },
+        { publisher: { $regex: regex } },
+        { sourceName: { $regex: regex } },
+        { url: { $regex: regex } },
+        { canonicalUrl: { $regex: regex } },
+        { classification: { $regex: regex } },
+        { resourceKind: { $regex: regex } },
+        { "analysis.threatActors": { $regex: regex } },
+        { "analysis.malware": { $regex: regex } },
+        { "extractedEntities.cves": { $regex: regex } },
+        { "extractedEntities.tactics": { $regex: regex } },
+        { "iocs.value": { $regex: regex } },
+      ],
+    });
+  }
+
+  if (andConditions.length > 0) {
+    filter.$and = andConditions;
   }
 
   const cursor = col
@@ -175,6 +298,7 @@ export async function mongoListReports(params?: {
       rawHtml: 1,
       pdfUrl: 1,
       pdfBase64: 1,
+      analysis: 1,
     });
 
   const docs = await cursor.toArray();
@@ -182,6 +306,29 @@ export async function mongoListReports(params?: {
   return docs.map((doc) => {
     const text = doc.extractedText || "";
     const iocsList = (doc.iocs as IocHit[]) || [];
+
+    let calculatedKind = (doc.resourceKind as ResourceKind) || null;
+    if (!calculatedKind) {
+      const cls = (doc.classification || "").toUpperCase();
+      const analysisObj = doc.analysis as IntelAnalysis | undefined;
+      const entitiesObj = doc.extractedEntities as ExtractedEntities | undefined;
+      if (cls.includes("INTRUSION") || cls.includes("ATTACK_CHAIN") || (analysisObj?.attackChain && analysisObj.attackChain.length > 0)) {
+        calculatedKind = "FULL_ATTACK_CHAIN";
+      } else if (cls.includes("MALWARE") || (analysisObj?.malware && analysisObj.malware.length > 0)) {
+        calculatedKind = "MALWARE_ANALYSIS";
+      } else if (cls.includes("EMULATION") || cls.includes("PROCEDURE") || cls.includes("PURPLE") || (analysisObj?.emulation && analysisObj.emulation.length > 0)) {
+        calculatedKind = "PROCEDURE_DEEPDIVE";
+      } else if (cls.includes("DETECTION") || cls.includes("SIGMA") || (analysisObj?.detections && analysisObj.detections.length > 0)) {
+        calculatedKind = "DETECTION_GUIDANCE";
+      } else if (cls.includes("VULNERABILITY") || (entitiesObj?.cves && entitiesObj.cves.length > 0)) {
+        calculatedKind = "VULNERABILITY_ADVISORY";
+      } else if (cls.includes("THREAT_ACTOR") || (analysisObj?.threatActors && analysisObj.threatActors.length > 0)) {
+        calculatedKind = "THREAT_ACTOR_DOSSIER";
+      } else {
+        calculatedKind = "CAMPAIGN_INTEL";
+      }
+    }
+
     return {
       id: doc.id,
       sourceId: doc.sourceId,
@@ -204,7 +351,7 @@ export async function mongoListReports(params?: {
       publisher: doc.publisher || doc.sourceName,
       author: doc.author || doc.publisher,
       classification: doc.classification || "THREAT_REPORT",
-      resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
+      resourceKind: calculatedKind,
       extractedEntities: (doc.extractedEntities as ExtractedEntities) || undefined,
       discoveryMethod: doc.discoveryMethod || "manual",
       discoveryQuery: doc.discoveryQuery || "",
@@ -214,6 +361,7 @@ export async function mongoListReports(params?: {
       rawHtml: doc.rawHtml || "",
       pdfUrl: doc.pdfUrl || "",
       pdfBase64: doc.pdfBase64 || "",
+      analysis: (doc.analysis as IntelAnalysis) || null,
     };
   });
 }
@@ -480,21 +628,29 @@ export async function mongoListRecentCrawlJobItems(limit = 25): Promise<CrawlJob
 // ---------------------------------------------------------------------------
 
 export async function mongoUpsertDiscoveredResource(resource: Partial<DiscoveredResource> & { canonicalUrl: string }): Promise<void> {
-  const col = await getThreatIntelCollection();
-  await col.updateOne(
-    { docType: "discovered_resource", canonicalUrl: resource.canonicalUrl },
-    {
-      $set: {
-        docType: "discovered_resource",
-        ...resource,
-        updatedAt: new Date().toISOString(),
+  if (!isMongoConfigured()) return;
+  try {
+    const col = await getThreatIntelCollection();
+    const assignedId = resource.id || `dsc_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const { id: _ignoredId, ...setFields } = resource;
+    await col.updateOne(
+      { docType: "discovered_resource", canonicalUrl: resource.canonicalUrl },
+      {
+        $set: {
+          docType: "discovered_resource",
+          ...setFields,
+          updatedAt: new Date().toISOString(),
+        },
+        $setOnInsert: {
+          id: assignedId,
+          createdAt: new Date().toISOString(),
+        },
       },
-      $setOnInsert: {
-        createdAt: new Date().toISOString(),
-      },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
+  } catch (err) {
+    console.warn("[mongodb] mongoUpsertDiscoveredResource error:", err);
+  }
 }
 
 export async function mongoListDiscoveredResources(limit = 40): Promise<DiscoveredResource[]> {
@@ -514,17 +670,21 @@ export async function mongoListDiscoveredResources(limit = 40): Promise<Discover
     publisher: d.publisher || "",
     author: d.author || "",
     publicationDate: d.publicationDate || null,
-    classification: d.classification || "THREAT_REPORT",
-    discoveryMethod: d.discoveryMethod || "crawl_source",
-    discoveryQuery: d.discoveryQuery || "",
-    parentSource: d.parentSource || "",
-    sourceDomain: d.sourceDomain || "",
-    contentType: d.contentType || "text/html",
-    status: d.status || "discovered",
-    rejectReason: d.rejectReason || "",
+    classification: d.classification,
+    resourceKind: d.resourceKind,
+    discoveryMethod: d.discoveryMethod,
+    discoveryQuery: d.discoveryQuery,
+    parentSource: d.parentSource,
+    parentUrl: d.parentUrl,
+    sourceDomain: d.sourceDomain,
+    contentType: d.contentType,
+    status: d.status,
     qualityScore: d.qualityScore ? Number(d.qualityScore) : null,
-    reportId: d.reportId || null,
-    createdAt: d.createdAt || new Date().toISOString(),
+    rejectReason: d.rejectReason,
+    reportId: d.reportId,
+    discoveryPath: (d.discoveryPath as string[]) || [],
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
   }));
 }
 
@@ -569,20 +729,29 @@ export async function mongoListRecentIngestEvents(limit = 8): Promise<IngestEven
 
 export async function mongoInsertDiscoveredSource(source: DiscoveredSourceRecord) {
   if (!isMongoConfigured()) return;
-  const col = await getThreatIntelCollection();
-  await col.updateOne(
-    { docType: "discovered_source", domain: source.domain },
-    {
-      $set: {
-        docType: "discovered_source",
-        ...source,
-        lastSeenAt: new Date().toISOString(),
+  try {
+    const col = await getThreatIntelCollection();
+    const assignedId = source.id || `src_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const { id: _ignoredId, ...setFields } = source;
+    await col.updateOne(
+      { docType: "discovered_source", domain: source.domain },
+      {
+        $set: {
+          docType: "discovered_source",
+          ...setFields,
+          lastSeenAt: new Date().toISOString(),
+        },
+        $inc: { resourceCount: 1 },
+        $setOnInsert: {
+          id: assignedId,
+          firstDiscoveredAt: new Date().toISOString(),
+        },
       },
-      $inc: { resourceCount: 1 },
-      $setOnInsert: { firstDiscoveredAt: new Date().toISOString() },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
+  } catch (err) {
+    console.warn("[mongodb] mongoInsertDiscoveredSource error:", err);
+  }
 }
 
 export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceRecord[]> {

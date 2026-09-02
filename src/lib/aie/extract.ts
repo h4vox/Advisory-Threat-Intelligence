@@ -119,8 +119,35 @@ export function htmlToText(html: string): { title: string; text: string } {
   return { title: decodeEntities(title).slice(0, 240), text: decodeEntities(stripped) };
 }
 
-function decodeEntities(s: string): string {
-  return s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+export function decodeEntities(s: string): string {
+  if (!s) return "";
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 16));
+      } catch {
+        return "";
+      }
+    })
+    .replace(/&#([0-9]+);/g, (_, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 10));
+      } catch {
+        return "";
+      }
+    })
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lsquo;/g, "‘")
+    .replace(/&rsquo;/g, "’")
+    .replace(/&ldquo;/g, "“")
+    .replace(/&rdquo;/g, "”")
+    .replace(/&mdash;/g, "—")
+    .replace(/&ndash;/g, "–")
+    .replace(/&hellip;/g, "…")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
 }
 
 const TECH_RE = /\bT1[0-9]{3}(?:\.[0-9]{3})?\b/g;

@@ -602,17 +602,24 @@ function IngestPage() {
                         <td className="py-2.5 font-mono text-fg">{j.id.slice(0, 12)}</td>
                         <td className="py-2.5 font-mono text-subtle">{j.triggerType}</td>
                         <td className="py-2.5">
-                          <Badge
-                            tone={
-                              j.status === "completed"
-                                ? "sage"
-                                : j.status === "running"
-                                  ? "accent"
-                                  : "danger"
-                            }
-                          >
-                            {j.status}
-                          </Badge>
+                          <div className="flex flex-col gap-0.5">
+                            <Badge
+                              tone={
+                                j.status === "completed"
+                                  ? "sage"
+                                  : j.status === "running"
+                                    ? "accent"
+                                    : "danger"
+                              }
+                            >
+                              {j.status}
+                            </Badge>
+                            {j.errorSummary ? (
+                              <span className="text-[10px] text-danger font-mono max-w-[150px] truncate" title={j.errorSummary}>
+                                {j.errorSummary}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="py-2.5 font-mono">{j.discoveredCount}</td>
                         <td className="py-2.5 font-mono text-muted">{j.evaluatedCount || j.discoveredCount}</td>

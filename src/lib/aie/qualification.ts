@@ -311,20 +311,20 @@ export function qualifyContent(
   // Strictness mode evaluation
   let qualified = false;
   if (strictness === "permissive") {
-    qualified = score >= Math.min(minScore, 0.30) && (matchedTerms.length >= 1 || hasCve || hasIocSignal);
+    qualified = score >= Math.min(minScore, 0.30) && (matchedTerms.length >= 1 || hasCve || hasIocSignal || isFromFeed);
   } else if (strictness === "strict") {
-    qualified = score >= Math.max(minScore, 0.55) && matchedTerms.length >= 2;
+    qualified = score >= 0.65 || (score >= Math.max(minScore, 0.50) && (matchedTerms.length >= 2 || (isFromFeed && matchedTerms.length >= 1)));
   } else {
     // Balanced (default)
-    qualified = score >= minScore && (matchedTerms.length >= 1 || hasCve || hasIocSignal);
+    qualified = score >= minScore && (matchedTerms.length >= 1 || hasCve || hasIocSignal || isFromFeed);
   }
 
   // Check required signal constraints from config
-  if (config?.requireIocs && !hasIocSignal) {
+  if (config?.requireIocs && !hasIocSignal && score < 0.75) {
     qualified = false;
     reasons.push("Missing required IOCs (enforced by settings)");
   }
-  if (config?.requireAttck && !/\bT1\d{3}(?:\.\d{3})?\b/.test(text)) {
+  if (config?.requireAttck && !/\bT1\d{3}(?:\.\d{3})?\b/.test(text) && score < 0.75) {
     qualified = false;
     reasons.push("Missing required MITRE ATT&CK technique IDs (enforced by settings)");
   }
@@ -351,7 +351,7 @@ export function qualifyContent(
     classification,
     resourceKind,
     reasons,
-    rejectionReason: qualified ? undefined : `REJECTED: Score (${score}) below threshold (${minScore}) or insufficient TTP depth`,
+    rejectionReason: qualified ? undefined : `REJECTED: Score (${Math.round(score * 100)}%) below threshold (${Math.round(minScore * 100)}%) or insufficient TTP depth`,
     isIndexOrGeneric: false,
   };
 }

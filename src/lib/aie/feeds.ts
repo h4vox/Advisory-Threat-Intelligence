@@ -1,4 +1,5 @@
 import { isCandidateResourceUrl } from "./qualification";
+import { decodeEntities } from "./extract";
 
 export type FeedArticle = {
   url: string;
@@ -110,13 +111,7 @@ export function parseRssOrAtomXml(xml: string): FeedArticle[] {
 }
 
 function decodeXmlEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  return decodeEntities(s);
 }
 
 function stripHtml(s: string): string {
