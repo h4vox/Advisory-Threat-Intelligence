@@ -1,7 +1,8 @@
-import { analyzeThreatIntelligence } from "./attack-chain";
+import { analyzeThreatIntelligence, extractStructuredEntities } from "./attack-chain";
 import {
   DISCOVERY_KNOWLEDGE_POOL,
-  extractLinksFromHtml,
+  evaluateDomainTrust,
+  extractOutlinksAndCitations,
   generateSearchQueries,
 } from "./discovery";
 import {
@@ -15,11 +16,12 @@ import {
 } from "./extract";
 import { parseRssOrAtomXml } from "./feeds";
 import { buildPristineDocumentHtml } from "./pdf";
-import { qualifyContent } from "./qualification";
+import { isCandidateResourceUrl, qualifyContent } from "./qualification";
 import type {
   CrawlConfig,
   CrawlJob,
   CrawlJobItem,
+  CrawlPipelineStage,
   CrawlTrigger,
   DiscoveredResource,
   SourceRecord,
@@ -28,10 +30,22 @@ import { getSql } from "@/lib/db";
 import { isMongoConfigured } from "../mongodb/client.server";
 import {
   mongoFindReportByCanonical,
+  mongoGetCrawlConfig,
+  mongoInsertCrawlJob,
+  mongoInsertCrawlJobItem,
+  mongoInsertDiscoveredSource,
+  mongoInsertGraphEdge,
+  mongoInsertIngestEvent,
   mongoInsertReport,
-  mongoUpsertDiscoveredResource,
+  mongoListReports,
+  mongoListSources,
+  mongoSeedSources,
+  mongoUpdateCrawlConfig,
+  mongoUpdateCrawlJob,
   mongoUpdateSourceLastIngest,
+  mongoUpsertDiscoveredResource,
 } from "../mongodb/repository.server";
+import { SOURCE_SEED } from "./catalog";
 
 function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -40,50 +54,83 @@ function newId(prefix: string) {
 // Active job cancellation tokens
 const activeJobs = new Map<string, { cancel: boolean; pause: boolean }>();
 
-export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
-  const sql = await getSql();
-  const rows = await sql<{
-    id: string;
-    enabled: boolean;
-    paused: boolean;
-    frequency_minutes: number;
-    start_hour: string;
-    max_resources_per_run: number;
-    max_depth: number;
-    auto_ingest: boolean;
-    auto_analyze: boolean;
-    search_discovery: boolean;
-    recursive_discovery: boolean;
-    keywords: string;
-    date_range_days: number | null;
-    last_run_at: string | null;
-    next_run_at: string | null;
-  }>`select * from crawl_config limit 1`;
+interface FrontierItem {
+  url: string;
+  canonicalUrl: string;
+  depth: number;
+  priorityScore: number;
+  parentUrl: string | null;
+  parentSource: string | null;
+  discoveryPath: string[];
+  discoveryMethod: "seed_source" | "rss_feed" | "outlink_citation" | "pdf_reference" | "repo_reference" | "search_expansion";
+  sourceId?: string;
+  sourceSlug?: string;
+  publisher?: string;
+  domain: string;
+  preloadedText?: string;
+  title?: string;
+}
 
-  if (rows[0]) {
-    const r = rows[0];
-    return {
-      id: r.id,
-      enabled: Boolean(r.enabled),
-      paused: Boolean(r.paused),
-      frequencyMinutes: Number(r.frequency_minutes),
-      startHour: r.start_hour,
-      maxResourcesPerRun: Number(r.max_resources_per_run),
-      maxDepth: Number(r.max_depth),
-      autoIngest: Boolean(r.auto_ingest),
-      autoAnalyze: Boolean(r.auto_analyze),
-      searchDiscovery: Boolean(r.search_discovery),
-      recursiveDiscovery: Boolean(r.recursive_discovery),
-      keywords: r.keywords,
-      dateRangeDays: r.date_range_days ? Number(r.date_range_days) : null,
-      lastRunAt: toIsoString(r.last_run_at),
-      nextRunAt: toIsoString(r.next_run_at),
-    };
+export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
+  if (isMongoConfigured()) {
+    try {
+      return await mongoGetCrawlConfig();
+    } catch (err) {
+      console.warn("[mongodb] getOrCreateCrawlConfig fallback:", err);
+    }
   }
 
-  const id = "cfg_default";
-  const now = new Date();
-  const nextRun = new Date(now.getTime() + 6 * 60 * 60 * 1000).toISOString();
+  const sql = await getSql();
+  const rows = await sql<CrawlConfig[]>`select * from crawl_config limit 1`;
+  if (rows.length > 0) return rows[0];
+
+  const defaultConfig: CrawlConfig = {
+    id: "cfg_default",
+    enabled: true,
+    paused: false,
+    frequencyMinutes: 360,
+    startHour: "09:00",
+    maxResourcesPerRun: 60,
+    maxResourcesPerJob: 60,
+    maxResourcesPerDomain: 8,
+    maxDepth: 3,
+    discoveryBreadth: "balanced",
+    allowExternalDomains: true,
+    domainAllowlist: [],
+    domainBlocklist: [],
+    rateLimitMs: 150,
+    concurrency: 2,
+    maxPdfDownloads: 10,
+    autoIngest: true,
+    autoAnalyze: true,
+    generatePdf: true,
+    rssDiscovery: true,
+    htmlDiscovery: true,
+    searchDiscovery: true,
+    recursiveDiscovery: true,
+    keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
+    noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy",
+    minQualityScore: 0.35,
+    minWordCount: 100,
+    strictnessMode: "balanced",
+    requireIocs: false,
+    requireAttck: false,
+    rejectMarketingNoise: true,
+    dedupMethod: "smart_hybrid",
+    activeSources: [],
+    targetResourceTypes: [
+      "FULL_ATTACK_CHAIN",
+      "CAMPAIGN_INTEL",
+      "PROCEDURE_DEEPDIVE",
+      "MALWARE_ANALYSIS",
+      "DETECTION_GUIDANCE",
+      "VULNERABILITY_ADVISORY",
+      "THREAT_ACTOR_DOSSIER",
+    ],
+    dateRangeDays: null,
+    lastRunAt: null,
+    nextRunAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+  };
 
   await sql`
     insert into crawl_config (
@@ -91,29 +138,15 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
       max_depth, auto_ingest, auto_analyze, search_discovery, recursive_discovery,
       keywords, date_range_days, last_run_at, next_run_at
     ) values (
-      ${id}, true, false, 360, '09:00', 25, 2, true, true, true, true,
-      'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-      null, null, ${nextRun}
+      ${defaultConfig.id}, ${defaultConfig.enabled}, ${defaultConfig.paused},
+      ${defaultConfig.frequencyMinutes}, ${defaultConfig.startHour}, ${defaultConfig.maxResourcesPerRun},
+      ${defaultConfig.maxDepth}, ${defaultConfig.autoIngest}, ${defaultConfig.autoAnalyze},
+      ${defaultConfig.searchDiscovery}, ${defaultConfig.recursiveDiscovery}, ${defaultConfig.keywords},
+      ${defaultConfig.dateRangeDays}, ${defaultConfig.lastRunAt}, ${defaultConfig.nextRunAt}
     )
   `;
 
-  return {
-    id,
-    enabled: true,
-    paused: false,
-    frequencyMinutes: 360,
-    startHour: "09:00",
-    maxResourcesPerRun: 25,
-    maxDepth: 2,
-    autoIngest: true,
-    autoAnalyze: true,
-    searchDiscovery: true,
-    recursiveDiscovery: true,
-    keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-    dateRangeDays: null,
-    lastRunAt: null,
-    nextRunAt: nextRun,
-  };
+  return defaultConfig;
 }
 
 export async function executeCrawlJob(
@@ -122,10 +155,44 @@ export async function executeCrawlJob(
   targetedQuery?: string,
 ): Promise<CrawlJob> {
   const sql = await getSql();
-  const config = await getOrCreateCrawlConfig();
+  const config = isMongoConfigured() ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();
 
   const jobControl = { cancel: false, pause: false };
   activeJobs.set(jobId, jobControl);
+
+  const maxTotalResources = config.maxResourcesPerJob || config.maxResourcesPerRun || 60;
+  const maxPerDomain = config.maxResourcesPerDomain || 8;
+  const maxDepth = config.maxDepth || 3;
+
+  const initialJob: CrawlJob = {
+    id: jobId,
+    status: "running",
+    triggerType,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    sourceCount: 0,
+    discoveredCount: 0,
+    evaluatedCount: 0,
+    qualifiedCount: 0,
+    ingestedCount: 0,
+    duplicateCount: 0,
+    failedCount: 0,
+    rejectedCount: 0,
+    updatedCount: 0,
+    skippedCount: 0,
+    newSourcesCount: 0,
+    pdfGeneratedCount: 0,
+    errorSummary: "",
+    currentStage: "discovered",
+  };
+
+  if (isMongoConfigured()) {
+    try {
+      await mongoInsertCrawlJob(initialJob);
+    } catch (err) {
+      console.warn("[mongodb] insert crawl job:", err);
+    }
+  }
 
   await sql`
     update crawl_jobs
@@ -134,221 +201,365 @@ export async function executeCrawlJob(
   `;
 
   let discoveredCount = 0;
+  let evaluatedCount = 0;
   let qualifiedCount = 0;
   let ingestedCount = 0;
   let duplicateCount = 0;
   let failedCount = 0;
   let rejectedCount = 0;
   let skippedCount = 0;
+  let newSourcesCount = 0;
+  let pdfGeneratedCount = 0;
 
   try {
     // 1. Get enabled sources
-    const sources = await sql<{
-      id: string;
-      name: string;
-      slug: string;
-      homepage_url: string;
-      feed_url?: string;
-      enabled: boolean;
-      trust_level: string;
-    }>`select id, name, slug, homepage_url, coalesce(feed_url, '') as feed_url, enabled, trust_level from sources where enabled = true`;
+    let sources: SourceRecord[] = [];
+    if (isMongoConfigured()) {
+      try {
+        const allSources = await mongoListSources();
+        sources = allSources.filter((s) => s.enabled);
+      } catch (err) {
+        console.warn("[mongodb] list sources fallback:", err);
+      }
+    }
 
+    if (sources.length === 0) {
+      const dbSources = await sql<{
+        id: string;
+        name: string;
+        slug: string;
+        homepage_url: string;
+        feed_url?: string;
+        enabled: boolean;
+        trust_level: string;
+      }>`select id, name, slug, homepage_url, coalesce(feed_url, '') as feed_url, enabled, trust_level from sources where enabled = true`;
+      sources = dbSources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        category: "threat_feed",
+        priority: 1,
+        homepageUrl: s.homepage_url,
+        feedUrl: s.feed_url || "",
+        enabled: s.enabled,
+        trustLevel: "reputable" as const,
+        notes: "",
+        lastIngestAt: null,
+      }));
+    }
+
+    // Apply whitelist if configured
+    if (config.activeSources && config.activeSources.length > 0) {
+      sources = sources.filter((s) => config.activeSources.includes(s.id) || config.activeSources.includes(s.slug));
+    }
+
+    if (isMongoConfigured()) {
+      await mongoUpdateCrawlJob(jobId, { sourceCount: sources.length });
+    }
     await sql`update crawl_jobs set source_count = ${sources.length} where id = ${jobId}`;
 
-    // Collect candidate URLs to process
-    const candidates: {
-      url: string;
-      title: string;
-      sourceId: string;
-      sourceSlug: string;
-      publisher: string;
-      discoveryMethod: "crawl_source" | "search_discovery" | "rss_feed" | "recursive_link";
-      discoveryQuery?: string;
-      depth: number;
-      preloadedText?: string;
-    }[] = [];
+    // 2. Query existing storage for smart deduplication
+    const storedCanonicalUrls = new Set<string>();
+    const storedHashes = new Set<string>();
 
-    // Phase A: Continuous RSS & Atom Feeds Crawling
-    for (const source of sources) {
-      if (jobControl.cancel) break;
-
-      const feedTarget = source.feed_url || `${source.homepage_url.replace(/\/+$/, "")}/feed/`;
+    if (isMongoConfigured()) {
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-
-        const feedRes = await fetch(feedTarget, {
-          signal: controller.signal,
-          headers: {
-            "user-agent": "AIE-Autonomous-Threat-Crawler/1.0 (+https://aie-intel.internal; cti-feed-reader)",
-            accept: "application/rss+xml, application/atom+xml, text/xml, */*",
-          },
-        }).catch(() => null);
-
-        clearTimeout(timeout);
-
-        if (feedRes && feedRes.ok) {
-          const xml = await feedRes.text();
-          const feedItems = parseRssOrAtomXml(xml);
-
-          for (const item of feedItems) {
-            candidates.push({
-              url: item.url,
-              title: item.title,
-              sourceId: source.id,
-              sourceSlug: source.slug,
-              publisher: source.name,
-              discoveryMethod: "rss_feed",
-              depth: 1,
-              preloadedText: item.rawContent || item.summary,
-            });
-          }
+        const existingReports = await mongoListReports();
+        for (const r of existingReports) {
+          if (r.canonicalUrl) storedCanonicalUrls.add(r.canonicalUrl);
+          if (r.textHash) storedHashes.add(r.textHash);
         }
-      } catch (err) {
-        // Feed fetch fallback is silent, we continue to HTML crawl
+      } catch {
+        /* fallback to sql */
       }
     }
 
-    // Phase B: HTML Source Homepage & Permalink Crawl
-    for (const source of sources) {
-      if (jobControl.cancel) break;
-
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 6000);
-
-        const res = await fetch(source.homepage_url, {
-          signal: controller.signal,
-          headers: {
-            "user-agent": "AIE-Autonomous-Threat-Crawler/1.0 (+https://aie-intel.internal; threat-research)",
-            accept: "text/html,application/xhtml+xml,text/plain",
-          },
-        }).catch(() => null);
-
-        clearTimeout(timeout);
-
-        if (res && res.ok) {
-          const html = await res.text();
-          const links = extractLinksFromHtml(html, source.homepage_url, {
-            sourceId: source.id,
-            publisher: source.name,
-            discoveryMethod: "crawl_source",
-            depth: 1,
-          });
-
-          for (const link of links) {
-            candidates.push({
-              url: link.url,
-              title: link.title,
-              sourceId: source.id,
-              sourceSlug: source.slug,
-              publisher: source.publisher || source.name,
-              discoveryMethod: "crawl_source",
-              depth: 1,
-            });
-          }
-        }
-      } catch (err) {
-        console.warn(`[crawler] failed fetching source ${source.name}:`, err);
-      }
+    const sqlExisting = await sql<{ canonical_url: string; text_hash: string }>`
+      select canonical_url, text_hash from reports
+    `;
+    for (const r of sqlExisting) {
+      if (r.canonical_url) storedCanonicalUrls.add(r.canonical_url);
+      if (r.text_hash) storedHashes.add(r.text_hash);
     }
 
-    // Phase C: Search-Driven Discovery & Knowledge Pool Discovery
-    if (config.searchDiscovery || targetedQuery) {
+    // 3. Initialize the Priority Frontier Queue
+    const frontierQueue: FrontierItem[] = [];
+    const enqueuedUrls = new Set<string>();
+    const domainVisitCounts = new Map<string, number>();
+
+    const enqueue = (item: FrontierItem) => {
+      if (enqueuedUrls.has(item.canonicalUrl)) return;
+      enqueuedUrls.add(item.canonicalUrl);
+      frontierQueue.push(item);
+      discoveredCount++;
+    };
+
+    // Phase A: Seed Continuous Feeds (RSS & Atom)
+    if (config.rssDiscovery !== false) {
+      await Promise.allSettled(
+        sources.map(async (source) => {
+          if (!source.enabled) return;
+          const feedTarget = source.feedUrl || `${source.homepageUrl.replace(/\/+$/, "")}/feed/`;
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4500);
+
+            const feedRes = await fetch(feedTarget, {
+              signal: controller.signal,
+              headers: {
+                "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+                accept: "application/rss+xml, application/atom+xml, text/xml, */*",
+              },
+            }).catch(() => null);
+
+            clearTimeout(timeout);
+
+            if (feedRes && feedRes.ok) {
+              const xml = await feedRes.text();
+              const feedItems = parseRssOrAtomXml(xml);
+
+              for (const item of feedItems) {
+                try {
+                  const canonical = canonicalizeUrl(item.url);
+                  const domain = new URL(canonical).hostname.replace(/^www\./, "");
+                  enqueue({
+                    url: item.url,
+                    canonicalUrl: canonical,
+                    depth: 0,
+                    priorityScore: 0.90,
+                    parentUrl: feedTarget,
+                    parentSource: source.name,
+                    discoveryPath: [source.homepageUrl, item.url],
+                    discoveryMethod: "rss_feed",
+                    sourceId: source.id,
+                    sourceSlug: source.slug,
+                    publisher: source.name,
+                    domain,
+                    title: item.title,
+                    preloadedText: item.rawContent || item.summary,
+                  });
+                } catch {
+                  /* skip invalid */
+                }
+              }
+            }
+          } catch {
+            /* silent fallback */
+          }
+        }),
+      );
+    }
+
+    // Phase B: Seed Homepage Permalinks
+    if (config.htmlDiscovery !== false) {
+      await Promise.allSettled(
+        sources.map(async (source) => {
+          if (!source.enabled) return;
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4500);
+
+            const res = await fetch(source.homepageUrl, {
+              signal: controller.signal,
+              headers: {
+                "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+                accept: "text/html,application/xhtml+xml,text/plain",
+              },
+            }).catch(() => null);
+
+            clearTimeout(timeout);
+
+            if (res && res.ok) {
+              const html = await res.text();
+              const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
+                html,
+                source.homepageUrl,
+                {
+                  sourceId: source.id,
+                  publisher: source.name,
+                  discoveryMethod: "crawl_source",
+                  depth: 1,
+                  allowExternalDomains: config.allowExternalDomains !== false,
+                  domainAllowlist: config.domainAllowlist,
+                  domainBlocklist: config.domainBlocklist,
+                },
+              );
+
+              // Persist newly discovered sources and edges into MongoDB
+              if (isMongoConfigured()) {
+                for (const src of newDiscoveredSources) {
+                  await mongoInsertDiscoveredSource(src);
+                  newSourcesCount++;
+                }
+                for (const edge of graphEdges) {
+                  await mongoInsertGraphEdge({ ...edge, jobId });
+                }
+              }
+
+              for (const link of discoveredLinks) {
+                enqueue({
+                  url: link.url,
+                  canonicalUrl: link.canonicalUrl,
+                  depth: 1,
+                  priorityScore: link.priorityScore,
+                  parentUrl: source.homepageUrl,
+                  parentSource: source.name,
+                  discoveryPath: link.discoveryPath,
+                  discoveryMethod: link.isExternalDomain ? "outlink_citation" : "seed_source",
+                  sourceId: source.id,
+                  sourceSlug: source.slug,
+                  publisher: link.publisher || source.name,
+                  domain: link.domain,
+                  title: link.title,
+                });
+              }
+            }
+          } catch {
+            /* silent */
+          }
+        }),
+      );
+    }
+
+    // Phase C: Knowledge Pool & Search-Driven Discovery
+    if (config.searchDiscovery !== false || targetedQuery) {
       const activeKeywords = targetedQuery || config.keywords;
       const queries = generateSearchQueries(activeKeywords);
 
       for (const item of DISCOVERY_KNOWLEDGE_POOL) {
-        const matchingSource = sources.find((s) => s.slug === item.sourceSlug) || sources[0];
-        candidates.push({
-          url: item.url,
-          title: item.title,
-          sourceId: matchingSource?.id || "src_dfir",
-          sourceSlug: item.sourceSlug,
-          publisher: item.publisher,
-          discoveryMethod: "search_discovery",
-          discoveryQuery: targetedQuery || queries[Math.floor(Math.random() * queries.length)],
-          depth: 1,
-          preloadedText: item.sampleText,
-        });
-      }
-    }
+        try {
+          const canonical = canonicalizeUrl(item.url);
+          const domain = new URL(canonical).hostname.replace(/^www\./, "");
+          const matchingSource = sources.find((s) => s.slug === item.sourceSlug) || sources[0];
 
-    // Deduplicate candidates in this run
-    const uniqueCandidates = new Map<string, (typeof candidates)[0]>();
-    for (const c of candidates) {
-      try {
-        const canonical = canonicalizeUrl(c.url);
-        if (!uniqueCandidates.has(canonical)) {
-          uniqueCandidates.set(canonical, c);
+          enqueue({
+            url: item.url,
+            canonicalUrl: canonical,
+            depth: 0,
+            priorityScore: 0.95,
+            parentUrl: null,
+            parentSource: matchingSource?.name || "Verified Intelligence Pool",
+            discoveryPath: [item.url],
+            discoveryMethod: "search_expansion",
+            sourceId: matchingSource?.id || "src_dfir",
+            sourceSlug: item.sourceSlug,
+            publisher: item.publisher,
+            domain,
+            title: item.title,
+            preloadedText: item.sampleText,
+          });
+        } catch {
+          /* skip */
         }
-      } catch {
-        /* skip invalid */
       }
     }
 
-    const candidateList = Array.from(uniqueCandidates.values()).slice(0, config.maxResourcesPerRun);
-
-    // Existing stored canonical URLs
-    const existingReports = await sql<{ canonical_url: string; id: string }>`
-      select canonical_url, id from reports
-    `;
-    const storedUrls = new Map(existingReports.map((r) => [r.canonical_url, r.id]));
-
-    // Process each candidate resource
-    for (const candidate of candidateList) {
+    // 4. MAIN FRONTIER PROCESSING LOOP
+    // Dynamically pops the highest-priority resource and explores outbound relationships
+    while (frontierQueue.length > 0 && evaluatedCount < maxTotalResources) {
       if (jobControl.cancel) break;
 
-      discoveredCount++;
-      let canonical: string;
-      try {
-        canonical = canonicalizeUrl(candidate.url);
-      } catch {
-        failedCount++;
+      // Sort by priority descending to dequeue the most technically relevant resource
+      frontierQueue.sort((a, b) => b.priorityScore - a.priorityScore);
+      const current = frontierQueue.shift()!;
+
+      // Enforce per-domain limit to ensure wide discovery breadth across different sources
+      const currentDomainCount = domainVisitCounts.get(current.domain) || 0;
+      if (currentDomainCount >= maxPerDomain && current.depth > 0) {
         continue;
       }
 
-      const domain = new URL(canonical).hostname.replace(/^www\./, "");
+      evaluatedCount++;
+      domainVisitCounts.set(current.domain, currentDomainCount + 1);
 
-      // 1. Check Deduplication
-      if (storedUrls.has(canonical)) {
+      // Log progress to MongoDB in real time
+      if (isMongoConfigured() && evaluatedCount % 5 === 0) {
+        await mongoUpdateCrawlJob(jobId, {
+          discoveredCount,
+          evaluatedCount,
+          qualifiedCount,
+          ingestedCount,
+          duplicateCount,
+          failedCount,
+          rejectedCount,
+          skippedCount,
+          newSourcesCount,
+          pdfGeneratedCount,
+          currentUrl: current.url,
+          currentStage: "evaluated",
+        });
+      }
+
+      // 4.1 Deduplication Check
+      let isDuplicate = false;
+      if (config.dedupMethod === "canonical_url" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") {
+        if (storedCanonicalUrls.has(current.canonicalUrl)) {
+          isDuplicate = true;
+        }
+      }
+
+      if (isDuplicate) {
         duplicateCount++;
         const itemId = newId("itm");
+        const jobItem: CrawlJobItem = {
+          id: itemId,
+          jobId,
+          sourceId: current.sourceId || null,
+          url: current.url,
+          canonicalUrl: current.canonicalUrl,
+          title: current.title || "Untitled",
+          classification: "THREAT_REPORT",
+          decision: "DUPLICATE",
+          reason: "Canonical URL already acquired in knowledge base",
+          stage: "duplicate",
+          discoveryMethod: current.discoveryMethod,
+          discoveryQuery: "",
+          parentUrl: current.parentUrl,
+          depth: current.depth,
+          publisher: current.publisher || current.domain,
+          discoveryPath: current.discoveryPath,
+          createdAt: new Date().toISOString(),
+        };
+
+        if (isMongoConfigured()) {
+          await mongoInsertCrawlJobItem(jobItem);
+        }
         await sql`
           insert into crawl_job_items (
             id, job_id, source_id, url, canonical_url, title, classification,
             decision, reason, discovery_method, discovery_query, depth, publisher
           ) values (
-            ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-            ${candidate.title}, 'THREAT_REPORT', 'DUPLICATE', 'Canonical URL already stored in knowledge base',
-            ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
+            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+            ${current.title ?? 'Untitled'}, 'THREAT_REPORT', 'DUPLICATE',
+            'Canonical URL already acquired in knowledge base',
+            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
           )
         `;
         continue;
       }
 
-      // 2. Fetch or lookup sample content
-      let textContent = candidate.preloadedText || "";
-      let docTitle = candidate.title;
+      // 4.2 Content Acquisition
+      let textContent = current.preloadedText || "";
+      let docTitle = current.title || "Threat Intelligence Report";
       let contentType = "text/html";
-      let rawBytes: Uint8Array | string = candidate.preloadedText || "";
+      let rawBytes: Uint8Array | string = current.preloadedText || "";
       let fetchedHtmlBody = "";
 
-      const poolItem = DISCOVERY_KNOWLEDGE_POOL.find((p) => p.url === candidate.url);
-      if (poolItem) {
-        textContent = poolItem.sampleText;
-        docTitle = poolItem.title;
-        rawBytes = poolItem.sampleText;
-        fetchedHtmlBody = poolItem.sampleText;
-      } else if (!textContent) {
+      if (!textContent) {
         try {
+          // Polite rate limit delay
+          if (config.rateLimitMs > 0) {
+            await new Promise((r) => setTimeout(r, Math.min(config.rateLimitMs, 250)));
+          }
+
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 8000);
-          const res = await fetch(canonical, {
+
+          const res = await fetch(current.canonicalUrl, {
             signal: controller.signal,
             headers: {
-              "user-agent": "AIE-Autonomous-Threat-Crawler/1.0 (+research; public-cti)",
-              accept: "text/html,application/pdf,text/plain",
+              "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+research; public-cti; threat-emulation-engine)",
+              accept: "text/html,application/xhtml+xml,application/pdf,text/plain",
             },
           });
           clearTimeout(timeout);
@@ -362,7 +573,7 @@ export async function executeCrawlJob(
           contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
 
           if (contentType.includes("pdf")) {
-            textContent = `PDF Document: ${candidate.title}. Raw cryptographic evidence preserved.`;
+            textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
           } else {
             const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
             fetchedHtmlBody = body;
@@ -376,48 +587,179 @@ export async function executeCrawlJob(
           failedCount++;
           const itemId = newId("itm");
           const errMsg = fetchErr instanceof Error ? fetchErr.message : "Fetch failed";
+          const jobItem: CrawlJobItem = {
+            id: itemId,
+            jobId,
+            sourceId: current.sourceId || null,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
+            title: current.title || "Fetch Failure",
+            classification: "OTHER",
+            decision: "FAILED",
+            reason: errMsg,
+            stage: "failed",
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentUrl: current.parentUrl,
+            depth: current.depth,
+            publisher: current.publisher || current.domain,
+            discoveryPath: current.discoveryPath,
+            createdAt: new Date().toISOString(),
+          };
+
+          if (isMongoConfigured()) {
+            await mongoInsertCrawlJobItem(jobItem);
+          }
           await sql`
             insert into crawl_job_items (
               id, job_id, source_id, url, canonical_url, title, classification,
               decision, reason, discovery_method, discovery_query, depth, publisher
             ) values (
-              ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-              ${candidate.title}, 'OTHER', 'FAILED', ${errMsg},
-              ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
+              ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+              ${current.title ?? 'Fetch Failure'}, 'OTHER', 'FAILED', ${errMsg},
+              ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
             )
           `;
           continue;
         }
       }
 
-      // 3. Resource Qualification & Classification
-      const qual = qualifyContent(textContent, docTitle, canonical);
+      // Check Content Hash Deduplication
+      const textHash = sha256Hex(textContent);
+      if (
+        (config.dedupMethod === "content_hash" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") &&
+        storedHashes.has(textHash)
+      ) {
+        duplicateCount++;
+        continue;
+      }
+
+      // 4.3 Recursive Citation & Graph Outlink Exploration
+      // When a report contains links to new domains or papers, expand outward!
+      if (
+        config.recursiveDiscovery !== false &&
+        current.depth < maxDepth &&
+        fetchedHtmlBody &&
+        discoveredCount < maxTotalResources * 2
+      ) {
+        const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
+          fetchedHtmlBody,
+          current.canonicalUrl,
+          {
+            sourceId: current.sourceId,
+            publisher: current.publisher,
+            parentPath: current.discoveryPath,
+            depth: current.depth + 1,
+            allowExternalDomains: config.allowExternalDomains !== false,
+            domainAllowlist: config.domainAllowlist,
+            domainBlocklist: config.domainBlocklist,
+          },
+        );
+
+        if (isMongoConfigured()) {
+          for (const newSrc of newDiscoveredSources) {
+            await mongoInsertDiscoveredSource(newSrc);
+            newSourcesCount++;
+          }
+          for (const edge of graphEdges) {
+            await mongoInsertGraphEdge({ ...edge, jobId });
+          }
+        }
+
+        // Push discovered citations, PDFs, and external research papers into the frontier!
+        for (const outlink of discoveredLinks) {
+          enqueue({
+            url: outlink.url,
+            canonicalUrl: outlink.canonicalUrl,
+            depth: current.depth + 1,
+            priorityScore: outlink.priorityScore,
+            parentUrl: current.canonicalUrl,
+            parentSource: current.publisher || current.domain,
+            discoveryPath: outlink.discoveryPath,
+            discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
+            sourceId: current.sourceId,
+            publisher: outlink.publisher,
+            domain: outlink.domain,
+            title: outlink.title,
+          });
+        }
+      }
+
+      // 4.4 Heuristic Qualification & Noise Elimination
+      const isFeedEntry = current.discoveryMethod === "rss_feed";
+      const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
 
       if (!qual.qualified) {
         rejectedCount++;
         const itemId = newId("itm");
+        const rejectMsg = qual.rejectionReason || "Below qualification threshold";
+
+        const jobItem: CrawlJobItem = {
+          id: itemId,
+          jobId,
+          sourceId: current.sourceId || null,
+          url: current.url,
+          canonicalUrl: current.canonicalUrl,
+          title: docTitle,
+          classification: qual.classification,
+          decision: "REJECTED",
+          reason: rejectMsg,
+          stage: "rejected",
+          discoveryMethod: current.discoveryMethod,
+          discoveryQuery: "",
+          parentUrl: current.parentUrl,
+          depth: current.depth,
+          publisher: current.publisher || current.domain,
+          qualityScore: qual.score,
+          resourceKind: qual.resourceKind,
+          discoveryPath: current.discoveryPath,
+          createdAt: new Date().toISOString(),
+        };
+
+        if (isMongoConfigured()) {
+          await mongoInsertCrawlJobItem(jobItem);
+          await mongoUpsertDiscoveredResource({
+            canonicalUrl: current.canonicalUrl,
+            url: current.url,
+            sourceId: current.sourceId || null,
+            title: docTitle,
+            publisher: current.publisher || current.domain,
+            classification: qual.classification,
+            resourceKind: qual.resourceKind,
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentSource: current.parentSource || current.domain,
+            parentUrl: current.parentUrl,
+            sourceDomain: current.domain,
+            contentType,
+            status: "rejected",
+            rejectReason: rejectMsg,
+            qualityScore: qual.score,
+            discoveryPath: current.discoveryPath,
+          });
+        }
+
         await sql`
           insert into crawl_job_items (
             id, job_id, source_id, url, canonical_url, title, classification,
             decision, reason, discovery_method, discovery_query, depth, publisher
           ) values (
-            ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-            ${docTitle}, ${qual.classification}, 'REJECTED', ${qual.rejectionReason ?? 'Below qualification threshold'},
-            ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
+            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+            ${docTitle}, ${qual.classification}, 'REJECTED', ${rejectMsg},
+            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
           )
         `;
 
-        // Save in discovered resources queue
         await sql`
           insert into discovered_resources (
             id, canonical_url, url, source_id, title, publisher, classification,
             discovery_method, discovery_query, parent_source, source_domain,
             content_type, status, reject_reason, quality_score
           ) values (
-            ${newId("dsc")}, ${canonical}, ${candidate.url}, ${candidate.sourceId}, ${docTitle},
-            ${candidate.publisher}, ${qual.classification}, ${candidate.discoveryMethod},
-            ${candidate.discoveryQuery ?? ''}, ${candidate.publisher}, ${domain},
-            ${contentType}, 'rejected', ${qual.rejectionReason ?? 'Rejected by heuristic qualification gate'}, ${qual.score}
+            ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+            ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+            '', ${current.parentSource ?? current.domain}, ${current.domain},
+            ${contentType}, 'rejected', ${rejectMsg}, ${qual.score}
           )
           on conflict (canonical_url) do update
           set status = 'rejected', reject_reason = excluded.reject_reason, updated_at = now()
@@ -427,60 +769,29 @@ export async function executeCrawlJob(
 
       qualifiedCount++;
 
-      // Phase D: Recursive Outlink Exploration (Depth 2-3)
-      if (config.recursiveDiscovery && candidate.depth < config.maxDepth && fetchedHtmlBody) {
-        try {
-          const referencedLinks = extractLinksFromHtml(fetchedHtmlBody, canonical, {
-            depth: candidate.depth + 1,
-            discoveryMethod: "recursive_link",
-            publisher: "Cross-Referenced Source",
-          });
+      // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
+      const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
+      const iocs = harvestIocs(textContent);
+      const rawHash = sha256Hex(rawBytes || textContent);
+      const reportId = newId("rpt");
 
-          for (const ref of referencedLinks.slice(0, 5)) {
-            const refCanonical = canonicalizeUrl(ref.url);
-            if (!storedUrls.has(refCanonical)) {
-              await sql`
-                insert into discovered_resources (
-                  id, canonical_url, url, source_id, title, publisher, classification,
-                  discovery_method, parent_source, source_domain, content_type, status
-                ) values (
-                  ${newId("dsc")}, ${refCanonical}, ${ref.url}, ${candidate.sourceId}, ${ref.title},
-                  ${new URL(refCanonical).hostname}, 'THREAT_REPORT', 'recursive_link',
-                  ${candidate.title}, ${new URL(refCanonical).hostname}, 'text/html', 'discovered'
-                )
-                on conflict (canonical_url) do nothing
-              `;
-            }
-          }
-        } catch {
-          /* ignore recursive extraction failures */
-        }
+      let intelAnalysis = null;
+      let extractedEntities = undefined;
+      if (config.autoAnalyze) {
+        intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
+        extractedEntities = extractStructuredEntities(textContent, docTitle, qual.classification, intelAnalysis);
       }
 
-      // 4. Ingest and Persist to Knowledge Base with Pristine PDF & HTML Preservation
-      if (config.autoIngest) {
-        const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
-        const iocs = harvestIocs(textContent);
-        const rawHash = sha256Hex(rawBytes || textContent);
-        const textHash = sha256Hex(textContent);
-        const reportId = newId("rpt");
-
-        // Structured TTP Analysis & Attack Chain Reconstruction
-        let intelAnalysis = null;
-        let analysisJson = "{}";
-        if (config.autoAnalyze) {
-          intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
-          analysisJson = JSON.stringify(intelAnalysis);
-        }
-
-        // Build pristine standalone HTML with print/PDF styling matching exact document look
-        const pristineHtml = buildPristineDocumentHtml(fetchedHtmlBody || textContent, {
+      // High-Fidelity PDF & HTML Layout Generation
+      let pristineHtml = "";
+      if (config.generatePdf !== false) {
+        pristineHtml = buildPristineDocumentHtml(fetchedHtmlBody || textContent, {
           id: reportId,
           title: docTitle,
-          url: candidate.url,
-          canonicalUrl: canonical,
-          publisher: candidate.publisher,
-          author: candidate.publisher,
+          url: current.url,
+          canonicalUrl: current.canonicalUrl,
+          publisher: current.publisher || current.domain,
+          author: current.publisher || current.domain,
           publishedAt: new Date().toISOString().slice(0, 10),
           ingestedAt: new Date().toISOString(),
           classification: qual.classification,
@@ -491,34 +802,25 @@ export async function executeCrawlJob(
           iocs,
           analysis: intelAnalysis,
         });
+        pdfGeneratedCount++;
+      }
 
-        await sql`
-          insert into reports (
-            id, source_id, title, url, canonical_url, published_at, content_type,
-            status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
-            extracted_text, iocs_json, ingest_origin, publisher, author,
-            classification, discovery_method, discovery_query, parent_source,
-            source_domain, version, analysis_json, raw_html
-          ) values (
-            ${reportId}, ${candidate.sourceId}, ${docTitle}, ${candidate.url}, ${canonical},
-            ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
-            ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
-            ${textContent}, ${JSON.stringify(iocs)}, 'crawl', ${candidate.publisher},
-            ${candidate.publisher}, ${qual.classification}, ${candidate.discoveryMethod},
-            ${candidate.discoveryQuery ?? ''}, ${candidate.publisher}, ${domain}, 1,
-            ${analysisJson}, ${pristineHtml}
-          )
-        `;
+      // 4.6 Ingestion vs Human Review Queue
+      if (config.autoIngest) {
+        ingestedCount++;
+        storedCanonicalUrls.add(current.canonicalUrl);
+        storedHashes.add(textHash);
 
+        // Persist to MongoDB Atlas
         if (isMongoConfigured()) {
           try {
             await mongoInsertReport({
               id: reportId,
-              sourceId: candidate.sourceId,
-              sourceName: candidate.publisher,
+              sourceId: current.sourceId || "src_expanded",
+              sourceName: current.publisher || current.domain,
               title: docTitle,
-              url: candidate.url,
-              canonicalUrl: canonical,
+              url: current.url,
+              canonicalUrl: current.canonicalUrl,
               publishedAt: new Date().toISOString().slice(0, 10),
               contentType,
               status: "acquired",
@@ -529,143 +831,248 @@ export async function executeCrawlJob(
               wordCount,
               extractedText: textContent,
               iocs,
-              ingestOrigin: "crawl",
+              ingestOrigin: current.depth > 0 ? "citation_expansion" : "crawl",
               ingestedAt: new Date().toISOString(),
-              publisher: candidate.publisher,
-              author: candidate.publisher,
+              publisher: current.publisher || current.domain,
+              author: current.publisher || current.domain,
               classification: qual.classification,
-              discoveryMethod: candidate.discoveryMethod,
-              discoveryQuery: candidate.discoveryQuery ?? "",
-              parentSource: candidate.publisher,
-              sourceDomain: domain,
+              resourceKind: qual.resourceKind,
+              extractedEntities,
+              discoveryMethod: current.discoveryMethod,
+              discoveryQuery: "",
+              parentSource: current.parentSource || current.domain,
+              sourceDomain: current.domain,
               version: 1,
               rawHtml: pristineHtml,
               pdfUrl: "",
               analysis: intelAnalysis,
+              discoveryPath: current.discoveryPath,
             });
-            await mongoUpdateSourceLastIngest(candidate.sourceId);
+
+            if (current.sourceId) {
+              await mongoUpdateSourceLastIngest(current.sourceId);
+            }
+
+            await mongoInsertIngestEvent({
+              id: newId("evt"),
+              reportId,
+              url: current.url,
+              outcome: "acquired",
+              detail: `[${qual.resourceKind}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · Depth ${current.depth} (${current.domain})`,
+              createdAt: new Date().toISOString(),
+            });
+
             await mongoUpsertDiscoveredResource({
-              id: newId("dsc"),
-              canonicalUrl: canonical,
-              url: candidate.url,
-              sourceId: candidate.sourceId,
+              canonicalUrl: current.canonicalUrl,
+              url: current.url,
+              sourceId: current.sourceId || null,
               title: docTitle,
-              publisher: candidate.publisher,
+              publisher: current.publisher || current.domain,
               classification: qual.classification,
-              discoveryMethod: candidate.discoveryMethod,
-              discoveryQuery: candidate.discoveryQuery ?? "",
-              parentSource: candidate.publisher,
-              sourceDomain: domain,
+              resourceKind: qual.resourceKind,
+              discoveryMethod: current.discoveryMethod,
+              discoveryQuery: "",
+              parentSource: current.parentSource || current.domain,
+              parentUrl: current.parentUrl,
+              sourceDomain: current.domain,
               contentType,
               status: "ingested",
               qualityScore: score,
               reportId,
+              discoveryPath: current.discoveryPath,
             });
-          } catch (mErr) {
-            console.warn("[mongodb] crawler ingest:", mErr);
+          } catch (mongoErr) {
+            console.warn("[mongodb] report persistence error:", mongoErr);
           }
         }
 
-        await sql`update sources set last_ingest_at = now() where id = ${candidate.sourceId}`;
-
+        // Persist to SQL store
         await sql`
-          insert into ingest_events (id, report_id, url, outcome, detail)
-          values (
-            ${newId("evt")}, ${reportId}, ${canonical}, 'acquired',
-            ${`Autonomous crawl ingested [${qual.classification}] · score ${score} · ${iocs.length} IOCs · PDF ready`}
+          insert into reports (
+            id, source_id, title, url, canonical_url, published_at, content_type,
+            status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
+            extracted_text, iocs_json, ingest_origin, publisher, author,
+            classification, discovery_method, discovery_query, parent_source,
+            source_domain, version, analysis_json, raw_html
+          ) values (
+            ${reportId}, ${current.sourceId ?? 'src_dfir'}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
+            ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
+            ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
+            ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
+            ${current.publisher ?? current.domain}, ${current.publisher ?? current.domain},
+            ${qual.classification}, ${current.discoveryMethod}, '', ${current.parentSource ?? current.domain},
+            ${current.domain}, 1, ${JSON.stringify(intelAnalysis)}, ${pristineHtml}
           )
         `;
 
-        // Update discovered resource tracking
         await sql`
           insert into discovered_resources (
             id, canonical_url, url, source_id, title, publisher, classification,
             discovery_method, discovery_query, parent_source, source_domain,
             content_type, status, quality_score, report_id
           ) values (
-            ${newId("dsc")}, ${canonical}, ${candidate.url}, ${candidate.sourceId}, ${docTitle},
-            ${candidate.publisher}, ${qual.classification}, ${candidate.discoveryMethod},
-            ${candidate.discoveryQuery ?? ''}, ${candidate.publisher}, ${domain},
+            ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+            ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+            '', ${current.parentSource ?? current.domain}, ${current.domain},
             ${contentType}, 'ingested', ${score}, ${reportId}
           )
           on conflict (canonical_url) do update
-          set status = 'ingested', quality_score = excluded.quality_score, report_id = excluded.report_id, updated_at = now()
+          set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
         `;
 
-        ingestedCount++;
-        storedUrls.set(canonical, reportId);
-
         const itemId = newId("itm");
+        const jobItem: CrawlJobItem = {
+          id: itemId,
+          jobId,
+          sourceId: current.sourceId || null,
+          url: current.url,
+          canonicalUrl: current.canonicalUrl,
+          title: docTitle,
+          classification: qual.classification,
+          decision: "INGESTED",
+          reason: `Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`,
+          stage: "ingested",
+          discoveryMethod: current.discoveryMethod,
+          discoveryQuery: "",
+          parentUrl: current.parentUrl,
+          depth: current.depth,
+          publisher: current.publisher || current.domain,
+          qualityScore: score,
+          resourceKind: qual.resourceKind,
+          discoveryPath: current.discoveryPath,
+          createdAt: new Date().toISOString(),
+        };
+
+        if (isMongoConfigured()) {
+          await mongoInsertCrawlJobItem(jobItem);
+        }
         await sql`
           insert into crawl_job_items (
             id, job_id, source_id, url, canonical_url, title, classification,
             decision, reason, discovery_method, discovery_query, depth, publisher
           ) values (
-            ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-            ${docTitle}, ${qual.classification}, 'INGESTED', ${`Qualified (${qual.score}) & Ingested with PDF rendering to Knowledge Base`},
-            ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
+            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+            ${docTitle}, ${qual.classification}, 'INGESTED',
+            ${`Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`},
+            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
           )
         `;
       } else {
-        // Discovered & qualified, but auto-ingest is off -> placed in queue
+        // Auto-ingest is OFF: Hold in queue with explicit state for analyst review
+        skippedCount++;
         const itemId = newId("itm");
+        const jobItem: CrawlJobItem = {
+          id: itemId,
+          jobId,
+          sourceId: current.sourceId || null,
+          url: current.url,
+          canonicalUrl: current.canonicalUrl,
+          title: docTitle,
+          classification: qual.classification,
+          decision: "AWAITING_APPROVAL",
+          reason: `Qualified (${qual.resourceKind}): quality ${score}. Auto-ingest is disabled in settings; held in Discovery Queue for approval.`,
+          stage: "qualified",
+          discoveryMethod: current.discoveryMethod,
+          discoveryQuery: "",
+          parentUrl: current.parentUrl,
+          depth: current.depth,
+          publisher: current.publisher || current.domain,
+          qualityScore: score,
+          resourceKind: qual.resourceKind,
+          discoveryPath: current.discoveryPath,
+          createdAt: new Date().toISOString(),
+        };
+
+        if (isMongoConfigured()) {
+          await mongoInsertCrawlJobItem(jobItem);
+          await mongoUpsertDiscoveredResource({
+            canonicalUrl: current.canonicalUrl,
+            url: current.url,
+            sourceId: current.sourceId || null,
+            title: docTitle,
+            publisher: current.publisher || current.domain,
+            classification: qual.classification,
+            resourceKind: qual.resourceKind,
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentSource: current.parentSource || current.domain,
+            parentUrl: current.parentUrl,
+            sourceDomain: current.domain,
+            contentType,
+            status: "awaiting_approval",
+            qualityScore: score,
+            discoveryPath: current.discoveryPath,
+          });
+        }
+
         await sql`
           insert into crawl_job_items (
             id, job_id, source_id, url, canonical_url, title, classification,
             decision, reason, discovery_method, discovery_query, depth, publisher
           ) values (
-            ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-            ${docTitle}, ${qual.classification}, 'QUALIFIED', 'Qualified and queued for manual ingestion',
-            ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
+            ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+            ${docTitle}, ${qual.classification}, 'AWAITING_APPROVAL',
+            'Qualified by engine; held in Discovery Queue for manual ingestion approval',
+            ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
           )
-        `;
-
-        await sql`
-          insert into discovered_resources (
-            id, canonical_url, url, source_id, title, publisher, classification,
-            discovery_method, discovery_query, parent_source, source_domain,
-            content_type, status, quality_score
-          ) values (
-            ${newId("dsc")}, ${canonical}, ${candidate.url}, ${candidate.sourceId}, ${docTitle},
-            ${candidate.publisher}, ${qual.classification}, ${candidate.discoveryMethod},
-            ${candidate.discoveryQuery ?? ''}, ${candidate.publisher}, ${domain},
-            ${contentType}, 'qualified', ${qual.score}
-          )
-          on conflict (canonical_url) do update
-          set status = 'qualified', quality_score = excluded.quality_score, updated_at = now()
         `;
       }
     }
 
-    const finalStatus = jobControl.cancel ? "cancelled" : "completed";
+    // 5. Finalize Job
+    const nextRun = new Date(Date.now() + config.frequencyMinutes * 60 * 1000).toISOString();
+    const completedJobUpdates = {
+      status: "completed" as const,
+      completedAt: new Date().toISOString(),
+      discoveredCount,
+      evaluatedCount,
+      qualifiedCount,
+      ingestedCount,
+      duplicateCount,
+      failedCount,
+      rejectedCount,
+      skippedCount,
+      newSourcesCount,
+      pdfGeneratedCount,
+      currentStage: "indexed" as CrawlPipelineStage,
+    };
+
+    if (isMongoConfigured()) {
+      await mongoUpdateCrawlJob(jobId, completedJobUpdates);
+      await mongoUpdateCrawlConfig({
+        lastRunAt: new Date().toISOString(),
+        nextRunAt: nextRun,
+      });
+    }
+
     await sql`
       update crawl_jobs
-      set status = ${finalStatus},
-          completed_at = now(),
-          discovered_count = ${discoveredCount},
-          qualified_count = ${qualifiedCount},
-          ingested_count = ${ingestedCount},
-          duplicate_count = ${duplicateCount},
-          failed_count = ${failedCount},
-          rejected_count = ${rejectedCount},
+      set status = 'completed', completed_at = now(),
+          discovered_count = ${discoveredCount}, qualified_count = ${qualifiedCount},
+          ingested_count = ${ingestedCount}, duplicate_count = ${duplicateCount},
+          failed_count = ${failedCount}, rejected_count = ${rejectedCount},
           skipped_count = ${skippedCount}
       where id = ${jobId}
     `;
 
-    // Schedule next run
-    const nextTime = new Date(Date.now() + config.frequencyMinutes * 60 * 1000).toISOString();
     await sql`
       update crawl_config
-      set last_run_at = now(), next_run_at = ${nextTime}
+      set last_run_at = now(), next_run_at = ${nextRun}
       where id = ${config.id}
     `;
   } catch (jobErr) {
-    const errMsg = jobErr instanceof Error ? jobErr.message : "Job crashed";
+    const errMsg = jobErr instanceof Error ? jobErr.message : "Crawl job error";
+    console.error(`[crawler] job ${jobId} failed:`, jobErr);
+    if (isMongoConfigured()) {
+      await mongoUpdateCrawlJob(jobId, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        errorSummary: errMsg,
+      });
+    }
     await sql`
       update crawl_jobs
-      set status = 'failed',
-          completed_at = now(),
-          error_summary = ${errMsg}
+      set status = 'failed', completed_at = now(), error_summary = ${errMsg}
       where id = ${jobId}
     `;
   } finally {
@@ -675,7 +1082,7 @@ export async function executeCrawlJob(
   const updatedRows = await sql<{
     id: string;
     status: CrawlJob["status"];
-    trigger_type: CrawlTrigger;
+    trigger_type: CrawlJob["triggerType"];
     started_at: string | null;
     completed_at: string | null;
     source_count: number;
@@ -691,6 +1098,24 @@ export async function executeCrawlJob(
   }>`select * from crawl_jobs where id = ${jobId}`;
 
   const r = updatedRows[0];
+  if (!r) {
+    return {
+      ...initialJob,
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      discoveredCount,
+      evaluatedCount,
+      qualifiedCount,
+      ingestedCount,
+      duplicateCount,
+      failedCount,
+      rejectedCount,
+      skippedCount,
+      newSourcesCount,
+      pdfGeneratedCount,
+    };
+  }
+
   return {
     id: r.id,
     status: r.status,
@@ -699,6 +1124,7 @@ export async function executeCrawlJob(
     completedAt: toIsoString(r.completed_at),
     sourceCount: Number(r.source_count),
     discoveredCount: Number(r.discovered_count),
+    evaluatedCount,
     qualifiedCount: Number(r.qualified_count),
     ingestedCount: Number(r.ingested_count),
     duplicateCount: Number(r.duplicate_count),
@@ -706,6 +1132,8 @@ export async function executeCrawlJob(
     rejectedCount: Number(r.rejected_count),
     updatedCount: Number(r.updated_count),
     skippedCount: Number(r.skipped_count),
+    newSourcesCount,
+    pdfGeneratedCount,
     errorSummary: r.error_summary,
   };
 }
@@ -716,20 +1144,62 @@ export async function createAndRunCrawlJob(
 ): Promise<CrawlJob> {
   const sql = await getSql();
   const id = newId("job");
+  const startedAt = new Date().toISOString();
+
+  const initialJob: CrawlJob = {
+    id,
+    status: "running",
+    triggerType: trigger,
+    startedAt,
+    completedAt: null,
+    sourceCount: 0,
+    discoveredCount: 0,
+    evaluatedCount: 0,
+    qualifiedCount: 0,
+    ingestedCount: 0,
+    duplicateCount: 0,
+    failedCount: 0,
+    rejectedCount: 0,
+    updatedCount: 0,
+    skippedCount: 0,
+    newSourcesCount: 0,
+    pdfGeneratedCount: 0,
+    errorSummary: "",
+    currentStage: "discovered",
+  };
+
+  if (isMongoConfigured()) {
+    try {
+      await mongoInsertCrawlJob(initialJob);
+    } catch (err) {
+      console.warn("[mongodb] createAndRunCrawlJob initial insert:", err);
+    }
+  }
+
   await sql`
     insert into crawl_jobs (id, status, trigger_type, started_at)
     values (${id}, 'running', ${trigger}, now())
   `;
 
-  // Run execution
-  return executeCrawlJob(id, trigger, targetedQuery);
+  // Start asynchronous crawl in background so the UI immediately shows "Running" status
+  void executeCrawlJob(id, trigger, targetedQuery).catch((err) => {
+    console.error(`[crawler] job ${id} error:`, err);
+  });
+
+  return initialJob;
 }
 
 export async function cancelJob(jobId: string): Promise<boolean> {
   const job = activeJobs.get(jobId);
   if (job) {
     job.cancel = true;
+    if (isMongoConfigured()) {
+      await mongoUpdateCrawlJob(jobId, { status: "cancelled", completedAt: new Date().toISOString() });
+    }
     return true;
+  }
+  if (isMongoConfigured()) {
+    await mongoUpdateCrawlJob(jobId, { status: "cancelled", completedAt: new Date().toISOString() });
   }
   const sql = await getSql();
   await sql`update crawl_jobs set status = 'cancelled', completed_at = now() where id = ${jobId} and status = 'running'`;

@@ -259,3 +259,70 @@ export function analyzeThreatIntelligence(text: string, title: string, classific
     emulation,
   };
 }
+
+export function extractStructuredEntities(
+  text: string,
+  title: string,
+  classification: string,
+  analysis: IntelAnalysis,
+): import("./types").ExtractedEntities {
+  // Extract execution procedures and commands from code blocks or command patterns
+  const procedureMatches = text.match(
+    /(?:(?:powershell|cmd|wmic|rundll32|certutil|curl|bitsadmin|reg|schtasks|net|nltest|vssadmin|whoami|procdump|mimikatz)\b[^\r\n]{5,120})/gi,
+  ) || [];
+
+  const uniqueProcedures = Array.from(
+    new Set(
+      procedureMatches
+        .map((p) => p.trim().replace(/^[`'"]+|[`'"]+$/g, ""))
+        .filter((p) => p.length > 8 && !p.includes("<")),
+    ),
+  ).slice(0, 10);
+
+  // Extract mitigations
+  const mitigationMatches = text.match(
+    /(?:(?:disable|enforce|restrict|block|patch|isolate|rotate|audit|configure|enable)\b[^\r\n.]{10,120}\.)/gi,
+  ) || [];
+
+  const uniqueMitigations = Array.from(
+    new Set(
+      mitigationMatches
+        .map((m) => m.trim())
+        .filter((m) => m.length > 15),
+    ),
+  ).slice(0, 6);
+
+  const tactics = analysis.attackChain.map((s) => s.tactic);
+  const techniques = analysis.attackChain.flatMap((s) =>
+    s.techniques.map((t) => ({ id: t.id, name: t.name, tactic: s.tactic })),
+  );
+
+  const detectionRules = [
+    ...analysis.detections.map((d) => ({
+      type: "sigma" as const,
+      title: d.replace(/^Sigma:\s*/i, ""),
+      query: d,
+    })),
+    ...analysis.hunting.map((h) => ({
+      type: "hunting" as const,
+      title: h.replace(/^Hunting:\s*/i, ""),
+      query: h,
+    })),
+  ];
+
+  // Infer campaign name if present
+  const campaignMatch = title.match(/(?:Campaign\s+[A-Z0-9_-]+|Operation\s+[A-Z0-9_-]+|\b(?:202[3-6]|Q[1-4])\s+[A-Z0-9_-]+\s+Campaign)/i);
+  const campaign = campaignMatch ? campaignMatch[0] : null;
+
+  return {
+    threatActors: analysis.threatActors,
+    malwareFamilies: analysis.malware,
+    cves: analysis.vulnerabilities,
+    tactics,
+    techniques,
+    procedures: uniqueProcedures,
+    detectionRules,
+    mitigations: uniqueMitigations,
+    campaign,
+  };
+}

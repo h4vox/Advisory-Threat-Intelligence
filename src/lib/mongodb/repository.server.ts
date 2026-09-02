@@ -1,19 +1,24 @@
-import type { Collection, Filter, Document } from "mongodb";
+import type { Filter, Document } from "mongodb";
 import { getThreatIntelCollection, isMongoConfigured } from "./client.server";
 import type {
   CrawlConfig,
   CrawlJob,
   CrawlJobItem,
+  CrawlerState,
   DashboardStats,
   DiscoveredResource,
+  ExtractedEntities,
   IngestEvent,
   IntelAnalysis,
   IocHit,
   QualityReason,
   ReportListItem,
   ReportRecord,
+  ResourceKind,
   SourceRecord,
   TrustLevel,
+  DiscoveredSourceRecord,
+  DiscoveryGraphEdge,
 } from "../aie/types";
 import { excerptOf } from "../aie/extract";
 
@@ -34,6 +39,7 @@ export async function ensureMongoIndexes() {
     );
     await col.createIndex({ docType: 1, ingestedAt: -1 }, { background: true });
     await col.createIndex({ docType: 1, classification: 1 }, { background: true });
+    await col.createIndex({ docType: 1, resourceKind: 1 }, { background: true });
     await col.createIndex({ docType: 1, status: 1 }, { background: true });
     await col.createIndex({ docType: 1, priority: 1 }, { background: true });
     await col.createIndex({ docType: 1, createdAt: -1 }, { background: true });
@@ -74,6 +80,8 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     publisher: doc.publisher || doc.sourceName,
     author: doc.author || doc.publisher,
     classification: doc.classification || "THREAT_REPORT",
+    resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
+    extractedEntities: (doc.extractedEntities as ExtractedEntities) || undefined,
     discoveryMethod: doc.discoveryMethod || "manual",
     discoveryQuery: doc.discoveryQuery || "",
     parentSource: doc.parentSource || "",
@@ -81,13 +89,23 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     version: Number(doc.version ?? 1),
     rawHtml: doc.rawHtml || "",
     pdfUrl: doc.pdfUrl || "",
+    pdfBase64: doc.pdfBase64 || "",
     analysis: (doc.analysis as IntelAnalysis) || null,
   };
+}
+
+export async function mongoFindReportByCanonical(canonicalUrl: string): Promise<ReportRecord | null> {
+  const col = await getThreatIntelCollection();
+  const doc = await col.findOne({ docType: "report", canonicalUrl });
+  if (!doc) return null;
+  return mongoGetReportById(doc.id);
 }
 
 export async function mongoListReports(params?: {
   q?: string;
   classification?: string;
+  resourceKind?: string;
+  sourceId?: string;
 }): Promise<ReportListItem[]> {
   await ensureMongoIndexes();
   const col = await getThreatIntelCollection();
@@ -96,6 +114,14 @@ export async function mongoListReports(params?: {
 
   if (params?.classification && params.classification !== "ALL") {
     filter.classification = params.classification;
+  }
+
+  if (params?.resourceKind && params.resourceKind !== "ALL") {
+    filter.resourceKind = params.resourceKind;
+  }
+
+  if (params?.sourceId && params.sourceId !== "ALL") {
+    filter.sourceId = params.sourceId;
   }
 
   if (params?.q?.trim()) {
@@ -107,8 +133,11 @@ export async function mongoListReports(params?: {
       { url: { $regex: regex } },
       { canonicalUrl: { $regex: regex } },
       { classification: { $regex: regex } },
+      { resourceKind: { $regex: regex } },
       { "analysis.threatActors": { $regex: regex } },
       { "analysis.malware": { $regex: regex } },
+      { "extractedEntities.cves": { $regex: regex } },
+      { "extractedEntities.tactics": { $regex: regex } },
     ];
   }
 
@@ -136,6 +165,8 @@ export async function mongoListReports(params?: {
       publisher: 1,
       author: 1,
       classification: 1,
+      resourceKind: 1,
+      extractedEntities: 1,
       discoveryMethod: 1,
       discoveryQuery: 1,
       parentSource: 1,
@@ -143,6 +174,7 @@ export async function mongoListReports(params?: {
       version: 1,
       rawHtml: 1,
       pdfUrl: 1,
+      pdfBase64: 1,
     });
 
   const docs = await cursor.toArray();
@@ -172,6 +204,8 @@ export async function mongoListReports(params?: {
       publisher: doc.publisher || doc.sourceName,
       author: doc.author || doc.publisher,
       classification: doc.classification || "THREAT_REPORT",
+      resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
+      extractedEntities: (doc.extractedEntities as ExtractedEntities) || undefined,
       discoveryMethod: doc.discoveryMethod || "manual",
       discoveryQuery: doc.discoveryQuery || "",
       parentSource: doc.parentSource || "",
@@ -179,21 +213,12 @@ export async function mongoListReports(params?: {
       version: Number(doc.version ?? 1),
       rawHtml: doc.rawHtml || "",
       pdfUrl: doc.pdfUrl || "",
+      pdfBase64: doc.pdfBase64 || "",
     };
   });
 }
 
-export async function mongoFindReportByCanonical(canonicalUrl: string): Promise<{ id: string; qualityScore: number; title: string } | null> {
-  const col = await getThreatIntelCollection();
-  const doc = await col.findOne(
-    { docType: "report", canonicalUrl },
-    { projection: { id: 1, qualityScore: 1, title: 1 } },
-  );
-  if (!doc) return null;
-  return { id: doc.id, qualityScore: Number(doc.qualityScore ?? 0), title: doc.title };
-}
-
-export async function mongoInsertReport(report: ReportRecord & { sourceName?: string }): Promise<void> {
+export async function mongoInsertReport(report: ReportRecord): Promise<void> {
   await ensureMongoIndexes();
   const col = await getThreatIntelCollection();
   await col.updateOne(
@@ -270,8 +295,47 @@ export async function mongoSeedSources(sources: SourceRecord[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Crawler Config & Jobs
+// Crawler Config & Granular Controls
 // ---------------------------------------------------------------------------
+
+const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
+  id: "cfg_default",
+  enabled: true,
+  paused: false,
+  frequencyMinutes: 360,
+  startHour: "09:00",
+  maxResourcesPerRun: 30,
+  maxDepth: 2,
+  autoIngest: true,
+  autoAnalyze: true,
+  generatePdf: true,
+  rssDiscovery: true,
+  htmlDiscovery: true,
+  searchDiscovery: true,
+  recursiveDiscovery: true,
+  keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
+  noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy",
+  minQualityScore: 0.40,
+  minWordCount: 120,
+  strictnessMode: "balanced",
+  requireIocs: false,
+  requireAttck: false,
+  rejectMarketingNoise: true,
+  dedupMethod: "both",
+  activeSources: [],
+  targetResourceTypes: [
+    "FULL_ATTACK_CHAIN",
+    "CAMPAIGN_INTEL",
+    "PROCEDURE_DEEPDIVE",
+    "MALWARE_ANALYSIS",
+    "DETECTION_GUIDANCE",
+    "VULNERABILITY_ADVISORY",
+    "THREAT_ACTOR_DOSSIER",
+  ],
+  dateRangeDays: null,
+  lastRunAt: null,
+  nextRunAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+};
 
 export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
   const col = await getThreatIntelCollection();
@@ -280,49 +344,43 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
   if (doc) {
     return {
       id: doc.id,
-      enabled: Boolean(doc.enabled),
-      paused: Boolean(doc.paused),
+      enabled: Boolean(doc.enabled ?? true),
+      paused: Boolean(doc.paused ?? false),
       frequencyMinutes: Number(doc.frequencyMinutes ?? 360),
       startHour: doc.startHour || "09:00",
-      maxResourcesPerRun: Number(doc.maxResourcesPerRun ?? 25),
+      maxResourcesPerRun: Number(doc.maxResourcesPerRun ?? 30),
       maxDepth: Number(doc.maxDepth ?? 2),
       autoIngest: Boolean(doc.autoIngest ?? true),
       autoAnalyze: Boolean(doc.autoAnalyze ?? true),
+      generatePdf: Boolean(doc.generatePdf ?? true),
+      rssDiscovery: Boolean(doc.rssDiscovery ?? true),
+      htmlDiscovery: Boolean(doc.htmlDiscovery ?? true),
       searchDiscovery: Boolean(doc.searchDiscovery ?? true),
       recursiveDiscovery: Boolean(doc.recursiveDiscovery ?? true),
-      keywords: doc.keywords || 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK"',
+      keywords: doc.keywords || DEFAULT_CRAWL_CONFIG.keywords,
+      noiseKeywords: doc.noiseKeywords || DEFAULT_CRAWL_CONFIG.noiseKeywords,
+      minQualityScore: Number(doc.minQualityScore ?? 0.40),
+      minWordCount: Number(doc.minWordCount ?? 120),
+      strictnessMode: doc.strictnessMode || "balanced",
+      requireIocs: Boolean(doc.requireIocs ?? false),
+      requireAttck: Boolean(doc.requireAttck ?? false),
+      rejectMarketingNoise: Boolean(doc.rejectMarketingNoise ?? true),
+      dedupMethod: doc.dedupMethod || "both",
+      activeSources: (doc.activeSources as string[]) || [],
+      targetResourceTypes: (doc.targetResourceTypes as ResourceKind[]) || DEFAULT_CRAWL_CONFIG.targetResourceTypes,
       dateRangeDays: doc.dateRangeDays ? Number(doc.dateRangeDays) : null,
       lastRunAt: doc.lastRunAt || null,
       nextRunAt: doc.nextRunAt || null,
     };
   }
 
-  const nextRun = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
-  const defaultConfig: CrawlConfig = {
-    id: "cfg_default",
-    enabled: true,
-    paused: false,
-    frequencyMinutes: 360,
-    startHour: "09:00",
-    maxResourcesPerRun: 25,
-    maxDepth: 2,
-    autoIngest: true,
-    autoAnalyze: true,
-    searchDiscovery: true,
-    recursiveDiscovery: true,
-    keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-    dateRangeDays: null,
-    lastRunAt: null,
-    nextRunAt: nextRun,
-  };
-
   await col.updateOne(
-    { docType: "crawl_config", id: defaultConfig.id },
-    { $set: { docType: "crawl_config", ...defaultConfig } },
+    { docType: "crawl_config", id: DEFAULT_CRAWL_CONFIG.id },
+    { $set: { docType: "crawl_config", ...DEFAULT_CRAWL_CONFIG } },
     { upsert: true },
   );
 
-  return defaultConfig;
+  return DEFAULT_CRAWL_CONFIG;
 }
 
 export async function mongoUpdateCrawlConfig(updates: Partial<CrawlConfig>): Promise<CrawlConfig> {
@@ -332,6 +390,10 @@ export async function mongoUpdateCrawlConfig(updates: Partial<CrawlConfig>): Pro
   await col.updateOne({ docType: "crawl_config", id: current.id }, { $set: merged }, { upsert: true });
   return merged;
 }
+
+// ---------------------------------------------------------------------------
+// Jobs & Items
+// ---------------------------------------------------------------------------
 
 export async function mongoInsertCrawlJob(job: CrawlJob): Promise<void> {
   const col = await getThreatIntelCollection();
@@ -498,17 +560,149 @@ export async function mongoListRecentIngestEvents(limit = 8): Promise<IngestEven
 }
 
 // ---------------------------------------------------------------------------
+// Unified Crawler State from MongoDB
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Discovered Sources & Graph Edges
+// ---------------------------------------------------------------------------
+
+export async function mongoInsertDiscoveredSource(source: DiscoveredSourceRecord) {
+  if (!isMongoConfigured()) return;
+  const col = await getThreatIntelCollection();
+  await col.updateOne(
+    { docType: "discovered_source", domain: source.domain },
+    {
+      $set: {
+        docType: "discovered_source",
+        ...source,
+        lastSeenAt: new Date().toISOString(),
+      },
+      $inc: { resourceCount: 1 },
+      $setOnInsert: { firstDiscoveredAt: new Date().toISOString() },
+    },
+    { upsert: true },
+  );
+}
+
+export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceRecord[]> {
+  if (!isMongoConfigured()) return [];
+  const col = await getThreatIntelCollection();
+  const docs = await col.find({ docType: "discovered_source" }).sort({ trustScore: -1, resourceCount: -1 }).limit(50).toArray();
+  return docs.map((d) => ({
+    id: d.id,
+    domain: d.domain,
+    name: d.name,
+    homepageUrl: d.homepageUrl,
+    parentSource: d.parentSource || "",
+    parentUrl: d.parentUrl,
+    discoveryPath: (d.discoveryPath as string[]) || [],
+    trustScore: Number(d.trustScore ?? 0.5),
+    resourceCount: Number(d.resourceCount ?? 1),
+    status: d.status || "discovered",
+    firstDiscoveredAt: d.firstDiscoveredAt || new Date().toISOString(),
+    lastSeenAt: d.lastSeenAt || new Date().toISOString(),
+  }));
+}
+
+export async function mongoInsertGraphEdge(edge: Omit<DiscoveryGraphEdge, "id" | "createdAt">) {
+  if (!isMongoConfigured()) return;
+  const col = await getThreatIntelCollection();
+  const id = `edge_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  await col.updateOne(
+    { docType: "graph_edge", from: edge.from, to: edge.to, relationship: edge.relationship },
+    {
+      $set: {
+        docType: "graph_edge",
+        id,
+        ...edge,
+        createdAt: new Date().toISOString(),
+      },
+    },
+    { upsert: true },
+  );
+}
+
+export async function mongoListGraphEdges(limit = 60): Promise<DiscoveryGraphEdge[]> {
+  if (!isMongoConfigured()) return [];
+  const col = await getThreatIntelCollection();
+  const docs = await col.find({ docType: "graph_edge" }).sort({ createdAt: -1 }).limit(limit).toArray();
+  return docs.map((d) => ({
+    id: d.id || `edge_${d._id}`,
+    from: d.from,
+    to: d.to,
+    relationship: d.relationship,
+    label: d.label,
+    jobId: d.jobId,
+    createdAt: d.createdAt,
+  }));
+}
+
+export async function mongoGetCrawlerState(): Promise<CrawlerState> {
+  const col = await getThreatIntelCollection();
+
+  const [config, jobs, items, discovered, discoveredSources, graphEdges, sourceStatsDocs] = await Promise.all([
+    mongoGetCrawlConfig(),
+    mongoListRecentCrawlJobs(10),
+    mongoListRecentCrawlJobItems(35),
+    mongoListDiscoveredResources(50),
+    mongoListDiscoveredSources(),
+    mongoListGraphEdges(60),
+    col
+      .aggregate([
+        { $match: { docType: "crawl_job_item" } },
+        {
+          $group: {
+            _id: "$publisher",
+            found: { $sum: 1 },
+            ingested: {
+              $sum: { $cond: [{ $eq: ["$decision", "INGESTED"] }, 1, 0] },
+            },
+            failed: {
+              $sum: { $cond: [{ $eq: ["$decision", "FAILED"] }, 1, 0] },
+            },
+          },
+        },
+        { $sort: { ingested: -1, found: -1 } },
+        { $limit: 8 },
+      ])
+      .toArray(),
+  ]);
+
+  const activeJob = jobs.find((j) => j.status === "running") ?? null;
+
+  const sourceStats = sourceStatsDocs.map((s) => ({
+    sourceName: s._id || "Unknown Source",
+    found: Number(s.found),
+    ingested: Number(s.ingested),
+    failed: Number(s.failed),
+  }));
+
+  return {
+    config,
+    activeJob,
+    jobs,
+    items,
+    discovered,
+    discoveredSources,
+    graphEdges,
+    sourceStats,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard Aggregates
 // ---------------------------------------------------------------------------
 
 export async function mongoGetDashboardStats(): Promise<DashboardStats> {
   const col = await getThreatIntelCollection();
 
-  const [sourceTotal, enabledSources, reportTotal, acquiredTotal, qualityAgg, iocDocs] = await Promise.all([
+  const [sourceTotal, enabledSources, reportTotal, acquiredTotal, discoveredSourcesCount, qualityAgg, iocDocs] = await Promise.all([
     col.countDocuments({ docType: "source" }),
     col.countDocuments({ docType: "source", enabled: true }),
     col.countDocuments({ docType: "report" }),
     col.countDocuments({ docType: "report", status: "acquired" }),
+    col.countDocuments({ docType: "discovered_source" }),
     col.aggregate([
       { $match: { docType: "report", status: "acquired" } },
       { $group: { _id: null, avgQ: { $avg: "$qualityScore" } } },
@@ -517,7 +711,7 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
   ]);
 
   const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
-  const iocCount = iocDocs.reduce((acc, d) => acc + ((d.iocs as any[])?.length || 0), 0);
+  const iocCount = iocDocs.reduce((acc, d) => acc + ((d.iocs as unknown[])?.length || 0), 0);
 
   const recent = (await mongoListReports()).slice(0, 6);
   const events = await mongoListRecentIngestEvents(8);
@@ -544,5 +738,6 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     crawlerStatus,
     lastCrawlAt: config.lastRunAt,
     nextCrawlAt: config.nextRunAt,
+    discoveredSourcesCount,
   };
 }

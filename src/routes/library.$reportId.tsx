@@ -139,11 +139,16 @@ function ReportPage() {
           {/* Header Metadata */}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Badge tone="neutral">{data.sourceName}</Badge>
-            <Badge tone="accent">{data.classification}</Badge>
+            {data.resourceKind && (
+              <Badge tone="accent" className="font-semibold">
+                {data.resourceKind.replace(/_/g, " ")}
+              </Badge>
+            )}
+            <Badge tone="neutral">{data.classification}</Badge>
             <Badge tone={data.status === "acquired" ? "sage" : "warn"}>{data.status}</Badge>
             <Badge tone="neutral">{data.contentType}</Badge>
-            <Badge tone="neutral">via {data.discoveryMethod}</Badge>
-            <Badge tone="sage">PDF Available</Badge>
+            <Badge tone="neutral">via {data.discoveryMethod.replace(/_/g, " ")}</Badge>
+            <Badge tone="sage">High-Fidelity PDF Document Ready</Badge>
           </div>
 
           <h1 className="mt-3 max-w-4xl text-2xl font-medium tracking-tight md:text-3xl">
@@ -556,10 +561,25 @@ function ReportPage() {
                   <dt className="text-subtle">Ingested At</dt>
                   <dd className="text-fg">{formatDateTime(data.ingestedAt)}</dd>
                 </div>
-                <div className="flex justify-between pb-2">
+                <div className="flex justify-between border-b border-border pb-2">
                   <dt className="text-subtle">Document Version</dt>
                   <dd className="text-fg">v{data.version}</dd>
                 </div>
+                {data.discoveryPath && data.discoveryPath.length > 1 && (
+                  <div className="pt-2">
+                    <dt className="text-subtle mb-2">Discovery Ancestry Chain</dt>
+                    <dd className="space-y-1.5 pl-2 border-l-2 border-accent/40">
+                      {data.discoveryPath.map((step, idx) => (
+                        <div key={idx} className="flex items-center gap-2 text-[11px] truncate">
+                          <span className="text-accent font-semibold">Hop {idx}:</span>
+                          <a href={step} target="_blank" rel="noreferrer" className="truncate text-muted hover:text-fg">
+                            {step}
+                          </a>
+                        </div>
+                      ))}
+                    </dd>
+                  </div>
+                )}
               </dl>
             </div>
           )}

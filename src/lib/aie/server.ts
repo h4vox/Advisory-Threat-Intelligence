@@ -44,12 +44,14 @@ import {
   mongoGetReportById,
   mongoFindReportByCanonical,
   mongoInsertReport,
+  mongoDeleteReport,
   mongoListSources,
   mongoToggleSource,
   mongoSeedSources,
   mongoUpdateSourceLastIngest,
   mongoGetCrawlConfig,
   mongoUpdateCrawlConfig,
+  mongoGetCrawlerState,
   mongoListRecentCrawlJobs,
   mongoListRecentCrawlJobItems,
   mongoListDiscoveredResources,
@@ -177,6 +179,7 @@ async function ensureSeeded() {
           const qual = qualifyContent(r.text, r.title, r.url);
           const iocs = harvestIocs(r.text);
           const rawHash = sha256Hex(r.text);
+          const textHash = sha256Hex(r.text);
           const canonical = canonicalizeUrl(r.url);
           const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
 
@@ -266,6 +269,7 @@ async function ensureSeeded() {
       const qual = qualifyContent(r.text, r.title, r.url);
       const iocs = harvestIocs(r.text);
       const rawHash = sha256Hex(r.text);
+      const textHash = sha256Hex(r.text);
       const canonical = canonicalizeUrl(r.url);
       const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
 
@@ -425,7 +429,16 @@ export const toggleSource = createServerFn({ method: "POST" })
   });
 
 export const listReports = createServerFn({ method: "GET" })
-  .validator(z.object({ q: z.string().optional(), classification: z.string().optional() }).optional())
+  .validator(
+    z
+      .object({
+        q: z.string().optional(),
+        classification: z.string().optional(),
+        resourceKind: z.string().optional(),
+        sourceId: z.string().optional(),
+      })
+      .optional(),
+  )
   .handler(async ({ data }): Promise<ReportListItem[]> => {
     await ensureSeeded();
 
@@ -859,170 +872,205 @@ export const ingestUrl = createServerFn({ method: "POST" })
 
 // Crawler Server Functions
 export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlerState> => {
-  await ensureSeeded();
-  const sql = await getSql();
-  const config = await getOrCreateCrawlConfig();
+  try {
+    await ensureSeeded();
+    if (isMongoConfigured()) {
+      try {
+        return await mongoGetCrawlerState();
+      } catch (err) {
+        console.warn("[mongodb] getCrawlerState fallback to sql:", err);
+      }
+    }
+    const sql = await getSql();
+    const config = await getOrCreateCrawlConfig();
 
-  const jobs = await sql<{
-    id: string;
-    status: CrawlJob["status"];
-    trigger_type: CrawlJob["triggerType"];
-    started_at: string | null;
-    completed_at: string | null;
-    source_count: number;
-    discovered_count: number;
-    qualified_count: number;
-    ingested_count: number;
-    duplicate_count: number;
-    failed_count: number;
-    rejected_count: number;
-    updated_count: number;
-    skipped_count: number;
-    error_summary: string;
-  }>`select * from crawl_jobs order by created_at desc limit 10`;
+    const jobs = await sql<{
+      id: string;
+      status: CrawlJob["status"];
+      trigger_type: CrawlJob["triggerType"];
+      started_at: string | null;
+      completed_at: string | null;
+      source_count: number;
+      discovered_count: number;
+      qualified_count: number;
+      ingested_count: number;
+      duplicate_count: number;
+      failed_count: number;
+      rejected_count: number;
+      updated_count: number;
+      skipped_count: number;
+      error_summary: string;
+    }>`select * from crawl_jobs order by created_at desc limit 10`;
 
-  const activeJob = jobs.find((j) => j.status === "running") ?? null;
+    const activeJob = jobs.find((j) => j.status === "running") ?? null;
 
-  const items = await sql<{
-    id: string;
-    job_id: string;
-    source_id: string | null;
-    url: string;
-    canonical_url: string;
-    title: string;
-    classification: string;
-    decision: string;
-    reason: string;
-    discovery_method: string;
-    discovery_query: string;
-    parent_url: string | null;
-    depth: number;
-    publisher: string;
-    created_at: string;
-  }>`select * from crawl_job_items order by created_at desc limit 25`;
+    const items = await sql<{
+      id: string;
+      job_id: string;
+      source_id: string | null;
+      url: string;
+      canonical_url: string;
+      title: string;
+      classification: string;
+      decision: string;
+      reason: string;
+      discovery_method: string;
+      discovery_query: string;
+      parent_url: string | null;
+      depth: number;
+      publisher: string;
+      created_at: string;
+    }>`select * from crawl_job_items order by created_at desc limit 25`;
 
-  const discovered = await sql<{
-    id: string;
-    canonical_url: string;
-    url: string;
-    source_id: string | null;
-    title: string;
-    publisher: string;
-    author: string;
-    publication_date: string | null;
-    classification: string;
-    discovery_method: string;
-    discovery_query: string;
-    parent_source: string;
-    source_domain: string;
-    content_type: string;
-    status: string;
-    reject_reason: string;
-    quality_score: number | null;
-    report_id: string | null;
-    created_at: string;
-  }>`select * from discovered_resources order by created_at desc limit 40`;
+    const discovered = await sql<{
+      id: string;
+      canonical_url: string;
+      url: string;
+      source_id: string | null;
+      title: string;
+      publisher: string;
+      author: string;
+      publication_date: string | null;
+      classification: string;
+      discovery_method: string;
+      discovery_query: string;
+      parent_source: string;
+      source_domain: string;
+      content_type: string;
+      status: string;
+      reject_reason: string;
+      quality_score: number | null;
+      report_id: string | null;
+      created_at: string;
+    }>`select * from discovered_resources order by created_at desc limit 40`;
 
-  const sourceStatsRows = await sql<{
-    name: string;
-    found: number;
-    ingested: number;
-    failed: number;
-  }>`
-    select s.name,
-           count(i.id)::int as found,
-           count(i.id) filter (where i.decision = 'INGESTED')::int as ingested,
-           count(i.id) filter (where i.decision = 'FAILED')::int as failed
-    from sources s
-    left join crawl_job_items i on i.source_id = s.id
-    group by s.id, s.name
-    order by ingested desc, found desc
-    limit 8
-  `;
+    const sourceStatsRows = await sql<{
+      name: string;
+      found: number;
+      ingested: number;
+      failed: number;
+    }>`
+      select s.name,
+             count(i.id)::int as found,
+             count(i.id) filter (where i.decision = 'INGESTED')::int as ingested,
+             count(i.id) filter (where i.decision = 'FAILED')::int as failed
+      from sources s
+      left join crawl_job_items i on i.source_id = s.id
+      group by s.id, s.name
+      order by ingested desc, found desc
+      limit 8
+    `;
 
-  return {
-    config,
-    activeJob: activeJob
-      ? {
-          id: activeJob.id,
-          status: activeJob.status,
-          triggerType: activeJob.trigger_type,
-          startedAt: toIsoString(activeJob.started_at),
-          completedAt: toIsoString(activeJob.completed_at),
-          sourceCount: Number(activeJob.source_count),
-          discoveredCount: Number(activeJob.discovered_count),
-          qualifiedCount: Number(activeJob.qualified_count),
-          ingestedCount: Number(activeJob.ingested_count),
-          duplicateCount: Number(activeJob.duplicate_count),
-          failedCount: Number(activeJob.failed_count),
-          rejectedCount: Number(activeJob.rejected_count),
-          updatedCount: Number(activeJob.updated_count),
-          skippedCount: Number(activeJob.skipped_count),
-          errorSummary: activeJob.error_summary,
-        }
-      : null,
-    jobs: jobs.map((j) => ({
-      id: j.id,
-      status: j.status,
-      triggerType: j.trigger_type,
-      startedAt: toIsoString(j.started_at),
-      completedAt: toIsoString(j.completed_at),
-      sourceCount: Number(j.source_count),
-      discoveredCount: Number(j.discovered_count),
-      qualifiedCount: Number(j.qualified_count),
-      ingestedCount: Number(j.ingested_count),
-      duplicateCount: Number(j.duplicate_count),
-      failedCount: Number(j.failed_count),
-      rejectedCount: Number(j.rejected_count),
-      updatedCount: Number(j.updated_count),
-      skippedCount: Number(j.skipped_count),
-      errorSummary: j.error_summary,
-    })),
-    items: items.map((itm) => ({
-      id: itm.id,
-      jobId: itm.job_id,
-      sourceId: itm.source_id,
-      url: itm.url,
-      canonicalUrl: itm.canonical_url,
-      title: itm.title,
-      classification: itm.classification,
-      decision: itm.decision,
-      reason: itm.reason,
-      discoveryMethod: itm.discovery_method,
-      discoveryQuery: itm.discovery_query,
-      parentUrl: itm.parent_url,
-      depth: Number(itm.depth),
-      publisher: itm.publisher,
-      createdAt: toIsoString(itm.created_at) ?? "",
-    })),
-    discovered: discovered.map((d) => ({
-      id: d.id,
-      canonicalUrl: d.canonical_url,
-      url: d.url,
-      sourceId: d.source_id,
-      title: d.title,
-      publisher: d.publisher,
-      author: d.author,
-      publicationDate: d.publication_date,
-      classification: d.classification,
-      discoveryMethod: d.discovery_method,
-      discoveryQuery: d.discovery_query,
-      parentSource: d.parent_source,
-      sourceDomain: d.source_domain,
-      contentType: d.content_type,
-      status: d.status,
-      rejectReason: d.reject_reason,
-      qualityScore: d.quality_score ? Number(d.quality_score) : null,
-      reportId: d.report_id,
-      createdAt: toIsoString(d.created_at) ?? "",
-    })),
-    sourceStats: sourceStatsRows.map((s) => ({
-      sourceName: s.name,
-      found: Number(s.found),
-      ingested: Number(s.ingested),
-      failed: Number(s.failed),
-    })),
-  };
+    return {
+      config,
+      activeJob: activeJob
+        ? {
+            id: activeJob.id,
+            status: activeJob.status,
+            triggerType: activeJob.trigger_type,
+            startedAt: toIsoString(activeJob.started_at),
+            completedAt: toIsoString(activeJob.completed_at),
+            sourceCount: Number(activeJob.source_count),
+            discoveredCount: Number(activeJob.discovered_count),
+            qualifiedCount: Number(activeJob.qualified_count),
+            ingestedCount: Number(activeJob.ingested_count),
+            duplicateCount: Number(activeJob.duplicate_count),
+            failedCount: Number(activeJob.failed_count),
+            rejectedCount: Number(activeJob.rejected_count),
+            updatedCount: Number(activeJob.updated_count),
+            skippedCount: Number(activeJob.skipped_count),
+            errorSummary: activeJob.error_summary,
+          }
+        : null,
+      jobs: jobs.map((j) => ({
+        id: j.id,
+        status: j.status,
+        triggerType: j.trigger_type,
+        startedAt: toIsoString(j.started_at),
+        completedAt: toIsoString(j.completed_at),
+        sourceCount: Number(j.source_count),
+        discoveredCount: Number(j.discovered_count),
+        qualifiedCount: Number(j.qualified_count),
+        ingestedCount: Number(j.ingested_count),
+        duplicateCount: Number(j.duplicate_count),
+        failedCount: Number(j.failed_count),
+        rejectedCount: Number(j.rejected_count),
+        updatedCount: Number(j.updated_count),
+        skippedCount: Number(j.skipped_count),
+        errorSummary: j.error_summary,
+      })),
+      items: items.map((itm) => ({
+        id: itm.id,
+        jobId: itm.job_id,
+        sourceId: itm.source_id,
+        url: itm.url,
+        canonicalUrl: itm.canonical_url,
+        title: itm.title,
+        classification: itm.classification,
+        decision: itm.decision,
+        reason: itm.reason,
+        discoveryMethod: itm.discovery_method,
+        discoveryQuery: itm.discovery_query,
+        parentUrl: itm.parent_url,
+        depth: Number(itm.depth),
+        publisher: itm.publisher,
+        createdAt: toIsoString(itm.created_at) ?? "",
+      })),
+      discovered: discovered.map((d) => ({
+        id: d.id,
+        canonicalUrl: d.canonical_url,
+        url: d.url,
+        sourceId: d.source_id,
+        title: d.title,
+        publisher: d.publisher,
+        author: d.author,
+        publicationDate: d.publication_date,
+        classification: d.classification,
+        discoveryMethod: d.discovery_method,
+        discoveryQuery: d.discovery_query,
+        parentSource: d.parent_source,
+        sourceDomain: d.source_domain,
+        contentType: d.content_type,
+        status: d.status,
+        rejectReason: d.reject_reason,
+        qualityScore: d.quality_score ? Number(d.quality_score) : null,
+        reportId: d.report_id,
+        createdAt: toIsoString(d.created_at) ?? "",
+      })),
+      sourceStats: sourceStatsRows.map((s) => ({
+        sourceName: s.name,
+        found: Number(s.found),
+        ingested: Number(s.ingested),
+        failed: Number(s.failed),
+      })),
+    };
+  } catch (err) {
+    console.error("[crawler] getCrawlerState error:", err);
+    return {
+      config: {
+        id: "cfg_default",
+        enabled: true,
+        paused: false,
+        frequencyMinutes: 360,
+        startHour: "09:00",
+        maxResourcesPerRun: 25,
+        maxDepth: 2,
+        autoIngest: true,
+        autoAnalyze: true,
+        searchDiscovery: true,
+        recursiveDiscovery: true,
+        keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
+        dateRangeDays: null,
+        lastRunAt: null,
+        nextRunAt: null,
+      },
+      activeJob: null,
+      jobs: [],
+      items: [],
+      discovered: [],
+      sourceStats: [],
+    };
+  }
 });
 
 export const updateCrawlerConfig = createServerFn({ method: "POST" })
@@ -1036,15 +1084,38 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
       maxDepth: z.number().optional(),
       autoIngest: z.boolean().optional(),
       autoAnalyze: z.boolean().optional(),
+      generatePdf: z.boolean().optional(),
+      rssDiscovery: z.boolean().optional(),
+      htmlDiscovery: z.boolean().optional(),
       searchDiscovery: z.boolean().optional(),
       recursiveDiscovery: z.boolean().optional(),
       keywords: z.string().optional(),
+      noiseKeywords: z.string().optional(),
+      minQualityScore: z.number().optional(),
+      minWordCount: z.number().optional(),
+      strictnessMode: z.enum(["permissive", "balanced", "strict"]).optional(),
+      requireIocs: z.boolean().optional(),
+      requireAttck: z.boolean().optional(),
+      rejectMarketingNoise: z.boolean().optional(),
+      dedupMethod: z.enum(["canonical_url", "content_hash", "both", "smart_hybrid"]).optional(),
+      activeSources: z.array(z.string()).optional(),
+      targetResourceTypes: z.array(z.string()).optional(),
+      maxResourcesPerJob: z.number().optional(),
+      maxResourcesPerDomain: z.number().optional(),
+      discoveryBreadth: z.enum(["focused", "balanced", "wide"]).optional(),
+      allowExternalDomains: z.boolean().optional(),
+      domainAllowlist: z.array(z.string()).optional(),
+      domainBlocklist: z.array(z.string()).optional(),
+      rateLimitMs: z.number().optional(),
+      concurrency: z.number().optional(),
+      maxPdfDownloads: z.number().optional(),
     }),
   )
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
       try {
-        await mongoUpdateCrawlConfig(data);
+        const updated = await mongoUpdateCrawlConfig(data as any);
+        return { ok: true as const, config: updated };
       } catch (err) {
         console.warn("[mongodb] update config:", err);
       }
@@ -1054,17 +1125,8 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
     const current = await getOrCreateCrawlConfig();
 
     const updated = {
-      enabled: data.enabled ?? current.enabled,
-      paused: data.paused ?? current.paused,
-      frequencyMinutes: data.frequencyMinutes ?? current.frequencyMinutes,
-      startHour: data.startHour ?? current.startHour,
-      maxResourcesPerRun: data.maxResourcesPerRun ?? current.maxResourcesPerRun,
-      maxDepth: data.maxDepth ?? current.maxDepth,
-      autoIngest: data.autoIngest ?? current.autoIngest,
-      autoAnalyze: data.autoAnalyze ?? current.autoAnalyze,
-      searchDiscovery: data.searchDiscovery ?? current.searchDiscovery,
-      recursiveDiscovery: data.recursiveDiscovery ?? current.recursiveDiscovery,
-      keywords: data.keywords ?? current.keywords,
+      ...current,
+      ...data,
     };
 
     await sql`
@@ -1085,6 +1147,80 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
     `;
 
     return { ok: true as const, config: updated };
+  });
+
+export const deleteReport = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.string() }))
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoDeleteReport(data.id);
+      } catch (err) {
+        console.warn("[mongodb] deleteReport:", err);
+      }
+    }
+    const sql = await getSql();
+    await sql`delete from reports where id = ${data.id}`;
+    return { ok: true };
+  });
+
+export const getReportPdf = createServerFn({ method: "GET" })
+  .validator(z.object({ id: z.string() }))
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      const doc = await mongoGetReportById(data.id);
+      if (doc) {
+        return {
+          ok: true,
+          id: doc.id,
+          title: doc.title,
+          url: doc.url,
+          canonicalUrl: doc.canonicalUrl,
+          rawHtml: doc.rawHtml || "",
+          pdfUrl: doc.pdfUrl || "",
+          pdfBase64: doc.pdfBase64 || "",
+          qualityScore: doc.qualityScore,
+          wordCount: doc.wordCount,
+          iocs: doc.iocs,
+          analysis: doc.analysis,
+          resourceKind: doc.resourceKind,
+          extractedEntities: doc.extractedEntities,
+        };
+      }
+    }
+
+    const sql = await getSql();
+    const rows = await sql<{
+      id: string;
+      title: string;
+      url: string;
+      canonical_url: string;
+      raw_html: string;
+      quality_score: number;
+      word_count: number;
+      iocs_json: string;
+      analysis_json: string;
+    }>`select id, title, url, canonical_url, raw_html, quality_score, word_count, iocs_json, analysis_json from reports where id = ${data.id}`;
+
+    if (!rows[0]) {
+      return { ok: false, error: "Report not found" };
+    }
+
+    const r = rows[0];
+    return {
+      ok: true,
+      id: r.id,
+      title: r.title,
+      url: r.url,
+      canonicalUrl: r.canonical_url,
+      rawHtml: r.raw_html || "",
+      pdfUrl: "",
+      pdfBase64: "",
+      qualityScore: Number(r.quality_score),
+      wordCount: Number(r.word_count),
+      iocs: JSON.parse(r.iocs_json || "[]"),
+      analysis: JSON.parse(r.analysis_json || "null"),
+    };
   });
 
 export const triggerCrawlJob = createServerFn({ method: "POST" })
