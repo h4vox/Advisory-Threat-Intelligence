@@ -433,7 +433,21 @@ function ReportPage() {
           {/* TAB 4: EXTRACTED TEXT */}
           {tab === "Extracted Text" && (
             <div className="mt-6 rounded-xl border border-border bg-bg-elevated p-5">
-              <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-muted">
+              <div className="flex items-center justify-between border-b border-border pb-3 mb-4">
+                <span className="font-mono text-[11px] text-subtle">
+                  Clean Extracted Text ({data.wordCount} words)
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => copyToClipboard(data.extractedText, "Extracted text")}
+                >
+                  <Copy className="size-3" />
+                  <span>Copy Text</span>
+                </Button>
+              </div>
+              <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-muted select-text">
                 {data.extractedText}
               </pre>
             </div>

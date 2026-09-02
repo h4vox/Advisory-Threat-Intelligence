@@ -439,6 +439,12 @@ export const listReports = createServerFn({ method: "GET" })
         classification: z.string().optional(),
         resourceKind: z.string().optional(),
         sourceId: z.string().optional(),
+        actor: z.string().optional(),
+        malware: z.string().optional(),
+        tactic: z.string().optional(),
+        publisher: z.string().optional(),
+        minScore: z.number().optional(),
+        hasIocs: z.boolean().optional(),
       })
       .optional(),
   )
@@ -466,6 +472,23 @@ export const listReports = createServerFn({ method: "GET" })
       items = items.filter((r) => r.classification === classification);
     }
 
+    if (data?.resourceKind && data.resourceKind !== "ALL") {
+      items = items.filter((r) => r.resourceKind === data.resourceKind);
+    }
+
+    if (data?.publisher && data.publisher !== "ALL") {
+      const pubLower = data.publisher.toLowerCase();
+      items = items.filter((r) => (r.publisher || r.sourceName || "").toLowerCase().includes(pubLower));
+    }
+
+    if (typeof data?.minScore === "number" && data.minScore > 0) {
+      items = items.filter((r) => r.qualityScore >= (data.minScore as number));
+    }
+
+    if (data?.hasIocs) {
+      items = items.filter((r) => r.iocCount > 0);
+    }
+
     if (!q) return items;
     return items.filter((r) =>
       `${r.title} ${r.sourceName} ${r.url} ${r.excerpt} ${r.classification}`.toLowerCase().includes(q),
@@ -480,7 +503,39 @@ export const getReport = createServerFn({ method: "GET" })
     if (isMongoConfigured()) {
       try {
         const mongoReport = await mongoGetReportById(data.id);
-        if (mongoReport) return mongoReport;
+        if (mongoReport) {
+          const needsPristineRegen =
+            !mongoReport.rawHtml ||
+            mongoReport.rawHtml.length < 100 ||
+            mongoReport.rawHtml.includes("&lt;img") ||
+            mongoReport.rawHtml.includes("&lt;p&gt;");
+
+          if (needsPristineRegen) {
+            mongoReport.rawHtml = buildPristineDocumentHtml(mongoReport.rawHtml || mongoReport.extractedText, {
+              id: mongoReport.id,
+              title: mongoReport.title,
+              url: mongoReport.url,
+              canonicalUrl: mongoReport.canonicalUrl,
+              publisher: mongoReport.publisher ?? mongoReport.sourceName,
+              author: mongoReport.author ?? mongoReport.sourceName,
+              publishedAt: mongoReport.publishedAt,
+              ingestedAt: mongoReport.ingestedAt,
+              classification: mongoReport.classification ?? "THREAT_REPORT",
+              rawHash: mongoReport.rawHash,
+              textHash: mongoReport.textHash,
+              qualityScore: Number(mongoReport.qualityScore),
+              wordCount: Number(mongoReport.wordCount),
+              iocs: mongoReport.iocs,
+              analysis: mongoReport.analysis,
+            });
+          }
+
+          if (/<[a-z][\s\S]*>/i.test(mongoReport.extractedText)) {
+            mongoReport.extractedText = htmlToText(mongoReport.extractedText).text;
+          }
+
+          return mongoReport;
+        }
       } catch (err) {
         console.warn("[mongodb] fallback to sql for getReport:", err);
       }
@@ -500,8 +555,8 @@ export const getReport = createServerFn({ method: "GET" })
     }
 
     let pristineHtml = r.raw_html || "";
-    if (!pristineHtml || pristineHtml.length < 50) {
-      pristineHtml = buildPristineDocumentHtml(r.extracted_text, {
+    if (!pristineHtml || pristineHtml.length < 50 || pristineHtml.includes("&lt;img") || pristineHtml.includes("&lt;p&gt;")) {
+      pristineHtml = buildPristineDocumentHtml(r.raw_html || r.extracted_text, {
         id: r.id,
         title: r.title,
         url: r.url,
@@ -520,9 +575,13 @@ export const getReport = createServerFn({ method: "GET" })
       });
     }
 
+    const cleanText = /<[a-z][\s\S]*>/i.test(r.extracted_text)
+      ? htmlToText(r.extracted_text).text
+      : r.extracted_text;
+
     return {
       ...toListItem(r),
-      extractedText: r.extracted_text,
+      extractedText: cleanText,
       rawHtml: pristineHtml,
       pdfUrl: r.pdf_url || "",
       qualityReasons: parseJson<QualityReason[]>(r.quality_reasons, []),
@@ -1173,13 +1232,40 @@ export const getReportPdf = createServerFn({ method: "GET" })
     if (isMongoConfigured()) {
       const doc = await mongoGetReportById(data.id);
       if (doc) {
+        let rawHtml = doc.rawHtml || "";
+        const needsPristineRegen =
+          !rawHtml ||
+          rawHtml.length < 100 ||
+          rawHtml.includes("&lt;img") ||
+          rawHtml.includes("&lt;p&gt;");
+
+        if (needsPristineRegen) {
+          rawHtml = buildPristineDocumentHtml(doc.rawHtml || doc.extractedText, {
+            id: doc.id,
+            title: doc.title,
+            url: doc.url,
+            canonicalUrl: doc.canonicalUrl,
+            publisher: doc.publisher ?? doc.sourceName,
+            author: doc.author ?? doc.sourceName,
+            publishedAt: doc.publishedAt,
+            ingestedAt: doc.ingestedAt,
+            classification: doc.classification ?? "THREAT_REPORT",
+            rawHash: doc.rawHash,
+            textHash: doc.textHash,
+            qualityScore: Number(doc.qualityScore),
+            wordCount: Number(doc.wordCount),
+            iocs: doc.iocs,
+            analysis: doc.analysis,
+          });
+        }
+
         return {
           ok: true,
           id: doc.id,
           title: doc.title,
           url: doc.url,
           canonicalUrl: doc.canonicalUrl,
-          rawHtml: doc.rawHtml || "",
+          rawHtml,
           pdfUrl: doc.pdfUrl || "",
           pdfBase64: doc.pdfBase64 || "",
           qualityScore: doc.qualityScore,
