@@ -7,10 +7,15 @@ import {
   Code2,
   Compass,
   Copy,
+  Download,
   ExternalLink,
+  Eye,
+  FileText,
   Flame,
   Globe,
   Layers,
+  Maximize2,
+  Printer,
   Search,
   Shield,
   ShieldAlert,
@@ -23,12 +28,13 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getReport } from "@/lib/aie/server";
-import { formatDateTime } from "@/lib/aie/extract";
+import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/library/$reportId")({ component: ReportPage });
 
 const TABS = [
+  "Document & PDF Reader",
   "Attack Chain & TTPs",
   "Emulation & Detections",
   "Extracted Text",
@@ -40,7 +46,9 @@ const TABS = [
 
 function ReportPage() {
   const { reportId } = Route.useParams();
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Attack Chain & TTPs");
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Document & PDF Reader");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
   const { data, isLoading } = useQuery({
     queryKey: ["report", reportId],
     queryFn: () => getReport({ data: { id: reportId } }),
@@ -51,17 +59,76 @@ function ReportPage() {
     toast.success(`Copied ${label} to clipboard`);
   };
 
+  const downloadDocument = () => {
+    if (!data?.rawHtml) {
+      toast.error("Document content not available");
+      return;
+    }
+    const blob = new Blob([data.rawHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const sanitizedTitle = (data.title || "threat_report")
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "_")
+      .slice(0, 50);
+    a.download = `${sanitizedTitle}_intel_report.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Document Downloaded", {
+      description: "High-fidelity document saved. Open in browser and choose Print → 'Save as PDF' for vector PDF.",
+    });
+  };
+
+  const printDocument = () => {
+    if (!data?.rawHtml) return;
+    const printWindow = window.open("", "_blank");
+    if (printWindow) {
+      printWindow.document.write(data.rawHtml);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+      }, 350);
+    } else {
+      toast.info("Pop-up blocked. Please allow pop-ups to print to PDF directly.");
+    }
+  };
+
   const analysis = data?.analysis;
 
   return (
     <AppShell>
-      <div className="mb-4">
+      <div className="mb-4 flex items-center justify-between">
         <Link
           to="/library"
           className="inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-fg"
         >
           <ArrowLeft className="size-3.5" /> Back to Library
         </Link>
+
+        {/* Action Buttons for PDF & Export */}
+        {data && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-8 gap-1.5 text-xs"
+              onClick={printDocument}
+            >
+              <Printer className="size-3.5" />
+              <span>Print to PDF</span>
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={downloadDocument}
+            >
+              <Download className="size-3.5" />
+              <span>Download PDF File</span>
+            </Button>
+          </div>
+        )}
       </div>
 
       {isLoading ? <p className="mt-6 text-sm text-muted">Loading intelligence record…</p> : null}
@@ -76,6 +143,7 @@ function ReportPage() {
             <Badge tone={data.status === "acquired" ? "sage" : "warn"}>{data.status}</Badge>
             <Badge tone="neutral">{data.contentType}</Badge>
             <Badge tone="neutral">via {data.discoveryMethod}</Badge>
+            <Badge tone="sage">PDF Available</Badge>
           </div>
 
           <h1 className="mt-3 max-w-4xl text-2xl font-medium tracking-tight md:text-3xl">
@@ -117,7 +185,74 @@ function ReportPage() {
             ))}
           </div>
 
-          {/* TAB 1: ATTACK CHAIN & TTPS */}
+          {/* TAB 1: DOCUMENT & PDF READER */}
+          {tab === "Document & PDF Reader" && (
+            <div className="mt-6 space-y-4">
+              <div className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-bg-elevated p-4 sm:flex-row sm:items-center">
+                <div className="flex items-center gap-3">
+                  <FileText className="size-5 text-accent" />
+                  <div>
+                    <div className="text-sm font-medium">Original Document & PDF Preview</div>
+                    <div className="text-xs text-muted">
+                      Exact resource formatting, headings, tables, code blocks, and cryptographic evidence.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={() => setIsFullscreen(!isFullscreen)}
+                  >
+                    <Maximize2 className="size-3" />
+                    <span>{isFullscreen ? "Standard View" : "Expanded View"}</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={printDocument}
+                  >
+                    <Printer className="size-3" />
+                    <span>Print / Save PDF</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={downloadDocument}
+                  >
+                    <Download className="size-3" />
+                    <span>Download</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Document Frame */}
+              <div
+                className={cn(
+                  "overflow-hidden rounded-xl border border-border bg-white shadow-sm transition-all",
+                  isFullscreen ? "h-[90vh]" : "h-[750px]",
+                )}
+              >
+                {data.rawHtml ? (
+                  <iframe
+                    srcDoc={data.rawHtml}
+                    title={data.title}
+                    className="size-full border-0"
+                    sandbox="allow-same-origin"
+                  />
+                ) : (
+                  <div className="flex size-full items-center justify-center p-8 text-sm text-neutral-500">
+                    No visual document format stored. View the Extracted Text tab.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: ATTACK CHAIN & TTPS */}
           {tab === "Attack Chain & TTPs" && (
             <div className="mt-6 space-y-6">
               {/* Threat Actor & Malware Chips */}
@@ -214,7 +349,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 2: EMULATION & DETECTIONS */}
+          {/* TAB 3: EMULATION & DETECTIONS */}
           {tab === "Emulation & Detections" && (
             <div className="mt-6 space-y-6">
               {/* Adversary Simulation Scenarios */}
@@ -290,7 +425,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 3: EXTRACTED TEXT */}
+          {/* TAB 4: EXTRACTED TEXT */}
           {tab === "Extracted Text" && (
             <div className="mt-6 rounded-xl border border-border bg-bg-elevated p-5">
               <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-muted">
@@ -299,7 +434,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 4: IOCS */}
+          {/* TAB 5: IOCS */}
           {tab === "IOCs" && (
             <div className="mt-6 overflow-x-auto rounded-xl border border-border bg-bg-elevated">
               {data.iocs.length === 0 ? (
@@ -337,7 +472,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 5: HASHES & EVIDENCE */}
+          {/* TAB 6: HASHES & EVIDENCE */}
           {tab === "Hashes & Evidence" && (
             <div className="mt-6 max-w-3xl rounded-xl border border-border bg-bg-elevated p-5">
               <dl className="space-y-4 font-mono text-xs">
@@ -361,7 +496,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 6: QUALITY GATE */}
+          {/* TAB 7: QUALITY GATE */}
           {tab === "Quality Gate" && (
             <div className="mt-6 max-w-2xl rounded-xl border border-border bg-bg-elevated p-5">
               <div className="flex items-baseline gap-3">
@@ -388,7 +523,7 @@ function ReportPage() {
             </div>
           )}
 
-          {/* TAB 7: PROVENANCE */}
+          {/* TAB 8: PROVENANCE */}
           {tab === "Provenance" && (
             <div className="mt-6 max-w-3xl rounded-xl border border-border bg-bg-elevated p-5">
               <h3 className="text-sm font-medium">Intelligence Provenance Record</h3>

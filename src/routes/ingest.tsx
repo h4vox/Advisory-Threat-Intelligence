@@ -9,14 +9,18 @@ import {
   CheckCircle2,
   Clock,
   Compass,
+  Crosshair,
   Database,
+  Download,
   ExternalLink,
+  FileText,
   Filter,
   Globe,
   Layers,
   ListFilter,
   Play,
   RefreshCw,
+  Rss,
   Search,
   Settings,
   Shield,
@@ -30,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import {
   cancelCrawlJob,
+  exportSTIXBundle,
   getCrawlerState,
   ingestDiscoveredUrl,
   ingestUrl,
@@ -37,7 +42,7 @@ import {
   triggerCrawlJob,
   updateCrawlerConfig,
 } from "@/lib/aie/server";
-import { formatDateTime } from "@/lib/aie/extract";
+import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/ingest")({ component: IngestPage });
@@ -46,14 +51,17 @@ const VIEWS = [
   { id: "crawler", label: "Autonomous Crawler", icon: Bot },
   { id: "queue", label: "Discovery Queue", icon: Compass },
   { id: "manual", label: "Manual Ingest", icon: Upload },
-  { id: "catalog", label: "Curated Catalog", icon: Layers },
+  { id: "catalog", label: "Curated Catalog", icon: Database },
   { id: "audit", label: "Crawl Audit Log", icon: Activity },
   { id: "settings", label: "Crawl Settings", icon: Settings },
 ] as const;
 
-export function IngestPage() {
+function IngestPage() {
   const qc = useQueryClient();
   const [activeView, setActiveView] = useState<(typeof VIEWS)[number]["id"]>("crawler");
+
+  // Targeted Hunt Query State
+  const [targetedTopic, setTargetedTopic] = useState("");
 
   // Manual Ingest State
   const [url, setUrl] = useState("");
@@ -75,6 +83,23 @@ export function IngestPage() {
     queryFn: () => listCatalog(),
   });
 
+  // Targeted Crawl Mutation
+  const targetedCrawl = useMutation({
+    mutationFn: (topic: string) =>
+      triggerCrawlJob({ data: { triggerType: "SEARCH", customQuery: topic } }),
+    onSuccess: () => {
+      toast.success("Targeted Threat Hunt Dispatched", {
+        description: `Autonomous crawler is hunting intelligence for '${targetedTopic}' and generating PDF evidence.`,
+      });
+      void qc.invalidateQueries({ queryKey: ["crawlerState"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      setTargetedTopic("");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to run hunt");
+    },
+  });
+
   // Manual Ingest Mutation
   const manualIngest = useMutation({
     mutationFn: (input: { url: string; pasted?: string }) => ingestUrl({ data: input }),
@@ -84,8 +109,13 @@ export function IngestPage() {
         toast.error(res.error);
         return;
       }
-      if (res.duplicate) toast.message("Already in the store", { description: res.title });
-      else toast.success("Acquired & Ingested", { description: `${res.title} · quality ${Math.round(res.qualityScore * 100)}%` });
+      if (res.duplicate) {
+        toast.message("Already in the store", { description: res.title });
+      } else {
+        toast.success("Acquired & Ingested", {
+          description: `${res.title} · quality ${Math.round(res.qualityScore * 100)}% · PDF generated`,
+        });
+      }
       setUrl("");
       setPasted("");
     },
@@ -100,7 +130,7 @@ export function IngestPage() {
       void qc.invalidateQueries({ queryKey: ["crawlerState"] });
       void qc.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success("Autonomous Crawler Triggered", {
-        description: "Scanning trusted sources & searching threat intel feeds...",
+        description: "Scanning trusted sources, continuous RSS feeds & search vectors...",
       });
     },
     onError: (e: Error) => toast.error(`Crawler failed to start: ${e.message}`),
@@ -124,7 +154,9 @@ export function IngestPage() {
         toast.error(res.error);
         return;
       }
-      toast.success("Resource Ingested", { description: res.title });
+      toast.success("Resource Ingested", {
+        description: `${res.title} · PDF document available in library`,
+      });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -140,68 +172,107 @@ export function IngestPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const exportStix = async () => {
+    try {
+      toast.info("Generating STIX 2.1 Threat Intel Bundle...");
+      const bundle = await exportSTIXBundle();
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl;
+      a.download = `cti_stix21_bundle_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(dlUrl);
+      toast.success("STIX 2.1 Bundle Downloaded successfully");
+    } catch {
+      toast.error("Failed to export STIX bundle");
+    }
+  };
+
   const state = crawlerState.data;
   const config = state?.config;
   const activeJob = state?.activeJob;
   const jobs = state?.jobs ?? [];
   const discovered = state?.discovered ?? [];
-  const auditItems = state?.items ?? [];
+  const items = state?.items ?? [];
 
-  // Filter queue items
-  const filteredDiscovered = discovered.filter((d) => {
-    const matchesFilter =
-      queueFilter === "all"
-        ? true
-        : queueFilter === "qualified"
-          ? d.status === "qualified" || d.status === "ingested"
-          : d.status === queueFilter;
-    const matchesSearch =
-      !queueSearch.trim() ||
-      `${d.title} ${d.publisher} ${d.url} ${d.classification}`.toLowerCase().includes(queueSearch.toLowerCase());
-    return matchesFilter && matchesSearch;
+  // Filtered Queue Items
+  const filteredDiscovered = discovered.filter((item) => {
+    if (queueFilter === "qualified" && item.status !== "qualified") return false;
+    if (queueFilter === "ingested" && item.status !== "ingested") return false;
+    if (queueFilter === "rejected" && item.status !== "rejected") return false;
+    if (queueSearch.trim()) {
+      const q = queueSearch.toLowerCase();
+      return (
+        item.title.toLowerCase().includes(q) ||
+        item.url.toLowerCase().includes(q) ||
+        item.publisher.toLowerCase().includes(q)
+      );
+    }
+    return true;
   });
 
   return (
     <AppShell>
-      {/* Top Header */}
-      <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
+      {/* Header Section */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
-            Adversary Intelligence Engine · Acquisition
-          </p>
-          <h1 className="mt-1 text-3xl font-medium tracking-tight">Threat Ingestion & Crawler</h1>
-          <p className="mt-1 text-sm text-muted">
-            Autonomous adversary intelligence discovery, qualification gate, and structured attack-chain extraction.
+          <div className="flex items-center gap-2">
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
+              Autonomous Intelligence Engine
+            </p>
+            <Badge tone="sage" className="gap-1 font-mono text-[10px]">
+              <Rss className="size-2.5" /> Feeds Active
+            </Badge>
+            <Badge tone="accent" className="gap-1 font-mono text-[10px]">
+              <FileText className="size-2.5" /> PDF Extraction Ready
+            </Badge>
+          </div>
+          <h1 className="mt-1 text-3xl font-medium tracking-tight">Threat Ingestion Console</h1>
+          <p className="mt-1 text-xs text-muted">
+            Continuous threat harvesting, permalink discrimination, attack-chain reconstruction, and high-fidelity PDF extraction.
           </p>
         </div>
 
-        {/* Global Action Button */}
-        <div className="flex items-center gap-2">
+        {/* Global Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={exportStix}
+            className="gap-1.5 text-xs"
+          >
+            <Download className="size-3.5" />
+            <span>Export STIX 2.1</span>
+          </Button>
+
           {activeJob ? (
             <Button
-              variant="secondary"
-              className="gap-2 border-warn/30 bg-warn/10 text-warn hover:bg-warn/20"
+              variant="danger"
+              size="sm"
               onClick={() => cancelCrawl.mutate(activeJob.id)}
               disabled={cancelCrawl.isPending}
+              className="gap-1.5 text-xs"
             >
-              <RefreshCw className="size-4 animate-spin" />
-              <span>Scanning... Stop</span>
+              <XCircle className="size-3.5" />
+              <span>Cancel Scan ({activeJob.id.slice(0, 8)})</span>
             </Button>
           ) : (
             <Button
-              className="gap-2 shadow-sm"
+              size="sm"
               onClick={() => runCrawl.mutate("MANUAL")}
               disabled={runCrawl.isPending}
+              className="gap-1.5 text-xs"
             >
-              <Zap className="size-4" />
-              <span>Run Discovery Now</span>
+              <Play className="size-3.5" />
+              <span>Launch Crawl Job</span>
             </Button>
           )}
         </div>
       </div>
 
-      {/* Navigation Sub-Tabs */}
-      <div className="mb-6 flex flex-wrap gap-1 border-b border-border">
+      {/* Sub-Navigation Tabs */}
+      <div className="mt-6 flex flex-wrap gap-1 border-b border-border pb-px">
         {VIEWS.map((v) => {
           const Icon = v.icon;
           const isActive = activeView === v.id;
@@ -211,16 +282,16 @@ export function IngestPage() {
               type="button"
               onClick={() => setActiveView(v.id)}
               className={cn(
-                "flex h-11 items-center gap-2 px-4 text-sm font-medium transition-colors duration-150",
+                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors",
                 isActive
                   ? "border-b-2 border-accent text-fg"
-                  : "text-muted hover:text-fg hover:bg-bg-subtle/50",
+                  : "text-muted hover:text-fg",
               )}
             >
-              <Icon className={cn("size-4", isActive ? "text-accent" : "text-subtle")} />
-              {v.label}
+              <Icon className="size-3.5" />
+              <span>{v.label}</span>
               {v.id === "queue" && discovered.length > 0 && (
-                <span className="ml-1 rounded-full bg-bg-elevated px-2 py-0.5 font-mono text-[10px] text-muted border border-border">
+                <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
                   {discovered.length}
                 </span>
               )}
@@ -232,51 +303,87 @@ export function IngestPage() {
       {/* VIEW 1: AUTONOMOUS CRAWLER CONSOLE */}
       {activeView === "crawler" && (
         <div className="space-y-6">
-          {/* Active Job Alert Banner */}
+          {/* Active Job Alert / Live Status */}
           {activeJob && (
-            <div className="flex items-center justify-between rounded-xl border border-accent/40 bg-accent/5 p-4">
+            <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-accent/40 bg-accent/5 p-4 sm:flex-row sm:items-center">
               <div className="flex items-center gap-3">
                 <RefreshCw className="size-5 animate-spin text-accent" />
                 <div>
-                  <div className="text-sm font-medium">Autonomous Discovery In Progress</div>
-                  <div className="text-xs text-muted">
-                    Inspecting feeds, discovering permalinks, running heuristic qualification & attack-chain mapping...
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-fg">
+                      Autonomous Threat Harvest Active
+                    </span>
+                    <Badge tone="accent">{activeJob.triggerType}</Badge>
                   </div>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Inspecting sources, parsing RSS feeds, and qualifying threat reports...
+                  </p>
                 </div>
               </div>
-              <Badge tone="accent">Running</Badge>
+              <div className="flex items-center gap-3">
+                <div className="font-mono text-xs text-subtle">
+                  Started: {formatDateTime(activeJob.startedAt)}
+                </div>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => cancelCrawl.mutate(activeJob.id)}
+                  disabled={cancelCrawl.isPending}
+                >
+                  Stop Job
+                </Button>
+              </div>
             </div>
           )}
 
-          {/* Crawler Live Metrics Cards */}
-          <div className="grid gap-3 xs:grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-            <div className="rounded-xl border border-border bg-bg-elevated p-4">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-subtle">Engine Status</div>
-              <div className="mt-1 flex items-center gap-2">
-                <span className={cn("size-2 rounded-full", activeJob ? "bg-accent animate-pulse" : config?.enabled ? "bg-sage" : "bg-muted")} />
-                <span className="text-lg font-medium capitalize">
-                  {activeJob ? "Crawling" : config?.paused ? "Paused" : config?.enabled ? "Scheduled" : "Idle"}
-                </span>
+          {/* TARGETED THREAT ACTOR & CVE HUNTER BAR */}
+          <div className="rounded-xl border border-border bg-bg-elevated p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Crosshair className="size-4 text-accent" />
+                  <h2 className="text-base font-medium">Targeted Threat Actor & CVE Deep Hunter</h2>
+                </div>
+                <p className="mt-0.5 text-xs text-muted">
+                  Direct the autonomous engine to execute search vectors for a specific adversary, malware family, or CVE exploit.
+                </p>
               </div>
-              <div className="mt-1 text-[11px] text-muted">
-                Freq: {config ? `${config.frequencyMinutes / 60}h` : "6h"}
-              </div>
+              <Badge tone="sage" className="self-start sm:self-auto text-xs">
+                Auto-ATT&CK & PDF Ready
+              </Badge>
             </div>
 
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={targetedTopic}
+                onChange={(e) => setTargetedTopic(e.target.value)}
+                placeholder="e.g. Akira Ransomware, Volt Typhoon, CVE-2024-3400, AdaptixC2, Scattered Spider Okta..."
+                className="flex-1 text-xs"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && targetedTopic.trim()) {
+                    targetedCrawl.mutate(targetedTopic.trim());
+                  }
+                }}
+              />
+              <Button
+                onClick={() => targetedCrawl.mutate(targetedTopic.trim())}
+                disabled={targetedCrawl.isPending || !targetedTopic.trim() || !!activeJob}
+                className="gap-1.5 text-xs whitespace-nowrap"
+              >
+                <Zap className="size-3.5" />
+                <span>Deep Hunt & Ingest</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* High-Level Crawl Metrics */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div className="rounded-xl border border-border bg-bg-elevated p-4">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-subtle">Discovered</div>
-              <div className="mt-1 text-2xl font-medium">
+              <div className="font-mono text-[10px] uppercase tracking-wider text-subtle">Discovered URLs</div>
+              <div className="mt-1 text-2xl font-medium text-fg">
                 {jobs.reduce((acc, j) => acc + j.discoveredCount, 0)}
               </div>
-              <div className="mt-1 text-[11px] text-muted">Total candidates found</div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-bg-elevated p-4">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-subtle">Qualified</div>
-              <div className="mt-1 text-2xl font-medium text-sage">
-                {jobs.reduce((acc, j) => acc + j.qualifiedCount, 0)}
-              </div>
-              <div className="mt-1 text-[11px] text-muted">Passed threat gate</div>
+              <div className="mt-1 text-[11px] text-muted">From feeds & sources</div>
             </div>
 
             <div className="rounded-xl border border-border bg-bg-elevated p-4">
@@ -284,7 +391,7 @@ export function IngestPage() {
               <div className="mt-1 text-2xl font-medium text-fg">
                 {jobs.reduce((acc, j) => acc + j.ingestedCount, 0)}
               </div>
-              <div className="mt-1 text-[11px] text-muted">In knowledge base</div>
+              <div className="mt-1 text-[11px] text-muted">With PDF representation</div>
             </div>
 
             <div className="rounded-xl border border-border bg-bg-elevated p-4">
@@ -309,7 +416,7 @@ export function IngestPage() {
             <div className="rounded-xl border border-border bg-bg-elevated p-5 lg:col-span-2">
               <h2 className="text-base font-medium">Autonomous Intelligence Pipeline</h2>
               <p className="mt-1 text-xs text-muted">
-                How the autonomous crawler searches, qualifies individual permalinks, and converts raw intelligence into attack chains.
+                How the autonomous crawler searches, qualifies individual permalinks, reconstructs attack chains, and formats exact PDFs.
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-5">
@@ -317,7 +424,7 @@ export function IngestPage() {
                   <div className="font-mono text-[10px] text-subtle">01 · SOURCE DISCOVERY</div>
                   <div className="mt-1 text-sm font-medium">Feed & Search Crawl</div>
                   <p className="mt-1 text-xs text-muted">
-                    Scans DFIR, Mandiant, SentinelLABS, CISA, Unit 42 & query vectors.
+                    Continuous RSS/Atom feeds, search queries, and source seeds.
                   </p>
                 </div>
 
@@ -338,10 +445,10 @@ export function IngestPage() {
                 </div>
 
                 <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">04 · ACQUISITION</div>
-                  <div className="mt-1 text-sm font-medium">Hash & Ingest</div>
+                  <div className="font-mono text-[10px] text-subtle">04 · PDF EXTRACTION</div>
+                  <div className="mt-1 text-sm font-medium">Pristine Document</div>
                   <p className="mt-1 text-xs text-muted">
-                    Stores SHA-256 evidence, raw text, and extracts regex IOCs.
+                    Extracts exact article layout, tables, code blocks, and print CSS.
                   </p>
                 </div>
 
@@ -400,10 +507,8 @@ export function IngestPage() {
                     </dd>
                   </div>
                   <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Auto-ATT&CK Analysis</dt>
-                    <dd className={config?.autoAnalyze ? "text-sage" : "text-muted"}>
-                      {config?.autoAnalyze ? "ON" : "OFF"}
-                    </dd>
+                    <dt className="text-subtle">PDF & HTML Extraction</dt>
+                    <dd className="text-sage">ALWAYS ON</dd>
                   </div>
                   <div className="flex justify-between border-b border-border pb-2">
                     <dt className="text-subtle">Last Run</dt>
@@ -449,35 +554,33 @@ export function IngestPage() {
                 onClick={() => setActiveView("audit")}
                 className="text-xs"
               >
-                View Detailed Item Audit
+                Full Audit Log
               </Button>
             </div>
 
             {jobs.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted">No crawl jobs executed yet. Click &quot;Run Discovery Now&quot; above.</p>
+              <p className="py-6 text-center text-sm text-muted">No crawl jobs executed yet.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[650px] text-left text-xs">
+                <table className="w-full min-w-[700px] text-left text-xs">
                   <thead className="border-b border-border font-mono text-[10px] uppercase text-subtle">
                     <tr>
-                      <th className="pb-2">Job ID</th>
-                      <th className="pb-2">Trigger</th>
-                      <th className="pb-2">Status</th>
-                      <th className="pb-2">Discovered</th>
-                      <th className="pb-2">Qualified</th>
-                      <th className="pb-2">Ingested</th>
-                      <th className="pb-2">Duplicates</th>
-                      <th className="pb-2">Rejected</th>
-                      <th className="pb-2">Completed At</th>
+                      <th className="py-2">Job ID</th>
+                      <th className="py-2">Trigger</th>
+                      <th className="py-2">Status</th>
+                      <th className="py-2">Discovered</th>
+                      <th className="py-2">Qualified</th>
+                      <th className="py-2">Ingested</th>
+                      <th className="py-2">Duplicates</th>
+                      <th className="py-2">Rejected</th>
+                      <th className="py-2">Completed</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {jobs.map((j) => (
-                      <tr key={j.id} className="hover:bg-bg-subtle">
-                        <td className="py-2.5 font-mono text-muted">{j.id}</td>
-                        <td className="py-2.5">
-                          <Badge tone="neutral">{j.triggerType}</Badge>
-                        </td>
+                      <tr key={j.id} className="hover:bg-bg-subtle/40">
+                        <td className="py-2.5 font-mono text-fg">{j.id.slice(0, 12)}</td>
+                        <td className="py-2.5 font-mono text-subtle">{j.triggerType}</td>
                         <td className="py-2.5">
                           <Badge
                             tone={
@@ -485,9 +588,7 @@ export function IngestPage() {
                                 ? "sage"
                                 : j.status === "running"
                                   ? "accent"
-                                  : j.status === "failed"
-                                    ? "danger"
-                                    : "warn"
+                                  : "danger"
                             }
                           >
                             {j.status}
@@ -619,7 +720,9 @@ export function IngestPage() {
                           params={{ reportId: item.reportId }}
                           className="inline-flex h-8 items-center gap-1 rounded-md bg-bg-subtle px-2.5 text-xs text-muted hover:text-fg"
                         >
-                          View Report <ArrowRight className="size-3" />
+                          <FileText className="size-3" />
+                          <span>View & PDF</span>
+                          <ArrowRight className="size-3" />
                         </Link>
                       ) : (
                         <Button
@@ -627,9 +730,10 @@ export function IngestPage() {
                           variant="secondary"
                           onClick={() => ingestQueueItem.mutate(item.id)}
                           disabled={ingestQueueItem.isPending}
-                          className="h-8 text-xs"
+                          className="h-8 text-xs gap-1"
                         >
-                          Ingest Now
+                          <Zap className="size-3" />
+                          <span>Ingest & PDF</span>
                         </Button>
                       )}
                     </div>
@@ -641,101 +745,141 @@ export function IngestPage() {
         </div>
       )}
 
-      {/* VIEW 3: MANUAL INGEST (PRESERVED & ENHANCED) */}
+      {/* VIEW 3: MANUAL INGEST */}
       {activeView === "manual" && (
         <div className="space-y-6">
           <div className="max-w-2xl">
             <h2 className="text-lg font-medium">Manual Report Acquisition</h2>
             <p className="mt-1 text-sm text-muted">
               Manually supply a threat intelligence report URL or paste the raw HTML/text payload.
-              The pipeline hashes original bytes, cleans content, scores quality, extracts regex IOCs, and reconstructs attack chains.
+              The engine automatically extracts IOCs, reconstructs attack chains, and formats the document into a high-fidelity PDF.
             </p>
           </div>
 
-          <form
-            className="max-w-2xl space-y-4 rounded-xl border border-border bg-bg-elevated p-5"
-            onSubmit={(e) => {
-              e.preventDefault();
-              manualIngest.mutate({ url, pasted: pasted.trim() ? pasted : undefined });
-            }}
-          >
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-subtle">Report URL</label>
-              <Input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://thedfirreport.com/2026/04/22/bissa-scanner-exposed…"
-                type="url"
-                required
-                className="mt-1.5"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-subtle">
-                Optional Paste Payload (HTML or Clean Text)
-              </label>
-              <p className="mt-0.5 text-[11px] text-muted">
-                Useful when cloud firewalls or paywalls block live automated web requests.
+          <div className="grid gap-6 lg:grid-cols-2">
+            {/* Direct URL Fetch */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!url.trim()) return;
+                manualIngest.mutate({ url: url.trim() });
+              }}
+              className="rounded-xl border border-border bg-bg-elevated p-5"
+            >
+              <h3 className="text-base font-medium">Fetch Live URL</h3>
+              <p className="mt-1 text-xs text-muted">
+                Fetches raw article HTML, strips nav/ads, normalizes text, generates PDF, and hashes evidence.
               </p>
-              <Textarea
-                value={pasted}
-                onChange={(e) => setPasted(e.target.value)}
-                placeholder="Paste threat analysis report text here when direct fetching is restricted…"
-                className="mt-1.5 min-h-[140px]"
-              />
-            </div>
 
-            <Button type="submit" disabled={manualIngest.isPending} className="mt-2 w-full sm:w-auto">
-              {manualIngest.isPending ? "Retrieving & Analyzing…" : "Retrieve, Hash and Ingest"}
-            </Button>
-          </form>
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://thedfirreport.com/2024/04/..."
+                  className="flex-1 font-mono text-xs"
+                />
+                <Button type="submit" disabled={manualIngest.isPending || !url.trim()} className="gap-2">
+                  <Play className="size-3.5" />
+                  <span>{manualIngest.isPending ? "Ingesting…" : "Acquire"}</span>
+                </Button>
+              </div>
+            </form>
+
+            {/* Direct Paste */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!pasted.trim()) return;
+                manualIngest.mutate({
+                  url: url.trim() || `https://manual-paste.internal/${crypto.randomUUID().slice(0, 8)}`,
+                  pasted: pasted.trim(),
+                });
+              }}
+              className="rounded-xl border border-border bg-bg-elevated p-5"
+            >
+              <h3 className="text-base font-medium">Paste HTML / Text Payload</h3>
+              <p className="mt-1 text-xs text-muted">
+                Bypasses Cloudflare anti-bot blocks if a live source is unreachable.
+              </p>
+
+              <div className="mt-4 space-y-3">
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="Optional Source URL (for provenance attribution)"
+                  className="font-mono text-xs"
+                />
+                <Textarea
+                  rows={6}
+                  value={pasted}
+                  onChange={(e) => setPasted(e.target.value)}
+                  placeholder="Paste article HTML, incident writeup, or TTP report text…"
+                  className="font-mono text-xs"
+                />
+                <Button
+                  type="submit"
+                  disabled={manualIngest.isPending || !pasted.trim()}
+                  className="w-full gap-2"
+                >
+                  <Upload className="size-3.5" />
+                  <span>{manualIngest.isPending ? "Ingesting…" : "Ingest Pasted Content & Build PDF"}</span>
+                </Button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
-      {/* VIEW 4: CURATED DISCOVERY CATALOG (PRESERVED) */}
+      {/* VIEW 4: CURATED CATALOG */}
       {activeView === "catalog" && (
         <div className="space-y-4">
           <div>
-            <h2 className="text-lg font-medium">Curated Golden-Set Catalog</h2>
-            <p className="text-sm text-muted">
-              Pre-validated high-value adversary reports representing key intrusion archetypes. One-click ingest routes through the live acquisition pipeline.
+            <h2 className="text-lg font-medium">Curated Golden CTI Reports Catalog</h2>
+            <p className="text-xs text-muted">
+              Pre-validated high-signal intrusion reports from DFIR, Mandiant, Unit 42, and CISA.
             </p>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             {catalog.data?.map((c) => (
-              <article key={c.id} className="flex flex-col rounded-xl border border-border bg-bg-elevated p-5">
-                <div className="flex flex-wrap gap-2">
-                  <Badge>{c.sourceName}</Badge>
-                  <Badge tone="neutral">{c.published}</Badge>
-                  {c.alreadyIngested ? <Badge tone="sage">In Knowledge Base</Badge> : null}
-                </div>
-                <h3 className="mt-3 text-sm font-medium leading-snug">{c.title}</h3>
-                <p className="mt-2 flex-1 text-sm text-muted">{c.why}</p>
-                <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={c.alreadyIngested ? "secondary" : "primary"}
-                    disabled={manualIngest.isPending}
-                    onClick={() => {
-                      setUrl(c.url);
-                      manualIngest.mutate({ url: c.url });
-                    }}
-                  >
-                    {c.alreadyIngested ? "Re-ingest" : "Ingest Report"}
-                  </Button>
+              <div
+                key={c.url}
+                className="flex flex-col justify-between rounded-xl border border-border bg-bg-elevated p-5"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge tone="neutral">{c.sourceName}</Badge>
+                    {c.alreadyIngested ? (
+                      <Badge tone="sage">Ingested & PDF Ready</Badge>
+                    ) : (
+                      <Badge tone="accent">Ready to Acquire</Badge>
+                    )}
+                  </div>
+                  <h3 className="mt-3 text-base font-medium">{c.title}</h3>
+                  <p className="mt-2 text-xs text-muted leading-relaxed">{c.notes}</p>
                   <a
                     href={c.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex h-9 items-center gap-1 rounded-md px-3 text-sm text-muted hover:text-fg"
+                    className="mt-3 flex items-center gap-1 font-mono text-[11px] text-subtle hover:text-fg"
                   >
-                    Open Source <ExternalLink className="size-3" />
+                    <span className="truncate">{c.url}</span>
+                    <ExternalLink className="size-3 shrink-0" />
                   </a>
                 </div>
-              </article>
+
+                <div className="mt-4 border-t border-border pt-3">
+                  <Button
+                    size="sm"
+                    variant={c.alreadyIngested ? "secondary" : "default"}
+                    disabled={manualIngest.isPending || c.alreadyIngested}
+                    onClick={() => manualIngest.mutate({ url: c.url })}
+                    className="w-full text-xs"
+                  >
+                    {c.alreadyIngested ? "Stored in Knowledge Base" : "One-Click Ingest & PDF"}
+                  </Button>
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -745,44 +889,42 @@ export function IngestPage() {
       {activeView === "audit" && (
         <div className="space-y-4">
           <div>
-            <h2 className="text-lg font-medium">Crawler Item Decision Audit</h2>
+            <h2 className="text-lg font-medium">Crawl Item Audit Log</h2>
             <p className="text-xs text-muted">
-              Per-URL qualification logs showing why candidate resources were accepted or rejected by the crawler.
+              Detailed breakdown of decisions (INGESTED, REJECTED, DUPLICATE, FAILED) made by the engine.
             </p>
           </div>
 
-          {auditItems.length === 0 ? (
+          {items.length === 0 ? (
             <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
-              No crawl decision records available yet. Run a discovery scan to see audit items.
+              No audit items recorded yet. Run a discovery scan to populate logs.
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-border bg-bg-elevated">
-              <table className="w-full min-w-[700px] text-left text-xs">
+              <table className="w-full min-w-[800px] text-left text-xs">
                 <thead className="border-b border-border bg-bg-subtle font-mono text-[10px] uppercase text-subtle">
                   <tr>
                     <th className="p-3">Decision</th>
                     <th className="p-3">Classification</th>
-                    <th className="p-3">Candidate Resource</th>
+                    <th className="p-3">Title / URL</th>
                     <th className="p-3">Publisher</th>
-                    <th className="p-3">Reason / Qualification Rationale</th>
-                    <th className="p-3">Time</th>
+                    <th className="p-3">Reason / Details</th>
+                    <th className="p-3">Timestamp</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {auditItems.map((itm) => (
-                    <tr key={itm.id} className="hover:bg-bg-subtle/50">
+                  {items.map((itm) => (
+                    <tr key={itm.id} className="hover:bg-bg-subtle/30">
                       <td className="p-3">
                         <Badge
                           tone={
                             itm.decision === "INGESTED"
                               ? "sage"
-                              : itm.decision === "QUALIFIED"
-                                ? "sage"
-                                : itm.decision === "DUPLICATE"
-                                  ? "warn"
-                                  : itm.decision === "REJECTED"
-                                    ? "danger"
-                                    : "neutral"
+                              : itm.decision === "DUPLICATE"
+                                ? "warn"
+                                : itm.decision === "REJECTED"
+                                  ? "neutral"
+                                  : "danger"
                           }
                         >
                           {itm.decision}
@@ -813,121 +955,73 @@ export function IngestPage() {
       {activeView === "settings" && config && (
         <div className="max-w-2xl space-y-6">
           <div>
-            <h2 className="text-lg font-medium">Crawler Configuration & Scheduler</h2>
+            <h2 className="text-lg font-medium">Crawler Configuration & Schedules</h2>
             <p className="text-xs text-muted">
-              Configure automatic discovery frequency, crawl depth, keyword filters, and ingestion gates.
+              Configure crawl depth, frequency, automatic qualification thresholds, and targeted keywords.
             </p>
           </div>
 
           <div className="space-y-4 rounded-xl border border-border bg-bg-elevated p-5">
-            {/* Auto Schedule Toggle */}
-            <div className="flex items-center justify-between border-b border-border pb-4">
+            <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium">Automated Crawling</div>
-                <div className="text-xs text-muted">Run autonomous discovery on a continuous recurring timer.</div>
+                <label className="text-sm font-medium">Automatic Ingestion</label>
+                <p className="text-xs text-muted">Automatically acquire qualified permalinks and build PDF documents.</p>
               </div>
-              <Button
-                variant={config.enabled ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => saveConfig.mutate({ enabled: !config.enabled })}
-              >
-                {config.enabled ? "Enabled" : "Disabled"}
-              </Button>
-            </div>
-
-            {/* Frequency Selection */}
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-subtle">Run Frequency</label>
-              <select
-                value={config.frequencyMinutes}
-                onChange={(e) => saveConfig.mutate({ frequencyMinutes: Number(e.target.value) })}
-                className="mt-1.5 w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm text-fg"
-              >
-                <option value={15}>Every 15 Minutes</option>
-                <option value={30}>Every 30 Minutes</option>
-                <option value={60}>Every 1 Hour</option>
-                <option value={360}>Every 6 Hours (Recommended)</option>
-                <option value={720}>Every 12 Hours</option>
-                <option value={1440}>Every 24 Hours (Daily)</option>
-              </select>
-            </div>
-
-            {/* Crawl Depth Selection */}
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-subtle">Maximum Crawl Depth</label>
-              <select
-                value={config.maxDepth}
-                onChange={(e) => saveConfig.mutate({ maxDepth: Number(e.target.value) })}
-                className="mt-1.5 w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm text-fg"
-              >
-                <option value={1}>Depth 1 · Direct Article Permalinks</option>
-                <option value={2}>Depth 2 · Recursive Referenced Reports (Recommended)</option>
-                <option value={3}>Depth 3 · New Discovered Threat Publishers</option>
-              </select>
-            </div>
-
-            {/* Max Resources Per Run */}
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-subtle">
-                Maximum Candidates Per Run
-              </label>
-              <Input
-                type="number"
-                value={config.maxResourcesPerRun}
-                onChange={(e) => saveConfig.mutate({ maxResourcesPerRun: Number(e.target.value) })}
-                min={5}
-                max={100}
-                className="mt-1.5"
+              <input
+                type="checkbox"
+                checked={config.autoIngest}
+                onChange={(e) => saveConfig.mutate({ autoIngest: e.target.checked })}
+                className="size-4 accent-accent"
               />
             </div>
 
-            {/* Ingestion & Analysis Toggles */}
-            <div className="space-y-3 border-t border-border pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium">Automatic Ingestion to Knowledge Base</div>
-                  <div className="text-xs text-muted">
-                    Automatically ingest qualified reports without waiting in queue.
-                  </div>
-                </div>
-                <Button
-                  variant={config.autoIngest ? "primary" : "secondary"}
-                  size="sm"
-                  onClick={() => saveConfig.mutate({ autoIngest: !config.autoIngest })}
-                >
-                  {config.autoIngest ? "ON" : "OFF"}
-                </Button>
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <label className="text-sm font-medium">Auto-ATT&CK & Attack Chain Analysis</label>
+                <p className="text-xs text-muted">Reconstruct TTP progression & adversary emulation commands.</p>
               </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium">Automatic ATT&CK & Attack-Chain Reconstruction</div>
-                  <div className="text-xs text-muted">
-                    Extract multi-stage kill chains and adversary emulation profiles upon ingest.
-                  </div>
-                </div>
-                <Button
-                  variant={config.autoAnalyze ? "primary" : "secondary"}
-                  size="sm"
-                  onClick={() => saveConfig.mutate({ autoAnalyze: !config.autoAnalyze })}
-                >
-                  {config.autoAnalyze ? "ON" : "OFF"}
-                </Button>
-              </div>
+              <input
+                type="checkbox"
+                checked={config.autoAnalyze}
+                onChange={(e) => saveConfig.mutate({ autoAnalyze: e.target.checked })}
+                className="size-4 accent-accent"
+              />
             </div>
 
-            {/* Discovery Keywords */}
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <label className="text-sm font-medium">Search-Driven Discovery Vectors</label>
+                <p className="text-xs text-muted">Execute dynamic search queries against CTI databases.</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.searchDiscovery}
+                onChange={(e) => saveConfig.mutate({ searchDiscovery: e.target.checked })}
+                className="size-4 accent-accent"
+              />
+            </div>
+
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <label className="text-sm font-medium">Recursive Outlink Discovery (Depth 2)</label>
+                <p className="text-xs text-muted">Spider external references linked within ingested reports.</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.recursiveDiscovery}
+                onChange={(e) => saveConfig.mutate({ recursiveDiscovery: e.target.checked })}
+                className="size-4 accent-accent"
+              />
+            </div>
+
             <div className="border-t border-border pt-4">
-              <label className="block text-xs uppercase tracking-wider text-subtle">
-                Search-Driven Discovery Keywords
-              </label>
-              <p className="mt-0.5 text-[11px] text-muted">
-                Comma-separated queries used for continuous search and topic discovery.
-              </p>
+              <label className="text-sm font-medium">Discovery Keywords & Attack Vector Patterns</label>
+              <p className="text-xs text-muted">Comma-separated terms used to seed discovery search vectors.</p>
               <Textarea
-                value={config.keywords}
-                onChange={(e) => saveConfig.mutate({ keywords: e.target.value })}
-                className="mt-1.5 text-xs"
+                rows={3}
+                defaultValue={config.keywords}
+                onBlur={(e) => saveConfig.mutate({ keywords: e.target.value })}
+                className="mt-2 text-xs font-mono"
               />
             </div>
           </div>

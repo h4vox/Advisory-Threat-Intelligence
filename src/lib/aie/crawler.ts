@@ -13,6 +13,8 @@ import {
   sha256Hex,
   toIsoString,
 } from "./extract";
+import { parseRssOrAtomXml } from "./feeds";
+import { buildPristineDocumentHtml } from "./pdf";
 import { qualifyContent } from "./qualification";
 import type {
   CrawlConfig,
@@ -23,6 +25,13 @@ import type {
   SourceRecord,
 } from "./types";
 import { getSql } from "@/lib/db";
+import { isMongoConfigured } from "../mongodb/client.server";
+import {
+  mongoFindReportByCanonical,
+  mongoInsertReport,
+  mongoUpsertDiscoveredResource,
+  mongoUpdateSourceLastIngest,
+} from "../mongodb/repository.server";
 
 function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -110,6 +119,7 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
 export async function executeCrawlJob(
   jobId: string,
   triggerType: CrawlTrigger = "MANUAL",
+  targetedQuery?: string,
 ): Promise<CrawlJob> {
   const sql = await getSql();
   const config = await getOrCreateCrawlConfig();
@@ -138,9 +148,10 @@ export async function executeCrawlJob(
       name: string;
       slug: string;
       homepage_url: string;
+      feed_url?: string;
       enabled: boolean;
       trust_level: string;
-    }>`select id, name, slug, homepage_url, enabled, trust_level from sources where enabled = true`;
+    }>`select id, name, slug, homepage_url, coalesce(feed_url, '') as feed_url, enabled, trust_level from sources where enabled = true`;
 
     await sql`update crawl_jobs set source_count = ${sources.length} where id = ${jobId}`;
 
@@ -151,12 +162,54 @@ export async function executeCrawlJob(
       sourceId: string;
       sourceSlug: string;
       publisher: string;
-      discoveryMethod: "crawl_source" | "search_discovery" | "rss_feed";
+      discoveryMethod: "crawl_source" | "search_discovery" | "rss_feed" | "recursive_link";
       discoveryQuery?: string;
       depth: number;
+      preloadedText?: string;
     }[] = [];
 
-    // Phase A: Fetch live sources and extract links
+    // Phase A: Continuous RSS & Atom Feeds Crawling
+    for (const source of sources) {
+      if (jobControl.cancel) break;
+
+      const feedTarget = source.feed_url || `${source.homepage_url.replace(/\/+$/, "")}/feed/`;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        const feedRes = await fetch(feedTarget, {
+          signal: controller.signal,
+          headers: {
+            "user-agent": "AIE-Autonomous-Threat-Crawler/1.0 (+https://aie-intel.internal; cti-feed-reader)",
+            accept: "application/rss+xml, application/atom+xml, text/xml, */*",
+          },
+        }).catch(() => null);
+
+        clearTimeout(timeout);
+
+        if (feedRes && feedRes.ok) {
+          const xml = await feedRes.text();
+          const feedItems = parseRssOrAtomXml(xml);
+
+          for (const item of feedItems) {
+            candidates.push({
+              url: item.url,
+              title: item.title,
+              sourceId: source.id,
+              sourceSlug: source.slug,
+              publisher: source.name,
+              discoveryMethod: "rss_feed",
+              depth: 1,
+              preloadedText: item.rawContent || item.summary,
+            });
+          }
+        }
+      } catch (err) {
+        // Feed fetch fallback is silent, we continue to HTML crawl
+      }
+    }
+
+    // Phase B: HTML Source Homepage & Permalink Crawl
     for (const source of sources) {
       if (jobControl.cancel) break;
 
@@ -200,9 +253,10 @@ export async function executeCrawlJob(
       }
     }
 
-    // Phase B: Search-Driven Discovery & Knowledge Pool Discovery
-    if (config.searchDiscovery) {
-      const queries = generateSearchQueries(config.keywords);
+    // Phase C: Search-Driven Discovery & Knowledge Pool Discovery
+    if (config.searchDiscovery || targetedQuery) {
+      const activeKeywords = targetedQuery || config.keywords;
+      const queries = generateSearchQueries(activeKeywords);
 
       for (const item of DISCOVERY_KNOWLEDGE_POOL) {
         const matchingSource = sources.find((s) => s.slug === item.sourceSlug) || sources[0];
@@ -213,8 +267,9 @@ export async function executeCrawlJob(
           sourceSlug: item.sourceSlug,
           publisher: item.publisher,
           discoveryMethod: "search_discovery",
-          discoveryQuery: queries[Math.floor(Math.random() * queries.length)],
+          discoveryQuery: targetedQuery || queries[Math.floor(Math.random() * queries.length)],
           depth: 1,
+          preloadedText: item.sampleText,
         });
       }
     }
@@ -273,17 +328,19 @@ export async function executeCrawlJob(
       }
 
       // 2. Fetch or lookup sample content
-      let textContent = "";
+      let textContent = candidate.preloadedText || "";
       let docTitle = candidate.title;
       let contentType = "text/html";
-      let rawBytes: Uint8Array | string = "";
+      let rawBytes: Uint8Array | string = candidate.preloadedText || "";
+      let fetchedHtmlBody = "";
 
       const poolItem = DISCOVERY_KNOWLEDGE_POOL.find((p) => p.url === candidate.url);
       if (poolItem) {
         textContent = poolItem.sampleText;
         docTitle = poolItem.title;
         rawBytes = poolItem.sampleText;
-      } else {
+        fetchedHtmlBody = poolItem.sampleText;
+      } else if (!textContent) {
         try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 8000);
@@ -308,6 +365,7 @@ export async function executeCrawlJob(
             textContent = `PDF Document: ${candidate.title}. Raw cryptographic evidence preserved.`;
           } else {
             const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+            fetchedHtmlBody = body;
             const extracted = htmlToText(body);
             textContent = extracted.text;
             if (extracted.title && extracted.title !== "Untitled report") {
@@ -369,7 +427,37 @@ export async function executeCrawlJob(
 
       qualifiedCount++;
 
-      // 4. Ingest and Persist to Knowledge Base (Reusing Existing Ingestion Pipeline)
+      // Phase D: Recursive Outlink Exploration (Depth 2-3)
+      if (config.recursiveDiscovery && candidate.depth < config.maxDepth && fetchedHtmlBody) {
+        try {
+          const referencedLinks = extractLinksFromHtml(fetchedHtmlBody, canonical, {
+            depth: candidate.depth + 1,
+            discoveryMethod: "recursive_link",
+            publisher: "Cross-Referenced Source",
+          });
+
+          for (const ref of referencedLinks.slice(0, 5)) {
+            const refCanonical = canonicalizeUrl(ref.url);
+            if (!storedUrls.has(refCanonical)) {
+              await sql`
+                insert into discovered_resources (
+                  id, canonical_url, url, source_id, title, publisher, classification,
+                  discovery_method, parent_source, source_domain, content_type, status
+                ) values (
+                  ${newId("dsc")}, ${refCanonical}, ${ref.url}, ${candidate.sourceId}, ${ref.title},
+                  ${new URL(refCanonical).hostname}, 'THREAT_REPORT', 'recursive_link',
+                  ${candidate.title}, ${new URL(refCanonical).hostname}, 'text/html', 'discovered'
+                )
+                on conflict (canonical_url) do nothing
+              `;
+            }
+          }
+        } catch {
+          /* ignore recursive extraction failures */
+        }
+      }
+
+      // 4. Ingest and Persist to Knowledge Base with Pristine PDF & HTML Preservation
       if (config.autoIngest) {
         const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
         const iocs = harvestIocs(textContent);
@@ -378,11 +466,31 @@ export async function executeCrawlJob(
         const reportId = newId("rpt");
 
         // Structured TTP Analysis & Attack Chain Reconstruction
+        let intelAnalysis = null;
         let analysisJson = "{}";
         if (config.autoAnalyze) {
-          const intel = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
-          analysisJson = JSON.stringify(intel);
+          intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
+          analysisJson = JSON.stringify(intelAnalysis);
         }
+
+        // Build pristine standalone HTML with print/PDF styling matching exact document look
+        const pristineHtml = buildPristineDocumentHtml(fetchedHtmlBody || textContent, {
+          id: reportId,
+          title: docTitle,
+          url: candidate.url,
+          canonicalUrl: canonical,
+          publisher: candidate.publisher,
+          author: candidate.publisher,
+          publishedAt: new Date().toISOString().slice(0, 10),
+          ingestedAt: new Date().toISOString(),
+          classification: qual.classification,
+          rawHash,
+          textHash,
+          qualityScore: score,
+          wordCount,
+          iocs,
+          analysis: intelAnalysis,
+        });
 
         await sql`
           insert into reports (
@@ -390,7 +498,7 @@ export async function executeCrawlJob(
             status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
             extracted_text, iocs_json, ingest_origin, publisher, author,
             classification, discovery_method, discovery_query, parent_source,
-            source_domain, version, analysis_json
+            source_domain, version, analysis_json, raw_html
           ) values (
             ${reportId}, ${candidate.sourceId}, ${docTitle}, ${candidate.url}, ${canonical},
             ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
@@ -398,9 +506,65 @@ export async function executeCrawlJob(
             ${textContent}, ${JSON.stringify(iocs)}, 'crawl', ${candidate.publisher},
             ${candidate.publisher}, ${qual.classification}, ${candidate.discoveryMethod},
             ${candidate.discoveryQuery ?? ''}, ${candidate.publisher}, ${domain}, 1,
-            ${analysisJson}
+            ${analysisJson}, ${pristineHtml}
           )
         `;
+
+        if (isMongoConfigured()) {
+          try {
+            await mongoInsertReport({
+              id: reportId,
+              sourceId: candidate.sourceId,
+              sourceName: candidate.publisher,
+              title: docTitle,
+              url: candidate.url,
+              canonicalUrl: canonical,
+              publishedAt: new Date().toISOString().slice(0, 10),
+              contentType,
+              status: "acquired",
+              rawHash,
+              textHash,
+              qualityScore: score,
+              qualityReasons: reasons,
+              wordCount,
+              extractedText: textContent,
+              iocs,
+              ingestOrigin: "crawl",
+              ingestedAt: new Date().toISOString(),
+              publisher: candidate.publisher,
+              author: candidate.publisher,
+              classification: qual.classification,
+              discoveryMethod: candidate.discoveryMethod,
+              discoveryQuery: candidate.discoveryQuery ?? "",
+              parentSource: candidate.publisher,
+              sourceDomain: domain,
+              version: 1,
+              rawHtml: pristineHtml,
+              pdfUrl: "",
+              analysis: intelAnalysis,
+            });
+            await mongoUpdateSourceLastIngest(candidate.sourceId);
+            await mongoUpsertDiscoveredResource({
+              id: newId("dsc"),
+              canonicalUrl: canonical,
+              url: candidate.url,
+              sourceId: candidate.sourceId,
+              title: docTitle,
+              publisher: candidate.publisher,
+              classification: qual.classification,
+              discoveryMethod: candidate.discoveryMethod,
+              discoveryQuery: candidate.discoveryQuery ?? "",
+              parentSource: candidate.publisher,
+              sourceDomain: domain,
+              contentType,
+              status: "ingested",
+              qualityScore: score,
+              reportId,
+            });
+          } catch (mErr) {
+            console.warn("[mongodb] crawler ingest:", mErr);
+          }
+        }
 
         await sql`update sources set last_ingest_at = now() where id = ${candidate.sourceId}`;
 
@@ -408,7 +572,7 @@ export async function executeCrawlJob(
           insert into ingest_events (id, report_id, url, outcome, detail)
           values (
             ${newId("evt")}, ${reportId}, ${canonical}, 'acquired',
-            ${`Autonomous crawl ingested [${qual.classification}] · score ${score} · ${iocs.length} IOCs`}
+            ${`Autonomous crawl ingested [${qual.classification}] · score ${score} · ${iocs.length} IOCs · PDF ready`}
           )
         `;
 
@@ -438,7 +602,7 @@ export async function executeCrawlJob(
             decision, reason, discovery_method, discovery_query, depth, publisher
           ) values (
             ${itemId}, ${jobId}, ${candidate.sourceId}, ${candidate.url}, ${canonical},
-            ${docTitle}, ${qual.classification}, 'INGESTED', ${`Qualified (${qual.score}) & Ingested to Knowledge Base`},
+            ${docTitle}, ${qual.classification}, 'INGESTED', ${`Qualified (${qual.score}) & Ingested with PDF rendering to Knowledge Base`},
             ${candidate.discoveryMethod}, ${candidate.discoveryQuery ?? ''}, ${candidate.depth}, ${candidate.publisher}
           )
         `;
@@ -546,7 +710,10 @@ export async function executeCrawlJob(
   };
 }
 
-export async function createAndRunCrawlJob(trigger: CrawlTrigger = "MANUAL"): Promise<CrawlJob> {
+export async function createAndRunCrawlJob(
+  trigger: CrawlTrigger = "MANUAL",
+  targetedQuery?: string,
+): Promise<CrawlJob> {
   const sql = await getSql();
   const id = newId("job");
   await sql`
@@ -555,7 +722,7 @@ export async function createAndRunCrawlJob(trigger: CrawlTrigger = "MANUAL"): Pr
   `;
 
   // Run execution
-  return executeCrawlJob(id, trigger);
+  return executeCrawlJob(id, trigger, targetedQuery);
 }
 
 export async function cancelJob(jobId: string): Promise<boolean> {

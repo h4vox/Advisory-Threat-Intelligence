@@ -60,6 +60,29 @@ export function readAppEnv(root) {
   }
 }
 
+export function readDotEnv(root) {
+  try {
+    const content = readFileSync(join(root, ".env"), "utf8");
+    const env = {};
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const idx = trimmed.indexOf("=");
+      if (idx > 0) {
+        const key = trimmed.slice(0, idx).trim();
+        let val = trimmed.slice(idx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        env[key] = val;
+      }
+    }
+    return env;
+  } catch {
+    return {};
+  }
+}
+
 /** File values under the process environment: an explicit override wins. */
 export function mergeAppEnv(appEnv, processEnv) {
   return { ...appEnv, ...processEnv };
@@ -110,7 +133,7 @@ function main(argv) {
     console.error("usage: node scripts/with-app-env.mjs <command> [args…]");
     process.exit(2);
   }
-  const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
+  const env = mergeAppEnv(readAppEnv(projectRoot()), { ...readDotEnv(projectRoot()), ...process.env });
   const child = spawn(command, args, {
     stdio: "inherit",
     env,

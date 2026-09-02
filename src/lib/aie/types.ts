@@ -75,6 +75,8 @@ export type ReportRecord = {
   classification: string;
   sourceDomain: string;
   version: number;
+  rawHtml?: string;
+  pdfUrl?: string;
   analysis: IntelAnalysis | null;
 };
 

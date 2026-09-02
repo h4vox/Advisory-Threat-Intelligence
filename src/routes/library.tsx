@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { ArrowUpRight, Filter, Search, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, FileText, Filter, Search, ShieldAlert } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { listReports } from "@/lib/aie/server";
-import { formatDateTime } from "@/lib/aie/extract";
+import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/library")({ component: LibraryPage });
@@ -89,7 +89,9 @@ function LibraryPage() {
                 <Badge tone="neutral">{r.sourceName}</Badge>
                 <Badge tone="accent">{r.classification}</Badge>
                 <Badge tone={r.status === "acquired" ? "sage" : "warn"}>{r.status}</Badge>
-                <Badge tone="neutral">{r.ingestOrigin}</Badge>
+                <Badge tone="sage" className="gap-1">
+                  <FileText className="size-2.5" /> PDF
+                </Badge>
               </div>
               <span className="font-mono text-[11px] text-subtle tabular-nums">
                 {Math.round(r.qualityScore * 100)}% quality · {r.wordCount} words · {r.iocCount} IOCs
@@ -106,7 +108,12 @@ function LibraryPage() {
 
             <div className="mt-3 flex items-center justify-between border-t border-border pt-2.5 font-mono text-[10px] text-subtle">
               <span>Domain: {r.sourceDomain || "Verified source"}</span>
-              <span>Ingested: {formatDateTime(r.ingestedAt)}</span>
+              <span className="flex items-center gap-3">
+                <span className="text-accent flex items-center gap-1">
+                  <FileText className="size-3" /> View & Download PDF
+                </span>
+                <span>Ingested: {formatDateTime(r.ingestedAt)}</span>
+              </span>
             </div>
           </Link>
         ))}

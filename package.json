@@ -24,6 +24,7 @@
     "@electric-sql/pglite": "^0.5.4",
     "@hookform/resolvers": "^5.7.0",
     "better-auth": "~1.6.30",
+    "mongodb": "^6.14.0",
     "jose": "6.2.9",
     "kysely": "^0.28.5",
     "pg": "^8.16.3",

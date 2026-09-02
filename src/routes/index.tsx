@@ -5,7 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getDashboard } from "@/lib/aie/server";
-import { formatDateTime } from "@/lib/aie/extract";
+import { formatDateTime } from "@/lib/aie/format";
 
 export const Route = createFileRoute("/")({ component: Home });
 
@@ -41,12 +41,12 @@ function Home() {
           { label: "Autonomous Discovery", desc: "Feeds & Targeted Search" },
           { label: "Resource Extraction", desc: "Permalinks Only" },
           { label: "Heuristic Gate", desc: "TTP Qualification" },
-          { label: "Acquire & Hash", desc: "SHA-256 Provenance" },
+          { label: "Acquire & PDF", desc: "SHA-256 & Exact PDF" },
           { label: "Attack Chain", desc: "ATT&CK & Emulation" },
         ].map((step, i) => (
           <li
             key={step.label}
-            className="rounded-lg border border-border bg-bg-elevated px-3.5 py-3"
+            className="rounded-lg border border-border bg-bg-elevated p-3"
           >
             <div className="font-mono text-[10px] text-subtle">{String(i + 1).padStart(2, "0")}</div>
             <div className="mt-1 text-sm font-medium">{step.label}</div>
@@ -88,6 +88,7 @@ function Home() {
                     <Badge tone="neutral">{r.sourceName}</Badge>
                     <Badge tone="accent">{r.classification}</Badge>
                     <Badge tone={r.status === "acquired" ? "sage" : "warn"}>{r.status}</Badge>
+                    <Badge tone="sage">PDF Ready</Badge>
                   </div>
                   <div className="mt-2 text-sm font-medium leading-snug">{r.title}</div>
                   <p className="mt-1 line-clamp-2 text-xs text-muted">{r.excerpt}</p>
