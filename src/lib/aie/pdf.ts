@@ -23,7 +23,9 @@ export function extractMainContentHtml(rawHtml: string, baseUrl?: string): strin
   if (!rawHtml || rawHtml.trim().length === 0) return "";
 
   // Check if input contains HTML markup (tags like <p>, <div>, <article>, <img>, <blockquote>, etc.)
-  const isHtml = /<[a-z][\s\S]*>/i.test(rawHtml) || /<(?:p|div|article|main|section|blockquote|img|table|h[1-6]|ul|ol|li|pre|code|a|strong|em)\b/i.test(rawHtml);
+  const isHtml =
+    /<[a-z][\s\S]*>/i.test(rawHtml) ||
+    /<(?:p|div|article|main|section|blockquote|img|table|h[1-6]|ul|ol|li|pre|code|a|strong|em)\b/i.test(rawHtml);
 
   if (!isHtml) {
     // Plain text: decode entities and wrap as styled paragraphs
@@ -44,41 +46,79 @@ export function extractMainContentHtml(rawHtml: string, baseUrl?: string): strin
     .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "")
     .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
     .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, "")
-    .replace(/<(?:nav|header|footer|aside|form)\b[^<]*(?:(?!<\/(?:nav|header|footer|aside|form)>)<[^<]*)*<\/(?:nav|header|footer|aside|form)>/gi, "");
-
-  // Match main content container if full page was provided
-  let mainBody = "";
-  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
-  if (articleMatch && articleMatch[1].length > 300) {
-    mainBody = articleMatch[1];
-  }
-
-  if (!mainBody) {
-    const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-    if (mainMatch && mainMatch[1].length > 300) {
-      mainBody = mainMatch[1];
-    }
-  }
-
-  if (!mainBody) {
-    const postMatch = cleaned.match(
-      /<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-content|gh-content|post-body|c-blog-post|single-content|rich-text|post-full-content)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    .replace(
+      /<(?:nav|header|footer|aside|form)\b[^<]*(?:(?!<\/(?:nav|header|footer|aside|form)>)<[^<]*)*<\/(?:nav|header|footer|aside|form)>/gi,
+      "",
     );
-    if (postMatch && postMatch[1].length > 300) {
-      mainBody = postMatch[1];
+
+  // Collect potential main content blocks across various CMS architectures
+  const candidates: { html: string; textLength: number }[] = [];
+
+  // 1. All <main> blocks
+  const mainMatches = cleaned.matchAll(/<main[^>]*>([\s\S]*?)<\/main>/gi);
+  for (const m of mainMatches) {
+    const textLen = m[1].replace(/<[^>]+>/g, " ").trim().length;
+    if (textLen > 250) {
+      candidates.push({ html: m[1], textLength: textLen });
     }
   }
 
-  if (!mainBody) {
+  // 2. All <article> blocks (find the largest one or combined)
+  const articleMatches = [...cleaned.matchAll(/<article[^>]*>([\s\S]*?)<\/article>/gi)];
+  if (articleMatches.length === 1) {
+    const textLen = articleMatches[0][1].replace(/<[^>]+>/g, " ").trim().length;
+    if (textLen > 250) candidates.push({ html: articleMatches[0][1], textLength: textLen });
+  } else if (articleMatches.length > 1) {
+    for (const m of articleMatches) {
+      const textLen = m[1].replace(/<[^>]+>/g, " ").trim().length;
+      if (textLen > 250) candidates.push({ html: m[1], textLength: textLen });
+    }
+    const combined = articleMatches.map((m) => m[1]).join("\n<hr class=\"my-4\" />\n");
+    const combinedLen = combined.replace(/<[^>]+>/g, " ").trim().length;
+    if (combinedLen > 400) {
+      candidates.push({ html: combined, textLength: combinedLen });
+    }
+  }
+
+  // 3. Class-based content containers
+  const postClassRegex =
+    /<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-content|article-body|c-blog-post|gh-content|single-content|rich-text|post-body|post-full-content)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
+  const classMatches = cleaned.matchAll(postClassRegex);
+  for (const m of classMatches) {
+    const textLen = m[1].replace(/<[^>]+>/g, " ").trim().length;
+    if (textLen > 250) {
+      candidates.push({ html: m[1], textLength: textLen });
+    }
+  }
+
+  // 4. Section-based content containers
+  const sectionClassRegex =
+    /<section[^>]*class=["'][^"']*(?:article-body|post-content|entry-content|content-area)[^"']*["'][^>]*>([\s\S]*?)<\/section>/gi;
+  const sectionMatches = cleaned.matchAll(sectionClassRegex);
+  for (const m of sectionMatches) {
+    const textLen = m[1].replace(/<[^>]+>/g, " ").trim().length;
+    if (textLen > 250) {
+      candidates.push({ html: m[1], textLength: textLen });
+    }
+  }
+
+  // Pick the candidate with the highest substantive text length
+  let mainBody = "";
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.textLength - a.textLength);
+    mainBody = candidates[0].html;
+  }
+
+  // Fallback: If best candidate has < 35% of cleaned body's text length, use cleaned body directly
+  const totalCleanedTextLen = cleaned.replace(/<[^>]+>/g, " ").trim().length;
+  const chosenTextLen = mainBody.replace(/<[^>]+>/g, " ").trim().length;
+
+  if (!mainBody || (totalCleanedTextLen > 600 && chosenTextLen < totalCleanedTextLen * 0.35)) {
     const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    if (bodyMatch && bodyMatch[1].length > 200) {
-      mainBody = bodyMatch[1];
-    } else {
-      mainBody = cleaned;
-    }
+    mainBody = bodyMatch && bodyMatch[1].length > 200 ? bodyMatch[1] : cleaned;
   }
 
-  // Decode stray entities in the HTML text (like &#x2019; -> ’)
+  // Decode entities
   mainBody = decodeEntities(mainBody);
 
   // Resolve relative images and links if baseUrl is provided
@@ -123,7 +163,36 @@ export function buildPristineDocumentHtml(
   rawContentOrHtml: string,
   meta: DocumentPrintMetadata,
 ): string {
-  const mainContent = extractMainContentHtml(rawContentOrHtml, meta.canonicalUrl);
+  let mainContent = extractMainContentHtml(rawContentOrHtml, meta.canonicalUrl);
+  const mainWords = mainContent.replace(/<[^>]+>/g, " ").trim().split(/\s+/).filter(Boolean).length;
+
+  // Truncation defense: if extracted content has < 25% of known word count, fallback to full body/text
+  if (meta.wordCount > 300 && mainWords < meta.wordCount * 0.25) {
+    const isHtml = /<[a-z][\s\S]*>/i.test(rawContentOrHtml);
+    if (isHtml) {
+      const cleaned = rawContentOrHtml
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+        .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "")
+        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
+        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, "")
+        .replace(
+          /<(?:nav|header|footer|aside|form)\b[^<]*(?:(?!<\/(?:nav|header|footer|aside|form)>)<[^<]*)*<\/(?:nav|header|footer|aside|form)>/gi,
+          "",
+        );
+      const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      mainContent = decodeEntities(bodyMatch && bodyMatch[1].length > 200 ? bodyMatch[1] : cleaned);
+    } else {
+      mainContent = `
+        <div class="content-body">
+          ${decodeEntities(rawContentOrHtml)
+            .split(/\n\n+/)
+            .map((p) => `<p>${escapeHtml(p.trim())}</p>`)
+            .join("\n")}
+        </div>
+      `;
+    }
+  }
 
   const iocRows = meta.iocs.slice(0, 30).map(
     (ioc) => `

@@ -264,6 +264,7 @@ export async function mongoListReports(params?: {
     filter.$and = andConditions;
   }
 
+  const startTime = Date.now();
   const cursor = col
     .find(filter)
     .sort({ ingestedAt: -1 })
@@ -284,7 +285,6 @@ export async function mongoListReports(params?: {
       iocs: 1,
       ingestOrigin: 1,
       ingestedAt: 1,
-      extractedText: 1,
       publisher: 1,
       author: 1,
       classification: 1,
@@ -295,16 +295,16 @@ export async function mongoListReports(params?: {
       parentSource: 1,
       sourceDomain: 1,
       version: 1,
-      rawHtml: 1,
-      pdfUrl: 1,
-      pdfBase64: 1,
       analysis: 1,
+      // Avoid transferring multi-megabyte HTML/PDF strings over network for list cards
+      excerpt: { $substrCP: [{ $ifNull: ["$extractedText", ""] }, 0, 320] },
     });
 
   const docs = await cursor.toArray();
+  console.log(`[mongo] listReports: fetched ${docs.length} reports in ${Date.now() - startTime}ms`);
 
   return docs.map((doc) => {
-    const text = doc.extractedText || "";
+    const text = (doc.excerpt as string) || (doc.extractedText as string) || "";
     const iocsList = (doc.iocs as IocHit[]) || [];
 
     let calculatedKind = (doc.resourceKind as ResourceKind) || null;

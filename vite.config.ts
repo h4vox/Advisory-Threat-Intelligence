@@ -150,11 +150,13 @@ export default defineConfig(({ command, isPreview }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    allowedHosts: ["aie.h4vox.site"],
   },
   preview: {
     host: "127.0.0.1",
     port: 8081,
     strictPort: true,
+    allowedHosts: ["aie.h4vox.site"],
   },
   resolve: { tsconfigPaths: true },
   plugins: [

@@ -170,13 +170,118 @@ function toListItem(r: ReportRow): ReportListItem {
   };
 }
 
+let hasSeeded = false;
+let seedPromise: Promise<void> | null = null;
+
 async function ensureSeeded() {
-  if (isMongoConfigured()) {
+  if (hasSeeded) return;
+  if (seedPromise) return seedPromise;
+
+  seedPromise = (async () => {
+    const t0 = Date.now();
+    console.log("[db] Initializing threat intelligence storage & indexes...");
+
+    if (isMongoConfigured()) {
+      try {
+        await ensureMongoIndexes();
+        await mongoSeedSources(SOURCE_SEED as SourceRecord[]);
+        const existingReports = await mongoListReports();
+        if (existingReports.length === 0) {
+          console.log("[db] Seeding initial gold-set threat reports into MongoDB Atlas...");
+          for (const r of SEED_REPORTS) {
+            const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
+            const qual = qualifyContent(r.text, r.title, r.url);
+            const iocs = harvestIocs(r.text);
+            const rawHash = sha256Hex(r.text);
+            const textHash = sha256Hex(r.text);
+            const canonical = canonicalizeUrl(r.url);
+            const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
+
+            const cleanHtml = buildPristineDocumentHtml(r.text, {
+              id: r.id,
+              title: r.title,
+              url: r.url,
+              canonicalUrl: canonical,
+              publisher: "The DFIR Report",
+              author: "The DFIR Report Research Team",
+              publishedAt: r.publishedAt,
+              ingestedAt: new Date().toISOString(),
+              classification: qual.classification,
+              rawHash,
+              textHash,
+              qualityScore: score,
+              wordCount,
+              iocs,
+              analysis: intel,
+            });
+
+            await mongoInsertReport({
+              id: r.id,
+              sourceId: r.sourceId,
+              sourceName: "The DFIR Report",
+              title: r.title,
+              url: r.url,
+              canonicalUrl: canonical,
+              publishedAt: r.publishedAt,
+              contentType: "text/plain",
+              status: "acquired",
+              rawHash,
+              textHash,
+              qualityScore: score,
+              qualityReasons: reasons,
+              wordCount,
+              extractedText: r.text,
+              iocs,
+              ingestOrigin: "seed",
+              ingestedAt: new Date().toISOString(),
+              publisher: "The DFIR Report",
+              author: "The DFIR Report Research Team",
+              classification: qual.classification,
+              discoveryMethod: "seed",
+              discoveryQuery: "",
+              parentSource: "thedfirreport.com",
+              sourceDomain: "thedfirreport.com",
+              version: 1,
+              rawHtml: cleanHtml,
+              pdfUrl: "",
+              analysis: intel,
+            });
+
+            await mongoInsertIngestEvent({
+              id: newId("evt"),
+              reportId: r.id,
+              url: r.url,
+              outcome: "seeded",
+              detail: "Gold-set seed stored in MongoDB Atlas",
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+        await mongoGetCrawlConfig();
+        hasSeeded = true;
+        console.log(`[db] MongoDB Atlas storage initialized in ${Date.now() - t0}ms`);
+        return;
+      } catch (mongoErr) {
+        console.warn("[mongodb] ensureSeeded fallback to local storage:", mongoErr);
+      }
+    }
+
+    // Local SQL fallback seeding
     try {
-      await ensureMongoIndexes();
-      await mongoSeedSources(SOURCE_SEED as SourceRecord[]);
-      const existingReports = await mongoListReports();
-      if (existingReports.length === 0) {
+      const sql = await getSql();
+      const existing = await sql<{ c: number }>`select count(*)::int as c from sources`;
+      if (Number(existing[0]?.c ?? 0) === 0) {
+        for (const s of SOURCE_SEED) {
+          await sql`
+            insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
+            values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
+            on conflict (id) do nothing
+          `;
+        }
+      }
+
+      const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
+      if (Number(rc[0]?.c ?? 0) === 0) {
         for (const r of SEED_REPORTS) {
           const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
           const qual = qualifyContent(r.text, r.title, r.url);
@@ -204,120 +309,37 @@ async function ensureSeeded() {
             analysis: intel,
           });
 
-          await mongoInsertReport({
-            id: r.id,
-            sourceId: r.sourceId,
-            sourceName: "The DFIR Report",
-            title: r.title,
-            url: r.url,
-            canonicalUrl: canonical,
-            publishedAt: r.publishedAt,
-            contentType: "text/plain",
-            status: "acquired",
-            rawHash,
-            textHash,
-            qualityScore: score,
-            qualityReasons: reasons,
-            wordCount,
-            extractedText: r.text,
-            iocs,
-            ingestOrigin: "seed",
-            ingestedAt: new Date().toISOString(),
-            publisher: "The DFIR Report",
-            author: "The DFIR Report Research Team",
-            classification: qual.classification,
-            discoveryMethod: "seed",
-            discoveryQuery: "",
-            parentSource: "thedfirreport.com",
-            sourceDomain: "thedfirreport.com",
-            version: 1,
-            rawHtml: cleanHtml,
-            pdfUrl: "",
-            analysis: intel,
-          });
-
-          await mongoInsertIngestEvent({
-            id: newId("evt"),
-            reportId: r.id,
-            url: r.url,
-            outcome: "seeded",
-            detail: "Gold-set seed stored in MongoDB Atlas",
-            createdAt: new Date().toISOString(),
-          });
+          await sql`
+            insert into reports (
+              id, source_id, title, url, canonical_url, published_at, content_type, status,
+              raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
+              iocs_json, ingest_origin, publisher, author, classification, discovery_method,
+              source_domain, version, analysis_json, raw_html
+            ) values (
+              ${r.id}, ${r.sourceId}, ${r.title}, ${r.url}, ${canonical}, ${r.publishedAt},
+              ${"text/plain"}, ${"acquired"}, ${rawHash}, ${rawHash}, ${score},
+              ${JSON.stringify(reasons)}, ${wordCount}, ${r.text}, ${JSON.stringify(iocs)}, ${"seed"},
+              ${"Seed Intelligence"}, ${"Curated CTI"}, ${qual.classification}, ${"seed"},
+              ${"thedfirreport.com"}, 1, ${JSON.stringify(intel)}, ${cleanHtml}
+            )
+            on conflict (id) do nothing
+          `;
+          await sql`
+            insert into ingest_events (id, report_id, url, outcome, detail)
+            values (${newId("evt")}, ${r.id}, ${r.url}, ${"seeded"}, ${"Gold-set seed for Phase 1 retrieval with pristine document"})
+          `;
         }
       }
-      await mongoGetCrawlConfig();
-    } catch (mongoErr) {
-      console.warn("[mongodb] ensureSeeded fallback to local storage:", mongoErr);
+
+      await getOrCreateCrawlConfig();
+      hasSeeded = true;
+      console.log(`[db] Local SQL storage initialized in ${Date.now() - t0}ms`);
+    } catch (sqlErr) {
+      console.warn("[db] SQL fallback seeding:", sqlErr);
     }
-  }
+  })();
 
-  // Local SQL fallback seeding
-  const sql = await getSql();
-  const existing = await sql<{ c: number }>`select count(*)::int as c from sources`;
-  if (Number(existing[0]?.c ?? 0) === 0) {
-    for (const s of SOURCE_SEED) {
-      await sql`
-        insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
-        values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
-        on conflict (id) do nothing
-      `;
-    }
-  }
-
-  const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
-  if (Number(rc[0]?.c ?? 0) === 0) {
-    for (const r of SEED_REPORTS) {
-      const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
-      const qual = qualifyContent(r.text, r.title, r.url);
-      const iocs = harvestIocs(r.text);
-      const rawHash = sha256Hex(r.text);
-      const textHash = sha256Hex(r.text);
-      const canonical = canonicalizeUrl(r.url);
-      const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
-
-      const cleanHtml = buildPristineDocumentHtml(r.text, {
-        id: r.id,
-        title: r.title,
-        url: r.url,
-        canonicalUrl: canonical,
-        publisher: "The DFIR Report",
-        author: "The DFIR Report Research Team",
-        publishedAt: r.publishedAt,
-        ingestedAt: new Date().toISOString(),
-        classification: qual.classification,
-        rawHash,
-        textHash,
-        qualityScore: score,
-        wordCount,
-        iocs,
-        analysis: intel,
-      });
-
-      await sql`
-        insert into reports (
-          id, source_id, title, url, canonical_url, published_at, content_type, status,
-          raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
-          iocs_json, ingest_origin, publisher, author, classification, discovery_method,
-          source_domain, version, analysis_json, raw_html
-        ) values (
-          ${r.id}, ${r.sourceId}, ${r.title}, ${r.url}, ${canonical}, ${r.publishedAt},
-          ${"text/plain"}, ${"acquired"}, ${rawHash}, ${rawHash}, ${score},
-          ${JSON.stringify(reasons)}, ${wordCount}, ${r.text}, ${JSON.stringify(iocs)}, ${"seed"},
-          ${"Seed Intelligence"}, ${"Curated CTI"}, ${qual.classification}, ${"seed"},
-          ${"thedfirreport.com"}, 1, ${JSON.stringify(intel)}, ${cleanHtml}
-        )
-        on conflict (id) do nothing
-      `;
-      await sql`
-        insert into ingest_events (id, report_id, url, outcome, detail)
-        values (${newId("evt")}, ${r.id}, ${r.url}, ${"seeded"}, ${"Gold-set seed for Phase 1 retrieval with pristine document"})
-      `;
-    }
-  }
-
-  // Ensure default crawl configuration exists
-  await getOrCreateCrawlConfig();
+  return seedPromise;
 }
 
 const REPORT_SELECT = `
@@ -504,30 +526,40 @@ export const getReport = createServerFn({ method: "GET" })
       try {
         const mongoReport = await mongoGetReportById(data.id);
         if (mongoReport) {
+          const htmlWordCount = (mongoReport.rawHtml || "")
+            .replace(/<[^>]+>/g, " ")
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean).length;
+
           const needsPristineRegen =
             !mongoReport.rawHtml ||
             mongoReport.rawHtml.length < 100 ||
             mongoReport.rawHtml.includes("&lt;img") ||
-            mongoReport.rawHtml.includes("&lt;p&gt;");
+            mongoReport.rawHtml.includes("&lt;p&gt;") ||
+            (mongoReport.wordCount > 300 && htmlWordCount < mongoReport.wordCount * 0.35);
 
           if (needsPristineRegen) {
-            mongoReport.rawHtml = buildPristineDocumentHtml(mongoReport.rawHtml || mongoReport.extractedText, {
-              id: mongoReport.id,
-              title: mongoReport.title,
-              url: mongoReport.url,
-              canonicalUrl: mongoReport.canonicalUrl,
-              publisher: mongoReport.publisher ?? mongoReport.sourceName,
-              author: mongoReport.author ?? mongoReport.sourceName,
-              publishedAt: mongoReport.publishedAt,
-              ingestedAt: mongoReport.ingestedAt,
-              classification: mongoReport.classification ?? "THREAT_REPORT",
-              rawHash: mongoReport.rawHash,
-              textHash: mongoReport.textHash,
-              qualityScore: Number(mongoReport.qualityScore),
-              wordCount: Number(mongoReport.wordCount),
-              iocs: mongoReport.iocs,
-              analysis: mongoReport.analysis,
-            });
+            mongoReport.rawHtml = buildPristineDocumentHtml(
+              mongoReport.extractedText || mongoReport.rawHtml,
+              {
+                id: mongoReport.id,
+                title: mongoReport.title,
+                url: mongoReport.url,
+                canonicalUrl: mongoReport.canonicalUrl,
+                publisher: mongoReport.publisher ?? mongoReport.sourceName,
+                author: mongoReport.author ?? mongoReport.sourceName,
+                publishedAt: mongoReport.publishedAt,
+                ingestedAt: mongoReport.ingestedAt,
+                classification: mongoReport.classification ?? "THREAT_REPORT",
+                rawHash: mongoReport.rawHash,
+                textHash: mongoReport.textHash,
+                qualityScore: Number(mongoReport.qualityScore),
+                wordCount: Number(mongoReport.wordCount),
+                iocs: mongoReport.iocs,
+                analysis: mongoReport.analysis,
+              },
+            );
           }
 
           if (/<[a-z][\s\S]*>/i.test(mongoReport.extractedText)) {
@@ -1233,14 +1265,21 @@ export const getReportPdf = createServerFn({ method: "GET" })
       const doc = await mongoGetReportById(data.id);
       if (doc) {
         let rawHtml = doc.rawHtml || "";
+        const htmlWordCount = rawHtml
+          .replace(/<[^>]+>/g, " ")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean).length;
+
         const needsPristineRegen =
           !rawHtml ||
           rawHtml.length < 100 ||
           rawHtml.includes("&lt;img") ||
-          rawHtml.includes("&lt;p&gt;");
+          rawHtml.includes("&lt;p&gt;") ||
+          (doc.wordCount > 300 && htmlWordCount < doc.wordCount * 0.35);
 
         if (needsPristineRegen) {
-          rawHtml = buildPristineDocumentHtml(doc.rawHtml || doc.extractedText, {
+          rawHtml = buildPristineDocumentHtml(doc.extractedText || doc.rawHtml, {
             id: doc.id,
             title: doc.title,
             url: doc.url,

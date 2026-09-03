@@ -28,8 +28,8 @@ export function parseRssOrAtomXml(xml: string): FeedArticle[] {
 
     if (!link || !link.startsWith("http")) continue;
 
-    // Check if link is an individual resource
-    if (!isCandidateResourceUrl(link).isResource) continue;
+    // Check if link is an individual resource (verified from feed)
+    if (!isCandidateResourceUrl(link, true).isResource) continue;
 
     const title =
       itemXml.match(/<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/title>/i)?.[1] ??
@@ -75,7 +75,7 @@ export function parseRssOrAtomXml(xml: string): FeedArticle[] {
         "";
 
       if (!link || !link.startsWith("http")) continue;
-      if (!isCandidateResourceUrl(link).isResource) continue;
+      if (!isCandidateResourceUrl(link, true).isResource) continue;
 
       const title =
         entryXml.match(/<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/title>/i)?.[1] ??

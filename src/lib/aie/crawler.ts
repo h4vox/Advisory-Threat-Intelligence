@@ -161,8 +161,10 @@ export async function executeCrawlJob(
   const jobControl = { cancel: false, pause: false };
   activeJobs.set(jobId, jobControl);
 
-  const maxTotalResources = config.maxResourcesPerJob || config.maxResourcesPerRun || 60;
-  const maxPerDomain = config.maxResourcesPerDomain || 8;
+  const maxTotalResources = targetedQuery
+    ? Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, 100)
+    : Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, 120);
+  const maxPerDomain = config.maxResourcesPerDomain || 12;
   const maxDepth = config.maxDepth || 3;
 
   const initialJob: CrawlJob = {
@@ -201,6 +203,8 @@ export async function executeCrawlJob(
     where id = ${jobId}
   `;
 
+  console.log(`[crawler] STARTING job ${jobId} (trigger=${triggerType}, query="${targetedQuery || ""}")`);
+
   let discoveredCount = 0;
   let evaluatedCount = 0;
   let qualifiedCount = 0;
@@ -224,30 +228,37 @@ export async function executeCrawlJob(
       }
     }
 
-    // 1. Get enabled sources
+    // 1. Get enabled sources and merge updated SOURCE_SEED definitions
+    const seedMap = new Map<string, SourceRecord>();
+    for (const s of SOURCE_SEED) {
+      seedMap.set(s.id, {
+        ...s,
+        feedUrl: s.feedUrl || `${s.homepageUrl.replace(/\/+$/, "")}/feed/`,
+        lastIngestAt: null,
+      });
+    }
+
     if (isMongoConfigured()) {
       try {
         const allSources = await mongoListSources();
-        sources = allSources.filter((s) => s.enabled);
+        for (const s of allSources) {
+          const seed = seedMap.get(s.id);
+          seedMap.set(s.id, {
+            ...s,
+            feedUrl: seed?.feedUrl || s.feedUrl || `${s.homepageUrl.replace(/\/+$/, "")}/feed/`,
+          });
+        }
       } catch (err) {
         console.warn("[mongodb] list sources fallback:", err);
       }
     }
 
-    if (sources.length === 0) {
-      // Seed directly from SOURCE_SEED definitions with feeds
-      sources = (SOURCE_SEED as Omit<SourceRecord, "lastIngestAt">[]).map((s) => ({
-        ...s,
-        feedUrl: `${s.homepageUrl.replace(/\/+$/, "")}/feed/`,
-        lastIngestAt: null,
-      }));
-
-      if (isMongoConfigured()) {
-        try {
-          await mongoSeedSources(sources);
-        } catch {
-          /* ignore seed errors */
-        }
+    sources = Array.from(seedMap.values()).filter((s) => s.enabled !== false);
+    if (isMongoConfigured()) {
+      try {
+        await mongoSeedSources(sources);
+      } catch {
+        /* ignore seed errors */
       }
     }
 
@@ -413,6 +424,10 @@ export async function executeCrawlJob(
               }
 
               for (const link of discoveredLinks) {
+                // Filter out non-technical site navigation, legal, and boilerplate links
+                if (/privacy|terms|contact|about|cookie|careers|login|signin|register|legal|jobs|pricing|subscribe|donate/i.test(link.canonicalUrl)) {
+                  continue;
+                }
                 enqueue({
                   url: link.url,
                   canonicalUrl: link.canonicalUrl,
@@ -437,11 +452,93 @@ export async function executeCrawlJob(
       );
     }
 
-    // Phase C: Knowledge Pool & Search-Driven Discovery
+    // Phase C: Real-Time Web & Graph Search Discovery
     if (config.searchDiscovery !== false || targetedQuery) {
-      const activeKeywords = targetedQuery || config.keywords;
-      const queries = generateSearchQueries(activeKeywords);
+      const activeKeywords = (targetedQuery || config.keywords || "").trim();
 
+      // Execute live search against CTI indices & open web if active query is present
+      if (activeKeywords.length > 0) {
+        const searchTerms = [
+          `"${activeKeywords}" threat intelligence technical analysis`,
+          `"${activeKeywords}" attack chain indicators of compromise`,
+          `${activeKeywords} cve technical writeup advisory filetype:html OR filetype:pdf`,
+        ];
+
+        for (const term of searchTerms) {
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 6000);
+
+            const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
+            const res = await fetch(searchUrl, {
+              signal: controller.signal,
+              headers: {
+                "user-agent":
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                accept: "text/html,application/xhtml+xml,text/plain",
+              },
+            }).catch(() => null);
+
+            clearTimeout(timeout);
+
+            if (res && res.ok) {
+              const html = await res.text();
+              const uddgMatches = [...html.matchAll(/\/l\/\?kh=-1&amp;uddg=([^"&]+)/g)];
+              for (const m of uddgMatches) {
+                try {
+                  const targetUrl = decodeURIComponent(m[1]);
+                  const urlObj = new URL(targetUrl);
+                  const domain = urlObj.hostname.toLowerCase().replace(/^www\./, "");
+                  const blocked = [
+                    "duckduckgo.com",
+                    "bing.com",
+                    "google.com",
+                    "youtube.com",
+                    "wikipedia.org",
+                    "facebook.com",
+                    "twitter.com",
+                    "x.com",
+                    "linkedin.com",
+                    "instagram.com",
+                  ];
+                  if (blocked.some((b) => domain.includes(b))) continue;
+
+                  const check = isCandidateResourceUrl(targetUrl);
+                  if (
+                    check.isResource ||
+                    targetUrl.endsWith(".pdf") ||
+                    /cve|threat|attack|ransomware|malware|incident|advisory|report/i.test(targetUrl)
+                  ) {
+                    const canonical = canonicalizeUrl(targetUrl);
+                    enqueue({
+                      url: targetUrl,
+                      canonicalUrl: canonical,
+                      depth: 0,
+                      priorityScore: 0.99,
+                      parentUrl: null,
+                      parentSource: `Live CTI Web Discovery (${activeKeywords})`,
+                      discoveryPath: [targetUrl],
+                      discoveryMethod: "search_expansion",
+                      sourceId: "src_web_search",
+                      publisher: domain,
+                      domain,
+                      title:
+                        targetUrl.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") ||
+                        `Live CTI: ${activeKeywords}`,
+                    });
+                  }
+                } catch {
+                  /* skip invalid URL */
+                }
+              }
+            }
+          } catch {
+            /* ignore live search network errors */
+          }
+        }
+      }
+
+      // Also enqueue curated knowledge pool
       for (const item of DISCOVERY_KNOWLEDGE_POOL) {
         try {
           const canonical = canonicalizeUrl(item.url);
@@ -479,9 +576,10 @@ export async function executeCrawlJob(
       frontierQueue.sort((a, b) => b.priorityScore - a.priorityScore);
       const current = frontierQueue.shift()!;
 
-      // Enforce per-domain limit to ensure wide discovery breadth across different sources
+      // Enforce per-domain limit on seed source homepage crawling to prevent getting trapped in site navigation,
+      // but allow citation outlinks and live search discovery to explore external domains freely
       const currentDomainCount = domainVisitCounts.get(current.domain) || 0;
-      if (currentDomainCount >= maxPerDomain && current.depth > 0) {
+      if (currentDomainCount >= maxPerDomain && current.depth > 0 && current.discoveryMethod === "seed_source") {
         continue;
       }
 
@@ -551,6 +649,63 @@ export async function executeCrawlJob(
             ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
           )
         `;
+
+        // Deep Graph Expansion: Even if canonical report is already acquired,
+        // extract its outbound citations to discover fresh external threat papers and repositories!
+        if (config.recursiveDiscovery !== false && current.depth < maxDepth) {
+          try {
+            let storedHtml = "";
+            if (isMongoConfigured()) {
+              const existing = await mongoFindReportByCanonical(current.canonicalUrl);
+              storedHtml = existing?.rawHtml || existing?.extractedText || "";
+            }
+            if (storedHtml && storedHtml.length > 200) {
+              const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
+                storedHtml,
+                current.canonicalUrl,
+                {
+                  sourceId: current.sourceId,
+                  publisher: current.publisher,
+                  parentPath: current.discoveryPath,
+                  depth: current.depth + 1,
+                  allowExternalDomains: config.allowExternalDomains !== false,
+                  domainAllowlist: config.domainAllowlist,
+                  domainBlocklist: config.domainBlocklist,
+                },
+              );
+
+              if (isMongoConfigured()) {
+                for (const newSrc of newDiscoveredSources) {
+                  await mongoInsertDiscoveredSource(newSrc);
+                  newSourcesCount++;
+                }
+                for (const edge of graphEdges) {
+                  await mongoInsertGraphEdge({ ...edge, jobId });
+                }
+              }
+
+              for (const outlink of discoveredLinks) {
+                enqueue({
+                  url: outlink.url,
+                  canonicalUrl: outlink.canonicalUrl,
+                  depth: current.depth + 1,
+                  priorityScore: outlink.priorityScore,
+                  parentUrl: current.canonicalUrl,
+                  parentSource: current.publisher || current.domain,
+                  discoveryPath: outlink.discoveryPath,
+                  discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
+                  sourceId: current.sourceId,
+                  publisher: outlink.publisher,
+                  domain: outlink.domain,
+                  title: outlink.title,
+                });
+              }
+            }
+          } catch {
+            /* ignore outlink expansion error */
+          }
+        }
+
         continue;
       }
 
@@ -828,6 +983,7 @@ export async function executeCrawlJob(
         ingestedCount++;
         storedCanonicalUrls.add(current.canonicalUrl);
         storedHashes.add(textHash);
+        console.log(`[crawler] INGESTED: "${docTitle.slice(0, 60)}" (${qual.resourceKind}, score: ${score}, ${iocs.length} IOCs) -> ${current.domain}`);
 
         // Persist to MongoDB Atlas
         if (isMongoConfigured()) {
@@ -1068,6 +1224,10 @@ export async function executeCrawlJob(
       pdfGeneratedCount,
       currentStage: "indexed" as CrawlPipelineStage,
     };
+
+    console.log(
+      `[crawler] COMPLETED job ${jobId}: discovered=${discoveredCount}, evaluated=${evaluatedCount}, qualified=${qualifiedCount}, ingested=${ingestedCount}, duplicates=${duplicateCount}, rejected=${rejectedCount}, newSources=${newSourcesCount}`
+    );
 
     if (isMongoConfigured()) {
       await mongoUpdateCrawlJob(jobId, completedJobUpdates);
