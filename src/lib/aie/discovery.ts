@@ -272,15 +272,33 @@ export function extractOutlinksAndCitations(
 
       seenUrls.add(cleanUrl);
 
-      // Score domain trust and candidate priority
+      // Score domain trust and candidate priority based on simulation value potential
       const trust = evaluateDomainTrust(targetHost);
       let priorityScore = trust.trustScore;
 
-      if (outlinkKind === "pdf_document") priorityScore += 0.15;
-      if (outlinkKind === "citation") priorityScore += 0.10;
-      if (/advisory|cve|incident|attack|ransomware|malware|threat/i.test(cleanUrl)) priorityScore += 0.15;
+      // Bonus for evidence and simulation indicators in URL and anchor text
+      const candidateContext = `${cleanUrl} ${rawAnchorText}`.toLowerCase();
+      if (outlinkKind === "pdf_document") priorityScore += 0.20;
+      if (outlinkKind === "citation" && trust.trustScore >= 0.85) priorityScore += 0.15;
+      if (targetHost === "github.com" && /sigma|yara|atomic|caldera|adversary|poc/i.test(candidateContext)) {
+        priorityScore += 0.20;
+      }
 
-      priorityScore = Math.min(1.0, Math.round(priorityScore * 100) / 100);
+      // High adversary simulation keywords in candidate anchor/slug
+      if (
+        /adversary|emulation|simulation|attack-chain|kill-chain|intrusion|powershell|lsass|mimikatz|c2|beacon|ransomware|lateral|credential|persistence|zero-day|cve-\d+/i.test(
+          candidateContext,
+        )
+      ) {
+        priorityScore += 0.25;
+      }
+
+      // Penalty for marketing or index-heavy paths
+      if (/tag\/|category\/|author\/|webinar|event|news-release|press-release/i.test(cleanUrl)) {
+        priorityScore -= 0.20;
+      }
+
+      priorityScore = Math.max(0.1, Math.min(1.0, Math.round(priorityScore * 100) / 100));
 
       // Register candidate link
       const discoveredLink: DiscoveredLink = {

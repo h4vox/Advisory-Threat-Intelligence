@@ -59,6 +59,7 @@ import {
   mongoInsertIngestEvent,
   mongoListRecentIngestEvents,
   ensureMongoIndexes,
+  mongoGetIngestedCanonicalUrls,
 } from "../mongodb/repository.server";
 
 type SourceRow = {
@@ -185,8 +186,9 @@ async function ensureSeeded() {
       try {
         await ensureMongoIndexes();
         await mongoSeedSources(SOURCE_SEED as SourceRecord[]);
-        const existingReports = await mongoListReports();
-        if (existingReports.length === 0) {
+        const col = await getThreatIntelCollection();
+        const existingCount = await col.countDocuments({ docType: "report" });
+        if (existingCount === 0) {
           console.log("[db] Seeding initial gold-set threat reports into MongoDB Atlas...");
           for (const r of SEED_REPORTS) {
             const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
@@ -631,9 +633,9 @@ export const listCatalog = createServerFn({ method: "GET" }).handler(async (): P
 
   if (isMongoConfigured()) {
     try {
-      const mongoReports = await mongoListReports();
-      for (const r of mongoReports) {
-        have.add(r.canonicalUrl);
+      const mongoUrls = await mongoGetIngestedCanonicalUrls();
+      for (const u of mongoUrls) {
+        have.add(u);
       }
     } catch {
       /* fallback */

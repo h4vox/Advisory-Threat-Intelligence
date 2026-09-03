@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IngestRouteImport } from './routes/ingest'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as MatrixRouteImport } from './routes/matrix'
 import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as LibraryReportIdRouteImport } from './routes/library.$reportId'
 
@@ -30,6 +31,11 @@ const LibraryRoute = LibraryRouteImport.update({
   path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MatrixRoute = MatrixRouteImport.update({
+  id: '/matrix',
+  path: '/matrix',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SourcesRoute = SourcesRouteImport.update({
   id: '/sources',
   path: '/sources',
@@ -45,6 +51,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/matrix': typeof MatrixRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
 }
@@ -52,6 +59,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/matrix': typeof MatrixRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
 }
@@ -60,19 +68,23 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/matrix': typeof MatrixRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/ingest' | '/library' | '/sources' | '/library/$reportId'
+  fullPaths:
+    '/' | '/ingest' | '/library' | '/matrix' | '/sources' | '/library/$reportId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/ingest' | '/library' | '/sources' | '/library/$reportId'
+  to:
+    '/' | '/ingest' | '/library' | '/matrix' | '/sources' | '/library/$reportId'
   id:
     | '__root__'
     | '/'
     | '/ingest'
     | '/library'
+    | '/matrix'
     | '/sources'
     | '/library/$reportId'
   fileRoutesById: FileRoutesById
@@ -81,6 +93,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IngestRoute: typeof IngestRoute
   LibraryRoute: typeof LibraryRouteWithChildren
+  MatrixRoute: typeof MatrixRoute
   SourcesRoute: typeof SourcesRoute
 }
 
@@ -105,6 +118,13 @@ declare module '@tanstack/react-router' {
       path: '/library'
       fullPath: '/library'
       preLoaderRoute: typeof LibraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/matrix': {
+      id: '/matrix'
+      path: '/matrix'
+      fullPath: '/matrix'
+      preLoaderRoute: typeof MatrixRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sources': {
@@ -139,6 +159,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IngestRoute: IngestRoute,
   LibraryRoute: LibraryRouteWithChildren,
+  MatrixRoute: MatrixRoute,
   SourcesRoute: SourcesRoute,
 }
 export const routeTree = rootRouteImport

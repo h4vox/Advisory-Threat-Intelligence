@@ -268,16 +268,16 @@ export function extractStructuredEntities(
 ): import("./types").ExtractedEntities {
   // Extract execution procedures and commands from code blocks or command patterns
   const procedureMatches = text.match(
-    /(?:(?:powershell|cmd|wmic|rundll32|certutil|curl|bitsadmin|reg|schtasks|net|nltest|vssadmin|whoami|procdump|mimikatz)\b[^\r\n]{5,120})/gi,
+    /(?:(?:powershell|cmd|wmic|rundll32|certutil|curl|bitsadmin|reg|schtasks|net|nltest|vssadmin|whoami|procdump|mimikatz|rubeus|adfind|powerview|chisel|rclone|megasync|psexec|wevtutil|sc)\b[^\r\n]{5,130})/gi,
   ) || [];
 
   const uniqueProcedures = Array.from(
     new Set(
       procedureMatches
         .map((p) => p.trim().replace(/^[`'"]+|[`'"]+$/g, ""))
-        .filter((p) => p.length > 8 && !p.includes("<")),
+        .filter((p) => p.length > 8 && !p.includes("<") && !p.includes(">")),
     ),
-  ).slice(0, 10);
+  ).slice(0, 15);
 
   // Extract mitigations
   const mitigationMatches = text.match(

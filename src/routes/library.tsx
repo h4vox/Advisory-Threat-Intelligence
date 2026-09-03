@@ -619,6 +619,16 @@ function LibraryPage() {
                   )}
                   <Badge tone="neutral">{r.classification}</Badge>
                   <Badge tone={r.status === "acquired" ? "sage" : "warn"}>{r.status}</Badge>
+                  {r.simulationScore !== undefined && r.simulationScore > 0 && (
+                    <Badge tone="accent" className="font-mono font-semibold">
+                      SIM {Math.round(r.simulationScore * 100)}%
+                    </Badge>
+                  )}
+                  {r.isEmergingTechnique && (
+                    <Badge tone="danger" className="font-semibold" title={r.noveltyRationale || "Novel unmapped adversary procedure"}>
+                      NOVEL TTP
+                    </Badge>
+                  )}
                   <Badge tone="sage" className="gap-1">
                     <FileText className="size-2.5" /> High-Fidelity PDF
                   </Badge>
@@ -660,13 +670,16 @@ function LibraryPage() {
                     <span className="hidden sm:inline">Download</span>
                   </Button>
 
-                  <Link
-                    to="/library/$reportId"
-                    params={{ reportId: r.id }}
-                    className="p-1 text-subtle hover:text-fg transition-colors"
+                  <a
+                    href={r.canonicalUrl || r.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-1 text-subtle hover:text-accent transition-colors"
+                    title={`Open source article: ${r.canonicalUrl || r.url}`}
+                    onClick={(e) => e.stopPropagation()}
                   >
                     <ArrowUpRight className="size-4" />
-                  </Link>
+                  </a>
                 </div>
               </div>
 

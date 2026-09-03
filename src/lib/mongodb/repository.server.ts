@@ -23,32 +23,49 @@ import type {
 import { excerptOf } from "../aie/extract";
 
 let indexesEnsured = false;
+let indexesPromise: Promise<void> | null = null;
+
+// High-speed in-memory cache for library queries (invalidated on ingest/delete)
+let cachedReportsList: { timestamp: number; data: ReportListItem[] } | null = null;
+const CACHE_TTL_MS = 8000; // 8 seconds cache for lightning-fast 0ms navigation
+
+export function invalidateReportsCache() {
+  cachedReportsList = null;
+}
 
 export async function ensureMongoIndexes() {
   if (indexesEnsured || !isMongoConfigured()) return;
-  try {
-    const col = await getThreatIntelCollection();
-    // Purge any documents with id: null to prevent E11000 duplicate key conflicts
-    await col.deleteMany({ id: null });
-    await col.createIndex({ docType: 1, id: 1 }, { unique: true, background: true });
-    await col.createIndex(
-      { docType: 1, canonicalUrl: 1 },
-      {
-        unique: true,
-        partialFilterExpression: { docType: "report", canonicalUrl: { $type: "string" } },
-        background: true,
-      },
-    );
-    await col.createIndex({ docType: 1, ingestedAt: -1 }, { background: true });
-    await col.createIndex({ docType: 1, classification: 1 }, { background: true });
-    await col.createIndex({ docType: 1, resourceKind: 1 }, { background: true });
-    await col.createIndex({ docType: 1, status: 1 }, { background: true });
-    await col.createIndex({ docType: 1, priority: 1 }, { background: true });
-    await col.createIndex({ docType: 1, createdAt: -1 }, { background: true });
-    indexesEnsured = true;
-  } catch (err) {
-    console.warn("[mongodb] failed ensuring indexes:", err);
-  }
+  if (indexesPromise) return indexesPromise;
+
+  indexesPromise = (async () => {
+    try {
+      const col = await getThreatIntelCollection();
+      await col.deleteMany({ id: null });
+      await col.createIndexes([
+        { key: { docType: 1, id: 1 }, unique: true, background: true },
+        {
+          key: { docType: 1, canonicalUrl: 1 },
+          unique: true,
+          partialFilterExpression: { docType: "report", canonicalUrl: { $type: "string" } },
+          background: true,
+        },
+        { key: { docType: 1, ingestedAt: -1 }, background: true },
+        { key: { docType: 1, classification: 1 }, background: true },
+        { key: { docType: 1, resourceKind: 1 }, background: true },
+        { key: { docType: 1, status: 1 }, background: true },
+        { key: { docType: 1, priority: 1 }, background: true },
+        { key: { docType: 1, createdAt: -1 }, background: true },
+        { key: { docType: 1, domain: 1 }, background: true },
+      ]);
+      indexesEnsured = true;
+    } catch (err) {
+      console.warn("[mongodb] failed ensuring indexes:", err);
+    } finally {
+      indexesPromise = null;
+    }
+  })();
+
+  return indexesPromise;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +132,14 @@ export async function mongoListReports(params?: {
   minScore?: number;
   hasIocs?: boolean;
 }): Promise<ReportListItem[]> {
+  const isDefaultQuery =
+    !params ||
+    Object.values(params).every((v) => v === undefined || v === "" || v === "ALL" || v === false);
+
+  if (isDefaultQuery && cachedReportsList && Date.now() - cachedReportsList.timestamp < CACHE_TTL_MS) {
+    return cachedReportsList.data;
+  }
+
   await ensureMongoIndexes();
   const col = await getThreatIntelCollection();
 
@@ -296,15 +321,20 @@ export async function mongoListReports(params?: {
       sourceDomain: 1,
       version: 1,
       analysis: 1,
-      // Avoid transferring multi-megabyte HTML/PDF strings over network for list cards
-      excerpt: { $substrCP: [{ $ifNull: ["$extractedText", ""] }, 0, 320] },
+      simulationScore: 1,
+      isEmergingTechnique: 1,
+      noveltyRationale: 1,
+      // Fetch pre-stored excerpt directly without expensive runtime $substrCP
+      excerpt: 1,
     });
 
   const docs = await cursor.toArray();
   console.log(`[mongo] listReports: fetched ${docs.length} reports in ${Date.now() - startTime}ms`);
 
-  return docs.map((doc) => {
-    const text = (doc.excerpt as string) || (doc.extractedText as string) || "";
+  const mapped = docs.map((doc) => {
+    const rawExcerpt = (doc.excerpt as string) || "";
+    const text = rawExcerpt || (doc.extractedText as string) || (doc.title as string) || "";
+    const excerpt = rawExcerpt.length > 0 ? rawExcerpt : excerptOf(text);
     const iocsList = (doc.iocs as IocHit[]) || [];
 
     let calculatedKind = (doc.resourceKind as ResourceKind) || null;
@@ -346,7 +376,7 @@ export async function mongoListReports(params?: {
       iocs: iocsList,
       ingestOrigin: doc.ingestOrigin || "crawl",
       ingestedAt: doc.ingestedAt,
-      excerpt: excerptOf(text),
+      excerpt,
       iocCount: iocsList.length,
       publisher: doc.publisher || doc.sourceName,
       author: doc.author || doc.publisher,
@@ -362,19 +392,30 @@ export async function mongoListReports(params?: {
       pdfUrl: doc.pdfUrl || "",
       pdfBase64: doc.pdfBase64 || "",
       analysis: (doc.analysis as IntelAnalysis) || null,
+      simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+      isEmergingTechnique: Boolean(doc.isEmergingTechnique),
+      noveltyRationale: (doc.noveltyRationale as string) || undefined,
     };
   });
+
+  if (isDefaultQuery) {
+    cachedReportsList = { timestamp: Date.now(), data: mapped };
+  }
+
+  return mapped;
 }
 
 export async function mongoInsertReport(report: ReportRecord): Promise<void> {
-  await ensureMongoIndexes();
+  invalidateReportsCache();
   const col = await getThreatIntelCollection();
+  const excerpt = report.excerpt || excerptOf(report.extractedText || report.title || "");
   await col.updateOne(
     { docType: "report", id: report.id },
     {
       $set: {
         docType: "report",
         ...report,
+        excerpt,
         updatedAt: new Date().toISOString(),
       },
     },
@@ -383,6 +424,7 @@ export async function mongoInsertReport(report: ReportRecord): Promise<void> {
 }
 
 export async function mongoDeleteReport(id: string): Promise<boolean> {
+  invalidateReportsCache();
   const col = await getThreatIntelCollection();
   const res = await col.deleteOne({ docType: "report", id });
   return res.deletedCount > 0;
@@ -732,7 +774,7 @@ export async function mongoInsertDiscoveredSource(source: DiscoveredSourceRecord
   try {
     const col = await getThreatIntelCollection();
     const assignedId = source.id || `src_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const { id: _ignoredId, ...setFields } = source;
+    const { id: _ignoredId, resourceCount: _ignoredCount, ...setFields } = source;
     await col.updateOne(
       { docType: "discovered_source", domain: source.domain },
       {
@@ -863,10 +905,92 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
 // Dashboard Aggregates
 // ---------------------------------------------------------------------------
 
+export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[]> {
+  const col = await getThreatIntelCollection();
+  const docs = await col
+    .find({ docType: "report" })
+    .sort({ ingestedAt: -1 })
+    .limit(limit)
+    .project({
+      id: 1,
+      sourceId: 1,
+      sourceName: 1,
+      title: 1,
+      url: 1,
+      canonicalUrl: 1,
+      publishedAt: 1,
+      contentType: 1,
+      status: 1,
+      rawHash: 1,
+      textHash: 1,
+      qualityScore: 1,
+      wordCount: 1,
+      iocs: 1,
+      ingestOrigin: 1,
+      ingestedAt: 1,
+      publisher: 1,
+      author: 1,
+      classification: 1,
+      resourceKind: 1,
+      simulationScore: 1,
+      isEmergingTechnique: 1,
+      noveltyRationale: 1,
+      excerpt: 1,
+    })
+    .toArray();
+
+  return docs.map((doc) => {
+    const rawExcerpt = (doc.excerpt as string) || "";
+    const text = rawExcerpt || (doc.extractedText as string) || (doc.title as string) || "";
+    const excerpt = rawExcerpt.length > 0 ? rawExcerpt : excerptOf(text);
+    const iocsList = (doc.iocs as IocHit[]) || [];
+
+    return {
+      id: doc.id,
+      sourceId: doc.sourceId,
+      sourceName: doc.sourceName || doc.publisher || "Verified Source",
+      title: doc.title,
+      url: doc.url,
+      canonicalUrl: doc.canonicalUrl,
+      publishedAt: doc.publishedAt ?? null,
+      contentType: doc.contentType || "text/html",
+      status: doc.status || "acquired",
+      rawHash: doc.rawHash,
+      textHash: doc.textHash,
+      qualityScore: Number(doc.qualityScore ?? 0),
+      wordCount: Number(doc.wordCount ?? 0),
+      iocs: iocsList,
+      ingestOrigin: doc.ingestOrigin || "crawl",
+      ingestedAt: doc.ingestedAt,
+      excerpt,
+      iocCount: iocsList.length,
+      publisher: doc.publisher || doc.sourceName,
+      author: doc.author || doc.publisher,
+      classification: doc.classification || "THREAT_REPORT",
+      resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
+      simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+      isEmergingTechnique: Boolean(doc.isEmergingTechnique),
+      noveltyRationale: (doc.noveltyRationale as string) || undefined,
+    };
+  });
+}
+
 export async function mongoGetDashboardStats(): Promise<DashboardStats> {
   const col = await getThreatIntelCollection();
 
-  const [sourceTotal, enabledSources, reportTotal, acquiredTotal, discoveredSourcesCount, qualityAgg, iocDocs] = await Promise.all([
+  const [
+    sourceTotal,
+    enabledSources,
+    reportTotal,
+    acquiredTotal,
+    discoveredSourcesCount,
+    qualityAgg,
+    iocAgg,
+    recent,
+    events,
+    config,
+    activeJob,
+  ] = await Promise.all([
     col.countDocuments({ docType: "source" }),
     col.countDocuments({ docType: "source", enabled: true }),
     col.countDocuments({ docType: "report" }),
@@ -876,16 +1000,19 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
       { $match: { docType: "report", status: "acquired" } },
       { $group: { _id: null, avgQ: { $avg: "$qualityScore" } } },
     ]).toArray(),
-    col.find({ docType: "report", status: "acquired" }).project({ iocs: 1 }).toArray(),
+    col.aggregate([
+      { $match: { docType: "report", status: "acquired" } },
+      { $project: { numIocs: { $size: { $ifNull: ["$iocs", []] } } } },
+      { $group: { _id: null, totalIocs: { $sum: "$numIocs" } } },
+    ]).toArray(),
+    mongoListRecentReports(6),
+    mongoListRecentIngestEvents(8),
+    mongoGetCrawlConfig(),
+    col.findOne({ docType: "crawl_job", status: "running" }),
   ]);
 
   const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
-  const iocCount = iocDocs.reduce((acc, d) => acc + ((d.iocs as unknown[])?.length || 0), 0);
-
-  const recent = (await mongoListReports()).slice(0, 6);
-  const events = await mongoListRecentIngestEvents(8);
-  const config = await mongoGetCrawlConfig();
-  const activeJob = await col.findOne({ docType: "crawl_job", status: "running" });
+  const iocCount = Number(iocAgg[0]?.totalIocs ?? 0);
 
   const crawlerStatus = activeJob
     ? "running"
@@ -909,4 +1036,30 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     nextCrawlAt: config.nextRunAt,
     discoveredSourcesCount,
   };
+}
+
+export async function mongoGetIngestedCanonicalUrls(): Promise<Set<string>> {
+  if (!isMongoConfigured()) return new Set();
+  const col = await getThreatIntelCollection();
+  const docs = await col
+    .find({ docType: "report" })
+    .project({ canonicalUrl: 1, _id: 0 })
+    .toArray();
+  const set = new Set<string>();
+  for (const d of docs) {
+    if (d.canonicalUrl) set.add(d.canonicalUrl);
+  }
+  return set;
+}
+
+export async function mongoGetExistingReportsDedupIndex(): Promise<
+  Array<{ id: string; canonicalUrl: string; textHash: string; title: string; excerpt: string }>
+> {
+  if (!isMongoConfigured()) return [];
+  const col = await getThreatIntelCollection();
+  const docs = await col
+    .find({ docType: "report" })
+    .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, _id: 0 })
+    .toArray();
+  return docs as any[];
 }

@@ -26,6 +26,18 @@ export type QualificationResult = {
   reasons: string[];
   rejectionReason?: string;
   isIndexOrGeneric: boolean;
+  simulationScore: number;
+  procedureDensity: number;
+  evidenceScore: number;
+  isEmergingTechnique: boolean;
+  noveltyRationale?: string;
+  noiseClusterScore: number;
+  evidenceDetails: {
+    commands: string[];
+    registryKeys: string[];
+    filePaths: string[];
+    eventIds: string[];
+  };
 };
 
 // Index / Non-resource URL patterns to reject
@@ -70,7 +82,6 @@ export function isCandidateResourceUrl(
   urlStr: string,
   isFromFeed = false,
 ): { isResource: boolean; reason: string } {
-  // Feed entries point directly to canonical articles
   if (isFromFeed) {
     return { isResource: true, reason: "Verified RSS/Atom feed article entry" };
   }
@@ -104,6 +115,119 @@ export function isCandidateResourceUrl(
   } catch {
     return { isResource: false, reason: "Invalid URL string" };
   }
+}
+
+// Concrete technical evidence extraction regexes
+const COMMAND_REGEX =
+  /(?:(?:powershell(?:\.exe)?|cmd(?:\.exe)?|wmic|schtasks|vssadmin|rundll32|certutil|bitsadmin|reg(?:\.exe)?|psexec|whoami|nltest|net\s+(?:user|group|localgroup|view|use)|procdump|mimikatz|rubeus|adfind|powerview|chisel|rclone|megasync|curl|mshta|cscript|wscript|sc(?:\.exe)?|wevtutil|nltest)\b[^\r\n]{4,140})/gi;
+
+const REGISTRY_REGEX =
+  /\b(?:HKLM|HKCU|HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER)\\[a-zA-Z0-9_\\]{4,100}\b/gi;
+
+const FILEPATH_REGEX =
+  /(?:[a-zA-Z]:\\(?:Windows|Users|ProgramData|AppData|Temp)\\[a-zA-Z0-9_.\\]{4,100}|\/(?:etc|tmp|dev\/shm|var\/tmp|opt)\/[a-zA-Z0-9_.\/]{3,100})/gi;
+
+const EVENT_ID_REGEX =
+  /\b(?:Event\s*ID\s*(?:4688|4624|4672|7045|1102|4720|4726|4738|8007)|Sysmon\s*(?:Event\s*)?(?:1|3|7|8|10|11|12|13|22))\b/gi;
+
+export function extractTechnicalEvidence(text: string, title = "") {
+  const combined = `${title}\n${text}`;
+  const rawCommands = combined.match(COMMAND_REGEX) || [];
+  const commands = Array.from(
+    new Set(
+      rawCommands
+        .map((c) => c.trim().replace(/^[`'"]+|[`'"]+$/g, ""))
+        .filter((c) => c.length > 8 && !c.includes("<") && !c.includes(">")),
+    ),
+  ).slice(0, 15);
+
+  const rawRegistry = combined.match(REGISTRY_REGEX) || [];
+  const registryKeys = Array.from(new Set(rawRegistry.map((r) => r.trim()))).slice(0, 10);
+
+  const rawPaths = combined.match(FILEPATH_REGEX) || [];
+  const filePaths = Array.from(new Set(rawPaths.map((p) => p.trim()))).slice(0, 10);
+
+  const rawEvents = combined.match(EVENT_ID_REGEX) || [];
+  const eventIds = Array.from(new Set(rawEvents.map((e) => e.trim()))).slice(0, 8);
+
+  const hasCve = /\bCVE-\d{4}-\d{4,7}\b/i.test(combined);
+  const hasAttckId = /\bT1\d{3}(?:\.\d{3})?\b/i.test(combined);
+  const hasIocSignal = /\b(?:[a-f0-9]{32}|[a-f0-9]{64}|(?:[0-9]{1,3}\.){3}[0-9]{1,3})\b/i.test(text);
+
+  return {
+    commands,
+    registryKeys,
+    filePaths,
+    eventIds,
+    hasCve,
+    hasAttckId,
+    hasIocSignal,
+    totalEvidenceCount: commands.length + registryKeys.length + filePaths.length + eventIds.length,
+  };
+}
+
+// Emerging technique and novel adversary behavior patterns
+const NOVEL_TRADE_PATTERNS = [
+  { name: "BYOVD Driver Weaponization", pattern: /\b(?:bring your own vulnerable driver|byovd|gdrv\.sys|mhyprot2|procexp\.sys|vulnerable signed driver|kill edr driver)\b/i },
+  { name: "Direct Syscall & EDR Unhooking", pattern: /\b(?:direct syscalls|hells gate|halos gate|unhooking|ntallocatevirtualmemory|ntwritevirtualmemory|syscall stub)\b/i },
+  { name: "AMSI & ETW Patching", pattern: /\b(?:amsi bypass|amsiscanbuffer|patching etw|etweventwrite|disable amsi)\b/i },
+  { name: "Cloud & Entra ID Identity Theft", pattern: /\b(?:aadrefreshtoken|primary refresh token|prt extraction|roadrecon|entra id token|device registration service)\b/i },
+  { name: "Living-Off-The-Cloud Execution", pattern: /\b(?:living off the cloud|lotc|azure automation runbook|aws lambda execution|github actions runner abuse)\b/i },
+  { name: "Process Tampering & Early Cascade", pattern: /\b(?:process hollowing|process doppelganging|process herpaderping|early cascade injection|mockingjay)\b/i },
+  { name: "Shadow Coercion & Relay", pattern: /\b(?:petitpotam|shadowcoercion|dfscoerce|webclient relay|adcs esc\d+)\b/i },
+];
+
+export function detectEmergingTechniques(text: string) {
+  for (const item of NOVEL_TRADE_PATTERNS) {
+    if (item.pattern.test(text)) {
+      return {
+        isEmerging: true,
+        rationale: `Detected novel/emerging procedure: ${item.name}`,
+      };
+    }
+  }
+  return { isEmerging: false };
+}
+
+// Commercial and marketing noise patterns
+const MARKETING_CLUSTERS = [
+  /\b(?:request|schedule|book)\s+(?:a\s+)?demo\b/i,
+  /\b(?:start\s+your\s+)?free\s+trial\b/i,
+  /\bpricing\s+plans?\b/i,
+  /\bgartner\s+(?:magic\s+quadrant|peer\s+insights)\b/i,
+  /\bnamed\s+a\s+leader\s+in\b/i,
+  /\bour\s+platform\s+(?:protects|empowers|secures|delivers)\b/i,
+  /\bcontact\s+(?:sales|our\s+sales\s+team)\b/i,
+  /\bdownload\s+(?:our\s+)?(?:solution\s+brief|datasheet|whitepaper\s+overview)\b/i,
+  /\bwebinar\s+registration\b/i,
+  /\bannual\s+(?:revenue|growth|quarterly\s+earnings)\b/i,
+  /\bcyber\s+insurance\s+policy\b/i,
+  /\bhiring\s+(?:security\s+engineers|account\s+executives)\b/i,
+  /\bpress\s+release\s+distribution\b/i,
+  /\bannounces\s+appointment\s+of\b/i,
+];
+
+export function detectMarketingNoiseCluster(text: string, title = "") {
+  const combined = `${title}\n${text}`;
+  let hits = 0;
+  const matchedPhrases: string[] = [];
+
+  for (const re of MARKETING_CLUSTERS) {
+    if (re.test(combined)) {
+      hits++;
+      const m = combined.match(re);
+      if (m?.[0]) matchedPhrases.push(m[0].trim());
+    }
+  }
+
+  // Check if this is an academic/conference paper footnote (which is NOT pure marketing)
+  const isResearchFootnote = /\b(?:black hat|def con|usenix|ieee|rsa conference)\b/i.test(combined);
+
+  return {
+    clusterScore: hits,
+    matchedPhrases,
+    isPureMarketing: hits >= 2 && !isResearchFootnote,
+  };
 }
 
 const HIGH_SIGNAL_TECHNICAL_TERMS = [
@@ -156,21 +280,6 @@ const HIGH_SIGNAL_TECHNICAL_TERMS = [
   "sha256",
 ];
 
-const DEFAULT_GENERIC_TERMS = [
-  "market trends",
-  "cybersecurity market",
-  "cyber insurance",
-  "privacy policy",
-  "hiring security engineers",
-  "press release",
-  "product launch",
-  "gartner magic quadrant",
-  "webinar registration",
-  "annual revenue",
-  "terms of service",
-  "discount code",
-];
-
 export function qualifyContent(
   text: string,
   title: string,
@@ -186,61 +295,85 @@ export function qualifyContent(
   const minWords = config?.minWordCount ?? 120;
   const strictness = config?.strictnessMode ?? "balanced";
 
+  // 1. URL candidate verification
   const urlCheck = isCandidateResourceUrl(url, isFromFeed);
   if (!urlCheck.isResource) {
     return {
       qualified: false,
       score: 0.1,
+      simulationScore: 0.05,
+      procedureDensity: 0,
+      evidenceScore: 0,
+      isEmergingTechnique: false,
+      noiseClusterScore: 0,
       classification: "GENERIC_NEWS",
       resourceKind: "CAMPAIGN_INTEL",
       reasons: [urlCheck.reason],
       rejectionReason: `REJECTED: ${urlCheck.reason}`,
       isIndexOrGeneric: true,
+      evidenceDetails: { commands: [], registryKeys: [], filePaths: [], eventIds: [] },
     };
   }
 
-  // Length check (Allow concise security advisories if they contain CVEs or IOCs)
-  const hasCve = /\bCVE-\d{4}-\d{4,7}\b/i.test(fullText);
-  const hasIocSignal = /\b(?:[a-f0-9]{32}|[a-f0-9]{64}|(?:[0-9]{1,3}\.){3}[0-9]{1,3})\b/i.test(text);
+  // 2. Extract technical evidence details
+  const evidence = extractTechnicalEvidence(text, title);
+  const matchedTerms = HIGH_SIGNAL_TECHNICAL_TERMS.filter((term) => fullText.includes(term));
+  const emerging = detectEmergingTechniques(text);
+  const marketing = detectMarketingNoiseCluster(text, title);
 
-  if (wordCount < minWords && !hasCve && !hasIocSignal) {
+  // 3. Robust False-Negative Prevention for concise or rapid-response advisories
+  // If a report contains real execution commands, registry keys, CVEs, or IOCs, NEVER reject solely on length!
+  const hasSubstantialEvidence =
+    evidence.commands.length > 0 ||
+    evidence.registryKeys.length > 0 ||
+    evidence.eventIds.length > 0 ||
+    evidence.hasCve ||
+    evidence.hasIocSignal;
+
+  if (wordCount < minWords && !hasSubstantialEvidence) {
     return {
       qualified: false,
       score: 0.15,
+      simulationScore: 0.05,
+      procedureDensity: 0,
+      evidenceScore: 0,
+      isEmergingTechnique: false,
+      noiseClusterScore: marketing.clusterScore,
       classification: "OTHER",
       resourceKind: "VULNERABILITY_ADVISORY",
-      reasons: [`Document too short (<${minWords} words) with no CVE or IOC evidence`],
-      rejectionReason: `REJECTED: Document too short (<${minWords} words)`,
+      reasons: [`Document too short (<${minWords} words) with no procedural or technical evidence`],
+      rejectionReason: `REJECTED: Document too short (<${minWords} words) with zero technical evidence`,
       isIndexOrGeneric: false,
+      evidenceDetails: evidence,
     };
   }
 
-  // Check custom or default noise terms
-  const noiseTerms = config?.noiseKeywords
-    ? config.noiseKeywords.split(",").map((k) => k.trim().toLowerCase()).filter(Boolean)
-    : DEFAULT_GENERIC_TERMS;
-
-  const matchedNoise = noiseTerms.filter((term) => fullText.includes(term));
-  const matchedTerms = HIGH_SIGNAL_TECHNICAL_TERMS.filter((term) => fullText.includes(term));
-
-  if (config?.rejectMarketingNoise !== false && matchedNoise.length >= 3 && matchedTerms.length <= 1) {
+  // 4. Cluster-based marketing & noise filtering
+  if (config?.rejectMarketingNoise !== false && marketing.isPureMarketing && evidence.totalEvidenceCount === 0) {
     return {
       qualified: false,
-      score: 0.2,
+      score: 0.18,
+      simulationScore: 0.05,
+      procedureDensity: 0,
+      evidenceScore: 0,
+      isEmergingTechnique: false,
+      noiseClusterScore: marketing.clusterScore,
       classification: "GENERIC_NEWS",
       resourceKind: "CAMPAIGN_INTEL",
-      reasons: ["Marketing, business news, or non-technical cybersecurity promotional page"],
-      rejectionReason: "REJECTED: Marketing or non-technical business news",
+      reasons: [`Commercial sales/marketing page (${marketing.matchedPhrases.slice(0, 2).join(", ")})`],
+      rejectionReason: `REJECTED: Commercial sales/marketing page with zero technical evidence`,
       isIndexOrGeneric: false,
+      evidenceDetails: evidence,
     };
   }
 
-  // Granular Classification & Intelligent ResourceKind mapping
+  // 5. Granular Classification & Intelligent ResourceKind mapping
   let classification: ResourceClassification = "THREAT_REPORT";
   let resourceKind: ResourceKind = "CAMPAIGN_INTEL";
 
   if (
-    /adversary emulation|emulation plan|micro-emulation|attackiq|caldera|atomic red team|procedure execution|command-line/i.test(fullText)
+    /adversary emulation|emulation plan|micro-emulation|attackiq|caldera|atomic red team|procedure execution/i.test(fullText) ||
+    evidence.commands.length >= 3
   ) {
     classification = "ADVERSARY_EMULATION";
     resourceKind = "PROCEDURE_DEEPDIVE";
@@ -261,11 +394,11 @@ export function qualifyContent(
     classification = "MALWARE_ANALYSIS";
     resourceKind = "MALWARE_ANALYSIS";
     reasons.push("Reverse-engineering malware & tooling teardown");
-  } else if (/sigma rule|yara rule|detection engineering|hunting query|kql|splunk query|mitigation guidance/i.test(fullText)) {
+  } else if (/sigma rule|yara rule|detection engineering|hunting query|kql|splunk query|mitigation guidance/i.test(fullText) || evidence.eventIds.length > 0) {
     classification = "DETECTION_RESEARCH";
     resourceKind = "DETECTION_GUIDANCE";
     reasons.push("Defensive detection rules & hunting engineering");
-  } else if (hasCve || /vulnerability analysis|proof of concept|exploit analysis|zero-day advisory/i.test(fullText)) {
+  } else if (evidence.hasCve || /vulnerability analysis|proof of concept|exploit analysis|zero-day advisory/i.test(fullText)) {
     classification = "VULNERABILITY_REPORT";
     resourceKind = "VULNERABILITY_ADVISORY";
     reasons.push("Vulnerability exploitation & advisory research");
@@ -275,72 +408,132 @@ export function qualifyContent(
     reasons.push("Targeted threat actor dossier & campaign tracking");
   }
 
-  // Scoring calculation
-  let score = isFromFeed ? 0.50 : 0.38; // Feed articles start with higher baseline curation
+  // 6. Calculate Adversary Simulation Score ($0.0 - 1.0$)
+  // How useful is this document for purple teaming and adversary emulation?
+  let simulationScore = 0.25;
+  if (evidence.commands.length >= 4) {
+    simulationScore += 0.35;
+    reasons.push(`Dense execution commands (${evidence.commands.length} found)`);
+  } else if (evidence.commands.length >= 1) {
+    simulationScore += 0.20;
+    reasons.push(`Actionable execution commands (${evidence.commands.length} found)`);
+  }
 
-  if (wordCount >= 1000) score += 0.22;
-  else if (wordCount >= 400) score += 0.12;
+  if (evidence.registryKeys.length > 0 || evidence.filePaths.length > 0) {
+    simulationScore += 0.15;
+    reasons.push("System persistence / artifact paths identified");
+  }
+
+  if (evidence.eventIds.length > 0) {
+    simulationScore += 0.15;
+    reasons.push(`Specific telemetry event IDs (${evidence.eventIds.join(", ")})`);
+  }
+
+  if (/initial access.*execution.*lateral movement/i.test(fullText) || /attack chain|kill chain/i.test(fullText)) {
+    simulationScore += 0.15;
+    reasons.push("Multi-phase sequential attack progression");
+  }
+
+  if (emerging.isEmerging) {
+    simulationScore += 0.15;
+    reasons.push(emerging.rationale!);
+  }
+
+  // Subtract minor penalty for marketing footer in otherwise technical report
+  if (marketing.matchedPhrases.length > 0) {
+    simulationScore = Math.max(0.1, simulationScore - 0.05);
+  }
+  simulationScore = Math.min(1.0, Math.round(simulationScore * 100) / 100);
+
+  // 7. General Quality Score calculation
+  let score = isFromFeed ? 0.50 : 0.40;
+
+  if (wordCount >= 1000) score += 0.20;
+  else if (wordCount >= 400) score += 0.10;
 
   if (matchedTerms.length >= 6) {
-    score += 0.28;
-    reasons.push(`High density of attack telemetry terms (${matchedTerms.length})`);
+    score += 0.25;
+    reasons.push(`High density of threat terms (${matchedTerms.length})`);
   } else if (matchedTerms.length >= 3) {
-    score += 0.16;
-    reasons.push(`Moderate threat terms (${matchedTerms.length})`);
+    score += 0.14;
   } else if (matchedTerms.length >= 1) {
     score += 0.08;
   }
 
-  if (/\bT1\d{3}(?:\.\d{3})?\b/.test(text)) {
+  if (evidence.hasAttckId) {
     score += 0.12;
     reasons.push("MITRE ATT&CK technique IDs detected");
   }
 
-  if (hasCve) {
-    score += 0.12;
+  if (evidence.hasCve) {
+    score += 0.10;
     reasons.push("CVE vulnerability references detected");
   }
 
-  if (hasIocSignal) {
+  if (evidence.hasIocSignal) {
     score += 0.10;
     reasons.push("Technical IOC artifacts (hashes/IPs) detected");
   }
 
-  score = Math.min(1.0, Math.round(score * 100) / 100);
-
-  // Strictness mode evaluation
-  let qualified = false;
-  if (strictness === "permissive") {
-    qualified = score >= Math.min(minScore, 0.30) && (matchedTerms.length >= 1 || hasCve || hasIocSignal || isFromFeed);
-  } else if (strictness === "strict") {
-    qualified = score >= 0.65 || (score >= Math.max(minScore, 0.50) && (matchedTerms.length >= 2 || (isFromFeed && matchedTerms.length >= 1)));
-  } else {
-    // Balanced (default)
-    qualified = score >= minScore && (matchedTerms.length >= 1 || hasCve || hasIocSignal || isFromFeed);
+  if (simulationScore >= 0.60) {
+    score += 0.15;
+    reasons.push(`High adversary emulation replay value (${Math.round(simulationScore * 100)}%)`);
   }
 
-  // Check required signal constraints from config
-  if (config?.requireIocs && !hasIocSignal && score < 0.75) {
+  if (emerging.isEmerging) {
+    score += 0.12;
+  }
+
+  score = Math.min(1.0, Math.round(score * 100) / 100);
+
+  // 8. Strictness mode evaluation
+  let qualified = false;
+  if (strictness === "permissive") {
+    qualified =
+      score >= Math.min(minScore, 0.30) ||
+      simulationScore >= 0.40 ||
+      hasSubstantialEvidence ||
+      isFromFeed;
+  } else if (strictness === "strict") {
+    qualified =
+      (score >= 0.65 || simulationScore >= 0.60) &&
+      (evidence.totalEvidenceCount >= 1 || matchedTerms.length >= 2);
+  } else {
+    // Balanced (default)
+    qualified =
+      (score >= minScore || simulationScore >= 0.50) &&
+      (matchedTerms.length >= 1 || hasSubstantialEvidence || isFromFeed);
+  }
+
+  // 9. Config constraint enforcement
+  if (config?.requireIocs && !evidence.hasIocSignal && score < 0.75) {
     qualified = false;
     reasons.push("Missing required IOCs (enforced by settings)");
   }
-  if (config?.requireAttck && !/\bT1\d{3}(?:\.\d{3})?\b/.test(text) && score < 0.75) {
+  if (config?.requireAttck && !evidence.hasAttckId && score < 0.75) {
     qualified = false;
     reasons.push("Missing required MITRE ATT&CK technique IDs (enforced by settings)");
   }
 
-  // Target resource types filter
+  // 10. Target resource types filter
   if (qualified && config?.targetResourceTypes && config.targetResourceTypes.length > 0) {
     if (!config.targetResourceTypes.includes(resourceKind)) {
       qualified = false;
       return {
         qualified: false,
         score,
+        simulationScore,
+        procedureDensity: evidence.commands.length,
+        evidenceScore: evidence.totalEvidenceCount,
+        isEmergingTechnique: emerging.isEmerging,
+        noveltyRationale: emerging.rationale,
+        noiseClusterScore: marketing.clusterScore,
         classification,
         resourceKind,
         reasons,
         rejectionReason: `REJECTED: Resource kind ${resourceKind} is not in target resource types whitelist`,
         isIndexOrGeneric: false,
+        evidenceDetails: evidence,
       };
     }
   }
@@ -348,10 +541,19 @@ export function qualifyContent(
   return {
     qualified,
     score,
+    simulationScore,
+    procedureDensity: evidence.commands.length,
+    evidenceScore: evidence.totalEvidenceCount,
+    isEmergingTechnique: emerging.isEmerging,
+    noveltyRationale: emerging.rationale,
+    noiseClusterScore: marketing.clusterScore,
     classification,
     resourceKind,
     reasons,
-    rejectionReason: qualified ? undefined : `REJECTED: Score (${Math.round(score * 100)}%) below threshold (${Math.round(minScore * 100)}%) or insufficient TTP depth`,
+    rejectionReason: qualified
+      ? undefined
+      : `REJECTED: Quality (${Math.round(score * 100)}%) and simulation score (${Math.round(simulationScore * 100)}%) below threshold (${Math.round(minScore * 100)}%)`,
     isIndexOrGeneric: false,
+    evidenceDetails: evidence,
   };
 }

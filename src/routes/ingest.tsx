@@ -712,7 +712,14 @@ function IngestPage() {
                         {res.resourceKind || res.classification}
                       </td>
                       <td className="max-w-[280px] p-3">
-                        <div className="truncate font-medium text-fg">{res.title}</div>
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span className="truncate font-medium text-fg">{res.title}</span>
+                          {res.isEmergingTechnique && (
+                            <span className="shrink-0 rounded bg-danger/15 px-1 py-0.2 text-[9px] font-bold text-danger font-mono" title={res.noveltyRationale || "Novel unmapped procedure"}>
+                              NOVEL
+                            </span>
+                          )}
+                        </div>
                         <a
                           href={res.canonicalUrl}
                           target="_blank"
@@ -722,23 +729,43 @@ function IngestPage() {
                           <span className="truncate">{res.canonicalUrl}</span>
                           <ExternalLink className="size-2.5 shrink-0" />
                         </a>
+                        {res.rejectReason && (
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-danger/80" title={res.rejectReason}>
+                            {res.rejectReason}
+                          </div>
+                        )}
                       </td>
                       <td className="p-3 text-muted">{res.sourceDomain}</td>
                       <td className="p-3 font-mono text-[10px] text-subtle">
                         {res.discoveryMethod.replace(/_/g, " ")}
                       </td>
                       <td className="p-3 font-mono">
-                        {res.qualityScore !== null ? `${Math.round(res.qualityScore * 100)}%` : "—"}
+                        <div>{res.qualityScore !== null ? `${Math.round(res.qualityScore * 100)}%` : "—"}</div>
+                        {res.simulationScore !== undefined && res.simulationScore > 0 && (
+                          <div className="text-[10px] font-mono text-accent">
+                            SIM {Math.round(res.simulationScore * 100)}%
+                          </div>
+                        )}
                       </td>
                       <td className="p-3 text-right">
                         {res.status === "ingested" ? (
-                          <Link
-                            to="/library/$reportId"
-                            params={{ reportId: res.reportId || "" }}
-                            className="inline-flex items-center gap-1 text-accent hover:underline text-xs"
-                          >
-                            View in Library
-                          </Link>
+                          res.reportId ? (
+                            <Link
+                              to="/library/$reportId"
+                              params={{ reportId: res.reportId }}
+                              className="inline-flex items-center gap-1 text-accent hover:underline text-xs"
+                            >
+                              View in Library
+                            </Link>
+                          ) : (
+                            <Link
+                              to="/library"
+                              search={{ q: res.title }}
+                              className="inline-flex items-center gap-1 text-accent hover:underline text-xs"
+                            >
+                              View in Library
+                            </Link>
+                          )
                         ) : (
                           <Button
                             size="sm"

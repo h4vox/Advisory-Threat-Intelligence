@@ -213,33 +213,128 @@ export function scoreQuality(text: string, title: string): {
   const body = `${title}\n${text}`.toLowerCase();
   const wordCount = text.split(/\s+/).filter(Boolean).length;
 
+  // Technical commands check
+  const hasCommands =
+    /(?:(?:powershell|cmd|wmic|schtasks|vssadmin|rundll32|certutil|reg|psexec|whoami|nltest|net\s+user|mimikatz|rubeus)\b[^\r\n]{5,100})/i.test(
+      text,
+    );
+  const hasRegistry = /\b(?:HKLM|HKCU)\\[a-zA-Z0-9_\\]{4,80}\b/i.test(text);
+  const hasEventId = /\b(?:Event\s*ID\s*(?:4688|4624|7045|1102)|Sysmon\s*(?:1|3|10))\b/i.test(text);
+  const hasCve = /CVE-\d{4}-\d+/i.test(text);
+
   if (wordCount >= 2500) reasons.push({ label: "Long-form technical depth", delta: 0.28 });
   else if (wordCount >= 1200) reasons.push({ label: "Substantial article length", delta: 0.2 });
-  else if (wordCount >= 500) reasons.push({ label: "Minimum length met", delta: 0.1 });
-  else reasons.push({ label: "Short document", delta: -0.15 });
+  else if (wordCount >= 500) reasons.push({ label: "Standard article length", delta: 0.1 });
+  else if (hasCommands || hasRegistry || hasCve) {
+    reasons.push({ label: "Concise technical artifact with actionable commands", delta: 0.16 });
+  } else {
+    reasons.push({ label: "Short non-procedural document", delta: -0.12 });
+  }
 
   const hits = SIGNAL_WORDS.filter((w) => body.includes(w));
   if (hits.length >= 8) reasons.push({ label: `Dense adversary vocabulary (${hits.length})`, delta: 0.28 });
   else if (hits.length >= 4) reasons.push({ label: `Relevant threat terms (${hits.length})`, delta: 0.18 });
   else if (hits.length >= 2) reasons.push({ label: "Some threat terms", delta: 0.08 });
-  else reasons.push({ label: "Weak threat vocabulary", delta: -0.12 });
+  else reasons.push({ label: "Weak threat vocabulary", delta: -0.10 });
 
-  if (/\bstage\s*[123]|infection chain|attack chain|kill chain/i.test(body)) {
-    reasons.push({ label: "Named stages / attack chain language", delta: 0.16 });
+  if (hasCommands) {
+    reasons.push({ label: "Adversary execution commands / tradecraft present", delta: 0.22 });
+  }
+  if (hasRegistry) {
+    reasons.push({ label: "Persistence registry keys / system artifacts", delta: 0.12 });
+  }
+  if (hasEventId) {
+    reasons.push({ label: "Telemetry & detection event IDs", delta: 0.12 });
+  }
+
+  if (/\bstage\s*[123]|infection chain|attack chain|kill chain|lateral movement.*exfil/i.test(body)) {
+    reasons.push({ label: "Named stages / attack chain language", delta: 0.18 });
   }
   if (/\bT1\d{3}\b/.test(text) || /att&ck/.test(body)) {
     reasons.push({ label: "ATT&CK identifiers present", delta: 0.12 });
   }
-  if (/CVE-\d{4}-\d+/.test(text)) {
-    reasons.push({ label: "CVE references", delta: 0.08 });
+  if (hasCve) {
+    reasons.push({ label: "CVE references", delta: 0.10 });
   }
 
-  const score = Math.max(0, Math.min(1, reasons.reduce((s, r) => s + r.delta, 0.25)));
+  // Detect emerging techniques (BYOVD, unhooking, direct syscalls, PRT theft)
+  if (/\b(?:byovd|direct syscalls|unhooking|amsi bypass|aadrefreshtoken|lotc)\b/i.test(body)) {
+    reasons.push({ label: "Emerging / novel technique tradecraft", delta: 0.16 });
+  }
+
+  const score = Math.max(0, Math.min(1, reasons.reduce((s, r) => s + r.delta, 0.22)));
   return { score: Math.round(score * 100) / 100, reasons, wordCount };
 }
 
 export function excerptOf(text: string, n = 220): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length <= n ? t : `${t.slice(0, n).trim()}…`;
+}
+
+const COMMON_STOP_WORDS = new Set([
+  "the", "and", "is", "in", "to", "of", "it", "that", "you", "he", "was", "for", "on", "are",
+  "as", "with", "his", "they", "at", "be", "this", "have", "from", "or", "one", "had", "by",
+  "word", "but", "not", "what", "all", "were", "we", "when", "your", "can", "said", "there",
+]);
+
+function fnv1a64(str: string): bigint {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= BigInt(str.charCodeAt(i));
+    hash = (hash * prime) & 0xffffffffffffffffn;
+  }
+  return hash;
+}
+
+export function computeSimHash64(text: string): string {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !COMMON_STOP_WORDS.has(w));
+
+  if (words.length === 0) return "0000000000000000";
+
+  const v = new Int32Array(64);
+
+  // Form 2-grams (shingles) for structural sentence similarity
+  const step = Math.max(1, Math.floor(words.length / 500));
+  for (let i = 0; i < words.length - 1; i += step) {
+    const shingle = `${words[i]} ${words[i + 1]}`;
+    const h = fnv1a64(shingle);
+    for (let bit = 0; bit < 64; bit++) {
+      if ((h >> BigInt(bit)) & 1n) {
+        v[bit] += 1;
+      } else {
+        v[bit] -= 1;
+      }
+    }
+  }
+
+  let fingerprint = 0n;
+  for (let bit = 0; bit < 64; bit++) {
+    if (v[bit] > 0) {
+      fingerprint |= 1n << BigInt(bit);
+    }
+  }
+
+  return fingerprint.toString(16).padStart(16, "0");
+}
+
+export function computeHammingDistance(hashA: string, hashB: string): number {
+  try {
+    const a = BigInt("0x" + hashA);
+    const b = BigInt("0x" + hashB);
+    let xor = a ^ b;
+    let dist = 0;
+    while (xor > 0n) {
+      dist += Number(xor & 1n);
+      xor >>= 1n;
+    }
+    return dist;
+  } catch {
+    return 64;
+  }
 }
 

@@ -7,6 +7,8 @@ import {
 } from "./discovery";
 import {
   canonicalizeUrl,
+  computeHammingDistance,
+  computeSimHash64,
   harvestIocs,
   htmlToText,
   MAX_BYTES,
@@ -38,6 +40,7 @@ import {
   mongoInsertIngestEvent,
   mongoInsertReport,
   mongoListReports,
+  mongoGetExistingReportsDedupIndex,
   mongoListSources,
   mongoSeedSources,
   mongoUpdateCrawlConfig,
@@ -161,11 +164,16 @@ export async function executeCrawlJob(
   const jobControl = { cancel: false, pause: false };
   activeJobs.set(jobId, jobControl);
 
+  const breadth = config.discoveryBreadth || "balanced";
+  let maxDepth = config.maxDepth || 3;
+  if (breadth === "focused") maxDepth = 1;
+  else if (breadth === "wide") maxDepth = Math.max(maxDepth, 4);
+
   const maxTotalResources = targetedQuery
     ? Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, 100)
-    : Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, 120);
-  const maxPerDomain = config.maxResourcesPerDomain || 12;
-  const maxDepth = config.maxDepth || 3;
+    : Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, breadth === "wide" ? 180 : 120);
+  const maxPerDomain = breadth === "wide" ? Math.max(config.maxResourcesPerDomain || 16, 16) : config.maxResourcesPerDomain || 12;
+  const maxPdfDownloads = config.maxPdfDownloads || 10;
 
   const initialJob: CrawlJob = {
     id: jobId,
@@ -284,13 +292,21 @@ export async function executeCrawlJob(
     // 2. Query existing storage for smart deduplication
     const storedCanonicalUrls = new Set<string>();
     const storedHashes = new Set<string>();
+    const storedSimhashes: Array<{ id: string; simhash: string; title: string }> = [];
 
     if (isMongoConfigured()) {
       try {
-        const existingReports = await mongoListReports();
+        const existingReports = await mongoGetExistingReportsDedupIndex();
         for (const r of existingReports) {
           if (r.canonicalUrl) storedCanonicalUrls.add(r.canonicalUrl);
           if (r.textHash) storedHashes.add(r.textHash);
+          if (r.title || r.excerpt) {
+            storedSimhashes.push({
+              id: r.id,
+              simhash: computeSimHash64(`${r.title} ${r.excerpt || ""}`),
+              title: r.title,
+            });
+          }
         }
       } catch {
         /* fallback to sql */
@@ -443,6 +459,92 @@ export async function executeCrawlJob(
                   domain: link.domain,
                   title: link.title,
                 });
+              }
+
+              // Deep Source Exploration: Crawl dedicated research archives if configured
+              if (source.researchArchives && source.researchArchives.length > 0) {
+                for (const archiveUrl of source.researchArchives) {
+                  if (archiveUrl === source.homepageUrl) continue;
+                  try {
+                    const archRes = await fetch(archiveUrl, {
+                      headers: {
+                        "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+                        accept: "text/html,application/xhtml+xml,text/plain",
+                      },
+                    }).catch(() => null);
+                    if (archRes && archRes.ok) {
+                      const archHtml = await archRes.text();
+                      const archLinks = extractOutlinksAndCitations(archHtml, archiveUrl, {
+                        sourceId: source.id,
+                        publisher: source.name,
+                        discoveryMethod: "crawl_source",
+                        depth: 1,
+                        allowExternalDomains: config.allowExternalDomains !== false,
+                        domainAllowlist: config.domainAllowlist,
+                        domainBlocklist: config.domainBlocklist,
+                      });
+                      for (const l of archLinks.discoveredLinks) {
+                        enqueue({
+                          url: l.url,
+                          canonicalUrl: l.canonicalUrl,
+                          depth: 1,
+                          priorityScore: l.priorityScore + 0.05,
+                          parentUrl: archiveUrl,
+                          parentSource: source.name,
+                          discoveryPath: l.discoveryPath,
+                          discoveryMethod: "seed_source",
+                          sourceId: source.id,
+                          sourceSlug: source.slug,
+                          publisher: l.publisher || source.name,
+                          domain: l.domain,
+                          title: l.title,
+                        });
+                      }
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }
+
+              // Deep Pagination: Explore page 2 for high-trust sources if breadth is balanced/wide
+              if ((breadth === "wide" || maxDepth >= 3) && source.paginationPattern) {
+                const page2Url = source.paginationPattern.replace("{n}", "2");
+                try {
+                  const p2Res = await fetch(page2Url, {
+                    headers: {
+                      "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal)",
+                    },
+                  }).catch(() => null);
+                  if (p2Res && p2Res.ok) {
+                    const p2Html = await p2Res.text();
+                    const p2Links = extractOutlinksAndCitations(p2Html, page2Url, {
+                      sourceId: source.id,
+                      publisher: source.name,
+                      discoveryMethod: "crawl_source",
+                      depth: 2,
+                    });
+                    for (const l of p2Links.discoveredLinks) {
+                      enqueue({
+                        url: l.url,
+                        canonicalUrl: l.canonicalUrl,
+                        depth: 2,
+                        priorityScore: l.priorityScore,
+                        parentUrl: page2Url,
+                        parentSource: source.name,
+                        discoveryPath: l.discoveryPath,
+                        discoveryMethod: "seed_source",
+                        sourceId: source.id,
+                        sourceSlug: source.slug,
+                        publisher: l.publisher || source.name,
+                        domain: l.domain,
+                        title: l.title,
+                      });
+                    }
+                  }
+                } catch {
+                  /* ignore */
+                }
               }
             }
           } catch {
@@ -802,6 +904,62 @@ export async function executeCrawlJob(
         continue;
       }
 
+      // Check Near-Duplicate & Syndication with SimHash
+      if (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both") {
+        const candidateSimhash = computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`);
+        const nearDuplicate = storedSimhashes.find(
+          (s) => computeHammingDistance(s.simhash, candidateSimhash) <= 3,
+        );
+        if (nearDuplicate) {
+          duplicateCount++;
+          console.log(`[crawler] SYNDICATED / NEAR-DUPLICATE of ${nearDuplicate.id}: "${docTitle.slice(0, 60)}"`);
+          const itemId = newId("itm");
+          const jobItem: CrawlJobItem = {
+            id: itemId,
+            jobId,
+            sourceId: current.sourceId || null,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
+            title: docTitle,
+            classification: "THREAT_REPORT",
+            decision: "DUPLICATE",
+            reason: `Syndicated or near-duplicate reproduction of canonical report ${nearDuplicate.id} ("${nearDuplicate.title.slice(0, 50)}")`,
+            stage: "duplicate",
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentUrl: current.parentUrl,
+            depth: current.depth,
+            publisher: current.publisher || current.domain,
+            discoveryPath: current.discoveryPath,
+            createdAt: new Date().toISOString(),
+          };
+          if (isMongoConfigured()) {
+            await mongoInsertCrawlJobItem(jobItem);
+          }
+          continue;
+        }
+      }
+
+      // Check dateRangeDays filter if configured
+      if (config.dateRangeDays && config.dateRangeDays > 0) {
+        const pubDateMatch = textContent.slice(0, 1500).match(/\b(202[0-6])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
+        if (pubDateMatch) {
+          const parsedPubDate = new Date(pubDateMatch[0]).getTime();
+          const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
+          if (!isNaN(parsedPubDate) && parsedPubDate < cutoff) {
+            skippedCount++;
+            continue;
+          }
+        }
+      }
+
+      // Check maxPdfDownloads limit
+      const isPdf = contentType.includes("pdf") || /\.pdf$/i.test(current.canonicalUrl);
+      if (isPdf && pdfGeneratedCount >= (config.maxPdfDownloads || 10)) {
+        skippedCount++;
+        continue;
+      }
+
       // 4.3 Recursive Citation & Graph Outlink Exploration
       // When a report contains links to new domains or papers, expand outward!
       if (
@@ -879,6 +1037,9 @@ export async function executeCrawlJob(
           depth: current.depth,
           publisher: current.publisher || current.domain,
           qualityScore: qual.score,
+          simulationScore: qual.simulationScore,
+          isEmergingTechnique: qual.isEmergingTechnique,
+          noveltyRationale: qual.noveltyRationale,
           resourceKind: qual.resourceKind,
           discoveryPath: current.discoveryPath,
           createdAt: new Date().toISOString(),
@@ -904,6 +1065,9 @@ export async function executeCrawlJob(
             status: "rejected",
             rejectReason: rejectMsg,
             qualityScore: qual.score,
+            simulationScore: qual.simulationScore,
+            isEmergingTechnique: qual.isEmergingTechnique,
+            noveltyRationale: qual.noveltyRationale,
             discoveryPath: current.discoveryPath,
           });
         }
@@ -1021,6 +1185,15 @@ export async function executeCrawlJob(
               pdfUrl: "",
               analysis: intelAnalysis,
               discoveryPath: current.discoveryPath,
+              simulationScore: qual.simulationScore,
+              isEmergingTechnique: qual.isEmergingTechnique,
+              noveltyRationale: qual.noveltyRationale,
+            });
+
+            storedSimhashes.push({
+              id: reportId,
+              simhash: computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`),
+              title: docTitle,
             });
 
             if (current.sourceId) {
@@ -1032,7 +1205,7 @@ export async function executeCrawlJob(
               reportId,
               url: current.url,
               outcome: "acquired",
-              detail: `[${qual.resourceKind}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · Depth ${current.depth} (${current.domain})`,
+              detail: `[${qual.resourceKind}] quality ${score} (sim: ${qual.simulationScore}) · ${wordCount} words · ${iocs.length} IOCs · Depth ${current.depth} (${current.domain})`,
               createdAt: new Date().toISOString(),
             });
 
@@ -1053,6 +1226,9 @@ export async function executeCrawlJob(
               contentType,
               status: "ingested",
               qualityScore: score,
+              simulationScore: qual.simulationScore,
+              isEmergingTechnique: qual.isEmergingTechnique,
+              noveltyRationale: qual.noveltyRationale,
               reportId,
               discoveryPath: current.discoveryPath,
             });

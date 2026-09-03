@@ -8,6 +8,9 @@ export type SourceRecord = {
   priority: number;
   homepageUrl: string;
   feedUrl?: string;
+  researchArchives?: string[];
+  paginationPattern?: string;
+  sitemapUrl?: string;
   enabled: boolean;
   trustLevel: TrustLevel;
   notes: string;
@@ -114,6 +117,10 @@ export type ReportRecord = {
   discoveryPath?: string[];
   outlinkCount?: number;
   citedDomains?: string[];
+  simulationScore?: number;
+  isEmergingTechnique?: boolean;
+  noveltyRationale?: string;
+  canonicalReportId?: string;
 };
 
 export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons"> & {
@@ -251,6 +258,9 @@ export type CrawlJobItem = {
   depth: number;
   publisher: string;
   qualityScore?: number;
+  simulationScore?: number;
+  isEmergingTechnique?: boolean;
+  noveltyRationale?: string;
   resourceKind?: ResourceKind;
   discoveryPath?: string[];
   outlinkCount?: number;
@@ -277,6 +287,9 @@ export type DiscoveredResource = {
   status: string; // discovered | evaluated | qualified | rejected | ingested | awaiting_approval
   rejectReason: string;
   qualityScore: number | null;
+  simulationScore?: number;
+  isEmergingTechnique?: boolean;
+  noveltyRationale?: string;
   reportId: string | null;
   discoveryPath?: string[];
   domainTrustScore?: number;
