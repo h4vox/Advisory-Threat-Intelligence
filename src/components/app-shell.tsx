@@ -22,7 +22,7 @@ function AieMark({ className }: { className?: string }) {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const pathname = useRouterState({ select: (s) => s?.location?.pathname ?? "" }) ?? "";
 
   return (
     <div className="min-h-dvh bg-bg text-fg">
@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <nav className="flex flex-1 flex-col gap-1">
             {NAV.map((item) => {
-              const active = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
+              const active = item.to === "/" ? pathname === "/" : Boolean(pathname && pathname.startsWith(item.to));
               return (
                 <Link
                   key={item.to}
