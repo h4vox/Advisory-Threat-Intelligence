@@ -30,6 +30,8 @@ import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IdBadge } from "@/components/id-badge";
+import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
 import { getDashboard } from "@/lib/aie/server";
 import { cn } from "@/lib/cn";
@@ -120,8 +122,8 @@ function Home() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => getDashboard(),
-    refetchInterval: 12000,
-    staleTime: 10000,
+    refetchInterval: 30000,
+    staleTime: 15000,
   });
 
   const [activeRegion, setActiveRegion] = useState<(typeof THREAT_REGIONS)[0] | null>(null);
@@ -530,6 +532,12 @@ function Home() {
                   className="flex items-start justify-between gap-4 px-5 py-4 transition-colors hover:bg-bg-subtle"
                 >
                   <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <IdBadge id={formatReportId(r.id)} category="report" size="xs" prefixLabel="ID" />
+                      {r.sourceId && (
+                        <IdBadge id={formatSourceId(r.sourceId, r.sourceName)} category="source" size="xs" prefixLabel="SRC" />
+                      )}
+                    </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge tone="neutral">{r.sourceName}</Badge>
                       <Badge tone="accent">{r.classification}</Badge>
@@ -557,28 +565,30 @@ function Home() {
               <span className="font-mono text-xs text-subtle">Live Pipeline</span>
             </div>
             <ul className="space-y-2">
-              {data?.events.map((e) => (
-                <li key={e.id} className="rounded-lg border border-border bg-bg-elevated px-4 py-3 shadow-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <Badge
-                      tone={
-                        e.outcome === "failed" || e.outcome === "rejected"
-                          ? "danger"
-                          : e.outcome === "duplicate"
-                            ? "warn"
-                            : "sage"
-                      }
-                    >
-                      {e.outcome}
-                    </Badge>
-                    <span className="font-mono text-[10px] text-subtle">
-                      {formatDateTime(e.createdAt)}
-                    </span>
-                  </div>
-                  <p className="mt-2 truncate font-mono text-xs text-fg">{e.url}</p>
-                  {e.detail ? <p className="mt-1 text-xs text-muted">{e.detail}</p> : null}
-                </li>
-              ))}
+              {data?.events.map((e) => {
+                const outcomeMeta = formatOutcomeId(e.outcome, e.reportId || e.id, e.url);
+                return (
+                  <li key={e.id} className="rounded-lg border border-border bg-bg-elevated px-4 py-3 shadow-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <IdBadge id={formatAuditId(e.id)} category="audit" size="xs" prefixLabel="AUD" />
+                        <IdBadge
+                          id={outcomeMeta.id}
+                          category={outcomeMeta.category}
+                          tone={outcomeMeta.tone}
+                          size="xs"
+                          label={e.outcome}
+                        />
+                      </div>
+                      <span className="font-mono text-[10px] text-subtle">
+                        {formatDateTime(e.createdAt)}
+                      </span>
+                    </div>
+                    <p className="mt-2 truncate font-mono text-xs text-fg">{e.url}</p>
+                    {e.detail ? <p className="mt-1 text-xs text-muted">{e.detail}</p> : null}
+                  </li>
+                );
+              })}
             </ul>
 
             <div className="mt-6 space-y-2 rounded-xl border border-border bg-bg-elevated p-4">

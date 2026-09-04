@@ -3,6 +3,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ExternalLink } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
+import { IdBadge } from "@/components/id-badge";
+import { formatDomainId, formatSourceId } from "@/lib/aie/ids";
 import { listSources, toggleSource } from "@/lib/aie/server";
 
 export const Route = createFileRoute("/sources")({ component: SourcesPage });
@@ -34,6 +36,10 @@ function SourcesPage() {
             className="flex flex-col gap-4 rounded-xl border border-border bg-bg-elevated p-5 md:flex-row md:items-center md:justify-between"
           >
             <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                <IdBadge id={formatSourceId(s.id, s.slug)} category="source" size="xs" prefixLabel="SRC" />
+                <IdBadge id={formatDomainId(s.homepageUrl)} category="domain" size="xs" />
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-medium">{s.name}</h2>
                 <Badge tone="accent">P{s.priority}</Badge>

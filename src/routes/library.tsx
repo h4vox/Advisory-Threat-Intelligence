@@ -22,6 +22,8 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IdBadge } from "@/components/id-badge";
+import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
@@ -169,7 +171,9 @@ function LibraryPage() {
         }
 
         if (query) {
-          const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${
+          const repId = formatReportId(r.id);
+          const domId = formatDomainId(r.sourceDomain || r.url);
+          const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.id} ${repId} ${r.sourceId} ${r.ingestOrigin || ""} ${domId} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${
             r.analysis?.threatActors?.join(" ") || ""
           } ${r.analysis?.malware?.join(" ") || ""} ${r.extractedEntities?.cves?.join(" ") || ""} ${
             r.iocs?.map((i) => i.value).join(" ") || ""
@@ -611,6 +615,14 @@ function LibraryPage() {
               key={r.id}
               className="group rounded-xl border border-border bg-bg-elevated p-5 transition-colors hover:border-border/80 hover:bg-bg-subtle/40"
             >
+              {/* Standardized AIE ID Bar: RST and DOM only */}
+              <div className="flex flex-wrap items-center gap-1.5 mb-2.5 pb-2 border-b border-border/50">
+                <IdBadge id={formatReportId(r.id)} category="report" size="xs" />
+                {(r.sourceDomain || r.url) && (
+                  <IdBadge id={formatDomainId(r.sourceDomain || r.url)} category="domain" size="xs" />
+                )}
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone="neutral">{r.sourceName || r.publisher}</Badge>
@@ -756,6 +768,14 @@ function LibraryPage() {
                   <FileText className="size-4 text-accent" />
                 </div>
                 <div className="overflow-hidden">
+                  <div className="flex items-center gap-2 mb-1">
+                    {previewReportId && (
+                      <IdBadge id={formatReportId(previewReportId)} category="report" size="xs" />
+                    )}
+                    {previewData?.url && (
+                      <IdBadge id={formatDomainId(previewData.url)} category="domain" size="xs" />
+                    )}
+                  </div>
                   <h3 className="truncate text-sm font-medium">
                     {previewData?.title || "High-Fidelity PDF Representation"}
                   </h3>

@@ -133,7 +133,16 @@ function main(argv) {
     console.error("usage: node scripts/with-app-env.mjs <command> [args…]");
     process.exit(2);
   }
-  const env = mergeAppEnv(readAppEnv(projectRoot()), { ...readDotEnv(projectRoot()), ...process.env });
+  const root = projectRoot();
+  const nodeBin = join(root, "node_modules", ".bin");
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const existingPath = process.env.Path || process.env.PATH || "";
+  const env = mergeAppEnv(readAppEnv(root), {
+    ...readDotEnv(root),
+    ...process.env,
+    PATH: `${nodeBin}${pathSep}${existingPath}`,
+    Path: `${nodeBin}${pathSep}${existingPath}`,
+  });
   const child = spawn(command, args, {
     stdio: "inherit",
     env,

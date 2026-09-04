@@ -5,13 +5,13 @@
  * identifiers across all CTI pipeline resources, ingestion states, and audit trails.
  *
  * Prefixes:
- *  - RPT-XXXXXX  : Library Reports & Intelligence Dossiers (Green)
+ *  - RST-XXXXXX  : Library Reports & Intelligence Dossiers (Green)
  *  - ING-XXXXXX  : Acquired & Ingested Pipeline Resources (Green)
  *  - DUP-XXXXXX  : Deduplicated Candidate URLs & Duplicate Hits (Amber)
  *  - REJ-XXXXXX  : Quality-Filtered / Noise / Low-Score Rejections (Red)
  *  - FAIL-XXXXXX : Network Fetch / TLS / Extraction Failures (Red)
  *  - DISC-XXXXXX : Candidate Resources in Discovery Queue (Cyan)
- *  - SRC-XXXXXX  : Registered & Discovered Threat Intel Sources (Sage/Purple)
+ *  - SRC-XXXXXX  : Registered & Discovered Threat Intel Sources (Neutral)
  *  - DOM-XXXXXX  : Clean Domain Identifiers (Neutral)
  *  - ORG-XXXXXX  : Origin Provenance Tags (SEED, CRAWL, MANUAL, PASTE)
  *  - JOB-XXXXXX  : Crawl Engine Job Executions (Neutral/Green)
@@ -33,7 +33,7 @@ export type IdCategory =
   | "audit"
   | "edge";
 
-export type IdTone = "sage" | "warn" | "danger" | "accent" | "neutral" | "purple";
+export type IdTone = "sage" | "warn" | "danger" | "accent" | "neutral";
 
 /**
  * Fast deterministic 8-character hex hash from any string (URL, title, etc.)
@@ -55,7 +55,7 @@ export function formatSystemId(
   fallbackSeed?: string,
 ): string {
   const prefixMap: Record<IdCategory, string> = {
-    report: "RPT",
+    report: "RST",
     ingested: "ING",
     duplicate: "DUP",
     rejected: "REJ",
@@ -82,15 +82,15 @@ export function formatSystemId(
 
   const clean = rawId.trim();
 
-  // If already formatted like RPT-XXXXXX, normalize case
+  // If already formatted like RST-XXXXXX or RPT-XXXXXX, normalize case
   const prefixMatch = clean.match(/^([A-Za-z]+)[-_](.+)$/);
   if (prefixMatch) {
     const existingPrefix = prefixMatch[1].toUpperCase();
     const body = prefixMatch[2].replace(/[^a-zA-Z0-9]/g, "").slice(0, 12).toUpperCase();
 
-    // If existing prefix is equivalent (e.g. RPT, ING, DUP, REJ, FAIL, SRC, JOB, AUD, EDG, DSC)
-    if (existingPrefix === "RPT" || existingPrefix === "REPORT") {
-      return `RPT-${body}`;
+    // If existing prefix is equivalent (e.g. RST, RPT, ING, DUP, REJ, FAIL, SRC, JOB, AUD, EDG, DSC)
+    if (existingPrefix === "RST" || existingPrefix === "RPT" || existingPrefix === "REPORT" || existingPrefix === "RESOURCE") {
+      return `RST-${body}`;
     }
     if (existingPrefix === "ING" || existingPrefix === "INGEST") {
       return `ING-${body}`;
@@ -286,4 +286,11 @@ export function formatAuditId(eventId?: string | null, fallbackUrl?: string): st
  */
 export function formatEdgeId(edgeId?: string | null, fallbackKey?: string): string {
   return formatSystemId("edge", edgeId, fallbackKey);
+}
+
+/**
+ * Generate unique internal document ID
+ */
+export function newId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }

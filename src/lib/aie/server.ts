@@ -69,6 +69,7 @@ import {
   mongoUpdateAppSettings,
   mongoGetStorageStats,
   purgeAllServerCaches,
+  invalidateCrawlerStateCache,
   DEFAULT_CRAWL_CONFIG,
 } from "../mongodb/repository.server";
 
@@ -1269,6 +1270,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
       activeSources: z.array(z.string()).optional(),
       targetResourceTypes: z.array(z.string()).optional(),
       maxResourcesPerJob: z.number().optional(),
+      maxRunTimeMinutes: z.number().optional(),
       maxResourcesPerDomain: z.number().optional(),
       discoveryBreadth: z.enum(["focused", "balanced", "wide"]).optional(),
       allowExternalDomains: z.boolean().optional(),
@@ -1280,6 +1282,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
     }).passthrough(),
   )
   .handler(async ({ data }) => {
+    invalidateCrawlerStateCache();
     if (isMongoConfigured()) {
       try {
         const updated = await mongoUpdateCrawlConfig(data as any);
@@ -1541,6 +1544,7 @@ export const triggerCrawlJob = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await ensureSeeded();
+    invalidateCrawlerStateCache();
     const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
     return { ok: true as const, job };
   });
@@ -1549,6 +1553,7 @@ export const cancelCrawlJob = createServerFn({ method: "POST" })
   .validator(z.object({ jobId: z.string() }))
   .handler(async ({ data }) => {
     const success = await cancelJob(data.jobId);
+    invalidateCrawlerStateCache();
     return { ok: success };
   });
 
@@ -1629,6 +1634,7 @@ export const ingestDiscoveredUrl = createServerFn({ method: "POST" })
       }
     }
 
+    invalidateCrawlerStateCache();
     return result;
   });
 

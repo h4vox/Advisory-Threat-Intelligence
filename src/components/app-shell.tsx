@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Database, Globe2, Layers, Library, Moon, Radar, Sun, Upload } from "lucide-react";
+import { Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const NAV = [
@@ -9,6 +9,7 @@ const NAV = [
   { to: "/sources", label: "Sources", icon: Globe2 },
   { to: "/ingest", label: "Ingest", icon: Upload },
   { to: "/library", label: "Library", icon: Library },
+  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 function AieMark({ className }: { className?: string }) {
@@ -120,7 +121,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* Mobile Bottom Navigation: Fixed to bottom */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 backdrop-blur md:hidden">
-        <div className="grid grid-cols-5">
+        <div className="grid grid-cols-6">
           {NAV.map((item) => {
             const active = item.to === "/" ? pathname === "/" : Boolean(pathname && pathname.startsWith(item.to));
             return (

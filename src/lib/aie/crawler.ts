@@ -49,6 +49,8 @@ import {
   mongoUpdateSourceLastIngest,
   mongoUpsertDiscoveredResource,
   ensureMongoIndexes,
+  invalidateCrawlerStateCache,
+  registerJobActiveChecker,
 } from "../mongodb/repository.server";
 import { SOURCE_SEED } from "./catalog";
 
@@ -58,6 +60,13 @@ function newId(prefix: string) {
 
 // Active job cancellation tokens
 const activeJobs = new Map<string, { cancel: boolean; pause: boolean }>();
+
+// Register memory state tracker with repository watchdog
+registerJobActiveChecker((jobId: string) => activeJobs.has(jobId));
+
+export function isJobActiveInMemory(jobId: string): boolean {
+  return activeJobs.has(jobId);
+}
 
 interface FrontierItem {
   url: string;
@@ -170,10 +179,13 @@ export async function executeCrawlJob(
   if (breadth === "focused") maxDepth = 1;
   else if (breadth === "wide") maxDepth = Math.max(maxDepth, 4);
 
+  const configuredMax = config.maxResourcesPerJob || config.maxResourcesPerRun || 35;
   const maxTotalResources = targetedQuery
-    ? Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, 100)
-    : Math.max(config.maxResourcesPerJob || config.maxResourcesPerRun || 120, breadth === "wide" ? 180 : 120);
-  const maxPerDomain = breadth === "wide" ? Math.max(config.maxResourcesPerDomain || 16, 16) : config.maxResourcesPerDomain || 12;
+    ? Math.min(Math.max(configuredMax, 15), 45)
+    : breadth === "wide"
+      ? Math.min(Math.max(configuredMax, 25), 55)
+      : Math.min(Math.max(configuredMax, 15), 35);
+  const maxPerDomain = breadth === "wide" ? Math.max(config.maxResourcesPerDomain || 8, 8) : config.maxResourcesPerDomain || 6;
   const maxPdfDownloads = config.maxPdfDownloads || 10;
 
   const initialJob: CrawlJob = {
@@ -670,10 +682,21 @@ export async function executeCrawlJob(
       }
     }
 
+    const jobStartTime = Date.now();
+    const maxRunTimeMinutes = config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0 ? config.maxRunTimeMinutes : 5;
+    const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
+
     // 4. MAIN FRONTIER PROCESSING LOOP
     // Dynamically pops the highest-priority resource and explores outbound relationships
     while (frontierQueue.length > 0 && evaluatedCount < maxTotalResources) {
-      if (jobControl.cancel) break;
+      if (jobControl.cancel) {
+        console.log(`[crawler] Job ${jobId} cancellation requested, halting queue processing.`);
+        break;
+      }
+      if (Date.now() - jobStartTime > MAX_JOB_EXECUTION_TIME_MS) {
+        console.warn(`[crawler] Job ${jobId} reached execution limit (${maxRunTimeMinutes}m). Finalizing smoothly with acquired items.`);
+        break;
+      }
 
       // Sort by priority descending to dequeue the most technically relevant resource
       frontierQueue.sort((a, b) => b.priorityScore - a.priorityScore);
@@ -830,7 +853,7 @@ export async function executeCrawlJob(
           }
 
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 8000);
+          const timeout = setTimeout(() => controller.abort(), 4500);
 
           const res = await fetch(current.canonicalUrl, {
             signal: controller.signal,
@@ -1550,15 +1573,22 @@ export async function cancelJob(jobId: string): Promise<boolean> {
   const job = activeJobs.get(jobId);
   if (job) {
     job.cancel = true;
-    if (isMongoConfigured()) {
-      await mongoUpdateCrawlJob(jobId, { status: "cancelled", completedAt: new Date().toISOString() });
-    }
-    return true;
   }
+  activeJobs.delete(jobId);
   if (isMongoConfigured()) {
-    await mongoUpdateCrawlJob(jobId, { status: "cancelled", completedAt: new Date().toISOString() });
+    await mongoUpdateCrawlJob(jobId, {
+      status: "cancelled",
+      completedAt: new Date().toISOString(),
+      errorSummary: "Crawl job cancelled by operator",
+      currentStage: "indexed",
+    });
   }
-  const sql = await getSql();
-  await sql`update crawl_jobs set status = 'cancelled', completed_at = now() where id = ${jobId} and status = 'running'`;
+  invalidateCrawlerStateCache();
+  try {
+    const sql = await getSql();
+    await sql`update crawl_jobs set status = 'cancelled', completed_at = now() where id = ${jobId} and status = 'running'`;
+  } catch {
+    /* ignore sql fallback */
+  }
   return true;
 }

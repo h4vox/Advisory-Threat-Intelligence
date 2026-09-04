@@ -174,6 +174,7 @@ export type CrawlConfig = {
   startHour: string;
   maxResourcesPerRun: number; // Max resources processed in single job run
   maxResourcesPerJob?: number;
+  maxRunTimeMinutes?: number; // Hard time limit for crawl job execution (1 to 30 mins, default 5)
   maxResourcesPerDomain: number; // Max articles from any single domain (default 8)
   maxDepth: number; // Traversal depth for outlink exploration (1 to 5)
   discoveryBreadth: DiscoveryBreadth; // focused | balanced | wide
@@ -333,6 +334,8 @@ export type DiscoveryGraphEdge = {
     | "USES_TTP"
     | "ATTRIBUTES";
   label: string;
+  sourceDomain?: string;
+  targetDomain?: string;
   jobId?: string;
   createdAt: string;
 };

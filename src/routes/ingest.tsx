@@ -87,8 +87,9 @@ const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   paused: false,
   frequencyMinutes: 360,
   startHour: "09:00",
-  maxResourcesPerRun: 60,
-  maxResourcesPerJob: 60,
+  maxResourcesPerRun: 35,
+  maxResourcesPerJob: 35,
+  maxRunTimeMinutes: 5,
   maxResourcesPerDomain: 8,
   maxDepth: 3,
   discoveryBreadth: "balanced",
@@ -326,12 +327,16 @@ function IngestPage() {
   const crawlerState = useQuery({
     queryKey: ["crawlerState"],
     queryFn: () => getCrawlerState(),
-    refetchInterval: 3500,
+    staleTime: 6000,
+    refetchInterval: (query) => (query.state.data?.activeJob ? 3000 : 25000),
   });
+
+  const isCrawlerLoading = crawlerState.isLoading || (!crawlerState.data && !crawlerState.isError);
 
   const catalog = useQuery({
     queryKey: ["catalog"],
     queryFn: () => listCatalog(),
+    staleTime: 60_000,
   });
 
   // Targeted Crawl Mutation
@@ -491,8 +496,8 @@ function IngestPage() {
   const pagedDiscovered = paginateList(sortedDiscovered, queuePage, queuePageSize);
 
   // Pipeline Audit Log computations
-  const auditStages = Array.from(new Set(items.map((i) => i.stage).filter(Boolean))).sort();
-  const auditPublishers = Array.from(new Set(items.map((i) => i.publisher).filter(Boolean))).sort();
+  const auditStages = (Array.from(new Set(items.map((i) => i.stage).filter(Boolean))) as string[]).sort();
+  const auditPublishers = (Array.from(new Set(items.map((i) => i.publisher).filter(Boolean))) as string[]).sort();
 
   const filteredAuditItems = items.filter((itm) => {
     if (auditDecision !== "all" && itm.decision !== auditDecision) return false;
@@ -559,15 +564,15 @@ function IngestPage() {
   const pagedSources = paginateList(sortedSources, sourcesPage, sourcesPageSize);
 
   // Citation Graph Edges computations
-  const edgeRelationships = Array.from(new Set(graphEdges.map((e) => e.relationship).filter(Boolean))).sort();
+  const edgeRelationships = (Array.from(new Set(graphEdges.map((e) => e.relationship).filter(Boolean))) as string[]).sort();
 
   const filteredEdges = graphEdges.filter((edge) => {
     if (edgesRelationship !== "all" && edge.relationship !== edgesRelationship) return false;
     if (edgesSearch.trim()) {
       const q = edgesSearch.toLowerCase();
       const edgId = formatEdgeId(edge.id, `${edge.from}->${edge.to}`).toLowerCase();
-      const srcDomId = formatDomainId(edge.sourceDomain).toLowerCase();
-      const tgtDomId = formatDomainId(edge.targetDomain).toLowerCase();
+      const srcDomId = formatDomainId(edge.sourceDomain || edge.from).toLowerCase();
+      const tgtDomId = formatDomainId(edge.targetDomain || edge.to).toLowerCase();
       return (
         (edge.from || "").toLowerCase().includes(q) ||
         (edge.to || "").toLowerCase().includes(q) ||
@@ -697,9 +702,15 @@ function IngestPage() {
             <Compass className="size-4 text-accent" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-fg">
-              {crawlerState.isLoading ? "—" : (state?.totalCounts?.discovered ?? (discovered.length > 0 ? `${discovered.length}+` : "0"))}
-            </span>
+            {isCrawlerLoading ? (
+              <div className="h-8 w-20 rounded bg-border/40 animate-pulse my-0.5" />
+            ) : (
+              <span className="font-mono text-2xl font-bold text-fg">
+                {state?.totalCounts?.discovered !== undefined
+                  ? state.totalCounts.discovered.toLocaleString()
+                  : discovered.length.toLocaleString()}
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted">URLs in store</span>
           </div>
         </div>
@@ -710,9 +721,15 @@ function IngestPage() {
             <Network className="size-4 text-sage" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-fg">
-              {crawlerState.isLoading ? "—" : (state?.totalCounts?.sources ?? (discoveredSources.length || 13))}
-            </span>
+            {isCrawlerLoading ? (
+              <div className="h-8 w-16 rounded bg-border/40 animate-pulse my-0.5" />
+            ) : (
+              <span className="font-mono text-2xl font-bold text-fg">
+                {state?.totalCounts?.sources !== undefined
+                  ? state.totalCounts.sources.toLocaleString()
+                  : discoveredSources.length.toLocaleString()}
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted">active domains</span>
           </div>
         </div>
@@ -723,9 +740,15 @@ function IngestPage() {
             <Bot className="size-4 text-accent" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-fg">
-              {crawlerState.isLoading ? "—" : (state?.totalCounts?.jobs ?? jobs.length)}
-            </span>
+            {isCrawlerLoading ? (
+              <div className="h-8 w-16 rounded bg-border/40 animate-pulse my-0.5" />
+            ) : (
+              <span className="font-mono text-2xl font-bold text-fg">
+                {state?.totalCounts?.jobs !== undefined
+                  ? state.totalCounts.jobs.toLocaleString()
+                  : jobs.length.toLocaleString()}
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted">executed jobs</span>
           </div>
         </div>
@@ -736,15 +759,15 @@ function IngestPage() {
             <GitBranch className="size-4 text-subtle" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-fg">
-              {crawlerState.isLoading
-                ? "—"
-                : state?.totalCounts?.graphEdges
+            {isCrawlerLoading ? (
+              <div className="h-8 w-20 rounded bg-border/40 animate-pulse my-0.5" />
+            ) : (
+              <span className="font-mono text-2xl font-bold text-fg">
+                {state?.totalCounts?.graphEdges !== undefined
                   ? state.totalCounts.graphEdges.toLocaleString()
-                  : graphEdges.length > 0
-                    ? `${graphEdges.length}+`
-                    : "0"}
-            </span>
+                  : graphEdges.length.toLocaleString()}
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted">mapped links</span>
           </div>
         </div>
@@ -769,17 +792,17 @@ function IngestPage() {
             >
               <Icon className="size-3.5" />
               <span>{v.label}</span>
-              {v.id === "queue" && discovered.length > 0 && (
+              {v.id === "queue" && !isCrawlerLoading && discovered.length > 0 && (
                 <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
                   {discovered.length}
                 </span>
               )}
-              {v.id === "graph" && (discoveredSources.length > 0 || graphEdges.length > 0) && (
+              {v.id === "graph" && !isCrawlerLoading && (discoveredSources.length > 0 || graphEdges.length > 0) && (
                 <span className="rounded-full bg-accent/20 text-accent px-1.5 py-0.2 font-mono text-[10px]">
                   +{discoveredSources.length || graphEdges.length}
                 </span>
               )}
-              {v.id === "audit" && items.length > 0 && (
+              {v.id === "audit" && !isCrawlerLoading && items.length > 0 && (
                 <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
                   {items.length}
                 </span>
@@ -947,44 +970,59 @@ function IngestPage() {
                 <h2 className="text-base font-medium">Engine Control Plane</h2>
                 <p className="mt-1 text-xs text-muted">Live parameters applied to the frontier crawler.</p>
 
-                <dl className="mt-5 space-y-3 font-mono text-xs">
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Max Resources / Job</dt>
-                    <dd className="text-accent font-semibold">{config.maxResourcesPerJob || config.maxResourcesPerRun || 60} URLs</dd>
+                {isCrawlerLoading ? (
+                  <div className="mt-5 space-y-3 animate-pulse">
+                    {[1, 2, 3, 4, 5, 6].map((i) => (
+                      <div key={i} className="flex justify-between border-b border-border pb-2">
+                        <div className="h-4 w-28 bg-border/40 rounded" />
+                        <div className="h-4 w-20 bg-border/40 rounded" />
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Per-Domain Cap</dt>
-                    <dd className="text-fg">{config.maxResourcesPerDomain ?? 8} per host</dd>
-                  </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Max Traversal Depth</dt>
-                    <dd className="text-fg">Depth {config.maxDepth ?? 3}</dd>
-                  </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">External Domain Expansion</dt>
-                    <dd className={config.allowExternalDomains !== false ? "text-sage" : "text-muted"}>
-                      {config.allowExternalDomains !== false ? "ENABLED" : "DISABLED"}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Deduplication Method</dt>
-                    <dd className="text-fg uppercase">{config.dedupMethod || "smart_hybrid"}</dd>
-                  </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Auto-Ingestion</dt>
-                    <dd className={config.autoIngest ? "text-sage" : "text-warn"}>
-                      {config.autoIngest ? "AUTO-PERSIST" : "APPROVAL QUEUE"}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between border-b border-border pb-2">
-                    <dt className="text-subtle">Strictness Mode</dt>
-                    <dd className="text-fg capitalize">{config.strictnessMode || "balanced"}</dd>
-                  </div>
-                  <div className="flex justify-between pb-2">
-                    <dt className="text-subtle">Last Discovery Run</dt>
-                    <dd className="text-fg">{formatDateTime(config.lastRunAt, "Never")}</dd>
-                  </div>
-                </dl>
+                ) : (
+                  <dl className="mt-5 space-y-3 font-mono text-xs">
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Max Resources / Job</dt>
+                      <dd className="text-accent font-semibold">{config.maxResourcesPerJob || config.maxResourcesPerRun || 35} URLs</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Execution Time Limit</dt>
+                      <dd className="text-accent font-semibold">{config.maxRunTimeMinutes ?? 5} min cap</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Per-Domain Cap</dt>
+                      <dd className="text-fg">{config.maxResourcesPerDomain ?? 8} per host</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Max Traversal Depth</dt>
+                      <dd className="text-fg">Depth {config.maxDepth ?? 3}</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">External Domain Expansion</dt>
+                      <dd className={config.allowExternalDomains !== false ? "text-sage" : "text-muted"}>
+                        {config.allowExternalDomains !== false ? "ENABLED" : "DISABLED"}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Deduplication Method</dt>
+                      <dd className="text-fg uppercase">{config.dedupMethod || "smart_hybrid"}</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Auto-Ingestion</dt>
+                      <dd className={config.autoIngest ? "text-sage" : "text-warn"}>
+                        {config.autoIngest ? "AUTO-PERSIST" : "APPROVAL QUEUE"}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Strictness Mode</dt>
+                      <dd className="text-fg capitalize">{config.strictnessMode || "balanced"}</dd>
+                    </div>
+                    <div className="flex justify-between pb-2">
+                      <dt className="text-subtle">Last Discovery Run</dt>
+                      <dd className="text-fg">{formatDateTime(config.lastRunAt, "Never")}</dd>
+                    </div>
+                  </dl>
+                )}
               </div>
 
               <div className="mt-6 flex flex-col gap-2">
@@ -1098,11 +1136,10 @@ function IngestPage() {
               </select>
             </div>
 
-            {crawlerState.isLoading ? (
-              <div className="py-8 space-y-2.5 animate-pulse">
-                <div className="h-4 bg-bg-subtle rounded w-3/4" />
-                <div className="h-4 bg-bg-subtle rounded w-full" />
-                <div className="h-4 bg-bg-subtle rounded w-5/6" />
+            {isCrawlerLoading ? (
+              <div className="py-10 text-center">
+                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <p className="text-xs text-muted">Retrieving crawl jobs execution history from database...</p>
               </div>
             ) : filteredJobs.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted">No crawl jobs match the selected filters.</p>
@@ -1193,9 +1230,9 @@ function IngestPage() {
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-medium">Candidate Discovery Queue</h2>
                 <Badge tone="accent" className="font-mono text-[10px]">
-                  {discovered.length} Total
+                  {isCrawlerLoading ? "…" : `${discovered.length} Total`}
                 </Badge>
-                {filteredDiscovered.length !== discovered.length && (
+                {!isCrawlerLoading && filteredDiscovered.length !== discovered.length && (
                   <Badge tone="neutral" className="font-mono text-[10px]">
                     {filteredDiscovered.length} Filtered
                   </Badge>
@@ -1210,18 +1247,18 @@ function IngestPage() {
             <div className="flex rounded-lg border border-border bg-bg-elevated p-0.5">
               {(
                 [
-                  { id: "all", label: `All (${discovered.length})` },
+                  { id: "all", label: `All (${isCrawlerLoading ? "…" : discovered.length})` },
                   {
                     id: "qualified",
-                    label: `Qualified (${discovered.filter((d) => d.status === "qualified" || d.status === "awaiting_approval").length})`,
+                    label: `Qualified (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "qualified" || d.status === "awaiting_approval").length})`,
                   },
                   {
                     id: "ingested",
-                    label: `Ingested (${discovered.filter((d) => d.status === "ingested").length})`,
+                    label: `Ingested (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "ingested").length})`,
                   },
                   {
                     id: "rejected",
-                    label: `Rejected (${discovered.filter((d) => d.status === "rejected").length})`,
+                    label: `Rejected (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "rejected").length})`,
                   },
                 ] as const
               ).map((tab) => (
@@ -1374,7 +1411,13 @@ function IngestPage() {
             )}
           </div>
 
-          {filteredDiscovered.length === 0 ? (
+          {isCrawlerLoading ? (
+            <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
+              <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
+              <p className="text-sm font-medium text-fg">Synchronizing Discovery Queue...</p>
+              <p className="mt-1 text-xs text-muted">Retrieving candidate URLs, qualification scores, and triage status from MongoDB Atlas.</p>
+            </div>
+          ) : filteredDiscovered.length === 0 ? (
             <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
               No discovered resources match the selected filters.
             </div>
@@ -1564,8 +1607,10 @@ function IngestPage() {
                 <p className="text-xs text-muted">External domains identified via hyperlinks, citations, and research papers.</p>
               </div>
               <div className="flex items-center gap-2">
-                <Badge tone="accent">Total: {discoveredSources.length} Domains</Badge>
-                {filteredSources.length !== discoveredSources.length && (
+                <Badge tone="accent">
+                  {isCrawlerLoading ? "…" : `Total: ${discoveredSources.length} Domains`}
+                </Badge>
+                {!isCrawlerLoading && filteredSources.length !== discoveredSources.length && (
                   <Badge tone="neutral">{filteredSources.length} Filtered</Badge>
                 )}
               </div>
@@ -1624,7 +1669,12 @@ function IngestPage() {
               </select>
             </div>
 
-            {filteredSources.length === 0 ? (
+            {isCrawlerLoading ? (
+              <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
+                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <p className="text-xs text-muted">Analyzing outlink graph and discovered CTI domain authorities...</p>
+              </div>
+            ) : filteredSources.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted">
                 No external sources match the current filter criteria.
               </p>
@@ -1698,8 +1748,10 @@ function IngestPage() {
                 <p className="text-xs text-muted">Relationship links established between documents, repositories, and PDFs.</p>
               </div>
               <div className="flex items-center gap-2">
-                <Badge tone="neutral">Total: {graphEdges.length} Edges</Badge>
-                {filteredEdges.length !== graphEdges.length && (
+                <Badge tone="neutral">
+                  {isCrawlerLoading ? "…" : `Total: ${graphEdges.length} Edges`}
+                </Badge>
+                {!isCrawlerLoading && filteredEdges.length !== graphEdges.length && (
                   <Badge tone="accent">{filteredEdges.length} Filtered</Badge>
                 )}
               </div>
@@ -1759,7 +1811,12 @@ function IngestPage() {
               </select>
             </div>
 
-            {filteredEdges.length === 0 ? (
+            {isCrawlerLoading ? (
+              <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
+                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <p className="text-xs text-muted">Mapping citation relationships and threat intelligence links...</p>
+              </div>
+            ) : filteredEdges.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted">No graph edges match the current filters.</p>
             ) : (
               <div className="space-y-4">
@@ -1780,7 +1837,7 @@ function IngestPage() {
                           <td className="max-w-[220px] py-2.5 px-3">
                             <div className="flex flex-wrap items-center gap-1 mb-1">
                               <IdBadge id={formatEdgeId(edge.id, `${edge.from}->${edge.to}`)} category="edge" size="xs" prefixLabel="EDGE" />
-                              <IdBadge id={formatDomainId(edge.sourceDomain)} category="domain" size="xs" />
+                              <IdBadge id={formatDomainId(edge.sourceDomain || edge.from)} category="domain" size="xs" />
                             </div>
                             <div className="truncate font-mono text-[11px] text-muted">{edge.from}</div>
                           </td>
@@ -1799,7 +1856,7 @@ function IngestPage() {
                           </td>
                           <td className="max-w-[260px] py-2.5 px-3">
                             <div className="mb-1">
-                              <IdBadge id={formatDomainId(edge.targetDomain)} category="domain" size="xs" />
+                              <IdBadge id={formatDomainId(edge.targetDomain || edge.to)} category="domain" size="xs" />
                             </div>
                             <a href={edge.to} target="_blank" rel="noreferrer" className="hover:text-accent font-mono text-[11px] text-fg flex items-center gap-1 truncate">
                               <span className="truncate">{edge.to}</span>
@@ -1840,9 +1897,9 @@ function IngestPage() {
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-medium">Pipeline Progression Audit Log</h2>
                 <Badge tone="accent" className="font-mono text-[10px]">
-                  {items.length} Total
+                  {isCrawlerLoading ? "…" : `${items.length} Total`}
                 </Badge>
-                {filteredAuditItems.length !== items.length && (
+                {!isCrawlerLoading && filteredAuditItems.length !== items.length && (
                   <Badge tone="neutral" className="font-mono text-[10px]">
                     {filteredAuditItems.length} Filtered
                   </Badge>
@@ -1981,7 +2038,13 @@ function IngestPage() {
             )}
           </div>
 
-          {filteredAuditItems.length === 0 ? (
+          {isCrawlerLoading ? (
+            <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
+              <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
+              <p className="text-sm font-medium text-fg">Loading Pipeline Audit Trail...</p>
+              <p className="mt-1 text-xs text-muted">Fetching multi-stage URL evaluations, content extractions, and ingestion verdicts from MongoDB Atlas.</p>
+            </div>
+          ) : filteredAuditItems.length === 0 ? (
             <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
               No audit log items match the selected filters.
             </div>

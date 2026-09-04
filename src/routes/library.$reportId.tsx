@@ -27,6 +27,8 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IdBadge } from "@/components/id-badge";
+import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
@@ -136,8 +138,16 @@ function ReportPage() {
 
       {data ? (
         <>
+          {/* Standardized AIE ID Bar: RST and DOM only */}
+          <div className="mt-2 flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border/60 bg-bg-elevated/70">
+            <IdBadge id={formatReportId(data.id)} category="report" size="sm" />
+            {(data.sourceDomain || data.url) && (
+              <IdBadge id={formatDomainId(data.sourceDomain || data.url)} category="domain" size="sm" />
+            )}
+          </div>
+
           {/* Header Metadata */}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Badge tone="neutral">{data.sourceName}</Badge>
             {data.resourceKind && (
               <Badge tone="accent" className="font-semibold">
