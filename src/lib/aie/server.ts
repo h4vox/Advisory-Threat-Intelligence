@@ -483,13 +483,22 @@ export const listReports = createServerFn({ method: "GET" })
       .optional(),
   )
   .handler(async ({ data }): Promise<ReportListItem[]> => {
+    const startTime = Date.now();
+    logger.serverFn("listReports", "START", undefined, data ? JSON.stringify(data) : "all");
     await ensureSeeded();
 
     if (isMongoConfigured()) {
       try {
-        return await mongoListReports(data);
+        const reports = await mongoListReports(data);
+        logger.serverFn(
+          "listReports",
+          "DONE",
+          Date.now() - startTime,
+          `Returned ${reports.length} reports`,
+        );
+        return reports;
       } catch (err) {
-        console.warn("[mongodb] fallback to sql for listReports:", err);
+        logger.error("SERVER-FN", "mongoListReports failed, falling back to SQL", err);
       }
     }
 
@@ -532,12 +541,20 @@ export const listReports = createServerFn({ method: "GET" })
 export const getReport = createServerFn({ method: "GET" })
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }): Promise<ReportRecord | null> => {
+    const startTime = Date.now();
+    logger.serverFn("getReport", "START", undefined, { id: data.id });
     await ensureSeeded();
 
     if (isMongoConfigured()) {
       try {
         const mongoReport = await mongoGetReportById(data.id);
         if (mongoReport) {
+          logger.serverFn(
+            "getReport",
+            "DONE",
+            Date.now() - startTime,
+            `"${mongoReport.title}" (${data.id})`,
+          );
           const htmlWordCount = (mongoReport.rawHtml || "")
             .replace(/<[^>]+>/g, " ")
             .trim()

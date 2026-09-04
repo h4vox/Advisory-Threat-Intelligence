@@ -1069,15 +1069,15 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     col.findOne({ docType: "crawl_job", status: "running" }),
   ]);
 
+  const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
+  const iocCount = Number(iocAgg[0]?.totalIocs ?? 0);
+
   logger.mongo(
     "getDashboardStats",
     "threat-intel",
     Date.now() - startTime,
     `Aggregated 11 queries in ${Date.now() - startTime}ms: ${reportTotal} reports, ${sourceTotal} sources, ${iocCount} IOCs`,
   );
-
-  const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
-  const iocCount = Number(iocAgg[0]?.totalIocs ?? 0);
 
   const crawlerStatus = activeJob
     ? "running"

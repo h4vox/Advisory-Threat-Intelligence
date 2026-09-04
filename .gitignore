@@ -10,6 +10,7 @@ node_modules/
 /.nitro/
 /.tanstack/
 /.vercel/
+/test Build/
 
 # Environment Variables & Secrets
 .env
