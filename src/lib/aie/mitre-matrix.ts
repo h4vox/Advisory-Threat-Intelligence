@@ -8027,11 +8027,13 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
             if (!step) continue;
             if (
               Array.isArray(step.techniques) &&
-              step.techniques.some(
-                (t) =>
-                  typeof t?.id === "string" &&
-                  (t.id === tech.id || t.id.startsWith(`${tech.id}.`)),
-              )
+              step.techniques.some((t: any) => {
+                const id = typeof t === "string" ? t.split(":")[0]?.trim() : t?.id;
+                return (
+                  typeof id === "string" &&
+                  (id === tech.id || id.startsWith(`${tech.id}.`))
+                );
+              })
             ) {
               isMatch = true;
               break;
@@ -8042,9 +8044,9 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
               step.tactic.toLowerCase() === tactic.name.toLowerCase()
             ) {
               const techNames = Array.isArray(step.techniques)
-                ? step.techniques.map((t) => t?.name || "").join(" ")
+                ? step.techniques.map((t: any) => (typeof t === "string" ? t : t?.name || "")).join(" ")
                 : "";
-              const stepStr = `${step.tactic} ${step.step || ""} ${techNames}`.toLowerCase();
+              const stepStr = `${step.tactic} ${step.summary || ""} ${techNames}`.toLowerCase();
               const dKws = Array.isArray(tech?.detectionKeywords) ? tech.detectionKeywords : [];
               if (dKws.some((kw) => stepStr.includes(kw.toLowerCase()))) {
                 isMatch = true;
@@ -8116,7 +8118,7 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
       // Map sub-techniques individually
       const mappedSubTechniques: MappedSubTechnique[] = subTechs.map((sub) => {
         const subMatched = matchedReports.filter((r) => {
-          const text = `${r.title || ""} ${r.excerpt || ""} ${r.extractedText || ""}`.toLowerCase();
+          const text = `${r.title || ""} ${r.excerpt || ""} ${(r as any).extractedText || ""}`.toLowerCase();
           return (
             (typeof sub?.id === "string" && text.includes(sub.id.toLowerCase())) ||
             (typeof sub?.name === "string" && text.includes(sub.name.toLowerCase())) ||

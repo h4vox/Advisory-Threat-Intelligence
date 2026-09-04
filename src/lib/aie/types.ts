@@ -123,9 +123,10 @@ export type ReportRecord = {
   canonicalReportId?: string;
 };
 
-export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons"> & {
+export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons" | "analysis"> & {
   excerpt: string;
   iocCount: number;
+  analysis?: IntelAnalysis | null;
 };
 
 export type IngestEvent = {
@@ -360,4 +361,72 @@ export type CrawlerState = {
   discoveredSources: DiscoveredSourceRecord[];
   graphEdges: DiscoveryGraphEdge[];
   sourceStats: { sourceName: string; found: number; ingested: number; failed: number }[];
+  totalCounts?: {
+    discovered: number;
+    sources: number;
+    jobs: number;
+    graphEdges: number;
+  };
+};
+
+export type AppSettings = {
+  id: string;
+  // General & SOC Policy
+  organizationName: string;
+  nodeId: string;
+  defaultClassification: string;
+  iocConfidenceThreshold: number;
+  evidenceRetentionDays: number;
+  defaultExportFormat: "json" | "stix21" | "csv" | "pdf";
+
+  // Storage & Cache Telemetry Controls
+  cacheTtlSeconds: number;
+  dashboardCacheTtlSeconds: number;
+  autoPurgeStaleEventsDays: number;
+
+  // Display & UI Preferences
+  defaultMatrixLayout: "standard" | "compact" | "mini";
+  matrixSubtechniqueAutoExpand: boolean;
+  pollingIntervalSeconds: number;
+  enableSoundAlerts: boolean;
+  enableLiveTelemetryStream: boolean;
+
+  updatedAt?: string;
+};
+
+export type StorageStats = {
+  configured: boolean;
+  databaseName: string;
+  collectionName: string;
+  totalReports: number;
+  totalSources: number;
+  totalDiscovered: number;
+  totalJobs: number;
+  totalEvents: number;
+  cacheStatus: {
+    reportsCached: boolean;
+    dashboardCached: boolean;
+    configCached: boolean;
+    settingsCached: boolean;
+  };
+  serverUptimeSeconds: number;
+};
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  id: "app_settings_default",
+  organizationName: "Cyber Defense SOC · Advisory Threat Intelligence",
+  nodeId: "SOC-NODE-01",
+  defaultClassification: "INTRUSION_REPORT",
+  iocConfidenceThreshold: 75,
+  evidenceRetentionDays: 365,
+  defaultExportFormat: "stix21",
+  cacheTtlSeconds: 60,
+  dashboardCacheTtlSeconds: 15,
+  autoPurgeStaleEventsDays: 30,
+  defaultMatrixLayout: "standard",
+  matrixSubtechniqueAutoExpand: false,
+  pollingIntervalSeconds: 12,
+  enableSoundAlerts: false,
+  enableLiveTelemetryStream: true,
+  updatedAt: new Date().toISOString(),
 };

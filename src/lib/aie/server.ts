@@ -21,7 +21,9 @@ import { buildPristineDocumentHtml } from "./pdf";
 import { qualifyContent } from "./qualification";
 import { SEED_REPORTS } from "./seed-reports";
 import type {
+  AppSettings,
   CatalogItem,
+  CrawlConfig,
   CrawlerState,
   CrawlJob,
   CrawlJobItem,
@@ -34,8 +36,10 @@ import type {
   ReportListItem,
   ReportRecord,
   SourceRecord,
+  StorageStats,
   TrustLevel,
 } from "./types";
+import { DEFAULT_APP_SETTINGS } from "./types";
 import { getSql } from "@/lib/db";
 import { logger } from "./logger";
 import { isMongoConfigured, getThreatIntelCollection } from "../mongodb/client.server";
@@ -61,6 +65,11 @@ import {
   mongoListRecentIngestEvents,
   ensureMongoIndexes,
   mongoGetIngestedCanonicalUrls,
+  mongoGetAppSettings,
+  mongoUpdateAppSettings,
+  mongoGetStorageStats,
+  purgeAllServerCaches,
+  DEFAULT_CRAWL_CONFIG,
 } from "../mongodb/repository.server";
 
 type SourceRow = {
@@ -261,26 +270,21 @@ async function ensureSeeded() {
           }
         }
         await mongoGetCrawlConfig();
-        hasSeeded = true;
         console.log(`[db] MongoDB Atlas storage initialized in ${Date.now() - t0}ms`);
-        return;
       } catch (mongoErr) {
         console.warn("[mongodb] ensureSeeded fallback to local storage:", mongoErr);
       }
     }
 
-    // Local SQL fallback seeding
+    // Ensure SQL sources table has seed sources populated for foreign-key integrity
     try {
       const sql = await getSql();
-      const existing = await sql<{ c: number }>`select count(*)::int as c from sources`;
-      if (Number(existing[0]?.c ?? 0) === 0) {
-        for (const s of SOURCE_SEED) {
-          await sql`
-            insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
-            values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
-            on conflict (id) do nothing
-          `;
-        }
+      for (const s of SOURCE_SEED) {
+        await sql`
+          insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
+          values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
+          on conflict (id) do nothing
+        `;
       }
 
       const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
@@ -570,7 +574,7 @@ export const getReport = createServerFn({ method: "GET" })
 
           if (needsPristineRegen) {
             mongoReport.rawHtml = buildPristineDocumentHtml(
-              mongoReport.extractedText || mongoReport.rawHtml,
+              mongoReport.extractedText || mongoReport.rawHtml || mongoReport.title || "",
               {
                 id: mongoReport.id,
                 title: mongoReport.title,
@@ -691,20 +695,40 @@ type IngestResult =
   | { ok: false; error: string };
 
 async function matchSource(url: string): Promise<string> {
-  const sql = await getSql();
   const host = new URL(url).hostname.replace(/^www\./, "");
-  const rows = await sql<SourceRow>`select * from sources`;
-  const hit = rows.find((s) => {
+  try {
+    const sql = await getSql();
+    const rows = await sql<SourceRow>`select * from sources`;
+    if (rows && rows.length > 0) {
+      const hit = rows.find((s) => {
+        try {
+          return (
+            new URL(s.homepage_url).hostname.replace(/^www\./, "").includes(host.split(".").slice(-2).join(".")) ||
+            host.includes(new URL(s.homepage_url).hostname.replace(/^www\./, ""))
+          );
+        } catch {
+          return false;
+        }
+      });
+      if (hit?.id) return hit.id;
+      const dfirHit = rows.find((s) => s.slug === "dfir");
+      if (dfirHit?.id) return dfirHit.id;
+    }
+  } catch (err) {
+    console.warn("[matchSource] SQL lookup fallback:", err);
+  }
+
+  const seedHit = SOURCE_SEED.find((s) => {
     try {
       return (
-        new URL(s.homepage_url).hostname.replace(/^www\./, "").includes(host.split(".").slice(-2).join(".")) ||
-        host.includes(new URL(s.homepage_url).hostname.replace(/^www\./, ""))
+        new URL(s.homepageUrl).hostname.replace(/^www\./, "").includes(host.split(".").slice(-2).join(".")) ||
+        host.includes(new URL(s.homepageUrl).hostname.replace(/^www\./, ""))
       );
     } catch {
       return false;
     }
   });
-  return hit?.id ?? rows.find((s) => s.slug === "dfir")?.id ?? SOURCE_SEED[0].id;
+  return seedHit?.id ?? SOURCE_SEED[0].id;
 }
 
 async function persistReport(input: {
@@ -854,31 +878,57 @@ async function persistReport(input: {
     }
   }
 
-  // Also persist in SQL store
-  await sql`
-    insert into reports (
-      id, source_id, title, url, canonical_url, published_at, content_type, status,
-      raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
-      iocs_json, ingest_origin, publisher, author, classification, discovery_method,
-      discovery_query, parent_source, source_domain, version, analysis_json, raw_html
-    ) values (
-      ${id}, ${input.sourceId}, ${input.title}, ${input.url}, ${input.canonical},
-      ${input.publishedAt}, ${input.contentType}, ${status}, ${rawHash}, ${textHash},
-      ${score}, ${JSON.stringify(reasons)}, ${wordCount}, ${input.text},
-      ${JSON.stringify(iocs)}, ${input.origin}, ${input.publisher ?? domain},
-      ${input.author ?? domain}, ${classification}, ${input.discoveryMethod ?? 'manual'},
-      ${input.discoveryQuery ?? ''}, ${input.publisher ?? domain}, ${domain}, 1,
-      ${JSON.stringify(analysis)}, ${cleanHtml}
-    )
-  `;
-  await sql`update sources set last_ingest_at = now() where id = ${input.sourceId}`;
-  await sql`
-    insert into ingest_events (id, report_id, url, outcome, detail)
-    values (
-      ${newId("evt")}, ${id}, ${input.url}, ${status},
-      ${status === "rejected" ? "Below quality threshold" : `[${classification}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · PDF ready`}
-    )
-  `;
+  // Also persist in SQL store (safe dual-write)
+  try {
+    const effectiveSourceId = input.sourceId || SOURCE_SEED[0].id;
+    const existingSource = await sql<{ id: string }>`select id from sources where id = ${effectiveSourceId} limit 1`;
+    if (existingSource.length === 0) {
+      for (const s of SOURCE_SEED) {
+        await sql`
+          insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
+          values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
+          on conflict (id) do nothing
+        `;
+      }
+      const checkAgain = await sql<{ id: string }>`select id from sources where id = ${effectiveSourceId} limit 1`;
+      if (checkAgain.length === 0) {
+        const fallbackDomain = domain || "discovered.threat.intel";
+        const cleanSlug = fallbackDomain.replace(/[^a-z0-9_-]/gi, "-").toLowerCase().slice(0, 30);
+        await sql`
+          insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
+          values (${effectiveSourceId}, ${input.publisher || fallbackDomain}, ${cleanSlug + "-" + effectiveSourceId.slice(-6)}, 'discovered', 2, ${'https://' + fallbackDomain}, true, 'medium', 'Autonomously Discovered Source')
+          on conflict (id) do nothing
+        `;
+      }
+    }
+
+    await sql`
+      insert into reports (
+        id, source_id, title, url, canonical_url, published_at, content_type, status,
+        raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
+        iocs_json, ingest_origin, publisher, author, classification, discovery_method,
+        discovery_query, parent_source, source_domain, version, analysis_json, raw_html
+      ) values (
+        ${id}, ${effectiveSourceId}, ${input.title}, ${input.url}, ${input.canonical},
+        ${input.publishedAt}, ${input.contentType}, ${status}, ${rawHash}, ${textHash},
+        ${score}, ${JSON.stringify(reasons)}, ${wordCount}, ${input.text},
+        ${JSON.stringify(iocs)}, ${input.origin}, ${input.publisher ?? domain},
+        ${input.author ?? domain}, ${classification}, ${input.discoveryMethod ?? 'manual'},
+        ${input.discoveryQuery ?? ''}, ${input.publisher ?? domain}, ${domain}, 1,
+        ${JSON.stringify(analysis)}, ${cleanHtml}
+      )
+    `;
+    await sql`update sources set last_ingest_at = now() where id = ${effectiveSourceId}`;
+    await sql`
+      insert into ingest_events (id, report_id, url, outcome, detail)
+      values (
+        ${newId("evt")}, ${id}, ${input.url}, ${status},
+        ${status === "rejected" ? "Below quality threshold" : `[${classification}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · PDF ready`}
+      )
+    `;
+  } catch (sqlErr) {
+    console.warn("[sql] dual-write persist report error (MongoDB Atlas primary succeeded):", sqlErr);
+  }
   return { ok: true, reportId: id, duplicate: false, qualityScore: score, title: input.title };
 }
 
@@ -996,14 +1046,15 @@ export const ingestUrl = createServerFn({ method: "POST" })
 // Crawler Server Functions
 export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlerState> => {
   try {
-    await ensureSeeded();
     if (isMongoConfigured()) {
       try {
-        return await mongoGetCrawlerState();
+        const state = await mongoGetCrawlerState();
+        return state;
       } catch (err) {
         console.warn("[mongodb] getCrawlerState fallback to sql:", err);
       }
     }
+    await ensureSeeded();
     const sql = await getSql();
     const config = await getOrCreateCrawlConfig();
 
@@ -1023,7 +1074,7 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
       updated_count: number;
       skipped_count: number;
       error_summary: string;
-    }>`select * from crawl_jobs order by created_at desc limit 10`;
+    }>`select * from crawl_jobs order by created_at desc limit 100`;
 
     const activeJob = jobs.find((j) => j.status === "running") ?? null;
 
@@ -1043,7 +1094,7 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
       depth: number;
       publisher: string;
       created_at: string;
-    }>`select * from crawl_job_items order by created_at desc limit 25`;
+    }>`select * from crawl_job_items order by created_at desc limit 500`;
 
     const discovered = await sql<{
       id: string;
@@ -1065,7 +1116,7 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
       quality_score: number | null;
       report_id: string | null;
       created_at: string;
-    }>`select * from discovered_resources order by created_at desc limit 40`;
+    }>`select * from discovered_resources order by created_at desc limit 1000`;
 
     const sourceStatsRows = await sql<{
       name: string;
@@ -1095,6 +1146,7 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
             completedAt: toIsoString(activeJob.completed_at),
             sourceCount: Number(activeJob.source_count),
             discoveredCount: Number(activeJob.discovered_count),
+            evaluatedCount: Number((activeJob as any).evaluated_count ?? activeJob.discovered_count ?? 0),
             qualifiedCount: Number(activeJob.qualified_count),
             ingestedCount: Number(activeJob.ingested_count),
             duplicateCount: Number(activeJob.duplicate_count),
@@ -1102,6 +1154,8 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
             rejectedCount: Number(activeJob.rejected_count),
             updatedCount: Number(activeJob.updated_count),
             skippedCount: Number(activeJob.skipped_count),
+            newSourcesCount: Number((activeJob as any).new_sources_count ?? 0),
+            pdfGeneratedCount: Number((activeJob as any).pdf_generated_count ?? 0),
             errorSummary: activeJob.error_summary,
           }
         : null,
@@ -1113,6 +1167,7 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
         completedAt: toIsoString(j.completed_at),
         sourceCount: Number(j.source_count),
         discoveredCount: Number(j.discovered_count),
+        evaluatedCount: Number((j as any).evaluated_count ?? j.discovered_count ?? 0),
         qualifiedCount: Number(j.qualified_count),
         ingestedCount: Number(j.ingested_count),
         duplicateCount: Number(j.duplicate_count),
@@ -1120,6 +1175,8 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
         rejectedCount: Number(j.rejected_count),
         updatedCount: Number(j.updated_count),
         skippedCount: Number(j.skipped_count),
+        newSourcesCount: Number((j as any).new_sources_count ?? 0),
+        pdfGeneratedCount: Number((j as any).pdf_generated_count ?? 0),
         errorSummary: j.error_summary,
       })),
       items: items.map((itm) => ({
@@ -1166,31 +1223,19 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
         ingested: Number(s.ingested),
         failed: Number(s.failed),
       })),
+      discoveredSources: [],
+      graphEdges: [],
     };
   } catch (err) {
     console.error("[crawler] getCrawlerState error:", err);
     return {
-      config: {
-        id: "cfg_default",
-        enabled: true,
-        paused: false,
-        frequencyMinutes: 360,
-        startHour: "09:00",
-        maxResourcesPerRun: 25,
-        maxDepth: 2,
-        autoIngest: true,
-        autoAnalyze: true,
-        searchDiscovery: true,
-        recursiveDiscovery: true,
-        keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-        dateRangeDays: null,
-        lastRunAt: null,
-        nextRunAt: null,
-      },
+      config: DEFAULT_CRAWL_CONFIG,
       activeJob: null,
       jobs: [],
       items: [],
       discovered: [],
+      discoveredSources: [],
+      graphEdges: [],
       sourceStats: [],
     };
   }
@@ -1232,7 +1277,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
       rateLimitMs: z.number().optional(),
       concurrency: z.number().optional(),
       maxPdfDownloads: z.number().optional(),
-    }),
+    }).passthrough(),
   )
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -1272,6 +1317,109 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
     return { ok: true as const, config: updated };
   });
 
+export const getCrawlConfig = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlConfig> => {
+  const startTime = Date.now();
+  logger.serverFn("getCrawlConfig", "START");
+  if (isMongoConfigured()) {
+    try {
+      const config = await mongoGetCrawlConfig();
+      logger.serverFn("getCrawlConfig", "DONE", Date.now() - startTime);
+      return config;
+    } catch (err) {
+      logger.error("SERVER-FN", "mongoGetCrawlConfig failed, falling back to SQL", err);
+    }
+  }
+  return await getOrCreateCrawlConfig();
+});
+
+export const getAppSettings = createServerFn({ method: "GET" }).handler(async (): Promise<AppSettings> => {
+  const startTime = Date.now();
+  logger.serverFn("getAppSettings", "START");
+  if (isMongoConfigured()) {
+    try {
+      const settings = await mongoGetAppSettings();
+      logger.serverFn("getAppSettings", "DONE", Date.now() - startTime);
+      return settings;
+    } catch (err) {
+      logger.error("SERVER-FN", "mongoGetAppSettings failed, returning defaults", err);
+    }
+  }
+  return DEFAULT_APP_SETTINGS;
+});
+
+export const updateAppSettings = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      organizationName: z.string().optional(),
+      nodeId: z.string().optional(),
+      defaultClassification: z.string().optional(),
+      iocConfidenceThreshold: z.number().optional(),
+      evidenceRetentionDays: z.number().optional(),
+      defaultExportFormat: z.enum(["json", "stix21", "csv", "pdf"]).optional(),
+      cacheTtlSeconds: z.number().optional(),
+      dashboardCacheTtlSeconds: z.number().optional(),
+      autoPurgeStaleEventsDays: z.number().optional(),
+      defaultMatrixLayout: z.enum(["standard", "compact", "mini"]).optional(),
+      matrixSubtechniqueAutoExpand: z.boolean().optional(),
+      pollingIntervalSeconds: z.number().optional(),
+      enableSoundAlerts: z.boolean().optional(),
+      enableLiveTelemetryStream: z.boolean().optional(),
+    }).passthrough(),
+  )
+  .handler(async ({ data }) => {
+    const startTime = Date.now();
+    logger.serverFn("updateAppSettings", "START", undefined, data);
+    if (isMongoConfigured()) {
+      try {
+        const updated = await mongoUpdateAppSettings(data as any);
+        logger.serverFn("updateAppSettings", "DONE", Date.now() - startTime);
+        return { ok: true as const, settings: updated };
+      } catch (err) {
+        logger.error("SERVER-FN", "mongoUpdateAppSettings failed", err);
+      }
+    }
+    return { ok: true as const, settings: DEFAULT_APP_SETTINGS };
+  });
+
+export const purgeServerCaches = createServerFn({ method: "POST" }).handler(async () => {
+  const startTime = Date.now();
+  logger.serverFn("purgeServerCaches", "START");
+  const result = purgeAllServerCaches();
+  logger.serverFn("purgeServerCaches", "DONE", Date.now() - startTime);
+  return { ok: true as const, result };
+});
+
+export const getStorageStats = createServerFn({ method: "GET" }).handler(async (): Promise<StorageStats> => {
+  const startTime = Date.now();
+  logger.serverFn("getStorageStats", "START");
+  if (isMongoConfigured()) {
+    try {
+      const stats = await mongoGetStorageStats();
+      logger.serverFn("getStorageStats", "DONE", Date.now() - startTime);
+      return stats;
+    } catch (err) {
+      logger.error("SERVER-FN", "mongoGetStorageStats failed", err);
+    }
+  }
+  return {
+    configured: false,
+    databaseName: "sqlite",
+    collectionName: "reports",
+    totalReports: 0,
+    totalSources: 0,
+    totalDiscovered: 0,
+    totalJobs: 0,
+    totalEvents: 0,
+    cacheStatus: {
+      reportsCached: false,
+      dashboardCached: false,
+      configCached: false,
+      settingsCached: false,
+    },
+    serverUptimeSeconds: Math.floor(process.uptime()),
+  };
+});
+
 export const deleteReport = createServerFn({ method: "POST" })
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
@@ -1308,7 +1456,9 @@ export const getReportPdf = createServerFn({ method: "GET" })
           (doc.wordCount > 300 && htmlWordCount < doc.wordCount * 0.35);
 
         if (needsPristineRegen) {
-          rawHtml = buildPristineDocumentHtml(doc.extractedText || doc.rawHtml, {
+          rawHtml = buildPristineDocumentHtml(
+            doc.extractedText || doc.rawHtml || doc.title || "",
+            {
             id: doc.id,
             title: doc.title,
             url: doc.url,
@@ -1539,7 +1689,7 @@ export const exportSTIXBundle = createServerFn({ method: "GET" }).handler(async 
       description: r.extracted_text.slice(0, 1200),
       published: r.published_at || new Date().toISOString(),
       confidence: Math.round(Number(r.quality_score) * 100),
-      labels: [r.classification.toLowerCase(), "adversary-intelligence"],
+      labels: [(r.classification || "threat-report").toLowerCase(), "adversary-intelligence"],
       external_references: [
         {
           source_name: r.publisher || r.source_name,

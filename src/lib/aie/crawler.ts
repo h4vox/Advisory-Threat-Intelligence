@@ -86,7 +86,7 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
   }
 
   const sql = await getSql();
-  const rows = await sql<CrawlConfig[]>`select * from crawl_config limit 1`;
+  const rows = await sql<CrawlConfig>`select * from crawl_config limit 1`;
   if (rows.length > 0) return rows[0];
 
   const defaultConfig: CrawlConfig = {

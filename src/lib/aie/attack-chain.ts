@@ -294,7 +294,12 @@ export function extractStructuredEntities(
 
   const tactics = analysis.attackChain.map((s) => s.tactic);
   const techniques = analysis.attackChain.flatMap((s) =>
-    s.techniques.map((t) => ({ id: t.id, name: t.name, tactic: s.tactic })),
+    s.techniques.map((t) => {
+      const parts = (typeof t === "string" ? t : (t as any).id || "").split(":");
+      const id = parts[0]?.trim() || (typeof t === "string" ? t : (t as any).id || "");
+      const name = parts[1]?.trim() || (typeof t === "string" ? t : (t as any).name || id);
+      return { id, name, tactic: s.tactic };
+    }),
   );
 
   const detectionRules = [
