@@ -120,7 +120,8 @@ function Home() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => getDashboard(),
-    refetchInterval: 6000,
+    refetchInterval: 12000,
+    staleTime: 10000,
   });
 
   const [activeRegion, setActiveRegion] = useState<(typeof THREAT_REGIONS)[0] | null>(null);

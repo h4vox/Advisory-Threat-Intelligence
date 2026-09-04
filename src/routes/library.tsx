@@ -56,6 +56,7 @@ function LibraryPage() {
   const { data: rawReports, isLoading } = useQuery({
     queryKey: ["reports-all"],
     queryFn: () => listReports({ data: {} }),
+    staleTime: 60_000,
   });
 
   const allReports = useMemo(() => rawReports || [], [rawReports]);
@@ -223,6 +224,7 @@ function LibraryPage() {
     queryKey: ["report-pdf", previewReportId],
     queryFn: () => (previewReportId ? getReportPdf({ data: { id: previewReportId } }) : null),
     enabled: Boolean(previewReportId),
+    staleTime: 60_000,
   });
 
   const handleDownloadPdf = (r: ReportListItem, e?: React.MouseEvent) => {

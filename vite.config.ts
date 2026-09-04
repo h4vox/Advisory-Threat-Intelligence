@@ -142,6 +142,78 @@ function authPopupPlugin(): Plugin {
   };
 }
 
+/**
+ * Developer Terminal Request Logger.
+ * Logs HTTP requests with status code, method, route, and latency for terminal monitoring.
+ */
+function requestLoggerPlugin(): Plugin {
+  return {
+    name: "app-builder:request-logger",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const start = Date.now();
+        const url = req.url ?? "/";
+        const method = (req.method ?? "GET").toUpperCase();
+
+        // Skip internal noise (HMR, static assets, node_modules)
+        const isInternal =
+          url.startsWith("/@") ||
+          url.startsWith("/node_modules/") ||
+          url.startsWith("/src/") ||
+          url.includes("?v=") ||
+          url.includes("?import") ||
+          url.endsWith(".svg") ||
+          url.endsWith(".png") ||
+          url.endsWith(".jpg") ||
+          url.endsWith(".ico") ||
+          url.endsWith(".css");
+
+        const originalEnd = res.end;
+        // @ts-expect-error wrapping res.end for timing
+        res.end = function (...args: any[]) {
+          const duration = Date.now() - start;
+          const status = res.statusCode;
+
+          if (!isInternal) {
+            const d = new Date();
+            const pad = (n: number, z = 2) => String(n).padStart(z, "0");
+            const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+
+            let statusColor = "\x1b[32m"; // green
+            if (status >= 500) statusColor = "\x1b[31m"; // red
+            else if (status >= 400) statusColor = "\x1b[33m"; // yellow
+            else if (status >= 300) statusColor = "\x1b[36m"; // cyan
+
+            const mColor =
+              method === "GET"
+                ? "\x1b[34m"
+                : method === "POST"
+                  ? "\x1b[35m"
+                  : method === "DELETE"
+                    ? "\x1b[31m"
+                    : "\x1b[33m";
+
+            const msStr =
+              duration < 50
+                ? `\x1b[90m(${duration}ms)\x1b[0m`
+                : duration < 200
+                  ? `\x1b[32m(${duration}ms)\x1b[0m`
+                  : `\x1b[33m(${duration}ms)\x1b[0m`;
+
+            console.log(
+              `\x1b[90m${time}\x1b[0m \x1b[36m[HTTP]\x1b[0m ${mColor}\x1b[1m${method.padEnd(6)}\x1b[0m \x1b[37m${url}\x1b[0m ${statusColor}\x1b[1m${status}\x1b[0m ${msStr}`
+            );
+          }
+          return originalEnd.apply(this, args);
+        };
+
+        next();
+      });
+    },
+  };
+}
+
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
@@ -160,6 +232,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    requestLoggerPlugin(),
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),

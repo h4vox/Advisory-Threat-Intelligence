@@ -40,7 +40,51 @@ export const Route = createFileRoute("/matrix")({ component: MatrixPage });
 
 type LayoutMode = "side" | "flat" | "mini";
 
-const PLATFORMS = ["All", "Windows", "Linux", "macOS", "Cloud", "Network", "Identity"] as const;
+const PLATFORMS = ["All", "Windows", "Linux", "macOS", "Cloud", "Network", "Identity", "PRE"] as const;
+
+const THREAT_ACTORS = [
+  "All Actors",
+  "Volt Typhoon",
+  "Scattered Spider",
+  "Lazarus Group",
+  "Midnight Blizzard",
+  "Sandworm",
+  "LockBit",
+  "Akira",
+  "FIN7",
+  "MuddyWater",
+  "Mustang Panda",
+] as const;
+
+const OFFENSIVE_TOOLS = [
+  "All Tools",
+  "Cobalt Strike",
+  "Mimikatz",
+  "Chisel",
+  "PlugX",
+  "Masscan",
+  "Nmap",
+  "PowerShell",
+] as const;
+
+const TACTIC_OPTIONS = [
+  "All 15 Tactics",
+  "Reconnaissance",
+  "Resource Development",
+  "Initial Access",
+  "Execution",
+  "Persistence",
+  "Privilege Escalation",
+  "Stealth",
+  "Defense Impairment",
+  "Credential Access",
+  "Discovery",
+  "Lateral Movement",
+  "Collection",
+  "Command and Control",
+  "Exfiltration",
+  "Impact",
+] as const;
 
 /**
  * MITRE ATT&CK Matrix Theme Tokens
@@ -65,7 +109,10 @@ function MatrixPage() {
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("side");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPlatform, setSelectedPlatform] = useState<string>("All");
-  const [onlyCovered, setOnlyCovered] = useState(false);
+  const [selectedActor, setSelectedActor] = useState<string>("All Actors");
+  const [selectedTool, setSelectedTool] = useState<string>("All Tools");
+  const [selectedTactic, setSelectedTactic] = useState<string>("All 15 Tactics");
+  const [coverageStatus, setCoverageStatus] = useState<"all" | "covered" | "uncovered">("all");
   const [showSubTechniques, setShowSubTechniques] = useState(false);
   const [expandedTechniqueIds, setExpandedTechniqueIds] = useState<Set<string>>(new Set());
 
@@ -74,10 +121,11 @@ function MatrixPage() {
   const [selectedSubTech, setSelectedSubTech] = useState<MappedSubTechnique | null>(null);
   const [previewReportId, setPreviewReportId] = useState<string | null>(null);
 
-  // Fetch Central Intelligence Reports
+  // Fetch Central Intelligence Reports with 60s cache for fast 0ms navigation
   const { data: allReports = [], isFetching, refetch } = useQuery({
     queryKey: ["reports-matrix"],
     queryFn: () => listReports({ data: {} }),
+    staleTime: 60_000,
   });
 
   // Fetch PDF Preview
@@ -85,6 +133,7 @@ function MatrixPage() {
     queryKey: ["report-pdf-matrix", previewReportId],
     queryFn: () => (previewReportId ? getReportPdf({ data: { id: previewReportId } }) : null),
     enabled: Boolean(previewReportId),
+    staleTime: 60_000,
   });
 
   // Build MITRE ATT&CK Tactics & Techniques Matrix
@@ -118,11 +167,22 @@ function MatrixPage() {
     };
   }, [mappedTactics]);
 
-  // Filter Tactics by search, platform, and coverage
+  // Filter Tactics by search, platform, actor, tool, tactic, and coverage
   const filteredTactics: MappedTactic[] = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
 
-    return (Array.isArray(mappedTactics) ? mappedTactics : []).map((tactic) => {
+    let tacticsList = Array.isArray(mappedTactics) ? mappedTactics : [];
+
+    // Tactic phase filter
+    if (selectedTactic !== "All 15 Tactics") {
+      tacticsList = tacticsList.filter(
+        (t) =>
+          t.name.toLowerCase() === selectedTactic.toLowerCase() ||
+          t.shortName.toLowerCase() === selectedTactic.toLowerCase(),
+      );
+    }
+
+    return tacticsList.map((tactic) => {
       let techniques = Array.isArray(tactic?.techniques) ? tactic.techniques : [];
 
       // Platform filter
@@ -139,12 +199,46 @@ function MatrixPage() {
         );
       }
 
-      // Coverage filter
-      if (onlyCovered) {
-        techniques = techniques.filter((t) => (t?.coverageCount ?? 0) > 0);
+      // Threat Actor filter
+      if (selectedActor !== "All Actors") {
+        const aLow = selectedActor.toLowerCase();
+        techniques = techniques.filter(
+          (t) =>
+            (Array.isArray(t?.threatActors) &&
+              t.threatActors.some((a) => a.toLowerCase().includes(aLow))) ||
+            (Array.isArray(t?.detectionKeywords) &&
+              t.detectionKeywords.some((kw) => kw.toLowerCase().includes(aLow))) ||
+            (Array.isArray(t?.mappedReports) &&
+              t.mappedReports.some((r) =>
+                `${r.title || ""} ${r.excerpt || ""}`.toLowerCase().includes(aLow),
+              )),
+        );
       }
 
-      // Search query
+      // Offensive Tool / Malware filter
+      if (selectedTool !== "All Tools") {
+        const mLow = selectedTool.toLowerCase();
+        techniques = techniques.filter(
+          (t) =>
+            (Array.isArray(t?.malware) &&
+              t.malware.some((m) => m.toLowerCase().includes(mLow))) ||
+            (Array.isArray(t?.detectionKeywords) &&
+              t.detectionKeywords.some((kw) => kw.toLowerCase().includes(mLow))) ||
+            (Array.isArray(t?.mappedReports) &&
+              t.mappedReports.some((r) =>
+                `${r.title || ""} ${r.excerpt || ""}`.toLowerCase().includes(mLow),
+              )),
+        );
+      }
+
+      // Coverage Status filter (all, covered, uncovered)
+      if (coverageStatus === "covered") {
+        techniques = techniques.filter((t) => (t?.coverageCount ?? 0) > 0);
+      } else if (coverageStatus === "uncovered") {
+        techniques = techniques.filter((t) => (t?.coverageCount ?? 0) === 0);
+      }
+
+      // Search query filter
       if (q) {
         techniques = techniques.filter(
           (t) =>
@@ -172,7 +266,30 @@ function MatrixPage() {
         coveredTechniques: techniques.filter((t) => (t?.coverageCount ?? 0) > 0).length,
       };
     });
-  }, [mappedTactics, selectedPlatform, onlyCovered, searchQuery]);
+  }, [mappedTactics, selectedPlatform, selectedActor, selectedTool, selectedTactic, coverageStatus, searchQuery]);
+
+  // Aggregate count of currently visible techniques
+  const totalVisibleTechniques = useMemo(() => {
+    return filteredTactics.reduce((acc, t) => acc + (t?.techniques?.length ?? 0), 0);
+  }, [filteredTactics]);
+
+  const hasActiveFilters = Boolean(
+    searchQuery ||
+    selectedPlatform !== "All" ||
+    selectedActor !== "All Actors" ||
+    selectedTool !== "All Tools" ||
+    selectedTactic !== "All 15 Tactics" ||
+    coverageStatus !== "all",
+  );
+
+  const resetAllFilters = () => {
+    setSearchQuery("");
+    setSelectedPlatform("All");
+    setSelectedActor("All Actors");
+    setSelectedTool("All Tools");
+    setSelectedTactic("All 15 Tactics");
+    setCoverageStatus("all");
+  };
 
   // Toggle sub-techniques globally
   const handleToggleGlobalSubTechs = () => {
@@ -259,17 +376,17 @@ function MatrixPage() {
         </div>
 
         {/* ========================================================================= */}
-        {/* CONTROLS BAR: SEARCH, SUB-TECHNIQUES TOGGLE, LAYOUT SELECTOR, FILTERS      */}
+        {/* CONTROLS BAR: SEARCH, TACTIC, ACTOR, TOOL, PLATFORM, COVERAGE, LAYOUT     */}
         {/* ========================================================================= */}
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between rounded-xl border border-border bg-bg-elevated p-3 shadow-xs">
-          {/* Left Controls: Search, Platform, Covered Only */}
-          <div className="flex flex-1 flex-wrap items-center gap-2.5">
+        <div className="space-y-2.5 rounded-xl border border-border bg-bg-elevated p-3 shadow-xs">
+          {/* Primary Controls Row: Search, Selectors, Toggles */}
+          <div className="flex flex-1 flex-wrap items-center gap-2">
             {/* Search Input */}
-            <div className="relative min-w-[220px] max-w-sm flex-1">
+            <div className="relative min-w-[200px] max-w-xs flex-1">
               <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-subtle" />
               <Input
                 type="text"
-                placeholder="Search technique or ID (e.g. T1059)..."
+                placeholder="Search ID, name, or report..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="h-8 pl-8 text-xs font-mono placeholder:text-subtle"
@@ -285,11 +402,54 @@ function MatrixPage() {
               )}
             </div>
 
+            {/* Tactic Phase Selector */}
+            <select
+              value={selectedTactic}
+              onChange={(e) => setSelectedTactic(e.target.value)}
+              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              title="Filter by MITRE ATT&CK Tactic Phase"
+            >
+              {TACTIC_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  Tactic: {t}
+                </option>
+              ))}
+            </select>
+
+            {/* Threat Actor Selector */}
+            <select
+              value={selectedActor}
+              onChange={(e) => setSelectedActor(e.target.value)}
+              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              title="Filter by Associated Adversary Group"
+            >
+              {THREAT_ACTORS.map((a) => (
+                <option key={a} value={a}>
+                  Adversary: {a}
+                </option>
+              ))}
+            </select>
+
+            {/* Tool / Malware Selector */}
+            <select
+              value={selectedTool}
+              onChange={(e) => setSelectedTool(e.target.value)}
+              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              title="Filter by Associated Tool or Malware"
+            >
+              {OFFENSIVE_TOOLS.map((m) => (
+                <option key={m} value={m}>
+                  Tool: {m}
+                </option>
+              ))}
+            </select>
+
             {/* Platform Filter */}
             <select
               value={selectedPlatform}
               onChange={(e) => setSelectedPlatform(e.target.value)}
               className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              title="Filter by Operating System / Platform"
             >
               {PLATFORMS.map((p) => (
                 <option key={p} value={p}>
@@ -298,20 +458,17 @@ function MatrixPage() {
               ))}
             </select>
 
-            {/* Covered Only Filter */}
-            <button
-              type="button"
-              onClick={() => setOnlyCovered((prev) => !prev)}
-              className={cn(
-                "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-mono transition-colors",
-                onlyCovered
-                  ? "border-border-strong bg-bg-subtle text-fg font-semibold shadow-xs"
-                  : "border-border bg-bg-subtle text-muted hover:text-fg",
-              )}
+            {/* Coverage Status Filter */}
+            <select
+              value={coverageStatus}
+              onChange={(e) => setCoverageStatus(e.target.value as "all" | "covered" | "uncovered")}
+              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              title="Filter by Library Intelligence Mapping Status"
             >
-              <CheckCircle2 className="size-3.5" />
-              <span>Covered ({stats.coveredTechniques})</span>
-            </button>
+              <option value="all">Coverage: All ({stats.totalTechniques})</option>
+              <option value="covered">Coverage: Mapped in Library ({stats.coveredTechniques})</option>
+              <option value="uncovered">Coverage: Gaps / Unmapped ({stats.totalTechniques - stats.coveredTechniques})</option>
+            </select>
 
             {/* Sub-Techniques Global Toggle Button */}
             <button
@@ -327,58 +484,160 @@ function MatrixPage() {
               <ChevronDown className={cn("size-3.5 transition-transform", showSubTechniques && "rotate-180")} />
               <span>{showSubTechniques ? "hide sub-techniques" : "show sub-techniques"}</span>
             </button>
+
+            {/* Reset All Filters Button */}
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="flex h-8 items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 text-xs font-mono text-muted hover:text-fg hover:border-border-strong transition-colors"
+                title="Clear all active filters"
+              >
+                <X className="size-3" />
+                <span>Reset</span>
+              </button>
+            )}
           </div>
 
-          {/* Right Controls: Layout Selector (side / flat / mini) */}
-          <div className="flex items-center gap-1.5">
-            <span className="font-mono text-xs text-subtle mr-1 hidden sm:inline">layout:</span>
-            <div className="flex items-center rounded-md border border-border bg-bg-subtle p-0.5">
-              <button
-                type="button"
-                onClick={() => setLayoutMode("side")}
-                className={cn(
-                  "flex h-7 items-center gap-1 rounded px-2.5 text-xs font-mono transition-colors",
-                  layoutMode === "side"
-                    ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                    : "text-muted hover:text-fg",
-                )}
-                title="Side layout: expandable sub-techniques"
-              >
-                <Columns3 className="size-3" />
-                <span>side</span>
-              </button>
+          {/* Secondary Info & Layout Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-t border-border/70 pt-2 text-xs">
+            {/* Filter Status Badge */}
+            <div className="flex items-center gap-2 font-mono text-[11px] text-muted">
+              <span>
+                Displaying <span className="font-bold text-fg">{totalVisibleTechniques}</span> of{" "}
+                <span className="text-fg">{stats.totalTechniques}</span> techniques
+              </span>
+              {hasActiveFilters && (
+                <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-fg font-medium">
+                  Filtered
+                </span>
+              )}
+            </div>
 
-              <button
-                type="button"
-                onClick={() => setLayoutMode("flat")}
-                className={cn(
-                  "flex h-7 items-center gap-1 rounded px-2.5 text-xs font-mono transition-colors",
-                  layoutMode === "flat"
-                    ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                    : "text-muted hover:text-fg",
-                )}
-                title="Flat layout: continuous list of all techniques"
-              >
-                <LayoutGrid className="size-3" />
-                <span>flat</span>
-              </button>
+            {/* Layout Selector (side / flat / mini) */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[11px] text-subtle mr-1">layout:</span>
+              <div className="flex items-center rounded-md border border-border bg-bg-subtle p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode("side")}
+                  className={cn(
+                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
+                    layoutMode === "side"
+                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
+                      : "text-muted hover:text-fg",
+                  )}
+                  title="Side layout: expandable sub-techniques with official '=' toggle"
+                >
+                  <Columns3 className="size-3" />
+                  <span>side</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setLayoutMode("mini")}
-                className={cn(
-                  "flex h-7 items-center gap-1 rounded px-2.5 text-xs font-mono transition-colors",
-                  layoutMode === "mini"
-                    ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                    : "text-muted hover:text-fg",
-                )}
-                title="Mini layout: compact heatmap view"
-              >
-                <Grid3X3 className="size-3" />
-                <span>mini</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode("flat")}
+                  className={cn(
+                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
+                    layoutMode === "flat"
+                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
+                      : "text-muted hover:text-fg",
+                  )}
+                  title="Flat layout: continuous list of all techniques"
+                >
+                  <LayoutGrid className="size-3" />
+                  <span>flat</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode("mini")}
+                  className={cn(
+                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
+                    layoutMode === "mini"
+                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
+                      : "text-muted hover:text-fg",
+                  )}
+                  title="Mini layout: compact heatmap view"
+                >
+                  <Grid3X3 className="size-3" />
+                  <span>mini</span>
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* Active Filter Chips (Removable) */}
+          {hasActiveFilters && (
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 pt-2">
+              <span className="text-[10px] font-mono uppercase text-subtle mr-1">Active:</span>
+
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>query: "{searchQuery}"</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+
+              {selectedTactic !== "All 15 Tactics" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTactic("All 15 Tactics")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>tactic: {selectedTactic}</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+
+              {selectedActor !== "All Actors" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedActor("All Actors")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>actor: {selectedActor}</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+
+              {selectedTool !== "All Tools" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTool("All Tools")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>tool: {selectedTool}</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+
+              {selectedPlatform !== "All" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedPlatform("All")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>platform: {selectedPlatform}</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+
+              {coverageStatus !== "all" && (
+                <button
+                  type="button"
+                  onClick={() => setCoverageStatus("all")}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                >
+                  <span>coverage: {coverageStatus}</span>
+                  <X className="size-2.5" />
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ========================================================================= */}
@@ -484,16 +743,21 @@ function MatrixPage() {
                                     {tech.name}
                                   </span>
 
-                                  {/* Sub-Technique Count in Parentheses */}
+                                  {/* Sub-Technique Count in Parentheses & Official '=' Toggle */}
                                   {subCount > 0 && layoutMode === "side" && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => toggleTechniqueExpand(tech.id, e)}
-                                      className="shrink-0 font-mono text-[10px] text-muted hover:text-fg px-1"
-                                      title={isExpanded ? "Collapse sub-techniques" : "Expand sub-techniques"}
-                                    >
-                                      ({subCount})
-                                    </button>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <span className="font-mono text-[10px] text-muted">
+                                        ({subCount})
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => toggleTechniqueExpand(tech.id, e)}
+                                        className="flex size-4 items-center justify-center rounded border border-border bg-bg text-[10px] font-mono font-bold text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
+                                        title={isExpanded ? "Collapse sub-techniques" : "Expand sub-techniques"}
+                                      >
+                                        {isExpanded ? "−" : "="}
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
 

@@ -21,16 +21,27 @@ import type {
   DiscoveryGraphEdge,
 } from "../aie/types";
 import { excerptOf } from "../aie/extract";
+import { logger } from "../aie/logger";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
 
 // High-speed in-memory cache for library queries (invalidated on ingest/delete)
 let cachedReportsList: { timestamp: number; data: ReportListItem[] } | null = null;
-const CACHE_TTL_MS = 8000; // 8 seconds cache for lightning-fast 0ms navigation
+const CACHE_TTL_MS = 60_000; // 60 seconds cache for instant 0ms transitions
+
+// High-speed in-memory cache for dashboard stats
+let cachedDashboardStats: { timestamp: number; data: DashboardStats } | null = null;
+const DASHBOARD_CACHE_TTL_MS = 15_000; // 15 seconds cache for dashboard telemetry
 
 export function invalidateReportsCache() {
   cachedReportsList = null;
+  logger.cache("INVALIDATE", "reports-list", "Cleared in-memory reports cache");
+}
+
+export function invalidateDashboardCache() {
+  cachedDashboardStats = null;
+  logger.cache("INVALIDATE", "dashboard-stats", "Cleared in-memory dashboard cache");
 }
 
 export async function ensureMongoIndexes() {
@@ -40,7 +51,6 @@ export async function ensureMongoIndexes() {
   indexesPromise = (async () => {
     try {
       const col = await getThreatIntelCollection();
-      await col.deleteMany({ id: null });
       await col.createIndexes([
         { key: { docType: 1, id: 1 }, unique: true, background: true },
         {
@@ -73,8 +83,15 @@ export async function ensureMongoIndexes() {
 // ---------------------------------------------------------------------------
 
 export async function mongoGetReportById(id: string): Promise<ReportRecord | null> {
+  const startTime = Date.now();
   const col = await getThreatIntelCollection();
   const doc = await col.findOne({ docType: "report", id });
+  logger.mongo(
+    "findOne",
+    "threat-intel",
+    Date.now() - startTime,
+    doc ? `found report "${doc.title}" (${id})` : `report ${id} not found`,
+  );
   if (!doc) return null;
 
   return {
@@ -137,6 +154,13 @@ export async function mongoListReports(params?: {
     Object.values(params).every((v) => v === undefined || v === "" || v === "ALL" || v === false);
 
   if (isDefaultQuery && cachedReportsList && Date.now() - cachedReportsList.timestamp < CACHE_TTL_MS) {
+    logger.mongo(
+      "listReports",
+      "threat-intel",
+      0,
+      `Returned ${cachedReportsList.data.length} cached intelligence reports`,
+      true,
+    );
     return cachedReportsList.data;
   }
 
@@ -329,7 +353,12 @@ export async function mongoListReports(params?: {
     });
 
   const docs = await cursor.toArray();
-  console.log(`[mongo] listReports: fetched ${docs.length} reports in ${Date.now() - startTime}ms`);
+  logger.mongo(
+    "listReports",
+    "threat-intel",
+    Date.now() - startTime,
+    `Fetched ${docs.length} documents from cluster`,
+  );
 
   const mapped = docs.map((doc) => {
     const rawExcerpt = (doc.excerpt as string) || "";
@@ -406,7 +435,9 @@ export async function mongoListReports(params?: {
 }
 
 export async function mongoInsertReport(report: ReportRecord): Promise<void> {
+  const startTime = Date.now();
   invalidateReportsCache();
+  invalidateDashboardCache();
   const col = await getThreatIntelCollection();
   const excerpt = report.excerpt || excerptOf(report.extractedText || report.title || "");
   await col.updateOne(
@@ -421,13 +452,28 @@ export async function mongoInsertReport(report: ReportRecord): Promise<void> {
     },
     { upsert: true },
   );
+  logger.mongo(
+    "updateOne:upsert",
+    "threat-intel",
+    Date.now() - startTime,
+    `Saved report "${report.title}" (${report.id})`,
+  );
 }
 
 export async function mongoDeleteReport(id: string): Promise<boolean> {
+  const startTime = Date.now();
   invalidateReportsCache();
+  invalidateDashboardCache();
   const col = await getThreatIntelCollection();
   const res = await col.deleteOne({ docType: "report", id });
-  return res.deletedCount > 0;
+  const ok = res.deletedCount > 0;
+  logger.mongo(
+    "deleteOne",
+    "threat-intel",
+    Date.now() - startTime,
+    `Deleted report ${id} (success: ${ok})`,
+  );
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -976,6 +1022,18 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
 }
 
 export async function mongoGetDashboardStats(): Promise<DashboardStats> {
+  if (cachedDashboardStats && Date.now() - cachedDashboardStats.timestamp < DASHBOARD_CACHE_TTL_MS) {
+    logger.mongo(
+      "getDashboardStats",
+      "threat-intel",
+      0,
+      `Returned cached metrics (${cachedDashboardStats.data.reportCount} reports, ${cachedDashboardStats.data.sourceCount} sources)`,
+      true,
+    );
+    return cachedDashboardStats.data;
+  }
+
+  const startTime = Date.now();
   const col = await getThreatIntelCollection();
 
   const [
@@ -1011,6 +1069,13 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     col.findOne({ docType: "crawl_job", status: "running" }),
   ]);
 
+  logger.mongo(
+    "getDashboardStats",
+    "threat-intel",
+    Date.now() - startTime,
+    `Aggregated 11 queries in ${Date.now() - startTime}ms: ${reportTotal} reports, ${sourceTotal} sources, ${iocCount} IOCs`,
+  );
+
   const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
   const iocCount = Number(iocAgg[0]?.totalIocs ?? 0);
 
@@ -1022,7 +1087,7 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
         ? "scheduled"
         : "disabled";
 
-  return {
+  const stats: DashboardStats = {
     sourceCount: sourceTotal,
     enabledSources,
     reportCount: reportTotal,
@@ -1036,6 +1101,9 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     nextCrawlAt: config.nextRunAt,
     discoveredSourcesCount,
   };
+
+  cachedDashboardStats = { timestamp: Date.now(), data: stats };
+  return stats;
 }
 
 export async function mongoGetIngestedCanonicalUrls(): Promise<Set<string>> {

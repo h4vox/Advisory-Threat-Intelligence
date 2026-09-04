@@ -1,0 +1,250 @@
+{
+  "$defs": {
+    "AttackStage": {
+      "properties": {
+        "stage_number": {
+          "description": "Chronological sequence number of the stage, starting from 1",
+          "title": "Stage Number",
+          "type": "integer"
+        },
+        "stage_name": {
+          "description": "Name of the stage (e.g. Stage 1: Initial Access / Malicious LNK)",
+          "title": "Stage Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "Technical breakdown and analysis of actions observed in this stage",
+          "title": "Description",
+          "type": "string"
+        },
+        "key_techniques": {
+          "description": "Primary attack techniques employed in this stage",
+          "items": {
+            "type": "string"
+          },
+          "title": "Key Techniques",
+          "type": "array"
+        },
+        "tools_and_artifacts": {
+          "description": "Loaders, malware, RATs, native utilities (LOLBins), scripts, or tools used",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools And Artifacts",
+          "type": "array"
+        },
+        "procedures": {
+          "description": "Granular procedure execution details (commands run, registry modified, etc.)",
+          "title": "Procedures",
+          "type": "string"
+        },
+        "infrastructure_c2": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Associated IP, domain, protocol, port, user-agent, or beaconing profile if relevant",
+          "title": "Infrastructure C2"
+        }
+      },
+      "required": [
+        "stage_number",
+        "stage_name",
+        "description",
+        "procedures"
+      ],
+      "title": "AttackStage",
+      "type": "object"
+    },
+    "MitreAttackMapping": {
+      "properties": {
+        "tactic": {
+          "description": "MITRE ATT&CK Tactic (e.g. TA0001 - Initial Access)",
+          "title": "Tactic",
+          "type": "string"
+        },
+        "technique_id": {
+          "description": "MITRE ATT&CK Technique ID (e.g. T1566.001)",
+          "title": "Technique Id",
+          "type": "string"
+        },
+        "technique_name": {
+          "description": "MITRE ATT&CK Technique Name (e.g. Spearphishing Attachment)",
+          "title": "Technique Name",
+          "type": "string"
+        },
+        "procedure_description": {
+          "description": "Specific procedure or implementation observed in the campaign",
+          "title": "Procedure Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tactic",
+        "technique_id",
+        "technique_name",
+        "procedure_description"
+      ],
+      "title": "MitreAttackMapping",
+      "type": "object"
+    },
+    "NotableIOCs": {
+      "properties": {
+        "file_hashes": {
+          "description": "SHA256, MD5, SHA1 hashes of payloads or artifacts",
+          "items": {
+            "type": "string"
+          },
+          "title": "File Hashes",
+          "type": "array"
+        },
+        "domains": {
+          "description": "Associated C2 or staging domain names",
+          "items": {
+            "type": "string"
+          },
+          "title": "Domains",
+          "type": "array"
+        },
+        "ip_addresses": {
+          "description": "Associated IP addresses",
+          "items": {
+            "type": "string"
+          },
+          "title": "Ip Addresses",
+          "type": "array"
+        },
+        "c2_servers": {
+          "description": "C2 URLs, ports, or listener configs",
+          "items": {
+            "type": "string"
+          },
+          "title": "C2 Servers",
+          "type": "array"
+        },
+        "file_paths_or_registry": {
+          "description": "Notable dropper paths, persistence keys, or artifact filesystem locations",
+          "items": {
+            "type": "string"
+          },
+          "title": "File Paths Or Registry",
+          "type": "array"
+        },
+        "detection_rules": {
+          "description": "References to YARA, Sigma, or Snort detection rules",
+          "items": {
+            "type": "string"
+          },
+          "title": "Detection Rules",
+          "type": "array"
+        }
+      },
+      "title": "NotableIOCs",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "title": {
+      "description": "Title of the research report or threat intelligence analysis",
+      "title": "Title",
+      "type": "string"
+    },
+    "source": {
+      "description": "Source organization or blog (e.g. The DFIR Report, Unit 42, SentinelOne Labs)",
+      "title": "Source",
+      "type": "string"
+    },
+    "url": {
+      "description": "Original URL or citation for the intelligence",
+      "title": "Url",
+      "type": "string"
+    },
+    "date": {
+      "description": "Publication date or intrusion discovery date (YYYY-MM-DD or formatted string)",
+      "title": "Date",
+      "type": "string"
+    },
+    "type": {
+      "description": "Type of resource (Infection Chain, Attack Chain, Intrusion Timeline, Technique Deep Dive, Emulation Playbook, Simulation Scenario)",
+      "title": "Type",
+      "type": "string"
+    },
+    "threat_actor_or_malware": {
+      "description": "Named threat groups, APTs, ransomware affiliates, or malware families involved",
+      "items": {
+        "type": "string"
+      },
+      "title": "Threat Actor Or Malware",
+      "type": "array"
+    },
+    "named_stages": {
+      "description": "List of stage names in order (e.g. ['Stage 1: Phishing & Malicious ISO', 'Stage 2: Loader Execution'])",
+      "items": {
+        "type": "string"
+      },
+      "title": "Named Stages",
+      "type": "array"
+    },
+    "stages": {
+      "description": "Detailed technical breakdown of each attack stage",
+      "items": {
+        "$ref": "#/$defs/AttackStage"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "attack_flow_diagram": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Mermaid diagram or structured ASCII/text diagram illustrating the end-to-end chain",
+      "title": "Attack Flow Diagram"
+    },
+    "mitre_attack_mappings": {
+      "description": "Granular MITRE ATT&CK tactic, technique, and procedure mappings",
+      "items": {
+        "$ref": "#/$defs/MitreAttackMapping"
+      },
+      "title": "Mitre Attack Mappings",
+      "type": "array"
+    },
+    "notable_iocs": {
+      "$ref": "#/$defs/NotableIOCs",
+      "description": "Structured Indicators of Compromise (hashes, IPs, domains, paths)"
+    },
+    "summary": {
+      "description": "Concise narrative summary of the intrusion from initial access to final objective",
+      "title": "Summary",
+      "type": "string"
+    },
+    "emulation_utility": {
+      "description": "Strategic analysis on how this chain can be converted into an adversary emulation plan, Atomic Red Team tests, or Caldera abilities",
+      "title": "Emulation Utility",
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "source",
+    "url",
+    "date",
+    "type",
+    "named_stages",
+    "stages",
+    "summary",
+    "emulation_utility"
+  ],
+  "title": "AdversaryEmulationReport",
+  "type": "object"
+}
