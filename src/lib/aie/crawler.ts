@@ -29,6 +29,7 @@ import type {
   SourceRecord,
 } from "./types";
 import { getSql } from "@/lib/db";
+import { logger } from "./logger";
 import { isMongoConfigured } from "../mongodb/client.server";
 import {
   mongoFindReportByCanonical,
@@ -1019,6 +1020,7 @@ export async function executeCrawlJob(
         rejectedCount++;
         const itemId = newId("itm");
         const rejectMsg = qual.rejectionReason || "Below qualification threshold";
+        logger.qualification(current.canonicalUrl, "REJECT", qual.score, rejectMsg);
 
         const jobItem: CrawlJobItem = {
           id: itemId,
@@ -1105,6 +1107,12 @@ export async function executeCrawlJob(
       }
 
       qualifiedCount++;
+      logger.qualification(
+        current.canonicalUrl,
+        "PASS",
+        qual.score,
+        `Classification: ${qual.classification}, Resource: ${qual.resourceKind}`,
+      );
 
       // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
       const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
@@ -1147,7 +1155,11 @@ export async function executeCrawlJob(
         ingestedCount++;
         storedCanonicalUrls.add(current.canonicalUrl);
         storedHashes.add(textHash);
-        console.log(`[crawler] INGESTED: "${docTitle.slice(0, 60)}" (${qual.resourceKind}, score: ${score}, ${iocs.length} IOCs) -> ${current.domain}`);
+        logger.ingest(
+          "ACQUIRED",
+          docTitle,
+          `Classification: ${qual.resourceKind}, Score: ${score.toFixed(2)}, Words: ${wordCount}, IOCs: ${iocs.length}, TTPs: ${intelAnalysis?.attackChain?.length ?? 0}`,
+        );
 
         // Persist to MongoDB Atlas
         if (isMongoConfigured()) {
