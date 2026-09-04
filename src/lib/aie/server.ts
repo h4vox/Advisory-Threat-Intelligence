@@ -37,6 +37,7 @@ import type {
   TrustLevel,
 } from "./types";
 import { getSql } from "@/lib/db";
+import { logger } from "./logger";
 import { isMongoConfigured, getThreatIntelCollection } from "../mongodb/client.server";
 import {
   mongoGetDashboardStats,
@@ -355,13 +356,22 @@ const REPORT_SELECT = `
 `;
 
 export const getDashboard = createServerFn({ method: "GET" }).handler(async (): Promise<DashboardStats> => {
+  const startTime = Date.now();
+  logger.serverFn("getDashboard", "START");
   await ensureSeeded();
 
   if (isMongoConfigured()) {
     try {
-      return await mongoGetDashboardStats();
+      const stats = await mongoGetDashboardStats();
+      logger.serverFn(
+        "getDashboard",
+        "DONE",
+        Date.now() - startTime,
+        `${stats.reportCount} reports, ${stats.sourceCount} sources, ${stats.iocCount} IOCs`,
+      );
+      return stats;
     } catch (err) {
-      console.warn("[mongodb] fallback to sql for dashboard:", err);
+      logger.error("SERVER-FN", "mongoGetDashboardStats failed, falling back to SQL", err);
     }
   }
 
