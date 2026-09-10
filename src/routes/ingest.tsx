@@ -730,7 +730,7 @@ function IngestPage() {
         <div className="mt-4 flex items-center justify-between rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-danger">
           <div className="flex items-center gap-2">
             <XCircle className="size-4 shrink-0" />
-            <span>Failed to sync live telemetry from MongoDB Atlas: {crawlerState.error?.message}</span>
+            <span>Failed to sync live telemetry: {crawlerState.error?.message}</span>
           </div>
           <Button
             size="sm"
@@ -977,7 +977,7 @@ function IngestPage() {
                   <div className="font-mono text-[10px] text-subtle">05 · PRESERVATION</div>
                   <div className="mt-1 text-sm font-medium">PDF & Knowledge Base</div>
                   <p className="mt-1 text-xs text-muted">
-                    Pristine vector document generation and MongoDB Atlas persistence.
+                    Pristine vector document generation and secure database persistence.
                   </p>
                 </div>
               </div>
@@ -986,7 +986,7 @@ function IngestPage() {
               <div className="mt-8 border-t border-border pt-5">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-medium">Source Ingestion Performance</h3>
-                  <span className="font-mono text-[11px] text-subtle">Atlas Live Feed</span>
+                  <span className="font-mono text-[11px] text-subtle">Live Pipeline Feed</span>
                 </div>
                 {crawlerState.isLoading ? (
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 animate-pulse">
@@ -1486,7 +1486,7 @@ function IngestPage() {
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
               <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
               <p className="text-sm font-medium text-fg">Synchronizing Discovery Queue...</p>
-              <p className="mt-1 text-xs text-muted">Retrieving candidate URLs, qualification scores, and triage status from MongoDB Atlas.</p>
+              <p className="mt-1 text-xs text-muted">Retrieving candidate URLs, qualification scores, and triage status from central database.</p>
             </div>
           ) : filteredDiscovered.length === 0 ? (
             <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
@@ -2166,7 +2166,7 @@ function IngestPage() {
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
               <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
               <p className="text-sm font-medium text-fg">Loading Pipeline Audit Trail...</p>
-              <p className="mt-1 text-xs text-muted">Fetching multi-stage URL evaluations, content extractions, and ingestion verdicts from MongoDB Atlas.</p>
+              <p className="mt-1 text-xs text-muted">Fetching multi-stage URL evaluations, content extractions, and ingestion verdicts from central database.</p>
             </div>
           ) : filteredAuditItems.length === 0 ? (
             <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">

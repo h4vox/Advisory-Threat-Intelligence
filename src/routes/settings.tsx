@@ -63,7 +63,7 @@ export const Route = createFileRoute("/settings")({
 const SETTINGS_SECTIONS = [
   { id: "crawler", label: "Crawler & Ingestion", icon: Bot, badge: "Engine" },
   { id: "policy", label: "Intelligence Policies", icon: Shield, badge: "SOC" },
-  { id: "storage", label: "Database & Storage", icon: Database, badge: "Atlas" },
+  { id: "storage", label: "Database & Storage", icon: Database, badge: "Storage" },
   { id: "display", label: "Display & Preferences", icon: Sliders, badge: "UI" },
   { id: "agent", label: "AI Agent", icon: Sparkles, badge: "AGY" },
 ] as const;
@@ -95,7 +95,7 @@ function SettingsPage() {
     search.tab ?? "crawler"
   );
 
-  // Fetch Configurations from MongoDB Atlas
+  // Fetch Configurations from Database
   const configQuery = useQuery({
     queryKey: ["crawler-config"],
     queryFn: () => getCrawlConfig(),
@@ -162,7 +162,7 @@ function SettingsPage() {
       void qc.invalidateQueries({ queryKey: ["app-settings"] });
       void qc.invalidateQueries({ queryKey: ["crawlerState"] });
       void qc.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success("Settings saved successfully to MongoDB Atlas");
+      toast.success("Settings saved successfully to Database");
     },
     onError: (err: Error) => {
       toast.error(`Failed to save settings: ${err.message}`);
@@ -241,7 +241,7 @@ function SettingsPage() {
               <div className="font-mono text-[10px] uppercase text-subtle">Primary Storage</div>
               <div className="font-mono text-xs text-accent font-medium flex items-center gap-1.5 justify-end">
                 <span className="size-1.5 rounded-full bg-emerald-500" />
-                MongoDB Atlas Cluster
+                Cloud Database Cluster
               </div>
             </div>
           </div>
@@ -260,7 +260,7 @@ function SettingsPage() {
             ) : (
               <span className="flex items-center gap-1.5 font-mono text-xs text-subtle">
                 <CheckCircle2 className="size-3.5 text-emerald-500" />
-                All configurations synced to MongoDB
+                All configurations synced to Database
               </span>
             )}
           </div>
@@ -272,7 +272,7 @@ function SettingsPage() {
               disabled={purgeMutation.isPending}
               onClick={() => purgeMutation.mutate()}
               className="gap-1.5 text-xs font-mono"
-              title="Flush in-memory caches to force fresh retrieval from MongoDB"
+              title="Flush in-memory caches to force fresh retrieval from Database"
             >
               <RefreshCw className={cn("size-3.5", purgeMutation.isPending && "animate-spin")} />
               <span>Purge Cache</span>
@@ -1087,7 +1087,7 @@ function SettingsPage() {
               <div className="flex items-center justify-between border-b border-border pb-3">
                 <h3 className="text-sm font-medium flex items-center gap-2">
                   <Database className="size-4 text-accent" />
-                  MongoDB Atlas Cluster Telemetry
+                  Cloud Database Cluster Telemetry
                 </h3>
                 <span className="flex items-center gap-1.5 font-mono text-xs text-emerald-400">
                   <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />

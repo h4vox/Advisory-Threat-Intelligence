@@ -113,6 +113,7 @@ function LibraryPage() {
     queryKey: ["reports-all"],
     queryFn: () => listReports({ data: {} }),
     staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
   const allReports = useMemo(() => rawReports || [], [rawReports]);
@@ -527,10 +528,10 @@ function LibraryPage() {
     <AppShell>
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">MongoDB Central Intelligence Store</p>
+          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">Central Intelligence Store</p>
           <h1 className="mt-1 text-3xl font-medium tracking-tight">Intelligence Library</h1>
           <p className="mt-1 text-xs text-muted">
-            Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains stored in MongoDB Atlas.
+            Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -842,7 +843,7 @@ function LibraryPage() {
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted">
             <RefreshCw className="size-6 animate-spin text-accent mb-2" />
-            <p className="text-sm">Querying MongoDB Central Intelligence Store…</p>
+            <p className="text-sm">Querying Central Intelligence Store…</p>
           </div>
         ) : null}
 

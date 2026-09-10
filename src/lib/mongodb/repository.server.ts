@@ -565,9 +565,9 @@ export async function mongoListReports(params?: {
       parentSource: doc.parentSource || "",
       sourceDomain: doc.sourceDomain || "",
       version: Number(doc.version ?? 1),
-      rawHtml: doc.rawHtml || "",
+      rawHtml: "",
       pdfUrl: doc.pdfUrl || "",
-      pdfBase64: doc.pdfBase64 || "",
+      pdfBase64: "",
       analysis: (doc.analysis as IntelAnalysis) || null,
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
@@ -651,7 +651,7 @@ let cachedSourcesList: { timestamp: number; data: SourceRecord[] } | null = null
 
 export async function mongoListSources(): Promise<SourceRecord[]> {
   const now = Date.now();
-  if (cachedSourcesList && now - cachedSourcesList.timestamp < 10_000) {
+  if (cachedSourcesList && now - cachedSourcesList.timestamp < 60_000) {
     return cachedSourcesList.data;
   }
   try {
@@ -2008,7 +2008,7 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
   if (cachedCrawlerState?.data) {
     return cachedCrawlerState.data;
   }
-  throw new Error("Unable to fetch crawler state from MongoDB Atlas");
+  throw new Error("Unable to fetch crawler state from database");
 }
 
 // ---------------------------------------------------------------------------

@@ -188,7 +188,7 @@ function toListItem(r: ReportRow): ReportListItem {
     parentSource: r.parent_source ?? "",
     sourceDomain: r.source_domain ?? "",
     version: Number(r.version ?? 1),
-    rawHtml: r.raw_html || "",
+    rawHtml: "",
     pdfUrl: r.pdf_url || "",
     analysis: parseJson<IntelAnalysis | null>(r.analysis_json, null),
   };
@@ -290,7 +290,7 @@ async function ensureSeeded() {
               reportId: r.id,
               url: r.url,
               outcome: "seeded",
-              detail: "Gold-set seed stored in MongoDB Atlas",
+              detail: "Gold-set seed stored in central database",
               createdAt: new Date().toISOString(),
             });
           }
@@ -1104,7 +1104,7 @@ async function persistReport(input: {
             reportId: dup.id,
             url: input.url,
             outcome: "duplicate",
-            detail: "Canonical URL already stored in MongoDB Atlas",
+            detail: "Canonical URL already stored in database",
             createdAt: new Date().toISOString(),
           });
           return {
@@ -1236,7 +1236,7 @@ async function persistReport(input: {
         detail:
           status === "rejected"
             ? "Below quality threshold"
-            : `[${classification}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · MongoDB Atlas & PDF ready`,
+            : `[${classification}] quality ${score} · ${wordCount} words · ${iocs.length} IOCs · Database & PDF ready`,
         createdAt: new Date().toISOString(),
       });
     } catch (mongoErr) {
