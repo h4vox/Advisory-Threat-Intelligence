@@ -49,7 +49,7 @@ const GENERIC_PATH_PATTERNS = [
   /\/tag\/[^\/]+\/?$/i,
   /\/tags\/[^\/]+\/?$/i,
   /\/author\/[^\/]+\/?$/i,
-  /\/topic\/[^\/]+\/?$/i,
+  /\/topics?\/[^\/]+\/?$/i,
   /\/archives?\/?$/i,
   /\/feed\/?$/i,
   /\/rss\/?$/i,

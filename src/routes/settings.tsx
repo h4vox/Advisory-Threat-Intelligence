@@ -18,6 +18,7 @@ import {
   Layers,
   Moon,
   Network,
+  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -37,6 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import {
+  checkCrawlerSchedule,
   getAppSettings,
   getCrawlConfig,
   getStorageStats,
@@ -63,6 +65,24 @@ const SETTINGS_SECTIONS = [
   { id: "storage", label: "Database & Storage", icon: Database, badge: "Atlas" },
   { id: "display", label: "Display & Preferences", icon: Sliders, badge: "UI" },
 ] as const;
+
+const INTERVAL_PRESETS = [
+  { label: "5m", mins: 5, tag: "Test" },
+  { label: "15m", mins: 15 },
+  { label: "30m", mins: 30 },
+  { label: "1h", mins: 60 },
+  { label: "2h", mins: 120 },
+  { label: "6h", mins: 360, tag: "Std" },
+  { label: "12h", mins: 720 },
+  { label: "24h", mins: 1440, tag: "Daily" },
+];
+
+function formatCrawlInterval(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
 
 type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 
@@ -150,6 +170,30 @@ function SettingsPage() {
     },
     onError: (err: Error) => {
       toast.error(`Cache flush failed: ${err.message}`);
+    },
+  });
+
+  // Mutation to manually trigger/test scheduled scan evaluation
+  const checkScheduleMutation = useMutation({
+    mutationFn: () => checkCrawlerSchedule(),
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: ["crawler-config"] });
+      void qc.invalidateQueries({ queryKey: ["crawlerState"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      if (res.triggered) {
+        toast.success(`Autonomous Scheduled Scan Dispatched!`, {
+          description: `Job ID: ${res.jobId?.slice(0, 16)} · Next run at ${res.nextRunAt ? new Date(res.nextRunAt).toLocaleTimeString() : "scheduled interval"}`,
+        });
+      } else {
+        toast.info(`Scheduler Status: ${res.reason}`, {
+          description: res.nextRunAt
+            ? `Next autonomous scan scheduled for: ${new Date(res.nextRunAt).toLocaleTimeString()}`
+            : undefined,
+        });
+      }
+    },
+    onError: (err: Error) => {
+      toast.error(`Scheduler check failed: ${err.message}`);
     },
   });
 
@@ -321,31 +365,89 @@ function SettingsPage() {
                 </div>
               </div>
 
+              {/* Live Autonomous Scheduler Telemetry & Trigger Card */}
+              <div className="p-3.5 rounded-lg border border-border bg-bg-subtle/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "size-2 rounded-full",
+                        !currentCrawl.enabled ? "bg-muted" : currentCrawl.paused ? "bg-warn" : "bg-sage animate-pulse"
+                      )}
+                    />
+                    <span className="text-xs font-semibold font-mono">
+                      {!currentCrawl.enabled
+                        ? "Autonomous Daemon: DISABLED"
+                        : currentCrawl.paused
+                          ? "Autonomous Daemon: PAUSED"
+                          : `Autonomous Daemon: ACTIVE (Cadence: every ${formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)})`}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
+                    <span>
+                      Last Run:{" "}
+                      <span className="text-fg">
+                        {currentCrawl.lastRunAt ? new Date(currentCrawl.lastRunAt).toLocaleString() : "Never run"}
+                      </span>
+                    </span>
+                    <span>
+                      Next Scheduled Run:{" "}
+                      <span className="text-accent font-medium">
+                        {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => checkScheduleMutation.mutate()}
+                  disabled={checkScheduleMutation.isPending}
+                  className="text-xs shrink-0 gap-1.5"
+                >
+                  <Play className="size-3 text-accent" />
+                  <span>{checkScheduleMutation.isPending ? "Evaluating Schedule..." : "Evaluate / Test Schedule"}</span>
+                </Button>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-xs">
                     <label className="font-medium">Crawl Interval</label>
-                    <span className="font-mono text-accent">
-                      {Math.floor((currentCrawl.frequencyMinutes ?? 360) / 60)}h{" "}
-                      {(currentCrawl.frequencyMinutes ?? 360) % 60 > 0
-                        ? `${(currentCrawl.frequencyMinutes ?? 360) % 60}m`
-                        : ""}
+                    <span className="font-mono text-accent font-semibold">
+                      {formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)}
                     </span>
                   </div>
                   <input
                     type="range"
-                    min="30"
+                    min="5"
                     max="1440"
-                    step="30"
+                    step="5"
                     value={currentCrawl.frequencyMinutes ?? 360}
                     onChange={(e) => updateCrawlField("frequencyMinutes", parseInt(e.target.value, 10))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] font-mono text-subtle">
-                    <span>30m</span>
-                    <span>6h</span>
-                    <span>12h</span>
-                    <span>24h</span>
+                  <div className="flex flex-wrap items-center gap-1 pt-1">
+                    {INTERVAL_PRESETS.map((p) => {
+                      const isSelected = (currentCrawl.frequencyMinutes ?? 360) === p.mins;
+                      return (
+                        <button
+                          key={p.mins}
+                          type="button"
+                          onClick={() => updateCrawlField("frequencyMinutes", p.mins)}
+                          className={cn(
+                            "px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors cursor-pointer",
+                            isSelected
+                              ? "border-accent bg-accent/15 text-accent font-semibold"
+                              : "border-border bg-bg-subtle/30 text-muted hover:border-border-hover hover:text-fg"
+                          )}
+                        >
+                          {p.label}
+                          {p.tag ? <span className="ml-0.5 opacity-70">({p.tag})</span> : null}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 

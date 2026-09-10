@@ -75,7 +75,7 @@ export const SOURCE_SEED: Omit<SourceRecord, "lastIngestAt">[] = [
     category: "threat_intelligence",
     priority: 2,
     homepageUrl: "https://cloud.google.com/blog/topics/threat-intelligence",
-    feedUrl: "https://cloud.google.com/feeds/threat-intelligence.xml",
+    feedUrl: "",
     researchArchives: ["https://cloud.google.com/blog/topics/threat-intelligence"],
     enabled: true,
     trustLevel: "official",

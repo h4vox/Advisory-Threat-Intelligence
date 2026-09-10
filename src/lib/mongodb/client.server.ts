@@ -1,11 +1,21 @@
 import { MongoClient, type Db, type Collection } from "mongodb";
 import dns from "node:dns";
 
-// Fix Windows / local ISP DNS SRV resolution issues (ECONNREFUSED on _mongodb._tcp)
+// Fix Windows / local ISP DNS and IPv6 NAT64 issues: prefer IPv4 addresses first
 try {
-  dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
+  if (typeof dns.setDefaultResultOrder === "function") {
+    dns.setDefaultResultOrder("ipv4first");
+  }
 } catch {
-  // Ignore in sandboxes where setServers is restricted
+  // Ignore in environments where setDefaultResultOrder is not supported
+}
+
+function applyDnsServersFallback() {
+  try {
+    dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
+  } catch {
+    // Ignore in sandboxes where setServers is restricted
+  }
 }
 
 declare global {
@@ -78,11 +88,15 @@ export async function getMongoClient(): Promise<MongoClient> {
 
   const tryConnect = async (targetUri: string): Promise<MongoClient> => {
     const client = new MongoClient(targetUri, {
-      maxPoolSize: 15,
-      minPoolSize: 1,
-      serverSelectionTimeoutMS: 6000,
-      connectTimeoutMS: 8000,
-      autoSelectFamily: false,
+      maxPoolSize: 25,
+      minPoolSize: 0,
+      serverSelectionTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      maxIdleTimeMS: 60000,
+      waitQueueTimeoutMS: 15000,
+      retryWrites: true,
+      retryReads: true,
       tls: true,
       tlsAllowInvalidCertificates: true,
     });
@@ -90,24 +104,44 @@ export async function getMongoClient(): Promise<MongoClient> {
   };
 
   const connectPromise = (async () => {
-    try {
-      return await tryConnect(uri);
-    } catch (srvErr) {
-      const isDnsOrTlsError =
-        srvErr instanceof Error &&
-        (srvErr.message.includes("querySrv") ||
-          srvErr.message.includes("ECONNREFUSED") ||
-          srvErr.message.includes("ENOTFOUND") ||
-          srvErr.message.includes("tlsv1 alert") ||
-          srvErr.message.includes("SSL alert"));
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await tryConnect(uri);
+      } catch (srvErr) {
+        lastErr = srvErr;
+        const isDnsOrTlsError =
+          srvErr instanceof Error &&
+          (srvErr.message.includes("querySrv") ||
+            srvErr.message.includes("ECONNREFUSED") ||
+            srvErr.message.includes("ENOTFOUND") ||
+            srvErr.message.includes("tlsv1 alert") ||
+            srvErr.message.includes("SSL alert"));
 
-      const directUri = isDnsOrTlsError ? getDirectSeedUri(uri) : null;
-      if (directUri) {
-        console.warn("[mongodb] SRV connection failed; attempting direct replica-set seed nodes...");
-        return await tryConnect(directUri);
+        if (isDnsOrTlsError) {
+          applyDnsServersFallback();
+        }
+
+        const directUri: string | null = isDnsOrTlsError ? getDirectSeedUri(uri) : null;
+        if (directUri && directUri !== uri) {
+          console.warn("[mongodb] SRV connection failed; attempting direct replica-set seed nodes...");
+          try {
+            return await tryConnect(directUri);
+          } catch (directErr) {
+            lastErr = directErr;
+          }
+        }
+
+        if (attempt < 2) {
+          console.warn(
+            `[mongodb] Connection attempt ${attempt} failed, retrying in 1s...`,
+            srvErr instanceof Error ? srvErr.message : srvErr,
+          );
+          await new Promise((r) => setTimeout(r, 1000));
+        }
       }
-      throw srvErr;
     }
+    throw lastErr;
   })();
 
   globalThis.__mongoClientPromise = connectPromise;

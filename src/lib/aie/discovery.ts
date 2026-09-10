@@ -80,6 +80,14 @@ const STRICT_BLOCKED_DOMAINS = new Set([
 
 export function isBlacklistedDomain(domain: string, userBlocklist?: string[]): boolean {
   const clean = domain.toLowerCase().replace(/^www\./, "");
+
+  // Authoritative CTI domains (e.g. cloud.google.com, mandiant.com) must NEVER be blocked
+  if (TRUSTED_CTI_DOMAINS.has(clean)) return false;
+  for (const trusted of TRUSTED_CTI_DOMAINS) {
+    if (clean === trusted || clean.endsWith(`.${trusted}`)) return false;
+  }
+  if (clean === "cloud.google.com" || clean.endsWith(".cloud.google.com")) return false;
+
   if (STRICT_BLOCKED_DOMAINS.has(clean)) return true;
   for (const blocked of STRICT_BLOCKED_DOMAINS) {
     if (clean.endsWith(`.${blocked}`)) return true;

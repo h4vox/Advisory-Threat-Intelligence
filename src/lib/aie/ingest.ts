@@ -210,8 +210,42 @@ export async function ensureSeeded() {
 }
 
 export async function matchSource(url: string): Promise<string> {
-  const sql = await getSql();
   const host = hostOf(url);
+  if (host === "cloud.google.com" || host.endsWith(".google.com") || host.includes("mandiant")) {
+    return "src_mandiant";
+  }
+  if (host.includes("microsoft.com")) {
+    return "src_msft";
+  }
+  if (host.includes("thedfirreport.com")) {
+    return "src_dfir";
+  }
+  if (host.includes("paloaltonetworks.com") || host.includes("unit42")) {
+    return "src_unit42";
+  }
+  if (host.includes("sentinelone.com")) {
+    return "src_sentinel";
+  }
+  if (host.includes("huntress.com")) {
+    return "src_huntress";
+  }
+  if (host.includes("cisa.gov")) {
+    return "src_cisa";
+  }
+  if (host.includes("talosintelligence.com")) {
+    return "src_talos";
+  }
+  if (host.includes("specterops.io")) {
+    return "src_specterops";
+  }
+  if (host.includes("redcanary.com")) {
+    return "src_redcanary";
+  }
+  if (host.includes("crowdstrike.com")) {
+    return "src_crowdstrike";
+  }
+
+  const sql = await getSql();
   const rows = await sql<SourceRow>`select * from sources`;
   const hit = rows.find((s) => {
     try {

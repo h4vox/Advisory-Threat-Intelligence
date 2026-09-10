@@ -143,7 +143,24 @@ export function formatOutcomeId(
 } {
   const norm = (outcome || "").toLowerCase().trim();
 
-  // 1. Green items: Ingested, Acquired, Seeded
+  // 1. Amber/Attention: Awaiting Approval (Action needed by operator)
+  if (
+    norm === "awaiting_approval" ||
+    norm === "awaiting approval" ||
+    norm === "pending_approval" ||
+    norm === "pending approval"
+  ) {
+    const id = formatSystemId("discovered", rawId, fallbackUrl);
+    return {
+      id,
+      category: "discovered",
+      tone: "warn",
+      label: "AWAITING APPROVAL",
+      badgeClass: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+    };
+  }
+
+  // 2. Green items: Ingested, Acquired, Seeded
   if (norm === "ingested" || norm === "acquired" || norm === "seeded" || norm === "success" || norm === "completed") {
     const id = formatSystemId("ingested", rawId, fallbackUrl);
     return {

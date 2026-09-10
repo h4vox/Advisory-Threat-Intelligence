@@ -53,6 +53,21 @@ export function isJobActive(jobId: string): boolean {
   return jobActiveCheckFn ? jobActiveCheckFn(jobId) : false;
 }
 
+// Autonomous schedule checker registry (registered by crawler to avoid circular imports)
+let scheduleCheckFn: (() => Promise<any>) | null = null;
+
+export function registerScheduleChecker(fn: () => Promise<any>) {
+  scheduleCheckFn = fn;
+}
+
+export function triggerScheduleCheck() {
+  if (scheduleCheckFn) {
+    void scheduleCheckFn().catch((err) => {
+      console.warn("[scheduler-hook] triggerScheduleCheck error:", err);
+    });
+  }
+}
+
 let cachedCrawlerState: { timestamp: number; data: CrawlerState } | null = null;
 const CRAWLER_STATE_CACHE_TTL_MS = 6_000; // 6s TTL: ultra-fast responses without hammering Atlas
 
@@ -91,11 +106,15 @@ export function invalidateSettingsCache() {
   logger.cache("INVALIDATE", "app-settings", "Cleared in-memory app settings cache");
 }
 
+let lastKnownGoodCrawlerState: CrawlerState | null = null;
+
 export function invalidateCrawlerStateCache() {
-  cachedCrawlerState = null;
+  if (cachedCrawlerState) {
+    cachedCrawlerState.timestamp = 0;
+  }
   cachedDiscoveredSources = null;
   cachedTelemetrySummary = null;
-  logger.cache("INVALIDATE", "crawler-state", "Cleared in-memory crawler state & sources cache");
+  logger.cache("INVALIDATE", "crawler-state", "Marked in-memory crawler state cache as stale");
 }
 
 export function purgeAllServerCaches() {
@@ -553,27 +572,47 @@ export async function mongoDeleteReport(id: string): Promise<boolean> {
 // Source Records
 // ---------------------------------------------------------------------------
 
-export async function mongoListSources(): Promise<SourceRecord[]> {
-  await ensureMongoIndexes();
-  const col = await getThreatIntelCollection();
-  const docs = await col
-    .find({ docType: "source" })
-    .sort({ priority: 1, name: 1 })
-    .toArray();
+let cachedSourcesList: { timestamp: number; data: SourceRecord[] } | null = null;
 
-  return docs.map((doc) => ({
-    id: doc.id,
-    name: doc.name,
-    slug: doc.slug,
-    category: doc.category,
-    priority: Number(doc.priority),
-    homepageUrl: doc.homepageUrl,
-    feedUrl: doc.feedUrl || "",
-    enabled: Boolean(doc.enabled),
-    trustLevel: (doc.trustLevel as TrustLevel) || "reputable",
-    notes: doc.notes || "",
-    lastIngestAt: doc.lastIngestAt || null,
-  }));
+export async function mongoListSources(): Promise<SourceRecord[]> {
+  const now = Date.now();
+  if (cachedSourcesList && now - cachedSourcesList.timestamp < 10_000) {
+    return cachedSourcesList.data;
+  }
+  try {
+    await ensureMongoIndexes();
+    const col = await getThreatIntelCollection();
+    const docs = await col
+      .find({ docType: "source" })
+      .sort({ priority: 1, name: 1 })
+      .toArray();
+
+    const result: SourceRecord[] = docs.map((doc) => ({
+      id: doc.id,
+      name: doc.name,
+      slug: doc.slug,
+      category: doc.category,
+      priority: Number(doc.priority),
+      homepageUrl: doc.homepageUrl,
+      feedUrl: doc.feedUrl || "",
+      enabled: Boolean(doc.enabled),
+      trustLevel: (doc.trustLevel as TrustLevel) || "reputable",
+      notes: doc.notes || "",
+      lastIngestAt: doc.lastIngestAt || null,
+    }));
+    cachedSourcesList = { timestamp: Date.now(), data: result };
+    return result;
+  } catch (err) {
+    if (cachedSourcesList?.data) {
+      logger.warn(
+        "mongodb",
+        "mongoListSources encountered transient error; serving cached sources:",
+        err instanceof Error ? err.message : err,
+      );
+      return cachedSourcesList.data;
+    }
+    throw err;
+  }
 }
 
 export async function mongoToggleSource(id: string, enabled: boolean): Promise<void> {
@@ -736,6 +775,31 @@ export async function mongoUpdateCrawlConfig(updates: Partial<CrawlConfig>): Pro
   invalidateDashboardCache();
   const col = await getThreatIntelCollection();
   const current = await mongoGetCrawlConfig();
+
+  // If scheduler is enabled and interval changed or enabled, intelligently update nextRunAt
+  const willBeEnabled = updates.enabled !== undefined ? updates.enabled : current.enabled;
+  const newFreq = updates.frequencyMinutes !== undefined ? updates.frequencyMinutes : (current.frequencyMinutes || 60);
+
+  if (willBeEnabled && updates.paused !== true) {
+    const now = Date.now();
+    const lastRunMs = current.lastRunAt ? new Date(current.lastRunAt).getTime() : 0;
+    
+    // Recalculate nextRunAt if not explicitly provided and interval or enabled state changed
+    if (updates.nextRunAt === undefined) {
+      if (updates.frequencyMinutes !== undefined) {
+        // User changed interval: schedule next run newFreq minutes from now
+        updates.nextRunAt = new Date(now + newFreq * 60 * 1000).toISOString();
+      } else if (updates.enabled === true && !current.enabled) {
+        if (!lastRunMs) {
+          updates.nextRunAt = new Date(now + 30_000).toISOString();
+        } else {
+          const targetNextMs = lastRunMs + newFreq * 60 * 1000;
+          updates.nextRunAt = new Date(Math.max(now + 30_000, targetNextMs)).toISOString();
+        }
+      }
+    }
+  }
+
   const merged: CrawlConfig = { ...current, ...updates };
   const { _id, ...cleanMerged } = merged as any;
   await col.updateOne({ docType: "crawl_config", id: current.id }, { $set: cleanMerged }, { upsert: true });
@@ -746,6 +810,10 @@ export async function mongoUpdateCrawlConfig(updates: Partial<CrawlConfig>): Pro
     Date.now() - startTime,
     `Updated crawl config (${Object.keys(updates).join(", ")})`,
   );
+
+  // Trigger schedule check in background so due scans run immediately
+  triggerScheduleCheck();
+
   return cleanMerged;
 }
 
@@ -881,11 +949,11 @@ export async function mongoUpdateCrawlJob(id: string, updates: Partial<CrawlJob>
   invalidateCrawlerStateCache();
 }
 
-export async function mongoListRecentCrawlJobs(limit = 10): Promise<CrawlJob[]> {
+export async function mongoListRecentCrawlJobs(limit = 100): Promise<CrawlJob[]> {
   const col = await getThreatIntelCollection();
   const docs = await col
     .find({ docType: "crawl_job" })
-    .sort({ createdAt: -1, startedAt: -1 })
+    .sort({ startedAt: -1, createdAt: -1 })
     .limit(limit)
     .toArray();
 
@@ -1493,6 +1561,9 @@ async function getOrComputeTelemetrySummary(col: any) {
 }
 
 export async function mongoGetCrawlerState(): Promise<CrawlerState> {
+  // Non-blocking trigger of autonomous schedule check
+  triggerScheduleCheck();
+
   const now = Date.now();
   if (cachedCrawlerState && now - cachedCrawlerState.timestamp < CRAWLER_STATE_CACHE_TTL_MS) {
     logger.cache("HIT", "crawler-state", "Returned cached crawler telemetry");
@@ -1500,92 +1571,130 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
   }
 
   const startTime = Date.now();
-  const col = await getThreatIntelCollection();
+  let attempts = 0;
+  while (attempts < 2) {
+    attempts++;
+    try {
+      const col = await getThreatIntelCollection();
 
-  const [
-    config,
-    jobs,
-    items,
-    discovered,
-    discoveredSources,
-    graphEdges,
-    summaryData,
-  ] = await Promise.all([
-    mongoGetCrawlConfig(),
-    mongoListRecentCrawlJobs(60),
-    mongoListRecentCrawlJobItems(250),
-    mongoListDiscoveredResources(350),
-    mongoListDiscoveredSources(),
-    mongoListGraphEdges(150),
-    getOrComputeTelemetrySummary(col),
-  ]);
+      const [
+        config,
+        jobs,
+        items,
+        discovered,
+        discoveredSources,
+        graphEdges,
+        summaryData,
+      ] = await Promise.all([
+        mongoGetCrawlConfig(),
+        mongoListRecentCrawlJobs(100),
+        mongoListRecentCrawlJobItems(250),
+        mongoListDiscoveredResources(350),
+        mongoListDiscoveredSources(),
+        mongoListGraphEdges(150),
+        getOrComputeTelemetrySummary(col),
+      ]);
 
-  // Watchdog & Zombie Job Reconciliation:
-  // Auto-detect and reconcile jobs stuck in "running" status across process restarts or exceeding runtime limits
-  const nowTime = Date.now();
-  const maxJobDurationMs = (config.maxRunTimeMinutes || 5) * 60 * 1000;
+      // Watchdog & Zombie Job Reconciliation:
+      // Auto-detect and reconcile jobs stuck in "running" status across process restarts or exceeding runtime limits
+      const nowTime = Date.now();
+      const maxJobDurationMs = (config.maxRunTimeMinutes || 5) * 60 * 1000;
 
-  for (const j of jobs) {
-    if (j.status === "running") {
-      const startedMs = j.startedAt ? new Date(j.startedAt).getTime() : 0;
-      const elapsedMs = nowTime - startedMs;
-      // Expired if elapsed exceeds configured time limit + 30s grace,
-      // OR orphaned if not active in server memory and older than 60s
-      const isExpired = elapsedMs > maxJobDurationMs + 30 * 1000;
-      const isOrphaned = elapsedMs > 60 * 1000 && !isJobActive(j.id);
+      for (const j of jobs) {
+        if (j.status === "running") {
+          const startedMs = j.startedAt ? new Date(j.startedAt).getTime() : 0;
+          const elapsedMs = nowTime - startedMs;
+          // Expired if elapsed exceeds configured time limit + 30s grace,
+          // OR orphaned if not active in server memory and older than 60s
+          const isExpired = elapsedMs > maxJobDurationMs + 30 * 1000;
+          const isOrphaned = elapsedMs > 60 * 1000 && !isJobActive(j.id);
 
-      if (isExpired || isOrphaned) {
-        logger.warn(
-          "crawler-watchdog",
-          `Auto-reconciling stuck crawl job ${j.id} (elapsed: ${Math.round(elapsedMs / 1000)}s, limit: ${Math.round(maxJobDurationMs / 60000)}m, expired: ${isExpired}, orphaned: ${isOrphaned})`,
-        );
-        j.status = "completed";
-        j.completedAt = j.completedAt || new Date().toISOString();
-        j.errorSummary = isExpired
-          ? `Job auto-finalized: exceeded configured time limit (${config.maxRunTimeMinutes || 5} min)`
-          : "Job finalized: process restart or execution state reconciled";
-        j.currentStage = "indexed";
+          if (isExpired || isOrphaned) {
+            logger.warn(
+              "crawler-watchdog",
+              `Auto-reconciling stuck crawl job ${j.id} (elapsed: ${Math.round(elapsedMs / 1000)}s, limit: ${Math.round(maxJobDurationMs / 60000)}m, expired: ${isExpired}, orphaned: ${isOrphaned})`,
+            );
+            j.status = "completed";
+            j.completedAt = j.completedAt || new Date().toISOString();
+            j.errorSummary = isExpired
+              ? `Job auto-finalized: exceeded configured time limit (${config.maxRunTimeMinutes || 5} min)`
+              : "Job finalized: process restart or execution state reconciled";
+            j.currentStage = "indexed";
 
-        // Persist update to MongoDB Atlas document so it is healed for all future sessions
-        void col.updateOne(
-          { docType: "crawl_job", id: j.id },
-          {
-            $set: {
-              status: "completed",
-              completedAt: j.completedAt,
-              errorSummary: j.errorSummary,
-              currentStage: "indexed",
-              updatedAt: new Date().toISOString(),
-            },
-          },
-        ).catch(() => {});
+            // Persist update to MongoDB Atlas document so it is healed for all future sessions
+            void col.updateOne(
+              { docType: "crawl_job", id: j.id },
+              {
+                $set: {
+                  status: "completed",
+                  completedAt: j.completedAt,
+                  errorSummary: j.errorSummary,
+                  currentStage: "indexed",
+                  updatedAt: new Date().toISOString(),
+                },
+              },
+            ).catch(() => {});
+          }
+        }
       }
+
+      const activeJob = jobs.find((j) => j.status === "running") ?? null;
+
+      const state: CrawlerState = {
+        config,
+        activeJob,
+        jobs,
+        items,
+        discovered,
+        discoveredSources,
+        graphEdges,
+        sourceStats: summaryData.sourceStats,
+        totalCounts: {
+          discovered: summaryData.totalDiscovered,
+          sources: summaryData.totalSources,
+          jobs: summaryData.totalJobs,
+          graphEdges: summaryData.totalGraphEdges,
+        },
+      };
+
+      const cleanState = JSON.parse(JSON.stringify(state));
+      cachedCrawlerState = { timestamp: Date.now(), data: cleanState };
+      lastKnownGoodCrawlerState = cleanState;
+      logger.mongo("crawlerState", "threat-intel", Date.now() - startTime, "Fetched crawler state telemetry");
+      return cleanState;
+    } catch (err) {
+      if (lastKnownGoodCrawlerState) {
+        logger.warn(
+          "mongodb",
+          "mongoGetCrawlerState encountered transient error; serving last known good Atlas state:",
+          err instanceof Error ? err.message : err,
+        );
+        return lastKnownGoodCrawlerState;
+      }
+      if (cachedCrawlerState?.data) {
+        return cachedCrawlerState.data;
+      }
+      if (attempts < 2) {
+        logger.warn(
+          "mongodb",
+          `mongoGetCrawlerState fetch attempt ${attempts} failed, retrying in 1s...`,
+          err instanceof Error ? err.message : err,
+        );
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      throw err;
     }
   }
 
-  const activeJob = jobs.find((j) => j.status === "running") ?? null;
-
-  const state: CrawlerState = {
-    config,
-    activeJob,
-    jobs,
-    items,
-    discovered,
-    discoveredSources,
-    graphEdges,
-    sourceStats: summaryData.sourceStats,
-    totalCounts: {
-      discovered: summaryData.totalDiscovered,
-      sources: summaryData.totalSources,
-      jobs: summaryData.totalJobs,
-      graphEdges: summaryData.totalGraphEdges,
-    },
-  };
-
-  const cleanState = JSON.parse(JSON.stringify(state));
-  cachedCrawlerState = { timestamp: Date.now(), data: cleanState };
-  logger.mongo("crawlerState", "threat-intel", Date.now() - startTime, "Fetched crawler state telemetry");
-  return cleanState;
+  // Fallback if loop finishes unexpectedly
+  if (lastKnownGoodCrawlerState) {
+    return lastKnownGoodCrawlerState;
+  }
+  if (cachedCrawlerState?.data) {
+    return cachedCrawlerState.data;
+  }
+  throw new Error("Unable to fetch crawler state from MongoDB Atlas");
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,6 +1777,9 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
 }
 
 export async function mongoGetDashboardStats(): Promise<DashboardStats> {
+  // Non-blocking trigger of autonomous schedule check
+  triggerScheduleCheck();
+
   if (cachedDashboardStats && Date.now() - cachedDashboardStats.timestamp < DASHBOARD_CACHE_TTL_MS) {
     logger.mongo(
       "getDashboardStats",
@@ -1790,13 +1902,13 @@ export async function mongoGetIngestedCanonicalUrls(): Promise<Set<string>> {
 }
 
 export async function mongoGetExistingReportsDedupIndex(): Promise<
-  Array<{ id: string; canonicalUrl: string; textHash: string; title: string; excerpt: string }>
+  Array<{ id: string; canonicalUrl: string; textHash: string; title: string; excerpt: string; wordCount?: number }>
 > {
   if (!isMongoConfigured()) return [];
   const col = await getThreatIntelCollection();
   const docs = await col
     .find({ docType: "report" })
-    .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, _id: 0 })
+    .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, wordCount: 1, _id: 0 })
     .toArray();
   return docs as any[];
 }

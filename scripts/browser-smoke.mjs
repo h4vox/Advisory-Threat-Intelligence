@@ -90,10 +90,19 @@ function compareAgainstBaseline(verdict) {
 
 let browser = null;
 try {
-  browser = await chromium.launch({
+  const launchOptions = {
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
+  };
+  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
+    launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  } else if (process.platform === "win32") {
+    const { existsSync } = await import("node:fs");
+    if (existsSync("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe")) {
+      launchOptions.executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+    }
+  }
+  browser = await chromium.launch(launchOptions);
 
   const viewports = {};
   for (const vp of VIEWPORTS) {

@@ -130,6 +130,16 @@ const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   nextRunAt: null,
 };
 
+function isItemAwaitingApproval(status?: string | null, decision?: string | null): boolean {
+  const s = (status || decision || "").toLowerCase().trim();
+  return (
+    s === "awaiting_approval" ||
+    s === "awaiting approval" ||
+    s === "pending_approval" ||
+    s === "pending approval"
+  );
+}
+
 function paginateList<T>(list: T[], page: number, pageSize: number | "all"): T[] {
   if (pageSize === "all") return list;
   const start = (page - 1) * pageSize;
@@ -328,6 +338,7 @@ function IngestPage() {
     queryKey: ["crawlerState"],
     queryFn: () => getCrawlerState(),
     staleTime: 6000,
+    placeholderData: (previousData) => previousData,
     refetchInterval: (query) => (query.state.data?.activeJob ? 3000 : 25000),
   });
 
@@ -455,7 +466,8 @@ function IngestPage() {
   const queueKinds = Array.from(new Set(discovered.map((d) => d.resourceKind || d.classification).filter(Boolean))).sort();
 
   const filteredDiscovered = discovered.filter((item) => {
-    if (queueFilter === "qualified" && item.status !== "qualified" && item.status !== "awaiting_approval") return false;
+    if (queueFilter === "awaiting_approval" && !isItemAwaitingApproval(item.status)) return false;
+    if (queueFilter === "qualified" && item.status !== "qualified" && !isItemAwaitingApproval(item.status)) return false;
     if (queueFilter === "ingested" && item.status !== "ingested") return false;
     if (queueFilter === "rejected" && item.status !== "rejected") return false;
     if (queueKind !== "all" && item.resourceKind !== queueKind && item.classification !== queueKind) return false;
@@ -486,6 +498,14 @@ function IngestPage() {
   });
 
   const sortedDiscovered = [...filteredDiscovered].sort((a, b) => {
+    // 1. PIN AWAITING APPROVAL TO TOP ROWS:
+    // Any candidate item requiring operator review/approval is pinned at the top
+    const aPending = isItemAwaitingApproval(a.status);
+    const bPending = isItemAwaitingApproval(b.status);
+    if (aPending && !bPending) return -1;
+    if (!aPending && bPending) return 1;
+
+    // 2. Secondary sort according to chosen criteria
     if (queueSort === "oldest") return (a.createdAt || "").localeCompare(b.createdAt || "");
     if (queueSort === "score_desc") return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
     if (queueSort === "title_asc") return (a.title || "").localeCompare(b.title || "");
@@ -500,7 +520,13 @@ function IngestPage() {
   const auditPublishers = (Array.from(new Set(items.map((i) => i.publisher).filter(Boolean))) as string[]).sort();
 
   const filteredAuditItems = items.filter((itm) => {
-    if (auditDecision !== "all" && itm.decision !== auditDecision) return false;
+    if (auditDecision !== "all") {
+      if (auditDecision === "AWAITING_APPROVAL") {
+        if (!isItemAwaitingApproval(itm.stage, itm.decision)) return false;
+      } else if (itm.decision !== auditDecision) {
+        return false;
+      }
+    }
     if (auditDepth === "0" && itm.depth !== 0) return false;
     if (auditDepth === "1" && itm.depth !== 1) return false;
     if (auditDepth === "2+" && itm.depth < 2) return false;
@@ -527,6 +553,12 @@ function IngestPage() {
   });
 
   const sortedAuditItems = [...filteredAuditItems].sort((a, b) => {
+    // Pin awaiting approval decisions to top rows in audit log as well
+    const aPending = isItemAwaitingApproval(a.stage, a.decision);
+    const bPending = isItemAwaitingApproval(b.stage, b.decision);
+    if (aPending && !bPending) return -1;
+    if (!aPending && bPending) return 1;
+
     if (auditSort === "oldest") return (a.createdAt || "").localeCompare(b.createdAt || "");
     return (b.createdAt || "").localeCompare(a.createdAt || "");
   });
@@ -1017,9 +1049,27 @@ function IngestPage() {
                       <dt className="text-subtle">Strictness Mode</dt>
                       <dd className="text-fg capitalize">{config.strictnessMode || "balanced"}</dd>
                     </div>
-                    <div className="flex justify-between pb-2">
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Autonomous Cadence</dt>
+                      <dd className={!config.enabled ? "text-muted" : config.paused ? "text-warn" : "text-sage font-medium"}>
+                        {!config.enabled
+                          ? "DISABLED"
+                          : config.paused
+                            ? "PAUSED"
+                            : `ACTIVE (${config.frequencyMinutes < 60 ? `${config.frequencyMinutes}m` : `${Math.floor(config.frequencyMinutes / 60)}h ${config.frequencyMinutes % 60 > 0 ? `${config.frequencyMinutes % 60}m` : ""}`.trim()})`}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
                       <dt className="text-subtle">Last Discovery Run</dt>
                       <dd className="text-fg">{formatDateTime(config.lastRunAt, "Never")}</dd>
+                    </div>
+                    <div className="flex justify-between pb-2">
+                      <dt className="text-subtle">Next Scheduled Run</dt>
+                      <dd className="text-accent font-medium">
+                        {config.enabled && !config.paused
+                          ? formatDateTime(config.nextRunAt, "Scheduled Soon")
+                          : "Inactive"}
+                      </dd>
                     </div>
                   </dl>
                 )}
@@ -1249,8 +1299,12 @@ function IngestPage() {
                 [
                   { id: "all", label: `All (${isCrawlerLoading ? "…" : discovered.length})` },
                   {
+                    id: "awaiting_approval",
+                    label: `Awaiting Approval (${isCrawlerLoading ? "…" : discovered.filter((d) => isItemAwaitingApproval(d.status)).length})`,
+                  },
+                  {
                     id: "qualified",
-                    label: `Qualified (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "qualified" || d.status === "awaiting_approval").length})`,
+                    label: `Qualified (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "qualified").length})`,
                   },
                   {
                     id: "ingested",
@@ -1438,6 +1492,7 @@ function IngestPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {pagedDiscovered.map((res) => {
+                      const isPending = isItemAwaitingApproval(res.status);
                       const outcomeMeta = formatOutcomeId(res.status, res.reportId || res.id, res.canonicalUrl);
                       const prefix =
                         res.status === "ingested"
@@ -1451,7 +1506,15 @@ function IngestPage() {
                                 : "DISC";
 
                       return (
-                        <tr key={res.id || res.canonicalUrl} className="hover:bg-bg-subtle/30">
+                        <tr
+                          key={res.id || res.canonicalUrl}
+                          className={cn(
+                            "transition-colors",
+                            isPending
+                              ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
+                              : "hover:bg-bg-subtle/30",
+                          )}
+                        >
                           <td className="p-3">
                             <div className="flex flex-col items-start gap-1">
                               <IdBadge
@@ -1463,7 +1526,7 @@ function IngestPage() {
                               />
                               <span
                                 className={cn(
-                                  "font-mono text-[9px] uppercase tracking-wider px-1 py-0.2 rounded font-semibold",
+                                  "font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-semibold",
                                   res.status === "ingested"
                                     ? "text-emerald-400 bg-emerald-950/40"
                                     : res.status === "duplicate"
@@ -1472,7 +1535,9 @@ function IngestPage() {
                                         ? "text-rose-400 bg-rose-950/40"
                                         : res.status === "failed"
                                           ? "text-red-400 bg-red-950/40"
-                                          : "text-cyan-400 bg-cyan-950/40",
+                                          : isPending
+                                            ? "text-amber-300 bg-amber-950/70 border border-amber-500/40"
+                                            : "text-cyan-400 bg-cyan-950/40",
                                 )}
                               >
                                 {res.status.replace(/_/g, " ")}
@@ -1550,8 +1615,11 @@ function IngestPage() {
                           ) : (
                             <Button
                               size="sm"
-                              variant="secondary"
-                              className="h-7 text-xs gap-1.5"
+                              variant={isPending ? "primary" : "secondary"}
+                              className={cn(
+                                "h-7 text-xs gap-1.5",
+                                isPending && "font-semibold shadow-xs"
+                              )}
                               disabled={ingestQueueItem.isPending}
                               onClick={() => ingestQueueItem.mutate(res.id)}
                             >
@@ -2065,6 +2133,7 @@ function IngestPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {pagedAuditItems.map((itm) => {
+                      const isPending = isItemAwaitingApproval(itm.stage, itm.decision);
                       const outcomeMeta = formatOutcomeId(itm.decision, itm.id, itm.url);
                       const prefix =
                         itm.decision === "INGESTED"
@@ -2078,7 +2147,15 @@ function IngestPage() {
                                 : "DISC";
 
                       return (
-                        <tr key={itm.id} className="hover:bg-bg-subtle/30">
+                        <tr
+                          key={itm.id}
+                          className={cn(
+                            "transition-colors",
+                            isPending
+                              ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
+                              : "hover:bg-bg-subtle/30",
+                          )}
+                        >
                           <td className="p-3">
                             <div className="flex flex-col items-start gap-1">
                               <IdBadge

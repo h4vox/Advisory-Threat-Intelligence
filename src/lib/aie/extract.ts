@@ -90,12 +90,29 @@ export function canonicalizeUrl(raw: string): string {
 }
 
 export function htmlToText(html: string): { title: string; text: string } {
-  const title =
-    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ??
+  let rawTitle =
     html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]?.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() ??
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ??
     "Untitled report";
 
-  const stripped = html
+  // Clean blog / publisher branding suffixes from title
+  rawTitle = rawTitle
+    .replace(/\s*[|–—]\s*(Google Cloud Blog|The DFIR Report|Microsoft Security Blog|Unit 42|SentinelOne|Cisco Talos|Huntress|BleepingComputer|Mandiant).*$/i, "")
+    .trim();
+
+  // If page contains an <article> or <main> container with substantial content, prioritize it
+  let contentHtml = html;
+  const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+  if (articleMatch && articleMatch[1].length > 400) {
+    contentHtml = articleMatch[1];
+  } else {
+    const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+    if (mainMatch && mainMatch[1].length > 400) {
+      contentHtml = mainMatch[1];
+    }
+  }
+
+  const stripped = contentHtml
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
@@ -116,7 +133,81 @@ export function htmlToText(html: string): { title: string; text: string } {
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 
-  return { title: decodeEntities(title).slice(0, 240), text: decodeEntities(stripped) };
+  return { title: decodeEntities(rawTitle).slice(0, 240), text: decodeEntities(stripped) };
+}
+
+export function extractHtmlMetadata(html: string): {
+  author?: string;
+  publisher?: string;
+  publishedAt?: string;
+} {
+  let author: string | undefined;
+  let publisher: string | undefined;
+  let publishedAt: string | undefined;
+
+  // 1. Check in-article author patterns like "Written by: Alice, Bob" or "By: Alice"
+  const writtenByMatch = html.match(/<(?:p|span|div)[^>]*>(?:Written\s+by|By):\s*([^<]+)<\/(?:p|span|div)>/i);
+  if (writtenByMatch && writtenByMatch[1].trim().length > 2 && writtenByMatch[1].trim().length < 150) {
+    author = decodeEntities(writtenByMatch[1].trim());
+  }
+
+  // 2. JSON-LD schema
+  try {
+    const jsonLdMatches = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+    for (const match of jsonLdMatches) {
+      try {
+        const data = JSON.parse(match[1]);
+        const items = Array.isArray(data) ? data : [data];
+        for (const item of items) {
+          if (!author && item.author) {
+            if (Array.isArray(item.author)) {
+              author = item.author.map((a: any) => (typeof a === "string" ? a : a.name)).filter(Boolean).join(", ");
+            } else if (typeof item.author === "object" && item.author.name) {
+              author = item.author.name;
+            } else if (typeof item.author === "string") {
+              author = item.author;
+            }
+          }
+          if (!publisher && item.publisher) {
+            publisher = typeof item.publisher === "object" ? item.publisher.name : item.publisher;
+          }
+          if (!publishedAt && (item.datePublished || item.dateCreated)) {
+            publishedAt = (item.datePublished || item.dateCreated).slice(0, 10);
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // 3. Meta tags
+  if (!author) {
+    const authorMeta =
+      html.match(/<meta\s+[^>]*name=["']authors?["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']authors?["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']track-metadata-page_post_author["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*property=["']article:author["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']twitter:creator["'][^>]*content=["']([^"']+)["']/i)?.[1];
+    if (authorMeta) author = decodeEntities(authorMeta.trim());
+  }
+
+  if (!publisher) {
+    const pubMeta =
+      html.match(/<meta\s+[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']publisher["'][^>]*content=["']([^"']+)["']/i)?.[1];
+    if (pubMeta) publisher = decodeEntities(pubMeta.trim());
+  }
+
+  if (!publishedAt) {
+    const dateMeta =
+      html.match(/<meta\s+[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']published_time["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']track-metadata-page_first_published["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<meta\s+[^>]*name=["']publish-date["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+      html.match(/<time\s+[^>]*datetime=["']([^"']+)["']/i)?.[1];
+    if (dateMeta) publishedAt = dateMeta.slice(0, 10);
+  }
+
+  return { author, publisher, publishedAt };
 }
 
 export function decodeEntities(s: string): string {

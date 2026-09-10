@@ -4,6 +4,7 @@ import { analyzeThreatIntelligence } from "./attack-chain";
 import { REPORT_CATALOG, SOURCE_SEED } from "./catalog";
 import {
   cancelJob,
+  checkAndTriggerScheduledCrawl,
   createAndRunCrawlJob,
   getOrCreateCrawlConfig,
 } from "./crawler";
@@ -12,6 +13,7 @@ import {
   excerptOf,
   harvestIocs,
   htmlToText,
+  extractHtmlMetadata,
   MAX_BYTES,
   scoreQuality,
   sha256Hex,
@@ -210,13 +212,26 @@ async function ensureSeeded() {
             const canonical = canonicalizeUrl(r.url);
             const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
 
+            const srcDef = SOURCE_SEED.find((s) => s.id === r.sourceId);
+            const srcName = srcDef?.name ?? "Cyber Threat Intelligence";
+            const srcDomain = new URL(r.url).hostname.replace(/^www\./, "");
+            const pubName = srcDef?.name ?? srcDomain;
+            const authorName =
+              r.sourceId === "src_mandiant"
+                ? "Google Threat Intelligence Group"
+                : r.sourceId === "src_msft"
+                ? "Microsoft Threat Intelligence"
+                : r.sourceId === "src_dfir"
+                ? "The DFIR Report Research Team"
+                : pubName;
+
             const cleanHtml = buildPristineDocumentHtml(r.text, {
               id: r.id,
               title: r.title,
               url: r.url,
               canonicalUrl: canonical,
-              publisher: "The DFIR Report",
-              author: "The DFIR Report Research Team",
+              publisher: pubName,
+              author: authorName,
               publishedAt: r.publishedAt,
               ingestedAt: new Date().toISOString(),
               classification: qual.classification,
@@ -231,7 +246,7 @@ async function ensureSeeded() {
             await mongoInsertReport({
               id: r.id,
               sourceId: r.sourceId,
-              sourceName: "The DFIR Report",
+              sourceName: srcName,
               title: r.title,
               url: r.url,
               canonicalUrl: canonical,
@@ -247,13 +262,13 @@ async function ensureSeeded() {
               iocs,
               ingestOrigin: "seed",
               ingestedAt: new Date().toISOString(),
-              publisher: "The DFIR Report",
-              author: "The DFIR Report Research Team",
+              publisher: pubName,
+              author: authorName,
               classification: qual.classification,
               discoveryMethod: "seed",
               discoveryQuery: "",
-              parentSource: "thedfirreport.com",
-              sourceDomain: "thedfirreport.com",
+              parentSource: srcDomain,
+              sourceDomain: srcDomain,
               version: 1,
               rawHtml: cleanHtml,
               pdfUrl: "",
@@ -271,79 +286,94 @@ async function ensureSeeded() {
           }
         }
         await mongoGetCrawlConfig();
+        hasSeeded = true;
         console.log(`[db] MongoDB Atlas storage initialized in ${Date.now() - t0}ms`);
+        return;
       } catch (mongoErr) {
-        console.warn("[mongodb] ensureSeeded fallback to local storage:", mongoErr);
+        console.warn("[mongodb] ensureSeeded Atlas connection warning:", mongoErr);
       }
-    }
-
-    // Ensure SQL sources table has seed sources populated for foreign-key integrity
-    try {
-      const sql = await getSql();
-      for (const s of SOURCE_SEED) {
-        await sql`
-          insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
-          values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
-          on conflict (id) do nothing
-        `;
-      }
-
-      const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
-      if (Number(rc[0]?.c ?? 0) === 0) {
-        for (const r of SEED_REPORTS) {
-          const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
-          const qual = qualifyContent(r.text, r.title, r.url);
-          const iocs = harvestIocs(r.text);
-          const rawHash = sha256Hex(r.text);
-          const textHash = sha256Hex(r.text);
-          const canonical = canonicalizeUrl(r.url);
-          const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
-
-          const cleanHtml = buildPristineDocumentHtml(r.text, {
-            id: r.id,
-            title: r.title,
-            url: r.url,
-            canonicalUrl: canonical,
-            publisher: "The DFIR Report",
-            author: "The DFIR Report Research Team",
-            publishedAt: r.publishedAt,
-            ingestedAt: new Date().toISOString(),
-            classification: qual.classification,
-            rawHash,
-            textHash,
-            qualityScore: score,
-            wordCount,
-            iocs,
-            analysis: intel,
-          });
-
+    } else {
+      // Local SQL storage initialization only when MongoDB is not configured
+      try {
+        const sql = await getSql();
+        for (const s of SOURCE_SEED) {
           await sql`
-            insert into reports (
-              id, source_id, title, url, canonical_url, published_at, content_type, status,
-              raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
-              iocs_json, ingest_origin, publisher, author, classification, discovery_method,
-              source_domain, version, analysis_json, raw_html
-            ) values (
-              ${r.id}, ${r.sourceId}, ${r.title}, ${r.url}, ${canonical}, ${r.publishedAt},
-              ${"text/plain"}, ${"acquired"}, ${rawHash}, ${rawHash}, ${score},
-              ${JSON.stringify(reasons)}, ${wordCount}, ${r.text}, ${JSON.stringify(iocs)}, ${"seed"},
-              ${"Seed Intelligence"}, ${"Curated CTI"}, ${qual.classification}, ${"seed"},
-              ${"thedfirreport.com"}, 1, ${JSON.stringify(intel)}, ${cleanHtml}
-            )
+            insert into sources (id, name, slug, category, priority, homepage_url, enabled, trust_level, notes)
+            values (${s.id}, ${s.name}, ${s.slug}, ${s.category}, ${s.priority}, ${s.homepageUrl}, ${s.enabled}, ${s.trustLevel}, ${s.notes})
             on conflict (id) do nothing
           `;
-          await sql`
-            insert into ingest_events (id, report_id, url, outcome, detail)
-            values (${newId("evt")}, ${r.id}, ${r.url}, ${"seeded"}, ${"Gold-set seed for Phase 1 retrieval with pristine document"})
-          `;
         }
-      }
 
-      await getOrCreateCrawlConfig();
-      hasSeeded = true;
-      console.log(`[db] Local SQL storage initialized in ${Date.now() - t0}ms`);
-    } catch (sqlErr) {
-      console.warn("[db] SQL fallback seeding:", sqlErr);
+        const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
+        if (Number(rc[0]?.c ?? 0) === 0) {
+          for (const r of SEED_REPORTS) {
+            const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
+            const qual = qualifyContent(r.text, r.title, r.url);
+            const iocs = harvestIocs(r.text);
+            const rawHash = sha256Hex(r.text);
+            const textHash = sha256Hex(r.text);
+            const canonical = canonicalizeUrl(r.url);
+            const intel = analyzeThreatIntelligence(r.text, r.title, qual.classification);
+
+            const srcDef = SOURCE_SEED.find((s) => s.id === r.sourceId);
+            const srcName = srcDef?.name ?? "Cyber Threat Intelligence";
+            const srcDomain = new URL(r.url).hostname.replace(/^www\./, "");
+            const pubName = srcDef?.name ?? srcDomain;
+            const authorName =
+              r.sourceId === "src_mandiant"
+                ? "Google Threat Intelligence Group"
+                : r.sourceId === "src_msft"
+                ? "Microsoft Threat Intelligence"
+                : r.sourceId === "src_dfir"
+                ? "The DFIR Report Research Team"
+                : pubName;
+
+            const cleanHtml = buildPristineDocumentHtml(r.text, {
+              id: r.id,
+              title: r.title,
+              url: r.url,
+              canonicalUrl: canonical,
+              publisher: pubName,
+              author: authorName,
+              publishedAt: r.publishedAt,
+              ingestedAt: new Date().toISOString(),
+              classification: qual.classification,
+              rawHash,
+              textHash,
+              qualityScore: score,
+              wordCount,
+              iocs,
+              analysis: intel,
+            });
+
+            await sql`
+              insert into reports (
+                id, source_id, title, url, canonical_url, published_at, content_type, status,
+                raw_hash, text_hash, quality_score, quality_reasons, word_count, extracted_text,
+                iocs_json, ingest_origin, publisher, author, classification, discovery_method,
+                source_domain, version, analysis_json, raw_html
+              ) values (
+                ${r.id}, ${r.sourceId}, ${r.title}, ${r.url}, ${canonical}, ${r.publishedAt},
+                ${"text/plain"}, ${"acquired"}, ${rawHash}, ${rawHash}, ${score},
+                ${JSON.stringify(reasons)}, ${wordCount}, ${r.text}, ${JSON.stringify(iocs)}, ${"seed"},
+                ${pubName}, ${authorName}, ${qual.classification}, ${"seed"},
+                ${srcDomain}, 1, ${JSON.stringify(intel)}, ${cleanHtml}
+              )
+              on conflict (id) do nothing
+            `;
+            await sql`
+              insert into ingest_events (id, report_id, url, outcome, detail)
+              values (${newId("evt")}, ${r.id}, ${r.url}, ${"seeded"}, ${"Gold-set seed for Phase 1 retrieval with pristine document"})
+            `;
+          }
+        }
+
+        await getOrCreateCrawlConfig();
+        hasSeeded = true;
+        console.log(`[db] Local SQL storage initialized in ${Date.now() - t0}ms`);
+      } catch (sqlErr) {
+        console.warn("[db] SQL fallback seeding:", sqlErr);
+      }
     }
   })();
 
@@ -363,7 +393,6 @@ const REPORT_SELECT = `
 export const getDashboard = createServerFn({ method: "GET" }).handler(async (): Promise<DashboardStats> => {
   const startTime = Date.now();
   logger.serverFn("getDashboard", "START");
-  await ensureSeeded();
 
   if (isMongoConfigured()) {
     try {
@@ -376,10 +405,12 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
       );
       return stats;
     } catch (err) {
-      logger.error("SERVER-FN", "mongoGetDashboardStats failed, falling back to SQL", err);
+      logger.error("SERVER-FN", "mongoGetDashboardStats failed:", err);
+      throw err;
     }
   }
 
+  await ensureSeeded();
   const sql = await getSql();
   const src = await sql<{ c: number; e: number }>`
     select count(*)::int as c, count(*) filter (where enabled)::int as e from sources
@@ -434,16 +465,16 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
 });
 
 export const listSources = createServerFn({ method: "GET" }).handler(async (): Promise<SourceRecord[]> => {
-  await ensureSeeded();
-
   if (isMongoConfigured()) {
     try {
       return await mongoListSources();
     } catch (err) {
-      console.warn("[mongodb] fallback to sql for sources:", err);
+      console.warn("[mongodb] listSources error:", err);
+      throw err;
     }
   }
 
+  await ensureSeeded();
   const sql = await getSql();
   const rows = await sql<SourceRow>`
     select id, name, slug, category, priority, homepage_url, coalesce(feed_url, '') as feed_url, enabled, trust_level, notes,
@@ -490,7 +521,6 @@ export const listReports = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<ReportListItem[]> => {
     const startTime = Date.now();
     logger.serverFn("listReports", "START", undefined, data ? JSON.stringify(data) : "all");
-    await ensureSeeded();
 
     if (isMongoConfigured()) {
       try {
@@ -503,10 +533,12 @@ export const listReports = createServerFn({ method: "GET" })
         );
         return reports;
       } catch (err) {
-        logger.error("SERVER-FN", "mongoListReports failed, falling back to SQL", err);
+        logger.error("SERVER-FN", "mongoListReports failed:", err);
+        throw err;
       }
     }
 
+    await ensureSeeded();
     const sql = await getSql();
     const q = data?.q?.trim().toLowerCase() ?? "";
     const classification = data?.classification?.trim();
@@ -548,7 +580,6 @@ export const getReport = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<ReportRecord | null> => {
     const startTime = Date.now();
     logger.serverFn("getReport", "START", undefined, { id: data.id });
-    await ensureSeeded();
 
     if (isMongoConfigured()) {
       try {
@@ -602,11 +633,14 @@ export const getReport = createServerFn({ method: "GET" })
 
           return mongoReport;
         }
+        return null;
       } catch (err) {
-        console.warn("[mongodb] fallback to sql for getReport:", err);
+        console.warn("[mongodb] getReport error:", err);
+        throw err;
       }
     }
 
+    await ensureSeeded();
     const sql = await getSql();
     const rows = await sql.query<ReportRow>(
       `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where r.id = $1`,
@@ -697,33 +731,100 @@ type IngestResult =
 
 async function matchSource(url: string): Promise<string> {
   const host = new URL(url).hostname.replace(/^www\./, "");
+
+  // 1. Direct domain match heuristics for known authoritative sources
+  if (host === "cloud.google.com" || host.endsWith(".google.com") || host.includes("mandiant")) {
+    return "src_mandiant";
+  }
+  if (host.includes("microsoft.com")) {
+    return "src_msft";
+  }
+  if (host.includes("thedfirreport.com")) {
+    return "src_dfir";
+  }
+  if (host.includes("paloaltonetworks.com") || host.includes("unit42")) {
+    return "src_unit42";
+  }
+  if (host.includes("sentinelone.com")) {
+    return "src_sentinel";
+  }
+  if (host.includes("huntress.com")) {
+    return "src_huntress";
+  }
+  if (host.includes("cisa.gov")) {
+    return "src_cisa";
+  }
+  if (host.includes("talosintelligence.com")) {
+    return "src_talos";
+  }
+  if (host.includes("specterops.io")) {
+    return "src_specterops";
+  }
+  if (host.includes("redcanary.com")) {
+    return "src_redcanary";
+  }
+  if (host.includes("crowdstrike.com")) {
+    return "src_crowdstrike";
+  }
+
+  // 2. Check MongoDB sources if configured
+  if (isMongoConfigured()) {
+    try {
+      const mongoSources = await mongoListSources();
+      if (mongoSources && mongoSources.length > 0) {
+        const hit = mongoSources.find((s) => {
+          try {
+            const srcHost = new URL(s.homepageUrl).hostname.replace(/^www\./, "");
+            return (
+              srcHost === host ||
+              host.endsWith(`.${srcHost}`) ||
+              srcHost.endsWith(`.${host}`) ||
+              host.includes(srcHost.split(".").slice(-2).join("."))
+            );
+          } catch {
+            return false;
+          }
+        });
+        if (hit?.id) return hit.id;
+      }
+    } catch (err) {
+      console.warn("[matchSource] MongoDB lookup fallback:", err);
+    }
+  }
+
+  // 3. Check SQL sources
   try {
     const sql = await getSql();
     const rows = await sql<SourceRow>`select * from sources`;
     if (rows && rows.length > 0) {
       const hit = rows.find((s) => {
         try {
+          const srcHost = new URL(s.homepage_url).hostname.replace(/^www\./, "");
           return (
-            new URL(s.homepage_url).hostname.replace(/^www\./, "").includes(host.split(".").slice(-2).join(".")) ||
-            host.includes(new URL(s.homepage_url).hostname.replace(/^www\./, ""))
+            srcHost === host ||
+            host.endsWith(`.${srcHost}`) ||
+            srcHost.endsWith(`.${host}`) ||
+            host.includes(srcHost.split(".").slice(-2).join("."))
           );
         } catch {
           return false;
         }
       });
       if (hit?.id) return hit.id;
-      const dfirHit = rows.find((s) => s.slug === "dfir");
-      if (dfirHit?.id) return dfirHit.id;
     }
   } catch (err) {
     console.warn("[matchSource] SQL lookup fallback:", err);
   }
 
+  // 4. Check SOURCE_SEED
   const seedHit = SOURCE_SEED.find((s) => {
     try {
+      const srcHost = new URL(s.homepageUrl).hostname.replace(/^www\./, "");
       return (
-        new URL(s.homepageUrl).hostname.replace(/^www\./, "").includes(host.split(".").slice(-2).join(".")) ||
-        host.includes(new URL(s.homepageUrl).hostname.replace(/^www\./, ""))
+        srcHost === host ||
+        host.endsWith(`.${srcHost}`) ||
+        srcHost.endsWith(`.${host}`) ||
+        host.includes(srcHost.split(".").slice(-2).join("."))
       );
     } catch {
       return false;
@@ -749,49 +850,77 @@ async function persistReport(input: {
   discoveryQuery?: string;
 }): Promise<IngestResult> {
   const sql = await getSql();
+  const domain = new URL(input.canonical).hostname.replace(/^www\./, "");
+  const isGoogle = domain === "cloud.google.com" || domain.endsWith(".google.com") || input.sourceId === "src_mandiant";
+  const effectiveSourceId = isGoogle ? "src_mandiant" : input.sourceId;
+  const srcDef = SOURCE_SEED.find((s) => s.id === effectiveSourceId);
+  const effectiveSourceName = isGoogle ? "Google Threat Intelligence" : srcDef?.name ?? input.publisher ?? domain;
+  const effectivePublisher = isGoogle ? "Google Threat Intelligence Group" : input.publisher || effectiveSourceName;
+  const effectiveAuthor = input.author || (isGoogle ? "Google Threat Intelligence Group" : effectivePublisher);
+
+  let targetId: string | null = null;
+  const incomingWordCount = input.text.split(/\s+/).filter(Boolean).length;
 
   // Check MongoDB duplicate first if enabled
   if (isMongoConfigured()) {
     try {
       const dup = await mongoFindReportByCanonical(input.canonical);
       if (dup) {
-        await mongoInsertIngestEvent({
-          id: newId("evt"),
-          reportId: dup.id,
-          url: input.url,
-          outcome: "duplicate",
-          detail: "Canonical URL already stored in MongoDB Atlas",
-          createdAt: new Date().toISOString(),
-        });
-        return {
-          ok: true,
-          reportId: dup.id,
-          duplicate: true,
-          qualityScore: dup.qualityScore,
-          title: dup.title,
-        };
+        const existingWordCount = dup.wordCount ?? 0;
+        const isStubUpgrade =
+          (existingWordCount < 500 && incomingWordCount >= 500) ||
+          (existingWordCount < 300 && incomingWordCount > existingWordCount) ||
+          (dup.sourceName === "The DFIR Report" && isGoogle);
+
+        if (!isStubUpgrade) {
+          await mongoInsertIngestEvent({
+            id: newId("evt"),
+            reportId: dup.id,
+            url: input.url,
+            outcome: "duplicate",
+            detail: "Canonical URL already stored in MongoDB Atlas",
+            createdAt: new Date().toISOString(),
+          });
+          return {
+            ok: true,
+            reportId: dup.id,
+            duplicate: true,
+            qualityScore: dup.qualityScore,
+            title: dup.title,
+          };
+        }
+        console.log(`[persistReport] Upgrading stub/partial report ${dup.id} (${existingWordCount}w -> ${incomingWordCount}w)`);
+        targetId = dup.id;
       }
     } catch (err) {
       console.warn("[mongodb] duplicate check fallback:", err);
     }
   }
 
-  const dup = await sql<{ id: string }>`select id from reports where canonical_url = ${input.canonical}`;
+  const dup = await sql<{ id: string; word_count?: number }>`select id, word_count from reports where canonical_url = ${input.canonical}`;
   if (dup[0]) {
-    await sql`
-      insert into ingest_events (id, report_id, url, outcome, detail)
-      values (${newId("evt")}, ${dup[0].id}, ${input.url}, 'duplicate', 'Canonical URL already stored in knowledge base')
-    `;
-    const existing = await sql<{ quality_score: number; title: string }>`
-      select quality_score, title from reports where id = ${dup[0].id}
-    `;
-    return {
-      ok: true,
-      reportId: dup[0].id,
-      duplicate: true,
-      qualityScore: Number(existing[0]?.quality_score ?? 0),
-      title: existing[0]?.title ?? input.title,
-    };
+    const existingWords = Number(dup[0].word_count ?? 0);
+    const isStubUpgrade =
+      (existingWords < 500 && incomingWordCount >= 500) ||
+      (existingWords < 300 && incomingWordCount > existingWords);
+
+    if (!isStubUpgrade) {
+      await sql`
+        insert into ingest_events (id, report_id, url, outcome, detail)
+        values (${newId("evt")}, ${dup[0].id}, ${input.url}, 'duplicate', 'Canonical URL already stored in knowledge base')
+      `;
+      const existing = await sql<{ quality_score: number; title: string }>`
+        select quality_score, title from reports where id = ${dup[0].id}
+      `;
+      return {
+        ok: true,
+        reportId: dup[0].id,
+        duplicate: true,
+        qualityScore: Number(existing[0]?.quality_score ?? 0),
+        title: existing[0]?.title ?? input.title,
+      };
+    }
+    targetId = dup[0].id;
   }
 
   const { score, reasons, wordCount } = scoreQuality(input.text, input.title);
@@ -800,8 +929,7 @@ async function persistReport(input: {
   const iocs = harvestIocs(input.text);
   const rawHash = sha256Hex(input.raw);
   const textHash = sha256Hex(input.text);
-  const id = newId("rpt");
-  const domain = new URL(input.canonical).hostname.replace(/^www\./, "");
+  const id = targetId || newId("rpt");
   const classification = input.classification ?? qual.classification;
 
   // Run TTP and attack-chain extraction
@@ -814,8 +942,8 @@ async function persistReport(input: {
     title: input.title,
     url: input.url,
     canonicalUrl: input.canonical,
-    publisher: input.publisher ?? domain,
-    author: input.author ?? domain,
+    publisher: effectivePublisher,
+    author: effectiveAuthor,
     publishedAt: input.publishedAt,
     ingestedAt: new Date().toISOString(),
     classification,
@@ -832,8 +960,8 @@ async function persistReport(input: {
     try {
       await mongoInsertReport({
         id,
-        sourceId: input.sourceId,
-        sourceName: input.publisher ?? domain,
+        sourceId: effectiveSourceId,
+        sourceName: effectiveSourceName,
         title: input.title,
         url: input.url,
         canonicalUrl: input.canonical,
@@ -849,20 +977,20 @@ async function persistReport(input: {
         iocs,
         ingestOrigin: input.origin,
         ingestedAt: new Date().toISOString(),
-        publisher: input.publisher ?? domain,
-        author: input.author ?? domain,
+        publisher: effectivePublisher,
+        author: effectiveAuthor,
         classification,
         discoveryMethod: input.discoveryMethod ?? "manual",
         discoveryQuery: input.discoveryQuery ?? "",
-        parentSource: input.publisher ?? domain,
+        parentSource: effectiveSourceName,
         sourceDomain: domain,
-        version: 1,
+        version: targetId ? 2 : 1,
         rawHtml: cleanHtml,
         pdfUrl: "",
         analysis,
       });
 
-      await mongoUpdateSourceLastIngest(input.sourceId);
+      await mongoUpdateSourceLastIngest(effectiveSourceId);
       await mongoInsertIngestEvent({
         id: newId("evt"),
         reportId: id,
@@ -946,8 +1074,8 @@ async function fetchResource(url: string): Promise<{
       redirect: "follow",
       headers: {
         "user-agent":
-          "AIE-Retrieval/0.1 (+research; public-cti ingest; contact: security-research)",
-        accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Retrieval/3.0)",
+        accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
       },
     });
     if (!res.ok) {
@@ -986,17 +1114,20 @@ export const ingestUrl = createServerFn({ method: "POST" })
     if (data.pasted && data.pasted.trim().length > 40) {
       const looksHtml = /<html|<body|<article/i.test(data.pasted);
       const extracted = looksHtml ? htmlToText(data.pasted) : { title: "", text: data.pasted.trim() };
+      const meta = looksHtml ? extractHtmlMetadata(data.pasted) : {};
       const title = extracted.title && extracted.title !== "Untitled report" ? extracted.title : "Pasted report";
       return persistReport({
         sourceId,
         title,
         url: canonical,
         canonical,
-        publishedAt: null,
+        publishedAt: meta.publishedAt || null,
         contentType: looksHtml ? "text/html" : "text/plain",
         raw: data.pasted,
         text: extracted.text,
         origin: "paste",
+        publisher: meta.publisher,
+        author: meta.author,
         discoveryMethod: "manual_paste",
       });
     }
@@ -1018,16 +1149,21 @@ export const ingestUrl = createServerFn({ method: "POST" })
         });
       }
       const extracted = htmlToText(fetched.body);
+      const meta = extractHtmlMetadata(fetched.body);
+      const domain = new URL(canonical).hostname.replace(/^www\./, "");
+      const isGoogle = domain === "cloud.google.com" || domain.endsWith(".google.com");
       return persistReport({
         sourceId,
         title: extracted.title,
         url: canonical,
         canonical,
-        publishedAt: null,
+        publishedAt: meta.publishedAt || null,
         contentType: fetched.contentType || "text/html",
         raw: fetched.body,
         text: extracted.text,
         origin: "live",
+        publisher: meta.publisher || (isGoogle ? "Google Threat Intelligence Group" : undefined),
+        author: meta.author || (isGoogle ? "Google Threat Intelligence Group" : undefined),
         discoveryMethod: "manual_url",
       });
     } catch (err) {
@@ -1046,15 +1182,17 @@ export const ingestUrl = createServerFn({ method: "POST" })
 
 // Crawler Server Functions
 export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlerState> => {
-  try {
-    if (isMongoConfigured()) {
-      try {
-        const state = await mongoGetCrawlerState();
-        return state;
-      } catch (err) {
-        console.warn("[mongodb] getCrawlerState fallback to sql:", err);
-      }
+  if (isMongoConfigured()) {
+    try {
+      const state = await mongoGetCrawlerState();
+      return state;
+    } catch (err) {
+      console.warn("[mongodb] getCrawlerState error:", err);
+      throw err;
     }
+  }
+
+  try {
     await ensureSeeded();
     const sql = await getSql();
     const config = await getOrCreateCrawlConfig();
@@ -1547,6 +1685,12 @@ export const triggerCrawlJob = createServerFn({ method: "POST" })
     invalidateCrawlerStateCache();
     const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
     return { ok: true as const, job };
+  });
+
+export const checkCrawlerSchedule = createServerFn({ method: "POST" })
+  .handler(async () => {
+    const res = await checkAndTriggerScheduledCrawl();
+    return res;
   });
 
 export const cancelCrawlJob = createServerFn({ method: "POST" })
