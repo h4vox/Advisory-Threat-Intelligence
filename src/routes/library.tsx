@@ -11,7 +11,6 @@ import {
   FileText,
   Filter,
   Flame,
-  MapPin,
   Printer,
   RefreshCw,
   Search,
@@ -265,42 +264,51 @@ function LibraryPage() {
 
     let cancelled = false;
     let attempts = 0;
-    const maxAttempts = 35;
+    const maxAttempts = 40;
 
     const tryScroll = () => {
       if (cancelled) return;
       attempts++;
 
       const matchedId = targetReport?.id || targetHighlightId;
+      const cleanTarget = targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+
       const el =
+        (targetReport ? document.getElementById(`report-${targetReport.id}`) : null) ||
         document.getElementById(`report-${matchedId}`) ||
         document.getElementById(`report-${targetHighlightId}`) ||
-        (targetReport ? document.getElementById(`report-${targetReport.id}`) : null) ||
         document.querySelector(`[data-report-id="${matchedId}"]`) ||
-        document.querySelector(`[data-report-id="${targetHighlightId}"]`);
+        document.querySelector(`[data-report-id="${targetHighlightId}"]`) ||
+        document.querySelector(`[data-clean-id="${cleanTarget}"]`);
 
       if (el) {
-        // 1. Native scrollIntoView
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        const scrollToElement = () => {
+          const mainContainer = el.closest("main");
+          if (mainContainer) {
+            const containerRect = mainContainer.getBoundingClientRect();
+            const elRect = el.getBoundingClientRect();
+            const relativeTop = elRect.top - containerRect.top + mainContainer.scrollTop;
+            const targetScrollTop = relativeTop - mainContainer.clientHeight / 2 + elRect.height / 2;
+            mainContainer.scrollTo({
+              top: Math.max(0, targetScrollTop),
+              behavior: "smooth",
+            });
+          }
+          try {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+          } catch {
+            // ignore
+          }
+        };
 
-        // 2. Direct container scrollTo on AppShell <main> scroll container
-        const mainContainer = el.closest("main");
-        if (mainContainer) {
-          const containerRect = mainContainer.getBoundingClientRect();
-          const elRect = el.getBoundingClientRect();
-          const relativeTop = elRect.top - containerRect.top + mainContainer.scrollTop;
-          const targetScrollTop = relativeTop - mainContainer.clientHeight / 3;
-          mainContainer.scrollTo({
-            top: Math.max(0, targetScrollTop),
-            behavior: "smooth",
-          });
-        }
+        scrollToElement();
+        setTimeout(scrollToElement, 300);
       } else if (attempts < maxAttempts) {
-        setTimeout(tryScroll, 100);
+        setTimeout(tryScroll, 80);
       }
     };
 
-    const timer = setTimeout(tryScroll, 120);
+    const timer = setTimeout(tryScroll, 100);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -386,12 +394,6 @@ function LibraryPage() {
         return true;
       })
       .sort((a, b) => {
-        // Priority 1: If targetReport exists, pin it to the very top so user never misses it
-        if (targetReport) {
-          if (a.id === targetReport.id) return -1;
-          if (b.id === targetReport.id) return 1;
-        }
-
         if (sortBy === "rejected") return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
         if (sortBy === "quality") return b.qualityScore - a.qualityScore;
         if (sortBy === "iocs") return (b.iocCount || 0) - (a.iocCount || 0);
@@ -401,7 +403,14 @@ function LibraryPage() {
 
     // Ensure targetReport is in the list even if current active filters would have excluded it
     if (targetReport && !list.some((r) => r.id === targetReport.id)) {
-      return [targetReport, ...list];
+      const merged = [...list, targetReport];
+      return merged.sort((a, b) => {
+        if (sortBy === "rejected") return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
+        if (sortBy === "quality") return b.qualityScore - a.qualityScore;
+        if (sortBy === "iocs") return (b.iocCount || 0) - (a.iocCount || 0);
+        if (sortBy === "words") return (b.wordCount || 0) - (a.wordCount || 0);
+        return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
+      });
     }
 
     return list;
@@ -854,49 +863,31 @@ function LibraryPage() {
           const actors = r.analysis?.threatActors || r.extractedEntities?.threatActors || [];
           const malware = r.analysis?.malware || r.extractedEntities?.malwareFamilies || [];
           const cves = r.extractedEntities?.cves || [];
-          const isHighlighted = Boolean(targetReport && targetReport.id === r.id);
+          const cleanId = r.id.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+          const isHighlighted = Boolean(
+            (targetReport && targetReport.id === r.id) ||
+            (targetHighlightId && (
+              r.id === targetHighlightId ||
+              r.id.toLowerCase() === targetHighlightId.toLowerCase() ||
+              formatReportId(r.id).toLowerCase() === targetHighlightId.toLowerCase() ||
+              (targetHighlightId.length >= 8 && cleanId.includes(targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "")))
+            ))
+          );
 
           return (
             <div
               key={r.id}
               id={`report-${r.id}`}
               data-report-id={r.id}
+              data-clean-id={cleanId}
               className={cn(
                 "group relative rounded-xl border bg-bg-elevated p-5 transition-all duration-300",
                 isHighlighted
-                  ? "border-accent ring-2 ring-accent/70 shadow-[0_0_30px_rgba(197,208,200,0.35)] bg-accent/[0.04]"
+                  ? "target-card-blink border-accent bg-accent/[0.03]"
                   : "border-border hover:border-border/80 hover:bg-bg-subtle/40",
                 r.status === "rejected" && "border-danger/40 bg-danger/[0.03]",
               )}
             >
-              {/* Jump Target Tracking Banner */}
-              {isHighlighted && (
-                <div className="mb-3 flex items-center justify-between rounded-lg border border-accent/40 bg-accent/15 px-3 py-1.5 text-xs text-fg font-mono animate-in fade-in duration-200">
-                  <div className="flex items-center gap-2">
-                    <MapPin className="size-3.5 text-accent animate-bounce" />
-                    <span className="font-semibold text-accent">Tracking Selected Resource:</span>
-                    <span className="text-muted truncate max-w-xs">{r.title}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void navigate({
-                        search: (prev) => {
-                          const next = { ...prev };
-                          delete next.selected;
-                          delete next.highlight;
-                          return next;
-                        },
-                        replace: true,
-                      });
-                    }}
-                    className="text-subtle hover:text-fg text-[11px] underline ml-2"
-                  >
-                    Clear Focus
-                  </button>
-                </div>
-              )}
-
               {/* AI Pruned / Rejected Banner */}
               {r.status === "rejected" && (
                 <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger/10 p-2.5 text-xs text-danger">
@@ -975,12 +966,17 @@ function LibraryPage() {
               </div>
 
               <div className="mt-3 flex items-start justify-between gap-4">
-                <Link to="/library/$reportId" params={{ reportId: r.id }} className="flex-1">
-                  <h2 className="text-base font-medium leading-snug group-hover:text-accent transition-colors">
+                <button
+                  type="button"
+                  onClick={() => openPdfModal(r.id)}
+                  className="flex-1 text-left cursor-pointer group/title"
+                  title="Open high-fidelity document representation"
+                >
+                  <h2 className="text-base font-medium leading-snug group-hover/title:text-accent transition-colors">
                     {r.title}
                   </h2>
                   <p className="mt-1.5 line-clamp-2 text-xs text-muted leading-relaxed">{r.excerpt}</p>
-                </Link>
+                </button>
 
                 <div className="flex shrink-0 items-center gap-2 pt-1">
                   <Button
@@ -1166,13 +1162,22 @@ function LibraryPage() {
                   </>
                 )}
 
-                <Link
-                  to="/library/$reportId"
-                  params={{ reportId: previewReportId }}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = previewReportId;
+                    closePdfModal();
+                    if (id) {
+                      void navigate({
+                        search: (prev) => ({ ...prev, selected: id }),
+                        replace: true,
+                      });
+                    }
+                  }}
                   className="rounded-lg border border-border bg-bg-elevated px-3 py-1.5 text-xs text-muted hover:text-fg transition-colors"
                 >
-                  Full Report Detail
-                </Link>
+                  View in Gallery
+                </button>
 
                 <button
                   type="button"

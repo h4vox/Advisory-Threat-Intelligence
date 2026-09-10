@@ -89,3 +89,40 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+@keyframes target-outer-blink {
+  0% {
+    box-shadow: 0 0 0 0 transparent;
+    border-color: var(--color-border);
+  }
+  20% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 85%, transparent),
+                0 0 28px color-mix(in srgb, var(--color-accent) 50%, transparent);
+    border-color: var(--color-accent);
+  }
+  45% {
+    box-shadow: 0 0 0 0 transparent;
+    border-color: var(--color-border);
+  }
+  70% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 85%, transparent),
+                0 0 28px color-mix(in srgb, var(--color-accent) 50%, transparent);
+    border-color: var(--color-accent);
+  }
+  90% {
+    box-shadow: 0 0 0 0 transparent;
+    border-color: var(--color-border);
+  }
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 60%, transparent),
+                0 0 16px color-mix(in srgb, var(--color-accent) 25%, transparent);
+    border-color: var(--color-accent);
+  }
+}
+
+.target-card-blink {
+  animation: target-outer-blink 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards !important;
+  z-index: 10;
+  position: relative;
+}
+
