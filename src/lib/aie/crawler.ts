@@ -18,8 +18,9 @@ import {
   toIsoString,
 } from "./extract";
 import { parseRssOrAtomXml } from "./feeds";
-import { buildPristineDocumentHtml } from "./pdf";
-import { isCandidateResourceUrl, qualifyContent } from "./qualification";
+import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
+import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
   CrawlConfig,
   CrawlJob,
@@ -44,6 +45,8 @@ import {
   mongoListReports,
   mongoGetExistingReportsDedupIndex,
   mongoListSources,
+  mongoListDiscoveredSources,
+  mongoCreateDiscoveredSource,
   mongoSeedSources,
   mongoUpdateCrawlConfig,
   mongoUpdateCrawlJob,
@@ -280,6 +283,7 @@ export async function executeCrawlJob(
           const seed = seedMap.get(s.id);
           seedMap.set(s.id, {
             ...s,
+            crawlPattern: s.crawlPattern || seed?.crawlPattern,
             feedUrl: seed?.feedUrl || s.feedUrl || `${s.homepageUrl.replace(/\/+$/, "")}/feed/`,
           });
         }
@@ -294,6 +298,118 @@ export async function executeCrawlJob(
         await mongoSeedSources(sources);
       } catch {
         /* ignore seed errors */
+      }
+    }
+
+    // Autonomous AI Agent Source Discovery (Adversary Emulation Intelligence Skill)
+    if (isMongoConfigured() && config.agentDiscoveryEnabled !== false) {
+      try {
+        logger.agent(
+          "DISCOVERY",
+          "Launching autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...",
+          { model: config.agentModel || "gemini-3.8-flash-low", timeout: `${config.agentTimeoutSeconds || 45}s` }
+        );
+        console.log(`[crawler] [AI AGENT] Running autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...`);
+
+        // Build known domain list to prevent duplicate discovery
+        const knownDomains: string[] = [];
+        for (const s of sources) {
+          try {
+            const h = new URL(s.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
+            if (h) knownDomains.push(h);
+          } catch {}
+        }
+        try {
+          const existingDiscovered = await mongoListDiscoveredSources();
+          for (const ds of existingDiscovered) {
+            if (ds.domain) knownDomains.push(ds.domain.toLowerCase());
+          }
+        } catch {}
+
+        const agentResult = await discoverAgentSources({
+          limit: 4,
+          existingDomains: Array.from(new Set(knownDomains)),
+          model: config.agentModel || "gemini-3.8-flash-low",
+          timeoutSeconds: config.agentTimeoutSeconds || 45,
+        });
+
+        if (agentResult.sources && agentResult.sources.length > 0) {
+          logger.agent(
+            "DISCOVERED",
+            `Discovered ${agentResult.sources.length} new high-value CTI research endpoints!`,
+            agentResult.sources.map((s) => s.domain).join(", ")
+          );
+          console.log(`[crawler] [AI AGENT] Discovered ${agentResult.sources.length} new high-value CTI sources!`);
+          for (const s of agentResult.sources) {
+            try {
+              const created = await mongoCreateDiscoveredSource({
+                domain: s.domain,
+                name: s.source_name,
+                homepageUrl: s.base_url || `https://${s.domain}`,
+                crawlPattern: s.crawl_pattern,
+                parentSource: "AGY Autonomous Discovery",
+                trustScore: 80,
+                origin: "agent_discovery",
+                notes: s.why_crawl,
+                whyCrawl: s.why_crawl,
+                status: "discovered",
+                enabled: true,
+              });
+              if (created) {
+                newSourcesCount++;
+                logger.agent("REGISTER", `Registered new source endpoint: ${s.source_name}`, s.base_url || s.domain);
+                console.log(`[crawler] [AI AGENT] Registered new source endpoint: ${s.source_name} (${s.base_url || s.domain})`);
+              }
+            } catch (err) {
+              logger.warn("AI AGENT", `Error saving discovered source ${s.domain}: ${(err as Error).message}`);
+            }
+          }
+        } else if (agentResult.error) {
+          logger.agent("NOTE", `Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
+          console.log(`[crawler] [AI AGENT] Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
+        } else {
+          logger.agent(
+            "COMPLETED",
+            `Source discovery run finished — candidate domains (${agentResult.candidateDomains?.join(", ") || "none"}) already present in registry. Proceeding with crawl.`
+          );
+        }
+      } catch (agentErr) {
+        logger.agent("FAILSAFE", `Autonomous discovery skipped (offline / timed out) — proceeding with core crawler: ${(agentErr as Error).message}`);
+        console.warn(`[crawler] [AI AGENT] Autonomous discovery skipped (offline / timed out) — proceeding with core crawler:`, (agentErr as Error).message);
+      }
+    }
+
+    // Merge enabled Discovered Sources if enabled in crawl config
+    if (isMongoConfigured() && config.agentCrawlSourcesEnabled !== false) {
+      try {
+        const discoveredSourcesList = await mongoListDiscoveredSources();
+        for (const ds of discoveredSourcesList) {
+          if (ds.enabled !== false && ds.status !== "rejected" && ds.status !== "ignored") {
+            const domain = ds.domain;
+            const slug = domain.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+            const rootUrl = ds.crawlPattern ? ds.crawlPattern.replace(/\/\*$/, "") : ds.homepageUrl || `https://${domain}`;
+            sources.push({
+              id: ds.id,
+              name: ds.name || domain,
+              slug,
+              category: "discovered_source",
+              homepageUrl: rootUrl.startsWith("http") ? rootUrl : `https://${rootUrl}`,
+              crawlPattern: ds.crawlPattern,
+              feedUrl: undefined,
+              researchArchives: ds.crawlPattern ? [ds.crawlPattern.replace(/\/\*$/, "")] : undefined,
+              enabled: true,
+              priority: ds.trustScore ? Math.round(ds.trustScore / 10) : 6,
+              trustLevel: ds.trustScore >= 70 ? "reputable" : "community",
+              notes: ds.notes || ds.whyCrawl || "",
+              lastIngestAt: null,
+              isCurated: false,
+              isDiscovered: true,
+              origin: ds.origin === "agent_discovery" ? "agent_discovery" : "crawler_outlink",
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("[crawler] Error merging discovered sources into crawl job:", err);
       }
     }
 
@@ -358,13 +474,35 @@ export async function executeCrawlJob(
       /* ignore sql fallback */
     }
 
-    // 3. Initialize the Priority Frontier Queue
+    // 3. Initialize the Priority Frontier Queue & Scoped Endpoint Pattern Map
     const frontierQueue: FrontierItem[] = [];
     const enqueuedUrls = new Set<string>();
     const domainVisitCounts = new Map<string, number>();
 
+    // Index all active crawl patterns by sourceId and domain
+    const sourcePatternMap = new Map<string, string>();
+    for (const s of sources) {
+      if (s.crawlPattern) {
+        sourcePatternMap.set(s.id, s.crawlPattern);
+        try {
+          const host = new URL(s.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
+          sourcePatternMap.set(host, s.crawlPattern);
+        } catch {}
+      }
+    }
+
     const enqueue = (item: FrontierItem) => {
       if (enqueuedUrls.has(item.canonicalUrl)) return;
+
+      // Strict Scoped Research Endpoint Guard:
+      // If the resource belongs to a source with a defined crawlPattern, enforce strict path scoping.
+      // This eliminates false data, marketing homepages, corporate sales, careers, and pricing pages.
+      const itemDomain = item.domain.toLowerCase().replace(/^www\./, "");
+      const pattern = (item.sourceId ? sourcePatternMap.get(item.sourceId) : undefined) || sourcePatternMap.get(itemDomain);
+      if (pattern && !matchesCrawlPattern(item.canonicalUrl, pattern)) {
+        return;
+      }
+
       enqueuedUrls.add(item.canonicalUrl);
       frontierQueue.push(item);
       discoveredCount++;
@@ -897,7 +1035,25 @@ export async function executeCrawlJob(
             contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
 
             if (contentType.includes("pdf")) {
-              textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+              // Extract real text from PDF buffer using pdf-parse / pypdf fallback
+              try {
+                const pdfResult = await extractTextFromPdfBuffer(Buffer.from(buf));
+                if (pdfResult.text && pdfResult.text.length > 50) {
+                  textContent = pdfResult.text;
+                  if (pdfResult.title && pdfResult.title !== "Untitled report") {
+                    docTitle = pdfResult.title;
+                  }
+                  if (pdfResult.author) {
+                    current.author = pdfResult.author;
+                  }
+                  console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
+                } else {
+                  textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+                }
+              } catch (pdfErr) {
+                console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
+                textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+              }
             } else {
               const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
               fetchedHtmlBody = body;
@@ -1178,6 +1334,40 @@ export async function executeCrawlJob(
         `Classification: ${qual.classification}, Resource: ${qual.resourceKind}`,
       );
 
+      // 4.4b AI Agent Enhancement Layer — Intelligent Tagging & Approval Validation
+      // Runs only if agent tagging or approval is enabled in config. Falls back cleanly on failure.
+      let agentResult: AgentEvaluationResult | null = null;
+      if (config.agentTaggingEnabled || config.agentApprovalEnabled) {
+        try {
+          agentResult = await evaluateResourceWithAgent({
+            text: textContent,
+            title: docTitle,
+            url: current.canonicalUrl,
+            domain: current.domain,
+            timeoutSeconds: config.agentTimeoutSeconds || 45,
+            model: config.agentModel || "gemini-3.8-flash-low",
+          });
+          if (agentResult.success && !agentResult.fallback) {
+            logger.agent(
+              "EVALUATE:DONE",
+              `"${docTitle.slice(0, 50)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
+              { actors: agentResult.threatActors?.length || 0, malware: agentResult.malwareFamilies?.length || 0, tech: agentResult.mitreTechniques?.length || 0 }
+            );
+            console.log(
+              `[crawler][agent] Evaluated "${docTitle.slice(0, 60)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
+            );
+          } else if (agentResult.error) {
+            logger.agent("FALLBACK", `Agent fallback for "${docTitle.slice(0, 40)}": ${agentResult.error}`);
+            console.warn(`[crawler][agent] Fallback for "${docTitle.slice(0, 40)}": ${agentResult.error}`);
+          }
+        } catch (agentErr) {
+          // Fail-safe: Agent failure never blocks the crawler pipeline
+          logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
+          console.warn("[crawler][agent] evaluateResourceWithAgent failed (non-blocking):", agentErr);
+          agentResult = null;
+        }
+      }
+
       // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
       const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
       const iocs = harvestIocs(textContent);
@@ -1194,7 +1384,8 @@ export async function executeCrawlJob(
       // High-Fidelity PDF & HTML Layout Generation
       let pristineHtml = "";
       if (config.generatePdf !== false) {
-        pristineHtml = buildPristineDocumentHtml(fetchedHtmlBody || textContent, {
+        const isPdfResource = contentType.includes("pdf") || current.canonicalUrl.toLowerCase().endsWith(".pdf");
+        pristineHtml = buildPristineDocumentHtml(isPdfResource ? textContent : (fetchedHtmlBody || textContent), {
           id: reportId,
           title: docTitle,
           url: current.url,
@@ -1215,7 +1406,11 @@ export async function executeCrawlJob(
       }
 
       // 4.6 Ingestion vs Human Review Queue
-      if (config.autoIngest) {
+      const shouldAutoIngest =
+        Boolean(config.autoIngest) ||
+        Boolean(config.agentAutoIngestEnabled && agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 65);
+
+      if (shouldAutoIngest) {
         ingestedCount++;
         storedCanonicalUrls.add(current.canonicalUrl);
         storedHashes.add(textHash);
@@ -1313,6 +1508,22 @@ export async function executeCrawlJob(
               noveltyRationale: qual.noveltyRationale,
               reportId,
               discoveryPath: current.discoveryPath,
+              // AI Agent enhancement fields (when available)
+              ...(agentResult && agentResult.success && !agentResult.fallback
+                ? {
+                    agentScore: agentResult.passScore,
+                    agentApproved: agentResult.recommendApproval,
+                    agentRationale: agentResult.rationale,
+                    agentClassification: agentResult.classification,
+                    agentResourceKind: agentResult.resourceKind,
+                    agentTags: [
+                      ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                      ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                      ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                      ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                    ],
+                  }
+                : {}),
             });
           } catch (mongoErr) {
             console.warn("[mongodb] report persistence error:", mongoErr);
@@ -1385,6 +1596,22 @@ export async function executeCrawlJob(
           resourceKind: qual.resourceKind,
           discoveryPath: current.discoveryPath,
           createdAt: new Date().toISOString(),
+          // AI Agent enrichment (when available)
+          ...(agentResult && agentResult.success && !agentResult.fallback
+            ? {
+                agentScore: agentResult.passScore,
+                agentApproved: agentResult.recommendApproval,
+                agentRationale: agentResult.rationale,
+                agentClassification: agentResult.classification,
+                agentResourceKind: agentResult.resourceKind,
+                agentTags: [
+                  ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                  ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                  ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                  ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                ],
+              }
+            : {}),
         };
 
         if (isMongoConfigured()) {
@@ -1431,6 +1658,22 @@ export async function executeCrawlJob(
           resourceKind: qual.resourceKind,
           discoveryPath: current.discoveryPath,
           createdAt: new Date().toISOString(),
+          // AI Agent enrichment (when available)
+          ...(agentResult && agentResult.success && !agentResult.fallback
+            ? {
+                agentScore: agentResult.passScore,
+                agentApproved: agentResult.recommendApproval,
+                agentRationale: agentResult.rationale,
+                agentClassification: agentResult.classification,
+                agentResourceKind: agentResult.resourceKind,
+                agentTags: [
+                  ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                  ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                  ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                  ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                ],
+              }
+            : {}),
         };
 
         if (isMongoConfigured()) {
@@ -1453,6 +1696,22 @@ export async function executeCrawlJob(
             status: "awaiting_approval",
             qualityScore: score,
             discoveryPath: current.discoveryPath,
+            // AI Agent enhancement fields (when available)
+            ...(agentResult && agentResult.success && !agentResult.fallback
+              ? {
+                  agentScore: agentResult.passScore,
+                  agentApproved: agentResult.recommendApproval,
+                  agentRationale: agentResult.rationale,
+                  agentClassification: agentResult.classification,
+                  agentResourceKind: agentResult.resourceKind,
+                  agentTags: [
+                    ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                    ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                    ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                    ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                  ],
+                }
+              : {}),
           });
         }
 

@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
   ArrowUpRight,
+  CheckCircle2,
   Download,
   Eye,
   FileText,
@@ -15,6 +16,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
+  Tag,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -24,7 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports } from "@/lib/aie/server";
+import { getReportPdf, listReports, runAiLibraryAudit } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
@@ -39,11 +41,14 @@ const RESOURCE_KINDS: { id: string; label: string }[] = [
   { id: "MALWARE_ANALYSIS", label: "Malware Analysis" },
   { id: "DETECTION_GUIDANCE", label: "Detections & Sigma" },
   { id: "VULNERABILITY_ADVISORY", label: "Vulnerability Advisories" },
+  { id: "THREAT_ACTOR_DOSSIER", label: "Threat Actor Dossiers" },
 ];
 
 function LibraryPage() {
+  const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [selectedKind, setSelectedKind] = useState("ALL");
+  const [selectedTag, setSelectedTag] = useState("ALL");
   const [selectedActor, setSelectedActor] = useState("ALL");
   const [selectedMalware, setSelectedMalware] = useState("ALL");
   const [selectedTactic, setSelectedTactic] = useState("ALL");
@@ -53,6 +58,19 @@ function LibraryPage() {
   const [sortBy, setSortBy] = useState<"newest" | "quality" | "iocs" | "words">("newest");
   const [showFilters, setShowFilters] = useState(false);
   const [previewReportId, setPreviewReportId] = useState<string | null>(null);
+  const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
+
+  // AI Library Audit & Verification Mutation
+  const auditLibraryMut = useMutation({
+    mutationFn: (autoPruneJunk?: boolean) => runAiLibraryAudit({ data: { autoPruneJunk } }),
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: ["reports-all"] });
+      toast.success(res?.message || "AI Library Audit complete");
+    },
+    onError: () => {
+      toast.error("Failed running AI Library Audit");
+    },
+  });
 
   // Fetch all reports to enable rich interactive filtering and instant counts
   const { data: rawReports, isLoading } = useQuery({
@@ -73,6 +91,7 @@ function LibraryPage() {
       MALWARE_ANALYSIS: 0,
       DETECTION_GUIDANCE: 0,
       VULNERABILITY_ADVISORY: 0,
+      THREAT_ACTOR_DOSSIER: 0,
     };
 
     for (const r of allReports) {
@@ -90,10 +109,15 @@ function LibraryPage() {
     const malwareSet = new Set<string>();
     const tacticsSet = new Set<string>();
     const publishersSet = new Set<string>();
+    const tagsSet = new Set<string>();
 
     for (const r of allReports) {
       if (r.publisher) publishersSet.add(r.publisher);
       if (r.sourceName) publishersSet.add(r.sourceName);
+
+      if (Array.isArray(r.tags)) {
+        for (const t of r.tags) if (t) tagsSet.add(t);
+      }
 
       if (r.analysis?.threatActors) {
         for (const a of r.analysis.threatActors) if (a && a !== "None Identified") actorsSet.add(a);
@@ -122,6 +146,7 @@ function LibraryPage() {
       malware: Array.from(malwareSet).sort(),
       tactics: Array.from(tacticsSet).sort(),
       publishers: Array.from(publishersSet).sort(),
+      tags: Array.from(tagsSet).sort(),
     };
   }, [allReports]);
 
@@ -162,6 +187,11 @@ function LibraryPage() {
           if (pub !== selectedPublisher.toLowerCase()) return false;
         }
 
+        if (selectedTag !== "ALL") {
+          const hasTag = r.tags && r.tags.some((t) => t.toLowerCase() === selectedTag.toLowerCase());
+          if (!hasTag) return false;
+        }
+
         if (minQuality > 0 && r.qualityScore < minQuality) {
           return false;
         }
@@ -173,7 +203,8 @@ function LibraryPage() {
         if (query) {
           const repId = formatReportId(r.id);
           const domId = formatDomainId(r.sourceDomain || r.url);
-          const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.id} ${repId} ${r.sourceId} ${r.ingestOrigin || ""} ${domId} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${
+          const tagsStr = r.tags?.join(" ") || "";
+          const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.id} ${repId} ${r.sourceId} ${r.ingestOrigin || ""} ${domId} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${tagsStr} ${
             r.analysis?.threatActors?.join(" ") || ""
           } ${r.analysis?.malware?.join(" ") || ""} ${r.extractedEntities?.cves?.join(" ") || ""} ${
             r.iocs?.map((i) => i.value).join(" ") || ""
@@ -193,6 +224,7 @@ function LibraryPage() {
   }, [
     allReports,
     selectedKind,
+    selectedTag,
     selectedActor,
     selectedMalware,
     selectedTactic,
@@ -205,6 +237,7 @@ function LibraryPage() {
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
+    if (selectedTag !== "ALL") count++;
     if (selectedActor !== "ALL") count++;
     if (selectedMalware !== "ALL") count++;
     if (selectedTactic !== "ALL") count++;
@@ -212,9 +245,10 @@ function LibraryPage() {
     if (minQuality > 0) count++;
     if (onlyWithIocs) count++;
     return count;
-  }, [selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
+  }, [selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
 
   const resetFilters = () => {
+    setSelectedTag("ALL");
     setSelectedActor("ALL");
     setSelectedMalware("ALL");
     setSelectedTactic("ALL");
@@ -305,8 +339,20 @@ function LibraryPage() {
             Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains stored in MongoDB Atlas.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative w-full md:w-80">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-9 gap-1.5 text-xs border-emerald-500/40 text-emerald-300 bg-emerald-950/40 hover:bg-emerald-950/70 transition-colors shadow-xs"
+            disabled={auditLibraryMut.isPending}
+            onClick={() => auditLibraryMut.mutate(false)}
+            title="Run AI content analysis, extract tradecraft, assign accurate tags, and verify library intelligence records"
+          >
+            <Sparkles className={cn("size-3.5 text-emerald-400", auditLibraryMut.isPending && "animate-spin")} />
+            <span>{auditLibraryMut.isPending ? "Auditing Library…" : "AI Quality Audit"}</span>
+          </Button>
+
+          <div className="relative w-full sm:w-72">
             <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
             <Input
               value={q}
@@ -392,7 +438,24 @@ function LibraryPage() {
             )}
           </div>
 
-          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            {/* Filter 0: Intelligence Tag */}
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-muted">Intelligence Tag</label>
+              <select
+                value={selectedTag}
+                onChange={(e) => setSelectedTag(e.target.value)}
+                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+              >
+                <option value="ALL">All Tags ({filterOptions.tags.length})</option>
+                {filterOptions.tags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Filter 1: Threat Actor */}
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-muted">Threat Actor / Adversary</label>
@@ -512,6 +575,14 @@ function LibraryPage() {
       {activeFiltersCount > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-mono text-muted mr-1">Active filters:</span>
+          {selectedTag !== "ALL" && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent border border-accent/20 px-2 py-0.5 text-xs font-mono">
+              Tag: {selectedTag}
+              <button type="button" onClick={() => setSelectedTag("ALL")} className="hover:opacity-75">
+                <X className="size-3" />
+              </button>
+            </span>
+          )}
           {selectedActor !== "ALL" && (
             <span className="inline-flex items-center gap-1 rounded-md bg-danger/10 text-danger border border-danger/20 px-2 py-0.5 text-xs font-mono">
               Actor: {selectedActor}
@@ -615,11 +686,35 @@ function LibraryPage() {
               key={r.id}
               className="group rounded-xl border border-border bg-bg-elevated p-5 transition-colors hover:border-border/80 hover:bg-bg-subtle/40"
             >
-              {/* Standardized AIE ID Bar: RST and DOM only */}
-              <div className="flex flex-wrap items-center gap-1.5 mb-2.5 pb-2 border-b border-border/50">
-                <IdBadge id={formatReportId(r.id)} category="report" size="xs" />
-                {(r.sourceDomain || r.url) && (
-                  <IdBadge id={formatDomainId(r.sourceDomain || r.url)} category="domain" size="xs" />
+              {/* Standardized AIE ID Bar: RST and DOM with AI Verification Badge on Very Top Right */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2.5 pb-2 border-b border-border/50">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <IdBadge id={formatReportId(r.id)} category="report" size="xs" />
+                  {(r.sourceDomain || r.url) && (
+                    <IdBadge id={formatDomainId(r.sourceDomain || r.url)} category="domain" size="xs" />
+                  )}
+                </div>
+
+                {/* Small green AI Verified badge on very top right */}
+                {r.aiVerified ? (
+                  <button
+                    type="button"
+                    onClick={() => setAuditModalReport(r)}
+                    className="inline-flex items-center gap-1 rounded-full bg-sage/15 hover:bg-sage/25 text-sage border border-sage/30 px-2 py-0.5 text-[10px] font-mono font-medium transition-colors cursor-pointer"
+                    title="Click to view AI Quality Gate Audit Details"
+                  >
+                    <CheckCircle2 className="size-2.5 text-sage" />
+                    AI Verified
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAuditModalReport(r)}
+                    className="inline-flex items-center gap-1 rounded-full bg-muted/10 hover:bg-muted/20 text-muted border border-border px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer"
+                    title="Click to view Crawler & AI Audit Details"
+                  >
+                    Crawler Ingested
+                  </button>
                 )}
               </div>
 
@@ -736,6 +831,32 @@ function LibraryPage() {
                       {cve}
                     </span>
                   ))}
+                </div>
+              )}
+
+              {/* High-Value Intelligence Tags (e.g. FULL ATTACK CHAIN, INTRUSION_REPORT, Publisher, Techniques) */}
+              {r.tags && r.tags.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap items-center gap-1">
+                  <span className="text-[10px] font-mono text-muted mr-1 flex items-center gap-1">
+                    <Tag className="size-2.5" /> Tags:
+                  </span>
+                  {r.tags.slice(0, 8).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTag(t);
+                        setShowFilters(true);
+                      }}
+                      className="inline-flex items-center rounded bg-bg-subtle hover:bg-bg border border-border px-1.5 py-0.5 text-[10px] font-mono text-fg hover:text-accent hover:border-accent/40 transition-colors"
+                      title={`Filter by tag: ${t}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                  {r.tags.length > 8 && (
+                    <span className="text-[10px] font-mono text-muted">+{r.tags.length - 8} more</span>
+                  )}
                 </div>
               )}
 
@@ -856,6 +977,114 @@ function LibraryPage() {
                   <p className="mt-1 text-xs">You can re-ingest or crawl to regenerate pristine document layouts.</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI QUALITY GATE AUDIT DETAILS MODAL */}
+      {auditModalReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="flex w-full max-w-lg flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-border bg-bg px-5 py-3.5">
+              <div className="flex items-center gap-2">
+                <Sparkles className="size-4 text-accent" />
+                <h3 className="text-sm font-semibold text-fg">AI Threat Intel Audit Verification</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuditModalReport(null)}
+                className="text-muted hover:text-fg p-1 rounded-md"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Verification Status:</span>
+                {auditModalReport.aiVerified ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-sage/15 text-sage border border-sage/30 px-2.5 py-0.5 font-mono font-medium">
+                    <CheckCircle2 className="size-3 text-sage" /> AI Quality Gate Verified
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/15 text-muted border border-border px-2.5 py-0.5 font-mono">
+                    Crawler Direct Ingested
+                  </span>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border bg-bg p-3 space-y-2">
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-muted">Quality Score:</span>
+                  <span className="text-fg font-semibold">{Math.round(auditModalReport.qualityScore * 100)}%</span>
+                </div>
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-muted">IOC Count:</span>
+                  <span className="text-fg font-semibold">{auditModalReport.iocCount || 0} indicators</span>
+                </div>
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-muted">Word Count:</span>
+                  <span className="text-fg font-semibold">{auditModalReport.wordCount || 0} words</span>
+                </div>
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-muted">Category:</span>
+                  <span className="text-accent font-semibold">
+                    {auditModalReport.resourceKind?.replace(/_/g, " ") || "CAMPAIGN INTEL"}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-[11px] font-medium text-muted uppercase tracking-wider block mb-1">
+                  AI Audit Assessment
+                </span>
+                <p className="rounded-lg border border-border bg-bg-subtle p-3 text-fg text-xs leading-relaxed font-sans">
+                  {auditModalReport.aiAuditReason ||
+                    "Report verified through automated threat intelligence pipeline. Contains substantive technical adversary indicators, procedures, or vulnerability disclosures."}
+                </p>
+              </div>
+
+              {auditModalReport.tags && auditModalReport.tags.length > 0 && (
+                <div>
+                  <span className="text-[11px] font-medium text-muted uppercase tracking-wider block mb-1.5">
+                    Extracted Intelligence Tags ({auditModalReport.tags.length})
+                  </span>
+                  <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1">
+                    {auditModalReport.tags.map((t) => (
+                      <span
+                        key={t}
+                        className="rounded bg-bg border border-border px-2 py-0.5 text-[10px] font-mono text-fg"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 flex justify-end gap-2 border-t border-border">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const r = auditModalReport;
+                    setAuditModalReport(null);
+                    setPreviewReportId(r.id);
+                  }}
+                  className="text-xs"
+                >
+                  <Eye className="size-3.5 mr-1" /> View High-Fidelity PDF
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setAuditModalReport(null)}
+                  className="text-xs"
+                >
+                  Close
+                </Button>
+              </div>
             </div>
           </div>
         </div>

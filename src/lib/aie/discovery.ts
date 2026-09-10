@@ -1,4 +1,4 @@
-import { isCandidateResourceUrl } from "./qualification";
+import { deriveCrawlPattern, isCandidateResourceUrl, matchesCrawlPattern } from "./qualification";
 import type { DiscoveredSourceRecord, DiscoveryGraphEdge, ResourceKind } from "./types";
 
 export type OutlinkKind = "citation" | "pdf_document" | "repository" | "research_paper" | "internal_article";
@@ -51,6 +51,23 @@ const TRUSTED_CTI_DOMAINS = new Set([
   "attack.mitre.org",
   "github.com",
   "arxiv.org",
+  "elastic.co",
+  "research.checkpoint.com",
+  "checkpoint.com",
+  "volexity.com",
+  "group-ib.com",
+  "sygnia.co",
+  "dragos.com",
+  "rapid7.com",
+  "qualys.com",
+  "blog.qualys.com",
+  "news.sophos.com",
+  "sophos.com",
+  "intezer.com",
+  "cybereason.com",
+  "blackberry.com",
+  "recordedfuture.com",
+  "proofpoint.com",
 ]);
 
 const STRICT_BLOCKED_DOMAINS = new Set([
@@ -339,11 +356,14 @@ export function extractOutlinksAndCitations(
 
       // If new external source with credibility, promote to DiscoveredSource
       if (isExternal && trust.trustScore >= 0.60) {
+        const crawlPattern = deriveCrawlPattern(cleanUrl);
+        const baseEndpoint = crawlPattern.replace(/\/\*+$/, "");
         newDiscoveredSources.push({
           id: `src_disc_${targetHost.replace(/[^a-z0-9]/gi, "_").slice(0, 30)}`,
           domain: targetHost,
           name: targetHost.charAt(0).toUpperCase() + targetHost.slice(1),
-          homepageUrl: `${resolved.protocol}//${targetHost}/`,
+          homepageUrl: baseEndpoint.startsWith("http") ? baseEndpoint : `${resolved.protocol}//${targetHost}/`,
+          crawlPattern,
           parentSource: host,
           parentUrl: baseUrlStr,
           discoveryPath: [...parentPath],

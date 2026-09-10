@@ -157,6 +157,26 @@ export const logger = {
   },
 
   /**
+   * AI Agent Enhancement Layer Logging
+   */
+  agent(action: string, message: string, meta?: Record<string, unknown> | string) {
+    const time = getTimestamp();
+    let metaStr = "";
+    if (typeof meta === "string") {
+      metaStr = ` ${FG_GRAY}› ${meta}${RESET}`;
+    } else if (meta) {
+      try {
+        metaStr = ` ${FG_GRAY}${JSON.stringify(meta)}${RESET}`;
+      } catch {
+        metaStr = "";
+      }
+    }
+    console.log(
+      `${FG_GRAY}${time}${RESET} \x1b[38;5;208m${BOLD}[AI:AGENT]${RESET} ${FG_CYAN}${BOLD}${action}${RESET}: ${message}${metaStr}`,
+    );
+  },
+
+  /**
    * MITRE ATT&CK Matrix Mapping Logging
    */
   mitre(action: string, details: string) {

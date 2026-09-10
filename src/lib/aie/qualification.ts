@@ -117,6 +117,144 @@ export function isCandidateResourceUrl(
   }
 }
 
+/**
+ * Strict Endpoint Pattern Verification:
+ * Validates whether a candidate URL strictly belongs to a source's scoped research endpoint pattern.
+ * e.g. "https://www.sentinelone.com/labs/*" ensures that /labs/... is accepted, while /company/ or /pricing is rejected.
+ */
+export function matchesCrawlPattern(candidateUrlStr: string, patternStr?: string | null): boolean {
+  if (!patternStr || !patternStr.trim() || patternStr.trim() === "*") {
+    return true; // No restriction specified
+  }
+
+  try {
+    const candidateUrl = new URL(candidateUrlStr.startsWith("http") ? candidateUrlStr : `https://${candidateUrlStr}`);
+    const candidateHost = candidateUrl.hostname.toLowerCase().replace(/^www\./, "");
+    const candidatePath = candidateUrl.pathname;
+
+    // Support multiple comma, semicolon, or newline separated patterns
+    const patterns = patternStr
+      .split(/[,;\n]+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    if (patterns.length === 0) return true;
+
+    return patterns.some((pat) => {
+      let normPat = pat;
+      if (!normPat.startsWith("http://") && !normPat.startsWith("https://")) {
+        normPat = `https://${normPat}`;
+      }
+
+      const patUrl = new URL(normPat.replace(/\*+$/, ""));
+      const patHost = patUrl.hostname.toLowerCase().replace(/^www\./, "");
+      const patPath = patUrl.pathname.replace(/\/+$/, "");
+
+      // Host matching: either exact match or subdomains match
+      const hostMatches =
+        candidateHost === patHost ||
+        candidateHost.endsWith(`.${patHost}`) ||
+        patHost.endsWith(`.${candidateHost}`);
+
+      if (!hostMatches) {
+        return false;
+      }
+
+      // If pattern has no path prefix (or root "/"), any resource on this host matches
+      if (!patPath || patPath === "" || patPath === "/") {
+        return true;
+      }
+
+      // Path matching: candidate path must start with the pattern prefix
+      if (candidatePath === patPath || candidatePath.startsWith(`${patPath}/`)) {
+        return true;
+      }
+
+      // Special allowance: If pattern host is thedfirreport.com and candidate is a dated article /20\d\d/...
+      if (candidateHost.includes("thedfirreport.com") && /^\/\d{4}\/\d{2}\//.test(candidatePath)) {
+        return true;
+      }
+
+      // Special allowance: If pattern host is redcanary.com and candidate is under /blog/...
+      if (candidateHost.includes("redcanary.com") && candidatePath.startsWith("/blog/")) {
+        return true;
+      }
+
+      // Glob wildcard matching support (e.g. /20*/*)
+      if (pat.includes("*")) {
+        const patternWithoutProto = normPat.replace(/^https?:\/\//, "").replace(/^www\./, "");
+        const regexStr = "^" + patternWithoutProto
+          .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*") + "$";
+        const candidateFull = `${candidateHost}${candidatePath}`;
+        if (new RegExp(regexStr, "i").test(candidateFull)) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Derives a targeted research endpoint pattern from any discovered technical article URL.
+ * Automatically identifies research subpaths (e.g. /labs/*, /threat-research/*, /reports/*)
+ * to prevent registering bare corporate apex domains.
+ */
+export function deriveCrawlPattern(urlStr: string): string {
+  try {
+    const url = new URL(urlStr.startsWith("http") ? urlStr : `https://${urlStr}`);
+    const host = url.hostname;
+    const path = url.pathname;
+
+    const KNOWN_RESEARCH_PREFIXES = [
+      "/labs",
+      "/category/threat-research",
+      "/category/threat-intel",
+      "/category/malware",
+      "/category/case-studies",
+      "/threat-research",
+      "/blog/topics/threat-intelligence",
+      "/blog/category/threat-intel",
+      "/blog/category/threat-research",
+      "/blog/tag/threat-intel",
+      "/en-us/security/blog",
+      "/en-us/category/threat-research",
+      "/security/blog",
+      "/news-events/cybersecurity-advisories",
+      "/reports",
+      "/research",
+      "/advisories",
+      "/blog",
+    ];
+
+    for (const prefix of KNOWN_RESEARCH_PREFIXES) {
+      if (path.startsWith(prefix)) {
+        return `${url.protocol}//${host}${prefix}/*`;
+      }
+    }
+
+    // If no exact known prefix matches, extract leading technical subdirectories before the slug/date
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length > 1) {
+      // Remove trailing article slug or date parts if present
+      const filtered = segments.filter(
+        (s) => !/^\d{4}$|^\d{2}$|^page$|^feed$/i.test(s) && !/^[a-z0-9_-]{12,}$/i.test(s),
+      );
+      if (filtered.length > 0) {
+        return `${url.protocol}//${host}/${filtered.slice(0, 2).join("/")}/*`;
+      }
+    }
+
+    return `${url.protocol}//${host}/*`;
+  } catch {
+    return `${urlStr}/*`;
+  }
+}
+
 // Concrete technical evidence extraction regexes
 const COMMAND_REGEX =
   /(?:(?:powershell(?:\.exe)?|cmd(?:\.exe)?|wmic|schtasks|vssadmin|rundll32|certutil|bitsadmin|reg(?:\.exe)?|psexec|whoami|nltest|net\s+(?:user|group|localgroup|view|use)|procdump|mimikatz|rubeus|adfind|powerview|chisel|rclone|megasync|curl|mshta|cscript|wscript|sc(?:\.exe)?|wevtutil|nltest)\b[^\r\n]{4,140})/gi;

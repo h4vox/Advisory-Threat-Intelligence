@@ -45,13 +45,14 @@ import {
   purgeServerCaches,
   updateAppSettings,
   updateCrawlerConfig,
+  getAgentStatus,
 } from "@/lib/aie/server";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
 
 const settingsSearchSchema = z.object({
-  tab: z.enum(["crawler", "policy", "storage", "display"]).optional(),
+  tab: z.enum(["crawler", "policy", "storage", "display", "agent"]).optional(),
 });
 
 export const Route = createFileRoute("/settings")({
@@ -64,6 +65,7 @@ const SETTINGS_SECTIONS = [
   { id: "policy", label: "Intelligence Policies", icon: Shield, badge: "SOC" },
   { id: "storage", label: "Database & Storage", icon: Database, badge: "Atlas" },
   { id: "display", label: "Display & Preferences", icon: Sliders, badge: "UI" },
+  { id: "agent", label: "AI Agent", icon: Sparkles, badge: "AGY" },
 ] as const;
 
 const INTERVAL_PRESETS = [
@@ -111,6 +113,12 @@ function SettingsPage() {
     queryFn: () => getStorageStats(),
     staleTime: 15000,
     refetchInterval: 20000,
+  });
+
+  const agentStatusQuery = useQuery({
+    queryKey: ["agent-status"],
+    queryFn: () => getAgentStatus(),
+    staleTime: 30000,
   });
 
   // Local Form States for instantaneous 0ms responsive UI
@@ -916,16 +924,22 @@ function SettingsPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-border">
-                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <label className="flex items-start gap-2.5 text-xs cursor-pointer">
                   <input
                     type="checkbox"
                     checked={currentCrawl.autoIngest ?? true}
                     onChange={(e) => updateCrawlField("autoIngest", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className="size-4 accent-accent mt-0.5"
                   />
                   <div>
                     <span className="font-medium block">Auto-Ingest Qualified Reports</span>
                     <span className="text-[10px] text-muted block">Direct save vs manual review approval queue</span>
+                    {!(currentCrawl.autoIngest ?? true) && Boolean(currentCrawl.agentAutoIngestEnabled) && (
+                      <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-amber-400 font-medium bg-amber-950/40 border border-amber-800/40 rounded px-1.5 py-0.5">
+                        <AlertTriangle className="size-2.5" />
+                        Pauses AI Agent autonomous ingestion until enabled
+                      </span>
+                    )}
                   </div>
                 </label>
 
@@ -1258,6 +1272,228 @@ function SettingsPage() {
                     <span className="text-[10px] text-muted block">Print HTTP & query metrics to terminal</span>
                   </div>
                 </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 5: AI AGENT                                                           */}
+        {/* ========================================================================= */}
+        {activeSection === "agent" && (
+          <div className="space-y-6">
+            {/* Agent Status Banner */}
+            <div className="rounded-xl border border-border bg-bg-elevated p-5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={cn(
+                    "flex size-10 items-center justify-center rounded-lg",
+                    agentStatusQuery.data?.available ? "bg-emerald-950/50" : "bg-red-950/50"
+                  )}>
+                    <Bot className={cn("size-5", agentStatusQuery.data?.available ? "text-emerald-400" : "text-red-400")} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-medium">AGY Agent Status</h3>
+                    <p className="text-xs text-muted">
+                      {agentStatusQuery.data?.available
+                        ? `v${agentStatusQuery.data.version} · ${agentStatusQuery.data.platform} · Ready`
+                        : "Agent unavailable — crawler operates with rule-based fallback"}
+                    </p>
+                  </div>
+                </div>
+                <div className={cn(
+                  "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium",
+                  agentStatusQuery.data?.available
+                    ? "bg-emerald-950/40 text-emerald-400"
+                    : "bg-red-950/40 text-red-400"
+                )}>
+                  <div className={cn("size-2 rounded-full", agentStatusQuery.data?.available ? "bg-emerald-500" : "bg-red-500")} />
+                  {agentStatusQuery.data?.available ? "Online" : "Offline"}
+                </div>
+              </div>
+            </div>
+
+            {/* Agent Feature Toggles */}
+            <div className="rounded-xl border border-border bg-bg-elevated p-5">
+              <h3 className="flex items-center gap-2 text-sm font-medium">
+                <Sparkles className="size-4 text-accent" />
+                Intelligence Enhancement Layer
+              </h3>
+              <p className="mt-1 text-xs text-muted">
+                Control which AI agent capabilities are active. The crawler engine remains the core system regardless of these settings.
+              </p>
+              <div className="mt-4 space-y-4">
+                {[
+                  {
+                    key: "agentDiscoveryEnabled" as const,
+                    label: "Source Discovery",
+                    desc: "Agent autonomously discovers new high-value CTI sources and root domains",
+                  },
+                  {
+                    key: "agentTaggingEnabled" as const,
+                    label: "Intelligent Tagging & Analysis",
+                    desc: "Agent evaluates resources and enriches classification, threat actors, malware families, and MITRE techniques",
+                  },
+                  {
+                    key: "agentLibraryAuditEnabled" as const,
+                    label: "AI Library Quality Audit",
+                    desc: "Continuously audit and evaluate library resources, verify technical threat intelligence, and assign enriched tags",
+                  },
+                  {
+                    key: "agentAutoPruneJunkEnabled" as const,
+                    label: "AI Auto-Prune Non-Threat Intel Pages",
+                    desc: "Carefully purge confirmed non-threat content (e.g. homepages, contact pages, error pages, zero-IOC marketing) from the library. High-value threat intelligence is protected by strict safety guardrails.",
+                  },
+                  {
+                    key: "agentApprovalEnabled" as const,
+                    label: "Approval Recommendations",
+                    desc: "Agent provides pass scores and ingestion recommendations for qualified resources",
+                  },
+                  {
+                    key: "agentAutoIngestEnabled" as const,
+                    label: "Auto-Ingest Agent Approved",
+                    desc: "Automatically ingest resources the agent approves with score ≥ 65 (requires auto-ingest ON)",
+                  },
+                  {
+                    key: "agentCrawlSourcesEnabled" as const,
+                    label: "Crawl Discovered Sources",
+                    desc: "Include agent-discovered and crawler-discovered sources in crawl jobs",
+                  },
+                ].map((toggle) => {
+                  const isChecked = Boolean(currentCrawl[toggle.key]);
+                  return (
+                    <div
+                      key={toggle.key}
+                      className="rounded-lg border border-border bg-bg-subtle p-3.5"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-medium text-fg">{toggle.label}</div>
+                          <div className="text-xs text-muted mt-0.5">{toggle.desc}</div>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={isChecked}
+                          onClick={() => {
+                            const next = !isChecked;
+                            updateCrawlField(toggle.key, next);
+                            updateAppField(toggle.key as any, next);
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-1 focus:ring-accent shadow-xs",
+                            isChecked
+                              ? "bg-accent"
+                              : "bg-zinc-800 border-zinc-700",
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out",
+                              isChecked ? "translate-x-5" : "translate-x-0",
+                            )}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Safety Guardrail banner for Auto-Prune */}
+                      {toggle.key === "agentAutoPruneJunkEnabled" && isChecked && (
+                        <div className="mt-2.5 flex items-center gap-2 text-[11px] text-emerald-400 bg-emerald-950/30 border border-emerald-800/40 rounded-md px-2.5 py-1.5 font-medium">
+                          <CheckCircle2 className="size-3.5 shrink-0" />
+                          <span>Strict Safety Guardrails Active: Legitimate threat reports with IOCs, CVEs, or ATT&CK techniques are strictly protected and will never be pruned.</span>
+                        </div>
+                      )}
+
+                      {/* Warning Alert when Auto-Ingest Agent Approved is enabled while Auto-Ingest Qualified Reports is disabled */}
+                      {toggle.key === "agentAutoIngestEnabled" && isChecked && !(currentCrawl.autoIngest ?? true) && (
+                        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                          <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-400" />
+                          <div className="flex-1 space-y-1">
+                            <div className="font-semibold text-amber-200">
+                              Prerequisite Setting Disabled: "Auto-Ingest Qualified Reports" is OFF
+                            </div>
+                            <p className="text-[11px] leading-relaxed text-amber-300/90">
+                              Autonomous ingestion requires <strong>BOTH</strong> settings enabled. While <em>Auto-Ingest Qualified Reports</em> (under Crawler & Ingestion) is paused, newly discovered reports approved by the agent will be placed in the manual review approval queue instead of being directly ingested.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                updateCrawlField("autoIngest", true);
+                                toast.success('Enabled "Auto-Ingest Qualified Reports"');
+                              }}
+                              className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/20 px-2.5 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="size-3.5 text-amber-300" />
+                              Enable "Auto-Ingest Qualified Reports" Now
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Agent Model & Timeout */}
+            <div className="rounded-xl border border-border bg-bg-elevated p-5">
+              <h3 className="flex items-center gap-2 text-sm font-medium">
+                <Zap className="size-4 text-accent" />
+                Model & Performance
+              </h3>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-medium text-muted mb-1.5">Agent Model</label>
+                  <select
+                    value={crawlForm.agentModel || "gemini-3.8-flash-low"}
+                    onChange={(e) => {
+                      setCrawlForm((prev) => ({ ...prev, agentModel: e.target.value }));
+                      setIsDirty(true);
+                    }}
+                    className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
+                  >
+                    <option value="gemini-3.8-flash-low">Gemini 3.8 Flash (Low Latency)</option>
+                    <option value="gemini-3.8-flash-medium">Gemini 3.8 Flash (Medium)</option>
+                    <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High)</option>
+                    <option value="gemini-3.7-flash-high">Gemini 3.7 Flash (High)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted mb-1.5">
+                    Timeout (seconds): {crawlForm.agentTimeoutSeconds || 45}s
+                  </label>
+                  <input
+                    type="range"
+                    min={10}
+                    max={120}
+                    step={5}
+                    value={crawlForm.agentTimeoutSeconds || 45}
+                    onChange={(e) => {
+                      setCrawlForm((prev) => ({ ...prev, agentTimeoutSeconds: Number(e.target.value) }));
+                      setIsDirty(true);
+                    }}
+                    className="w-full accent-accent"
+                  />
+                  <div className="flex justify-between text-[10px] text-subtle mt-1">
+                    <span>10s (fast)</span>
+                    <span>120s (thorough)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Fail-Safe Notice */}
+            <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 p-4">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="size-5 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-300">Zero Point of Failure Design</p>
+                  <p className="mt-1 text-xs text-amber-400/80">
+                    If the AGY agent is unavailable, times out, or returns an error, the crawler automatically
+                    falls back to rule-based heuristic qualification and standard ingestion — zero disruption to
+                    the core pipeline.
+                  </p>
+                </div>
               </div>
             </div>
           </div>

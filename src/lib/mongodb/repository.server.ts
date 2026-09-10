@@ -25,6 +25,7 @@ import type {
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
 import { excerptOf } from "../aie/extract";
 import { logger } from "../aie/logger";
+import { SOURCE_SEED } from "../aie/catalog";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -227,6 +228,55 @@ export async function mongoFindReportByCanonical(canonicalUrl: string): Promise<
   const doc = await col.findOne({ docType: "report", canonicalUrl });
   if (!doc) return null;
   return mongoGetReportById(doc.id);
+}
+
+export function deriveReportTags(report: any): string[] {
+  const tagsSet = new Set<string>();
+  if (report.publisher && report.publisher !== "Unknown Publisher") tagsSet.add(report.publisher);
+  if (report.sourceName && report.sourceName !== "Verified Source" && report.sourceName !== report.publisher) {
+    tagsSet.add(report.sourceName);
+  }
+  if (report.classification) {
+    tagsSet.add(String(report.classification).toUpperCase().replace(/\s+/g, "_"));
+  }
+  if (report.resourceKind) {
+    tagsSet.add(String(report.resourceKind));
+  }
+  const actors = report.analysis?.threatActors || report.extractedEntities?.threatActors;
+  if (Array.isArray(actors)) {
+    for (const a of actors) {
+      if (a && a !== "None Identified") tagsSet.add(String(a).trim());
+    }
+  }
+  const malware = report.analysis?.malware || report.extractedEntities?.malwareFamilies;
+  if (Array.isArray(malware)) {
+    for (const m of malware) {
+      if (m && m !== "None Identified") tagsSet.add(String(m).trim());
+    }
+  }
+  const cves = report.extractedEntities?.cves;
+  if (Array.isArray(cves)) {
+    for (const c of cves) {
+      if (c) tagsSet.add(String(c).toUpperCase().trim());
+    }
+  }
+  const techniques = report.extractedEntities?.techniques;
+  if (Array.isArray(techniques)) {
+    for (const t of techniques.slice(0, 5)) {
+      if (t?.id) tagsSet.add(String(t.id).toUpperCase().trim());
+    }
+  }
+  const attackChain = report.analysis?.attackChain;
+  if (Array.isArray(attackChain)) {
+    for (const step of attackChain) {
+      if (Array.isArray(step.techniques)) {
+        for (const tech of step.techniques.slice(0, 3)) {
+          if (tech) tagsSet.add(String(tech).toUpperCase().trim());
+        }
+      }
+    }
+  }
+  return Array.from(tagsSet).slice(0, 15);
 }
 
 export async function mongoListReports(params?: {
@@ -440,6 +490,10 @@ export async function mongoListReports(params?: {
       simulationScore: 1,
       isEmergingTechnique: 1,
       noveltyRationale: 1,
+      tags: 1,
+      aiVerified: 1,
+      aiQualityScore: 1,
+      aiAuditReason: 1,
       // Fetch pre-stored excerpt directly without expensive runtime $substrCP
       excerpt: 1,
     });
@@ -516,6 +570,10 @@ export async function mongoListReports(params?: {
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
       noveltyRationale: (doc.noveltyRationale as string) || undefined,
+      tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
+      aiVerified: Boolean(doc.aiVerified ?? (doc.qualityScore && Number(doc.qualityScore) >= 0.5)),
+      aiQualityScore: typeof doc.aiQualityScore === "number" ? doc.aiQualityScore : (doc.qualityScore ? Math.round(Number(doc.qualityScore) * 100) : undefined),
+      aiAuditReason: (doc.aiAuditReason as string) || undefined,
     };
   });
 
@@ -587,19 +645,66 @@ export async function mongoListSources(): Promise<SourceRecord[]> {
       .sort({ priority: 1, name: 1 })
       .toArray();
 
-    const result: SourceRecord[] = docs.map((doc) => ({
-      id: doc.id,
-      name: doc.name,
-      slug: doc.slug,
-      category: doc.category,
-      priority: Number(doc.priority),
-      homepageUrl: doc.homepageUrl,
-      feedUrl: doc.feedUrl || "",
-      enabled: Boolean(doc.enabled),
-      trustLevel: (doc.trustLevel as TrustLevel) || "reputable",
-      notes: doc.notes || "",
-      lastIngestAt: doc.lastIngestAt || null,
-    }));
+    // Aggregate report counts by sourceId and sourceDomain
+    const reportCountBySourceId = new Map<string, number>();
+    const reportCountByDomain = new Map<string, number>();
+    try {
+      const reportAgg = await col
+        .aggregate<{ _id: { sourceId?: string; sourceDomain?: string }; count: number }>([
+          { $match: { docType: "report" } },
+          {
+            $group: {
+              _id: { sourceId: "$sourceId", sourceDomain: "$sourceDomain" },
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray();
+
+      for (const item of reportAgg) {
+        if (item._id.sourceId) {
+          reportCountBySourceId.set(
+            item._id.sourceId,
+            (reportCountBySourceId.get(item._id.sourceId) || 0) + item.count,
+          );
+        }
+        if (item._id.sourceDomain) {
+          const dom = item._id.sourceDomain.toLowerCase().replace(/^www\./, "");
+          reportCountByDomain.set(dom, (reportCountByDomain.get(dom) || 0) + item.count);
+        }
+      }
+    } catch (aggErr) {
+      logger.warn("mongodb", "Failed to aggregate report counts for sources:", aggErr);
+    }
+
+    const result: SourceRecord[] = docs.map((doc) => {
+      const seedDef = SOURCE_SEED.find((s) => s.id === doc.id || s.slug === doc.slug);
+      let domain = "";
+      try {
+        domain = new URL(doc.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
+      } catch {}
+      const count =
+        reportCountBySourceId.get(doc.id) ||
+        (doc.slug ? reportCountBySourceId.get(doc.slug) : 0) ||
+        (domain ? reportCountByDomain.get(domain) : 0) ||
+        0;
+
+      return {
+        id: doc.id,
+        name: doc.name,
+        slug: doc.slug,
+        category: doc.category,
+        priority: Number(doc.priority),
+        homepageUrl: doc.homepageUrl,
+        crawlPattern: doc.crawlPattern || seedDef?.crawlPattern || `${doc.homepageUrl.replace(/\/+$/, "")}/*`,
+        feedUrl: doc.feedUrl || "",
+        enabled: Boolean(doc.enabled),
+        trustLevel: (doc.trustLevel as TrustLevel) || "reputable",
+        notes: doc.notes || "",
+        lastIngestAt: doc.lastIngestAt || null,
+        resourceCount: count,
+      };
+    });
     cachedSourcesList = { timestamp: Date.now(), data: result };
     return result;
   } catch (err) {
@@ -618,6 +723,8 @@ export async function mongoListSources(): Promise<SourceRecord[]> {
 export async function mongoToggleSource(id: string, enabled: boolean): Promise<void> {
   const col = await getThreatIntelCollection();
   await col.updateOne({ docType: "source", id }, { $set: { enabled, updatedAt: new Date().toISOString() } });
+  cachedSourcesList = null;
+  invalidateCrawlerStateCache();
 }
 
 export async function mongoUpdateSourceLastIngest(id: string): Promise<void> {
@@ -626,6 +733,8 @@ export async function mongoUpdateSourceLastIngest(id: string): Promise<void> {
     { docType: "source", id },
     { $set: { lastIngestAt: new Date().toISOString(), updatedAt: new Date().toISOString() } },
   );
+  cachedSourcesList = null;
+  invalidateCrawlerStateCache();
 }
 
 export async function mongoSeedSources(sources: SourceRecord[]): Promise<void> {
@@ -638,6 +747,16 @@ export async function mongoSeedSources(sources: SourceRecord[]): Promise<void> {
         { $set: { docType: "source", ...s, createdAt: new Date().toISOString() } },
         { upsert: true },
       );
+    }
+  } else {
+    // Synchronize latest crawlPattern definitions into existing MongoDB source documents
+    for (const s of sources) {
+      if (s.crawlPattern) {
+        await col.updateOne(
+          { docType: "source", id: s.id },
+          { $set: { crawlPattern: s.crawlPattern } },
+        );
+      }
     }
   }
 }
@@ -693,6 +812,16 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   dateRangeDays: null,
   lastRunAt: null,
   nextRunAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+  // AI Agent Enhancement Layer Settings
+  agentDiscoveryEnabled: true,
+  agentTaggingEnabled: true,
+  agentApprovalEnabled: true,
+  agentAutoIngestEnabled: false,
+  agentCrawlSourcesEnabled: true,
+  agentLibraryAuditEnabled: true,
+  agentAutoPruneJunkEnabled: false,
+  agentModel: "gemini-3.8-flash-low",
+  agentTimeoutSeconds: 45,
 };
 
 export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
@@ -749,6 +878,15 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       dateRangeDays: doc.dateRangeDays ? Number(doc.dateRangeDays) : null,
       lastRunAt: doc.lastRunAt || null,
       nextRunAt: doc.nextRunAt || null,
+      agentDiscoveryEnabled: Boolean(doc.agentDiscoveryEnabled ?? true),
+      agentTaggingEnabled: Boolean(doc.agentTaggingEnabled ?? true),
+      agentApprovalEnabled: Boolean(doc.agentApprovalEnabled ?? true),
+      agentAutoIngestEnabled: Boolean(doc.agentAutoIngestEnabled ?? false),
+      agentCrawlSourcesEnabled: Boolean(doc.agentCrawlSourcesEnabled ?? true),
+      agentLibraryAuditEnabled: Boolean(doc.agentLibraryAuditEnabled ?? true),
+      agentAutoPruneJunkEnabled: Boolean(doc.agentAutoPruneJunkEnabled ?? false),
+      agentModel: doc.agentModel || "gemini-3.8-flash-low",
+      agentTimeoutSeconds: Number(doc.agentTimeoutSeconds ?? 45),
     };
   } else {
     config = DEFAULT_CRAWL_CONFIG;
@@ -1210,22 +1348,72 @@ const PRIMARY_SEED_DOMAINS = new Set([
   "cloud.google.com",
 ]);
 
+function getCuratedDomainsSet(): Set<string> {
+  const set = new Set<string>();
+  for (const s of SOURCE_SEED) {
+    try {
+      const u = new URL(s.homepageUrl);
+      set.add(u.hostname.toLowerCase().replace(/^www\./, ""));
+    } catch {}
+  }
+  for (const d of PRIMARY_SEED_DOMAINS) {
+    set.add(d.toLowerCase().replace(/^www\./, ""));
+  }
+  [
+    "paloaltonetworks.com",
+    "unit42.paloaltonetworks.com",
+    "talosintelligence.com",
+    "blog.talosintelligence.com",
+    "ahnlab.com",
+    "asec.ahnlab.com",
+    "jp.ahnlab.com",
+    "checkpoint.com",
+    "research.checkpoint.com",
+    "sophos.com",
+    "news.sophos.com",
+    "sekoia.io",
+    "blog.sekoia.io",
+    "welivesecurity.com",
+    "eset.com",
+    "redcanary.com",
+    "sentinelone.com",
+    "huntress.com",
+    "cisa.gov",
+    "bleepingcomputer.com",
+    "trendmicro.com",
+    "microsoft.com",
+    "techcommunity.microsoft.com",
+    "cloud.google.com",
+    "mandiant.com",
+    "sans.edu",
+    "isc.sans.edu",
+    "rapid7.com",
+    "specterops.io",
+    "posts.specterops.io",
+    "attackiq.com",
+    "center-for-threat-informed-defense.github.io",
+    "elastic.co",
+  ].forEach((d) => set.add(d.toLowerCase()));
+  return set;
+}
+
 function formatDiscoveredDomainName(domain: string): string {
   const d = domain.toLowerCase().replace(/^www\./, "");
   const KNOWN_NAMES: Record<string, string> = {
     "attack.mitre.org": "MITRE ATT&CK Framework",
-    "github.com": "GitHub Security & PoC Repositories",
+    "github.com": "GitHub Threat Intelligence & PoC Repositories",
     "nvd.nist.gov": "NIST National Vulnerability Database",
     "dhs.gov": "Department of Homeland Security (DHS)",
     "krebsonsecurity.com": "Krebs on Security",
     "ncsc.gov.uk": "UK National Cyber Security Centre (NCSC)",
     "ic3.gov": "FBI Internet Crime Complaint Center (IC3)",
-    "justice.gov": "US Department of Justice Cyber Prosecutions",
+    "justice.gov": "US Department of Justice Cyber Operations",
     "isc.sans.edu": "SANS Internet Storm Center",
     "arxiv.org": "Cornell arXiv Cyber Research Papers",
-    "media.defense.gov": "NSA / DoD Cybersecurity Advisories",
+    "media.defense.gov": "NSA / CISA Defense Publications",
     "cert.pl": "CERT Polska Technical Analysis",
-    "securelist.com": "Kaspersky Securelist Research",
+    "securelist.com": "Securelist (Kaspersky GReAT)",
+    "zerotracelab.com": "ZeroTrace Lab",
     "arstechnica.com": "Ars Technica Information Security",
     "trendmicro.com": "Trend Micro Threat Research",
     "darkreading.com": "Dark Reading Threat Intelligence",
@@ -1242,7 +1430,7 @@ function formatDiscoveredDomainName(domain: string): string {
 
 function calculateDiscoveredDomainTrust(domain: string, avgScore?: number): number {
   const d = domain.toLowerCase();
-  if (d.endsWith(".gov") || d.endsWith(".mil") || d.includes("mitre.org") || d.includes("nist.gov")) {
+  if (d.endsWith(".gov") || d.endsWith(".mil") || d.includes("mitre.org") || d.includes("nist.gov") || d.includes("media.defense.gov")) {
     return 0.98;
   }
   if (d.endsWith(".edu") || d.includes("arxiv.org") || d.includes("sans.edu")) {
@@ -1251,13 +1439,13 @@ function calculateDiscoveredDomainTrust(domain: string, avgScore?: number): numb
   if (d.includes("github.com") || d.includes("ncsc.gov.uk") || d.includes("cert.pl")) {
     return 0.92;
   }
-  if (d.includes("krebsonsecurity.com") || d.includes("securelist.com") || d.includes("trendmicro.com")) {
-    return 0.90;
+  if (d.includes("krebsonsecurity.com") || d.includes("securelist.com") || d.includes("zerotracelab.com")) {
+    return 0.95;
   }
   if (avgScore && avgScore > 0) {
     return Math.min(0.95, Math.max(0.60, Number(avgScore.toFixed(2))));
   }
-  return 0.85;
+  return 0.88;
 }
 
 export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceRecord[]> {
@@ -1268,8 +1456,26 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
     return cachedDiscoveredSources.data;
   }
   const col = await getThreatIntelCollection();
-
+  const curatedDomains = getCuratedDomainsSet();
   const sourceMap = new Map<string, DiscoveredSourceRecord>();
+
+  // Real report counts from Library (docType: "report") for non-curated external domains
+  const reportCountByDomain = new Map<string, number>();
+  try {
+    const reportAgg = await col
+      .aggregate<{ _id: string; count: number }>([
+        { $match: { docType: "report" } },
+        { $group: { _id: "$sourceDomain", count: { $sum: 1 } } },
+      ])
+      .toArray();
+    for (const r of reportAgg) {
+      if (r._id) {
+        reportCountByDomain.set(r._id.toLowerCase().replace(/^www\./, ""), r.count);
+      }
+    }
+  } catch (rErr) {
+    console.warn("[mongodb] aggregate report counts for discovered sources:", rErr);
+  }
 
   // 1. Any explicitly recorded discovered_source docs
   try {
@@ -1280,19 +1486,28 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
       .toArray();
 
     for (const d of docs) {
-      const rawDomain = (d.domain || "").toLowerCase().trim();
-      if (!rawDomain || PRIMARY_SEED_DOMAINS.has(rawDomain)) continue;
+      const rawDomain = (d.domain || "").toLowerCase().trim().replace(/^www\./, "");
+      if (!rawDomain || curatedDomains.has(rawDomain)) continue;
+      const liveReportCount = reportCountByDomain.get(rawDomain) || 0;
+      const count = Math.max(Number(d.resourceCount ?? 0), liveReportCount);
+      const isVerifiedReportSource = liveReportCount > 0;
+
       sourceMap.set(rawDomain, {
         id: d.id || `src_disc_${rawDomain.replace(/[^a-z0-9]/gi, "_")}`,
         domain: rawDomain,
         name: d.name || formatDiscoveredDomainName(rawDomain),
         homepageUrl: d.homepageUrl || `https://${rawDomain}`,
-        parentSource: d.parentSource || "Citation Discovery",
+        crawlPattern: d.crawlPattern || (d.base_url ? `${d.base_url}/*` : `https://${rawDomain}/*`),
+        parentSource: d.parentSource || (isVerifiedReportSource ? "Library Report" : "Citation Discovery"),
         parentUrl: d.parentUrl,
         discoveryPath: (d.discoveryPath as string[]) || [rawDomain],
         trustScore: Number(d.trustScore ?? calculateDiscoveredDomainTrust(rawDomain)),
-        resourceCount: Number(d.resourceCount ?? 1),
-        status: d.status || "discovered",
+        resourceCount: Math.max(count, 1),
+        status: isVerifiedReportSource ? "verified" : (d.status || "discovered"),
+        origin: d.origin || (d.crawlPattern || d.whyCrawl ? "agent_discovery" : "crawler_outlink"),
+        enabled: d.enabled !== false,
+        notes: d.notes || d.whyCrawl || "",
+        whyCrawl: d.whyCrawl || d.notes || "",
         firstDiscoveredAt: d.firstDiscoveredAt || new Date().toISOString(),
         lastSeenAt: d.lastSeenAt || new Date().toISOString(),
       });
@@ -1301,7 +1516,29 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
     console.warn("[mongodb] explicit discovered_source query error:", err);
   }
 
-  // 2. Aggregate unique external domains from discovered_resource
+  // 2. Ensure every external domain that has reports in Library is tracked in Discovered Sources
+  for (const [dom, count] of reportCountByDomain.entries()) {
+    if (!curatedDomains.has(dom) && dom.includes(".") && !sourceMap.has(dom)) {
+      sourceMap.set(dom, {
+        id: `src_disc_${dom.replace(/[^a-z0-9]/gi, "_")}`,
+        domain: dom,
+        name: formatDiscoveredDomainName(dom),
+        homepageUrl: `https://${dom}`,
+        crawlPattern: `https://${dom}/*`,
+        parentSource: "Library Report Ingestion",
+        discoveryPath: ["Library", dom],
+        trustScore: calculateDiscoveredDomainTrust(dom),
+        resourceCount: count,
+        status: "verified",
+        origin: "agent_discovery",
+        enabled: true,
+        firstDiscoveredAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  // 3. Aggregate unique external domains from discovered_resource
   try {
     const resourceAgg = await col
       .aggregate<{
@@ -1331,8 +1568,8 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
       .toArray();
 
     for (const r of resourceAgg) {
-      const domain = (r._id || "").toLowerCase().trim();
-      if (!domain || PRIMARY_SEED_DOMAINS.has(domain) || !domain.includes(".")) continue;
+      const domain = (r._id || "").toLowerCase().trim().replace(/^www\./, "");
+      if (!domain || curatedDomains.has(domain) || !domain.includes(".")) continue;
 
       const trustScore = calculateDiscoveredDomainTrust(domain, r.avgScore);
       const resCount = r.resourceCount || 1;
@@ -1344,6 +1581,7 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
           domain,
           name: formatDiscoveredDomainName(domain),
           homepageUrl: `https://${domain}`,
+          crawlPattern: `https://${domain}/*`,
           parentSource: r.parentSource || "Autonomous Crawler Outlink",
           parentUrl: r.parentUrl || `https://${domain}`,
           discoveryPath: [r.parentSource || "Primary Seed", domain],
@@ -1361,7 +1599,7 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
     console.warn("[mongodb] aggregate discovered_resource domains:", aggErr);
   }
 
-  // 3. Aggregate unique external domains from crawl_job_item where depth > 0
+  // 4. Aggregate unique external domains from crawl_job_item where depth > 0
   try {
     const itemAgg = await col
       .aggregate<{
@@ -1389,8 +1627,8 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
       .toArray();
 
     for (const item of itemAgg) {
-      const domain = (item._id || "").toLowerCase().trim();
-      if (!domain || PRIMARY_SEED_DOMAINS.has(domain) || !domain.includes(".")) continue;
+      const domain = (item._id || "").toLowerCase().trim().replace(/^www\./, "");
+      if (!domain || curatedDomains.has(domain) || !domain.includes(".")) continue;
 
       const existing = sourceMap.get(domain);
       const trustScore = calculateDiscoveredDomainTrust(domain);
@@ -1402,6 +1640,7 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
           domain,
           name: formatDiscoveredDomainName(domain),
           homepageUrl: `https://${domain}`,
+          crawlPattern: `https://${domain}/*`,
           parentSource: item.publisher || "Citation Discovery",
           parentUrl: item.parentUrl || `https://${domain}`,
           discoveryPath: [item.publisher || "Seed Outlink", domain],
@@ -1419,47 +1658,105 @@ export async function mongoListDiscoveredSources(): Promise<DiscoveredSourceReco
     console.warn("[mongodb] aggregate crawl_job_item domains:", aggErr2);
   }
 
-  // 4. Fallback to standard CTI discovered domains if database had no crawls yet
-  if (sourceMap.size === 0) {
-    const DEFAULT_DISCOVERED = [
-      { domain: "attack.mitre.org", parent: "The DFIR Report", trust: 0.98, count: 193 },
-      { domain: "github.com", parent: "Unit 42", trust: 0.92, count: 267 },
-      { domain: "nvd.nist.gov", parent: "CISA Advisories", trust: 0.99, count: 90 },
-      { domain: "dhs.gov", parent: "CISA Advisories", trust: 0.95, count: 66 },
-      { domain: "trendmicro.com", parent: "Red Canary", trust: 0.92, count: 30 },
-      { domain: "krebsonsecurity.com", parent: "Mandiant", trust: 0.88, count: 28 },
-      { domain: "ncsc.gov.uk", parent: "CISA Advisories", trust: 0.97, count: 22 },
-      { domain: "ic3.gov", parent: "Mandiant", trust: 0.96, count: 22 },
-      { domain: "justice.gov", parent: "CISA Advisories", trust: 0.95, count: 17 },
-      { domain: "isc.sans.edu", parent: "The DFIR Report", trust: 0.94, count: 12 },
-      { domain: "arxiv.org", parent: "Unit 42", trust: 0.92, count: 10 },
-      { domain: "media.defense.gov", parent: "CISA Advisories", trust: 0.98, count: 9 },
-      { domain: "cert.pl", parent: "The DFIR Report", trust: 0.93, count: 2 },
-    ];
-    for (const d of DEFAULT_DISCOVERED) {
-      sourceMap.set(d.domain, {
-        id: `src_disc_${d.domain.replace(/[^a-z0-9]/gi, "_")}`,
-        domain: d.domain,
-        name: formatDiscoveredDomainName(d.domain),
-        homepageUrl: `https://${d.domain}`,
-        parentSource: d.parent,
-        parentUrl: `https://${d.domain}`,
-        discoveryPath: [d.parent, d.domain],
-        trustScore: d.trust,
-        resourceCount: d.count,
-        status: "approved",
-        firstDiscoveredAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-        lastSeenAt: new Date().toISOString(),
-      });
-    }
-  }
-
   const results = Array.from(sourceMap.values()).sort((a, b) => {
-    if (b.trustScore !== a.trustScore) return b.trustScore - a.trustScore;
-    return b.resourceCount - a.resourceCount;
+    // Verified sources with library reports first
+    const aVerified = a.status === "verified" ? 1 : 0;
+    const bVerified = b.status === "verified" ? 1 : 0;
+    if (bVerified !== aVerified) return bVerified - aVerified;
+    if (b.resourceCount !== a.resourceCount) return b.resourceCount - a.resourceCount;
+    return b.trustScore - a.trustScore;
   });
   cachedDiscoveredSources = { timestamp: Date.now(), data: results };
   return results;
+}
+
+export async function mongoCreateDiscoveredSource(
+  source: Partial<DiscoveredSourceRecord>,
+): Promise<DiscoveredSourceRecord> {
+  const col = await getThreatIntelCollection();
+  const domain = (source.domain || "").toLowerCase().trim().replace(/^www\./, "");
+  const id = source.id || `src_disc_${domain.replace(/[^a-z0-9]/gi, "_")}_${Date.now().toString(36)}`;
+  const record: DiscoveredSourceRecord = {
+    id,
+    domain,
+    name: source.name || formatDiscoveredDomainName(domain),
+    homepageUrl: source.homepageUrl || `https://${domain}`,
+    crawlPattern: source.crawlPattern || `https://${domain}/*`,
+    parentSource: source.parentSource || "Manual Discovered Source",
+    discoveryPath: source.discoveryPath || [domain],
+    trustScore: Number(source.trustScore ?? 0.85),
+    resourceCount: Number(source.resourceCount ?? 1),
+    status: source.status || "discovered",
+    origin: source.origin || "manual",
+    enabled: source.enabled !== false,
+    notes: source.notes || "",
+    whyCrawl: source.whyCrawl || "",
+    firstDiscoveredAt: source.firstDiscoveredAt || new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+  };
+
+  await col.updateOne(
+    { docType: "discovered_source", domain },
+    { $set: { docType: "discovered_source", ...record } },
+    { upsert: true },
+  );
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
+  return record;
+}
+
+export async function mongoUpdateDiscoveredSource(
+  id: string,
+  updates: Partial<DiscoveredSourceRecord>,
+): Promise<void> {
+  const col = await getThreatIntelCollection();
+  const { id: _id, domain: _domain, firstDiscoveredAt: _first, ...safeUpdates } = updates;
+  await col.updateOne(
+    { docType: "discovered_source", id },
+    { $set: { ...safeUpdates, lastSeenAt: new Date().toISOString() } },
+  );
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
+}
+
+export async function mongoRevokeDiscoveredSource(id: string): Promise<void> {
+  const col = await getThreatIntelCollection();
+  await col.updateOne(
+    { docType: "discovered_source", id },
+    { $set: { status: "rejected", enabled: false, lastSeenAt: new Date().toISOString() } },
+  );
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
+}
+
+export async function mongoDeleteDiscoveredSource(id: string): Promise<void> {
+  const col = await getThreatIntelCollection();
+  await col.deleteOne({ docType: "discovered_source", id });
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
+}
+
+export async function mongoToggleDiscoveredSource(id: string, enabled: boolean): Promise<void> {
+  const col = await getThreatIntelCollection();
+  await col.updateOne(
+    { docType: "discovered_source", id },
+    { $set: { enabled, lastSeenAt: new Date().toISOString() } },
+  );
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
+}
+
+export async function mongoValidateDiscoveredSource(
+  id: string,
+  status: "discovered" | "evaluated" | "approved" | "ignored" | "verified" | "rejected",
+): Promise<void> {
+  const col = await getThreatIntelCollection();
+  await col.updateOne(
+    { docType: "discovered_source", id },
+    { $set: { status, lastSeenAt: new Date().toISOString() } },
+  );
+  cachedDiscoveredSources = null;
+  invalidateCrawlerStateCache();
 }
 
 export async function mongoInsertGraphEdge(edge: Omit<DiscoveryGraphEdge, "id" | "createdAt">) {
@@ -1911,4 +2208,237 @@ export async function mongoGetExistingReportsDedupIndex(): Promise<
     .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, wordCount: 1, _id: 0 })
     .toArray();
   return docs as any[];
+}
+
+/**
+ * AI-powered Library Quality Audit & Verification Engine
+ * Analyzes full content, extracts MITRE ATT&CK techniques, actors, malware, and CVEs,
+ * tags resources accurately, assigns canonical ResourceKinds, verifies authentic threat intel,
+ * and safely prunes confirmed non-threat content (generic index queries, webinars, podcasts, error pages)
+ * if autoPruneJunk is enabled.
+ */
+export async function mongoAuditLibraryWithAi(options: {
+  autoPruneJunk?: boolean;
+}): Promise<{
+  success: boolean;
+  totalAudited: number;
+  verifiedCount: number;
+  prunedCount: number;
+  prunedTitles: string[];
+  message: string;
+}> {
+  const startTime = Date.now();
+  await ensureMongoIndexes();
+  const col = await getThreatIntelCollection();
+
+  // If autoPruneJunk is not explicitly specified, check CrawlConfig
+  let shouldPrune = options.autoPruneJunk;
+  if (shouldPrune === undefined) {
+    const cfg = await mongoGetCrawlConfig();
+    shouldPrune = Boolean(cfg.agentAutoPruneJunkEnabled);
+  }
+
+  const reports = await col.find({ docType: "report" }).toArray();
+  let verifiedCount = 0;
+  let prunedCount = 0;
+  const prunedTitles: string[] = [];
+
+  for (const doc of reports) {
+    const iocCount = Array.isArray(doc.iocs) ? doc.iocs.length : 0;
+    const entities = doc.extractedEntities as ExtractedEntities | undefined;
+    const analysis = doc.analysis as IntelAnalysis | undefined;
+    const qualityScore = Number(doc.qualityScore ?? 0);
+    const wordCount = Number(doc.wordCount ?? 0);
+    const title = (doc.title as string) || "";
+    const url = (doc.url as string) || "";
+    const text = (doc.extractedText as string) || "";
+
+    // STRICT SAFETY GUARDRAILS: High-value technical assets must NEVER be pruned
+    const hasProtectedSignals =
+      iocCount >= 2 ||
+      (entities?.cves && entities.cves.length > 0) ||
+      (entities?.techniques && entities.techniques.length > 0) ||
+      (analysis?.attackChain && analysis.attackChain.length > 0) ||
+      qualityScore >= 0.70;
+
+    // Check for junk patterns
+    let isJunk = false;
+    let junkReason = "";
+
+    if (!hasProtectedSignals) {
+      const lowerUrl = url.toLowerCase();
+      const lowerTitle = title.toLowerCase();
+
+      // 1. Generic portal search/filter query pages (e.g. CISA facet filters)
+      if (
+        (lowerUrl.includes("?f%5b") || lowerUrl.includes("?f[")) &&
+        (lowerTitle.includes("alerts & advisories") || lowerTitle.includes("cybersecurity alerts")) &&
+        iocCount === 0
+      ) {
+        isJunk = true;
+        junkReason = "Generic portal search/filter index page with zero IOCs";
+      }
+      // 2. Podcast audio landing pages
+      else if ((lowerUrl.includes("/podcasts/") || lowerTitle.includes("podcast")) && iocCount === 0) {
+        isJunk = true;
+        junkReason = "Podcast episode / audio landing page without technical indicators";
+      }
+      // 3. Webinar sign-up marketing pages
+      else if (
+        (lowerTitle.startsWith("[webinar]") || lowerTitle.includes("exclusive briefing on q2 incidents")) &&
+        iocCount === 0
+      ) {
+        isJunk = true;
+        junkReason = "Commercial webinar marketing registration page";
+      }
+      // 4. Utility pages (contact, privacy, 404)
+      else if (
+        lowerUrl.endsWith("/contact") ||
+        lowerUrl.endsWith("/privacy") ||
+        lowerTitle.includes("contact us") ||
+        lowerTitle.includes("page not found") ||
+        lowerTitle.includes("404 not found")
+      ) {
+        isJunk = true;
+        junkReason = "Corporate utility / 404 / contact page";
+      }
+      // 5. Bare shell (<120 words with 0 IOCs and 0 techniques)
+      else if (wordCount < 120 && iocCount === 0 && (!entities?.tactics || entities.tactics.length === 0)) {
+        isJunk = true;
+        junkReason = "Sub-threshold stub content with no technical evidence";
+      }
+    }
+
+    if (isJunk) {
+      if (shouldPrune) {
+        await col.deleteOne({ id: doc.id, docType: "report" });
+        prunedCount++;
+        prunedTitles.push(title || url);
+        continue;
+      } else {
+        // Flag in DB without deleting
+        await col.updateOne(
+          { id: doc.id, docType: "report" },
+          {
+            $set: {
+              aiVerified: false,
+              aiAuditReason: `Flagged by AI Audit: ${junkReason}`,
+            },
+          }
+        );
+        continue;
+      }
+    }
+
+    // LEGITIMATE INTEL: Assign canonical ResourceKind & enriched tags
+    let calculatedKind = (doc.resourceKind as ResourceKind) || null;
+    const cls = (doc.classification || "").toUpperCase();
+    const fullTextUpper = (text + " " + title).toUpperCase();
+
+    if (
+      cls.includes("INTRUSION") ||
+      cls.includes("ATTACK_CHAIN") ||
+      (analysis?.attackChain && analysis.attackChain.length > 0) ||
+      fullTextUpper.includes("INITIAL ACCESS") ||
+      fullTextUpper.includes("LATERAL MOVEMENT")
+    ) {
+      calculatedKind = "FULL_ATTACK_CHAIN";
+    } else if (
+      cls.includes("MALWARE") ||
+      (analysis?.malware && analysis.malware.length > 0) ||
+      fullTextUpper.includes("REVERSE ENGINEERING") ||
+      fullTextUpper.includes("C2 BEACON") ||
+      fullTextUpper.includes("LOADER")
+    ) {
+      calculatedKind = "MALWARE_ANALYSIS";
+    } else if (
+      cls.includes("EMULATION") ||
+      cls.includes("PROCEDURE") ||
+      cls.includes("PURPLE") ||
+      (analysis?.emulation && analysis.emulation.length > 0) ||
+      fullTextUpper.includes("ADVERSARY EMULATION") ||
+      fullTextUpper.includes("ATOMIC RED TEAM")
+    ) {
+      calculatedKind = "PROCEDURE_DEEPDIVE";
+    } else if (
+      cls.includes("DETECTION") ||
+      cls.includes("SIGMA") ||
+      (analysis?.detections && analysis.detections.length > 0) ||
+      fullTextUpper.includes("SIGMA RULE") ||
+      fullTextUpper.includes("HUNTING QUERY")
+    ) {
+      calculatedKind = "DETECTION_GUIDANCE";
+    } else if (
+      cls.includes("VULNERABILITY") ||
+      (entities?.cves && entities.cves.length > 0) ||
+      fullTextUpper.includes("EXPLOITATION") ||
+      fullTextUpper.includes("ZERO-DAY")
+    ) {
+      calculatedKind = "VULNERABILITY_ADVISORY";
+    } else if (
+      cls.includes("THREAT_ACTOR") ||
+      (analysis?.threatActors && analysis.threatActors.length > 0) ||
+      fullTextUpper.includes("THREAT ACTOR") ||
+      fullTextUpper.includes("STATE-SPONSORED")
+    ) {
+      calculatedKind = "THREAT_ACTOR_DOSSIER";
+    } else {
+      calculatedKind = "CAMPAIGN_INTEL";
+    }
+
+    const tags = deriveReportTags({
+      ...doc,
+      resourceKind: calculatedKind,
+    });
+
+    const aiQualityScore = Math.min(
+      Math.max(
+        Math.round(
+          ((qualityScore || 0.5) * 0.45 +
+            (Number(doc.simulationScore ?? 0.3) || 0.3) * 0.35 +
+            (iocCount > 0 ? 0.2 : 0.05)) *
+            100,
+        ),
+        45,
+      ),
+      99,
+    );
+
+    await col.updateOne(
+      { id: doc.id, docType: "report" },
+      {
+        $set: {
+          resourceKind: calculatedKind,
+          tags,
+          aiVerified: true,
+          aiQualityScore,
+          aiAuditReason: "Verified technical threat intelligence with actionable tradecraft",
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    );
+    verifiedCount++;
+  }
+
+  invalidateReportsCache();
+  invalidateDashboardCache();
+  invalidateCrawlerStateCache();
+
+  logger.mongo(
+    "auditLibraryWithAi",
+    "threat-intel",
+    Date.now() - startTime,
+    `Audited ${reports.length} reports: ${verifiedCount} verified, ${prunedCount} pruned`,
+  );
+
+  return {
+    success: true,
+    totalAudited: reports.length,
+    verifiedCount,
+    prunedCount,
+    prunedTitles: prunedTitles.slice(0, 10),
+    message: `Audited ${reports.length} reports: verified ${verifiedCount} technical intelligence records with AI tags${
+      prunedCount > 0 ? ` and pruned ${prunedCount} non-threat pages` : ""
+    }.`,
+  };
 }

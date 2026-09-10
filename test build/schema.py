@@ -161,3 +161,37 @@ class ThreatSourceCollection(BaseModel):
 
 def get_sources_json_schema() -> Dict[str, Any]:
     return ThreatSourceCollection.model_json_schema()
+
+# --- Crawl Root / Recursive Source Models ---
+
+class CrawlSourceItem(BaseModel):
+    source_name: str = Field(..., description="Organization or Lab name (e.g. The DFIR Report, Unit 42)")
+    domain: str = Field(..., description="Root domain or host (e.g. thedfirreport.com, unit42.paloaltonetworks.com)")
+    crawl_url: str = Field(..., description="Base URL path for recursive crawling")
+    crawl_pattern: str = Field(..., description="Wildcard pattern for recursive crawler engine (e.g. https://unit42.paloaltonetworks.com/*)")
+    category: str = Field(default="Threat Intelligence & Attack Chains", description="Category of threat research")
+    description: str = Field(default="", description="Technical scope and resources available at this source")
+    target_content_types: List[str] = Field(
+        default_factory=lambda: ["Infection Chains", "Attack Flows", "Multi-stage procedures"],
+        description="Target content types published by this source"
+    )
+    feed_or_sitemap_url: Optional[str] = Field(default=None, description="Optional RSS or sitemap URL")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_crawl_item(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Ensure crawl_pattern has wildcard
+            if "crawl_pattern" not in data and "crawl_url" in data:
+                url = data["crawl_url"].rstrip("/")
+                data["crawl_pattern"] = f"{url}/*"
+            elif "crawl_pattern" in data and not data["crawl_pattern"].endswith("*"):
+                data["crawl_pattern"] = f"{data['crawl_pattern'].rstrip('/')}/*"
+        return data
+
+class CrawlSourceCollection(BaseModel):
+    total_sources: int = Field(default=0, description="Total number of crawl sources")
+    sources: List[CrawlSourceItem] = Field(default_factory=list, description="Crawl root sources and patterns")
+
+def get_crawl_sources_json_schema() -> Dict[str, Any]:
+    return CrawlSourceCollection.model_json_schema()

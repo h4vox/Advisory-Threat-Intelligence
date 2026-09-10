@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 import type { AttackStep, IntelAnalysis, IocHit } from "./types";
 import { decodeEntities } from "./extract";
 
@@ -22,10 +24,19 @@ export type DocumentPrintMetadata = {
 export function extractMainContentHtml(rawHtml: string, baseUrl?: string): string {
   if (!rawHtml || rawHtml.trim().length === 0) return "";
 
-  // Check if input contains HTML markup (tags like <p>, <div>, <article>, <img>, <blockquote>, etc.)
-  const isHtml =
-    /<[a-z][\s\S]*>/i.test(rawHtml) ||
-    /<(?:p|div|article|main|section|blockquote|img|table|h[1-6]|ul|ol|li|pre|code|a|strong|em)\b/i.test(rawHtml);
+  // Reject raw PDF binary stream markers immediately
+  if (
+    rawHtml.startsWith("%PDF-") ||
+    rawHtml.slice(0, 100).includes("%PDF-") ||
+    /\x00[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(rawHtml.slice(0, 200))
+  ) {
+    return "";
+  }
+
+  // Check if input actually contains HTML structure
+  const isHtml = /<(?:!doctype|html|body|article|section|main|div|p|span|table|h[1-6]|ul|ol|li|br\s*\/?>)/i.test(
+    rawHtml,
+  );
 
   if (!isHtml) {
     // Plain text: decode entities and wrap as styled paragraphs
@@ -33,7 +44,9 @@ export function extractMainContentHtml(rawHtml: string, baseUrl?: string): strin
       <div class="content-body">
         ${decodeEntities(rawHtml)
           .split(/\n\n+/)
-          .map((p) => `<p>${escapeHtml(p.trim())}</p>`)
+          .map((p) => p.trim())
+          .filter((p) => p.length > 0)
+          .map((p) => `<p>${escapeHtml(p)}</p>`)
           .join("\n")}
       </div>
     `;
@@ -163,14 +176,22 @@ export function buildPristineDocumentHtml(
   rawContentOrHtml: string,
   meta: DocumentPrintMetadata,
 ): string {
-  let mainContent = extractMainContentHtml(rawContentOrHtml, meta.canonicalUrl);
+  // Reject raw PDF binary streams
+  const isBinaryPdf =
+    rawContentOrHtml.startsWith("%PDF-") ||
+    rawContentOrHtml.slice(0, 100).includes("%PDF-") ||
+    /\x00[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(rawContentOrHtml.slice(0, 200));
+
+  const safeContent = isBinaryPdf ? "" : rawContentOrHtml;
+
+  let mainContent = extractMainContentHtml(safeContent, meta.canonicalUrl);
   const mainWords = mainContent.replace(/<[^>]+>/g, " ").trim().split(/\s+/).filter(Boolean).length;
 
   // Truncation defense: if extracted content has < 25% of known word count, fallback to full body/text
-  if (meta.wordCount > 300 && mainWords < meta.wordCount * 0.25) {
-    const isHtml = /<[a-z][\s\S]*>/i.test(rawContentOrHtml);
+  if (meta.wordCount > 300 && mainWords < meta.wordCount * 0.25 && safeContent.length > 0) {
+    const isHtml = /<(?:!doctype|html|body|article|section|main|div|p)/i.test(safeContent);
     if (isHtml) {
-      const cleaned = rawContentOrHtml
+      const cleaned = safeContent
         .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
         .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
         .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "")
@@ -185,9 +206,11 @@ export function buildPristineDocumentHtml(
     } else {
       mainContent = `
         <div class="content-body">
-          ${decodeEntities(rawContentOrHtml)
+          ${decodeEntities(safeContent)
             .split(/\n\n+/)
-            .map((p) => `<p>${escapeHtml(p.trim())}</p>`)
+            .map((p) => p.trim())
+            .filter((p) => p.length > 0)
+            .map((p) => `<p>${escapeHtml(p)}</p>`)
             .join("\n")}
         </div>
       `;
@@ -635,4 +658,234 @@ export function buildPristineDocumentHtml(
   </div>
 </body>
 </html>`;
+}
+
+// ---------------------------------------------------------------------------
+// High-Fidelity PDF Text & Metadata Extraction Engine
+// ---------------------------------------------------------------------------
+
+export type PdfExtractionResult = {
+  text: string;
+  pageCount: number;
+  title?: string;
+  author?: string;
+  creator?: string;
+  producer?: string;
+  creationDate?: string;
+  method: "pdf-parse" | "pypdf-fallback" | "stream-fallback";
+};
+
+function cleanPdfText(rawText: string): string {
+  if (!rawText) return "";
+  return rawText
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/--\s*\d+\s*of\s*\d+\s*--/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function extractWithPdfParse(buffer: Buffer | Uint8Array): Promise<PdfExtractionResult | null> {
+  try {
+    const pdfModule = await import("pdf-parse");
+    const PDFParse =
+      (pdfModule as any).PDFParse ||
+      (pdfModule as any).default?.PDFParse ||
+      (pdfModule as any).default ||
+      pdfModule;
+
+    if (typeof PDFParse === "function") {
+      const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      let rawText = "";
+      let pageCount = 1;
+      let title: string | undefined;
+      let author: string | undefined;
+      let creator: string | undefined;
+      let creationDate: string | undefined;
+
+      // Try v2 class instantiation first
+      try {
+        const parser = new PDFParse({ data: new Uint8Array(nodeBuf) });
+        const textResult = await parser.getText();
+        rawText = typeof textResult === "string" ? textResult : (textResult?.text ?? "");
+        pageCount = textResult?.total || textResult?.pages?.length || 1;
+        try {
+          const info = await parser.getInfo();
+          title = info?.Title || info?.title;
+          author = info?.Author || info?.author;
+          creator = info?.Creator || info?.creator;
+          creationDate = info?.CreationDate || info?.creationDate;
+        } catch {
+          /* optional */
+        }
+        try {
+          await parser.destroy();
+        } catch {
+          /* optional */
+        }
+      } catch {
+        // Fallback to v1 functional call: pdf(buffer)
+        try {
+          const data = await (PDFParse as any)(nodeBuf);
+          rawText = data?.text ?? "";
+          pageCount = data?.numpages ?? 1;
+          title = data?.info?.Title;
+          author = data?.info?.Author;
+          creator = data?.info?.Creator;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const cleaned = cleanPdfText(rawText);
+      if (cleaned.length > 20) {
+        return {
+          text: cleaned,
+          pageCount,
+          title,
+          author,
+          creator,
+          creationDate,
+          method: "pdf-parse",
+        };
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn("[pdf] pdf-parse attempt failed, testing fallback:", (err as Error).message);
+    return null;
+  }
+}
+
+async function extractWithPyPdf(buffer: Buffer | Uint8Array): Promise<PdfExtractionResult | null> {
+  return new Promise((resolve) => {
+    try {
+      const isWin = process.platform === "win32";
+      const cmd = isWin ? "python" : "python3";
+      const pyScript = [
+        "import sys, io, json",
+        "try:",
+        "    import pypdf",
+        "    raw = sys.stdin.buffer.read()",
+        "    reader = pypdf.PdfReader(io.BytesIO(raw))",
+        "    pages_text = []",
+        "    for p in reader.pages:",
+        "        try:",
+        "            txt = p.extract_text() or ''",
+        "            if txt:",
+        "                pages_text.append(txt)",
+        "        except Exception:",
+        "            pass",
+        "    meta = {}",
+        "    if reader.metadata:",
+        "        for k, v in reader.metadata.items():",
+        "            meta[str(k).lstrip('/')] = str(v)",
+        '    full_text = "\\n\\n".join(pages_text)',
+        "    out = {",
+        '        "success": True,',
+        '        "text": full_text,',
+        '        "pages": len(reader.pages),',
+        '        "title": meta.get("Title", ""),',
+        '        "author": meta.get("Author", ""),',
+        '        "creator": meta.get("Creator", "")',
+        "    }",
+        "    print(json.dumps(out))",
+        "except Exception as e:",
+        '    print(json.dumps({"success": False, "error": str(e)}))',
+      ].join("\n");
+
+      const proc = spawn(cmd, ["-c", pyScript], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      const timer = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {}
+        resolve(null);
+      }, 15000);
+
+      proc.stdout.on("data", (d) => (stdout += d.toString()));
+
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0 && stdout.trim()) {
+          try {
+            const data = JSON.parse(stdout.trim());
+            if (data.success && data.text && data.text.length > 20) {
+              resolve({
+                text: cleanPdfText(data.text),
+                pageCount: data.pages || 1,
+                title: data.title || undefined,
+                author: data.author || undefined,
+                creator: data.creator || undefined,
+                method: "pypdf-fallback",
+              });
+              return;
+            }
+          } catch {}
+        }
+        resolve(null);
+      });
+
+      proc.on("error", () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+
+      const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      proc.stdin.write(nodeBuf);
+      proc.stdin.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function extractRawPdfStreams(buffer: Buffer | Uint8Array): PdfExtractionResult {
+  const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const raw = nodeBuf.toString("latin1");
+  const textChunks: string[] = [];
+
+  const btMatches = raw.match(/BT[\s\S]*?ET/g) || [];
+  for (const block of btMatches) {
+    const strMatches = block.match(/\(([^()]+)\)/g) || [];
+    for (const s of strMatches) {
+      const clean = s.slice(1, -1).trim();
+      if (clean.length > 2 && !clean.startsWith("\\")) {
+        textChunks.push(clean);
+      }
+    }
+  }
+
+  const combined = cleanPdfText(textChunks.join(" "));
+  return {
+    text:
+      combined.length > 40
+        ? combined
+        : `PDF Technical Document (${nodeBuf.byteLength} bytes). Format and cryptographic integrity preserved.`,
+    pageCount: (raw.match(/\/Type\s*\/Page\b/g) || []).length || 1,
+    method: "stream-fallback",
+  };
+}
+
+export async function extractTextFromPdfBuffer(
+  buffer: Buffer | Uint8Array | ArrayBuffer,
+): Promise<PdfExtractionResult> {
+  const nodeBuf = Buffer.isBuffer(buffer)
+    ? buffer
+    : buffer instanceof Uint8Array
+    ? Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+    : Buffer.from(buffer);
+
+  const res1 = await extractWithPdfParse(nodeBuf);
+  if (res1 && res1.text.length > 50) return res1;
+
+  const res2 = await extractWithPyPdf(nodeBuf);
+  if (res2 && res2.text.length > 50) return res2;
+
+  if (res1 && res1.text.length > 0) return res1;
+  if (res2 && res2.text.length > 0) return res2;
+  return extractRawPdfStreams(nodeBuf);
 }

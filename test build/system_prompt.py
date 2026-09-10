@@ -77,8 +77,9 @@ Also actively collect:
 - Atomic tests and simulation scenarios
 - Real-world intrusion timelines that show the full sequence from initial access to impact
 
-Preferred high-value domains:
-{', '.join(PREFERRED_DOMAINS)}
+Target high-value domains dynamically:
+Discover and search across cybersecurity research blogs, vendor labs (MDR, XDR, EDR), incident response firms, CERTs, and adversary emulation repositories.
+Do not rely on a static list; perform live web searches to find authoritative, active sources.
 
 Actively search and discover across the internet using combinations of these patterns:
 {', '.join(f'"{s}"' for s in SEARCH_PATTERNS)}, malware family names + "infection chain", APT group names + "attack chain".
@@ -108,8 +109,9 @@ def build_autonomous_collection_prompt(limit: int) -> str:
     return (
         f"{SYSTEM_PROMPT}\n\n"
         f"AUTONOMOUS TASK DIRECTIVE:\n"
-        f"Execute your internal instructions to autonomously discover, collect, and structure exactly {limit} "
-        f"distinct, high-value technical threat intelligence resources / infection chains from our preferred domains. "
+        f"Execute your internal instructions to autonomously search and discover online exactly {limit} "
+        f"distinct, high-value technical threat intelligence resources / infection chains across cybersecurity research blogs and labs. "
+        f"Perform live web searches without relying on any static or pre-memorized list. "
         f"Ensure each report provides detailed stage-by-stage breakdown, procedures, MITRE ATT&CK mappings, "
         f"and step-by-step emulation engineering plans.\n\n"
         f"OUTPUT REQUIRED:\n"

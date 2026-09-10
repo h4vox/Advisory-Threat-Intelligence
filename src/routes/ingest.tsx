@@ -140,6 +140,29 @@ function isItemAwaitingApproval(status?: string | null, decision?: string | null
   );
 }
 
+function formatResourceKind(kind?: string): { label: string; tone: "accent" | "warn" | "sage" | "neutral" } {
+  const k = (kind || "").toUpperCase().trim();
+  if (k.includes("ATTACK_CHAIN") || k.includes("INTRUSION")) {
+    return { label: "Attack Chains", tone: "accent" };
+  }
+  if (k.includes("MALWARE")) {
+    return { label: "Malware Analysis", tone: "warn" };
+  }
+  if (k.includes("EMULATION") || k.includes("PROCEDURE") || k.includes("PURPLE")) {
+    return { label: "Procedures & TTPs", tone: "accent" };
+  }
+  if (k.includes("DETECTION") || k.includes("SIGMA")) {
+    return { label: "Detections & Sigma", tone: "sage" };
+  }
+  if (k.includes("VULNERABILITY") || k.includes("CVE")) {
+    return { label: "Vulnerability Advisories", tone: "warn" };
+  }
+  if (k.includes("THREAT_ACTOR")) {
+    return { label: "Threat Actor Dossiers", tone: "neutral" };
+  }
+  return { label: "Campaigns", tone: "neutral" };
+}
+
 function paginateList<T>(list: T[], page: number, pageSize: number | "all"): T[] {
   if (pageSize === "all") return list;
   const start = (page - 1) * pageSize;
@@ -1487,7 +1510,7 @@ function IngestPage() {
                       <th className="p-3">Source Domain</th>
                       <th className="p-3">Method</th>
                       <th className="p-3">Score</th>
-                      <th className="p-3 text-right">Actions</th>
+                      <th className="p-3 text-right whitespace-nowrap w-[150px]">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -1544,8 +1567,15 @@ function IngestPage() {
                               </span>
                             </div>
                           </td>
-                          <td className="p-3 font-mono text-[11px] text-muted">
-                            {res.resourceKind || res.classification}
+                          <td className="p-3">
+                            {(() => {
+                              const meta = formatResourceKind(res.resourceKind || res.classification);
+                              return (
+                                <Badge tone={meta.tone} className="text-[10px] font-semibold whitespace-nowrap">
+                                  {meta.label}
+                                </Badge>
+                              );
+                            })()}
                           </td>
                           <td className="max-w-[280px] p-3">
                             {res.reportId && (
@@ -1586,20 +1616,62 @@ function IngestPage() {
                             {res.discoveryMethod.replace(/_/g, " ")}
                           </td>
                         <td className="p-3 font-mono">
-                          <div>{res.qualityScore !== null ? `${Math.round(res.qualityScore * 100)}%` : "—"}</div>
-                          {res.simulationScore !== undefined && res.simulationScore > 0 && (
-                            <div className="text-[10px] font-mono text-accent">
-                              SIM {Math.round(res.simulationScore * 100)}%
+                          <div className="flex flex-col gap-1">
+                            {/* Crawler Engine Qualification Score */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-sans text-subtle">Engine:</span>
+                              <span className="font-semibold text-fg text-xs">
+                                {res.qualityScore !== null && res.qualityScore !== undefined
+                                  ? `${Math.round(res.qualityScore * 100)}%`
+                                  : "—"}
+                              </span>
                             </div>
-                          )}
+
+                            {/* AI Agent Confidence Score */}
+                            {res.agentScore !== undefined && res.agentScore > 0 && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-sans text-subtle">AI:</span>
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold font-mono",
+                                    res.agentApproved
+                                      ? "bg-emerald-950/60 border border-emerald-800/40 text-emerald-400"
+                                      : "bg-amber-950/60 border border-amber-800/40 text-amber-400",
+                                  )}
+                                >
+                                  <Sparkles className="size-2.5 mr-0.5" />
+                                  {res.agentScore}%
+                                  {res.agentApproved && " ✓"}
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Simulation Score (if present) */}
+                            {res.simulationScore !== undefined && res.simulationScore > 0 && (
+                              <div className="flex items-center gap-1.5 text-[10px] text-accent">
+                                <span className="font-sans text-subtle">SIM:</span>
+                                <span>{Math.round(res.simulationScore * 100)}%</span>
+                              </div>
+                            )}
+
+                            {/* Agent Rationale */}
+                            {res.agentRationale && (
+                              <div
+                                className="truncate text-[9px] text-subtle italic max-w-[150px]"
+                                title={res.agentRationale}
+                              >
+                                {res.agentRationale}
+                              </div>
+                            )}
+                          </div>
                         </td>
-                        <td className="p-3 text-right">
+                        <td className="p-3 text-right whitespace-nowrap">
                           {res.status === "ingested" ? (
                             res.reportId ? (
                               <Link
                                 to="/library/$reportId"
                                 params={{ reportId: res.reportId }}
-                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium"
+                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
                               >
                                 View in Library
                               </Link>
@@ -1607,7 +1679,7 @@ function IngestPage() {
                               <Link
                                 to="/library"
                                 search={{ q: res.title }}
-                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium"
+                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
                               >
                                 View in Library
                               </Link>
@@ -1617,7 +1689,7 @@ function IngestPage() {
                               size="sm"
                               variant={isPending ? "primary" : "secondary"}
                               className={cn(
-                                "h-7 text-xs gap-1.5",
+                                "h-7 text-xs gap-1.5 whitespace-nowrap shrink-0",
                                 isPending && "font-semibold shadow-xs"
                               )}
                               disabled={ingestQueueItem.isPending}
@@ -1625,13 +1697,13 @@ function IngestPage() {
                             >
                               {ingestQueueItem.isPending && ingestingId === res.id ? (
                                 <>
-                                  <RefreshCw className="size-3 animate-spin text-accent" />
-                                  <span>Acquiring…</span>
+                                  <RefreshCw className="size-3 animate-spin text-accent shrink-0" />
+                                  <span className="whitespace-nowrap">Acquiring…</span>
                                 </>
                               ) : (
                                 <>
-                                  <Download className="size-3 text-muted" />
-                                  <span>Acquire & Ingest</span>
+                                  <Download className="size-3 text-muted shrink-0" />
+                                  <span className="whitespace-nowrap">Acquire & Ingest</span>
                                 </>
                               )}
                             </Button>

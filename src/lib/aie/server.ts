@@ -19,7 +19,8 @@ import {
   sha256Hex,
   toIsoString,
 } from "./extract";
-import { buildPristineDocumentHtml } from "./pdf";
+import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { discoverAgentSources, evaluateResourceWithAgent, isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { SEED_REPORTS } from "./seed-reports";
 import type {
@@ -31,6 +32,7 @@ import type {
   CrawlJobItem,
   DashboardStats,
   DiscoveredResource,
+  DiscoveredSourceRecord,
   IngestEvent,
   IntelAnalysis,
   IocHit,
@@ -72,6 +74,14 @@ import {
   mongoGetStorageStats,
   purgeAllServerCaches,
   invalidateCrawlerStateCache,
+  mongoListDiscoveredSources,
+  mongoCreateDiscoveredSource,
+  mongoUpdateDiscoveredSource,
+  mongoRevokeDiscoveredSource,
+  mongoDeleteDiscoveredSource,
+  mongoToggleDiscoveredSource,
+  mongoValidateDiscoveredSource,
+  mongoAuditLibraryWithAi,
   DEFAULT_CRAWL_CONFIG,
 } from "../mongodb/repository.server";
 
@@ -467,7 +477,12 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
 export const listSources = createServerFn({ method: "GET" }).handler(async (): Promise<SourceRecord[]> => {
   if (isMongoConfigured()) {
     try {
-      return await mongoListSources();
+      const docs = await mongoListSources();
+      return docs.map((d) => ({
+        ...d,
+        isCurated: true,
+        origin: (d.origin as any) || "seed",
+      }));
     } catch (err) {
       console.warn("[mongodb] listSources error:", err);
       throw err;
@@ -482,7 +497,11 @@ export const listSources = createServerFn({ method: "GET" }).handler(async (): P
     from sources
     order by priority asc, name asc
   `;
-  return rows.map(mapSource);
+  return rows.map((r) => ({
+    ...mapSource(r),
+    isCurated: true,
+    origin: "seed" as const,
+  }));
 });
 
 export const toggleSource = createServerFn({ method: "POST" })
@@ -499,6 +518,200 @@ export const toggleSource = createServerFn({ method: "POST" })
     const sql = await getSql();
     await sql`update sources set enabled = ${data.enabled} where id = ${data.id}`;
     return { ok: true as const };
+  });
+
+export const listDiscoveredSources = createServerFn({ method: "GET" }).handler(
+  async (): Promise<DiscoveredSourceRecord[]> => {
+    if (isMongoConfigured()) {
+      try {
+        return await mongoListDiscoveredSources();
+      } catch (err) {
+        console.warn("[mongodb] listDiscoveredSources error:", err);
+        return [];
+      }
+    }
+    return [];
+  },
+);
+
+export const updateDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.string(),
+      name: z.string().optional(),
+      crawlPattern: z.string().optional(),
+      notes: z.string().optional(),
+      status: z.enum(["discovered", "evaluated", "approved", "ignored", "verified", "rejected"]).optional(),
+      enabled: z.boolean().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoUpdateDiscoveredSource(data.id, data);
+        return { ok: true as const };
+      } catch (err) {
+        console.warn("[mongodb] updateDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: true as const };
+  });
+
+export const revokeDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.string() }))
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoRevokeDiscoveredSource(data.id);
+        return { ok: true as const };
+      } catch (err) {
+        console.warn("[mongodb] revokeDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: true as const };
+  });
+
+export const deleteDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.string() }))
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoDeleteDiscoveredSource(data.id);
+        return { ok: true as const };
+      } catch (err) {
+        console.warn("[mongodb] deleteDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: true as const };
+  });
+
+export const toggleDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.string(), enabled: z.boolean() }))
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoToggleDiscoveredSource(data.id, data.enabled);
+        return { ok: true as const };
+      } catch (err) {
+        console.warn("[mongodb] toggleDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: true as const };
+  });
+
+export const validateDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.string(),
+      status: z.enum(["discovered", "evaluated", "approved", "ignored", "verified", "rejected"]),
+    }),
+  )
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        await mongoValidateDiscoveredSource(data.id, data.status);
+        return { ok: true as const };
+      } catch (err) {
+        console.warn("[mongodb] validateDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: true as const };
+  });
+
+export const addDiscoveredSource = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      domain: z.string().min(3),
+      name: z.string().optional(),
+      homepageUrl: z.string().optional(),
+      crawlPattern: z.string().optional(),
+      notes: z.string().optional(),
+      whyCrawl: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    if (isMongoConfigured()) {
+      try {
+        const created = await mongoCreateDiscoveredSource({
+          ...data,
+          origin: "manual",
+          status: "discovered",
+          enabled: true,
+        });
+        return { ok: true as const, source: created };
+      } catch (err) {
+        console.warn("[mongodb] addDiscoveredSource error:", err);
+        throw err;
+      }
+    }
+    return { ok: false as const, error: "Database not configured" };
+  });
+
+export const getAgentStatus = createServerFn({ method: "GET" }).handler(async () => {
+  return await isAgentAvailable();
+});
+
+export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
+  .validator(z.object({ limit: z.number().optional() }).optional())
+  .handler(async ({ data }) => {
+    const limit = data?.limit ?? 6;
+    const config = await getOrCreateCrawlConfig();
+    const curated = await listSources();
+    const discovered = await mongoListDiscoveredSources();
+    const existingDomains = Array.from(
+      new Set([
+        ...curated.map((s) => {
+          try {
+            return new URL(s.homepageUrl).hostname.replace(/^www\./, "");
+          } catch {
+            return s.homepageUrl.replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+          }
+        }),
+        ...discovered.map((d) => d.domain),
+      ]),
+    );
+
+    const result = await discoverAgentSources({
+      limit,
+      existingDomains,
+      timeoutSeconds: config.agentTimeoutSeconds ?? 90,
+      model: config.agentModel || "gemini-3.8-flash-low",
+    });
+
+    const inserted: DiscoveredSourceRecord[] = [];
+    for (const s of result.sources) {
+      const created = await mongoCreateDiscoveredSource({
+        domain: s.domain,
+        name: s.source_name,
+        homepageUrl: s.base_url || `https://${s.domain}`,
+        crawlPattern: s.crawl_pattern,
+        origin: "agent_discovery",
+        whyCrawl: s.why_crawl,
+        notes: s.why_crawl,
+        status: "discovered",
+        trustScore: s.confidence ?? 0.90,
+      });
+      inserted.push(created);
+    }
+
+    return {
+      ok: true as const,
+      discoveredCount: result.sources.length,
+      insertedCount: inserted.length,
+      sources: inserted,
+      error: result.error,
+    };
+  });
+
+export const runAiLibraryAudit = createServerFn({ method: "POST" })
+  .validator(z.object({ autoPruneJunk: z.boolean().optional() }).optional())
+  .handler(async ({ data }) => {
+    return await mongoAuditLibraryWithAi({ autoPruneJunk: data?.autoPruneJunk });
   });
 
 export const listReports = createServerFn({ method: "GET" })
@@ -602,11 +815,13 @@ export const getReport = createServerFn({ method: "GET" })
             mongoReport.rawHtml.length < 100 ||
             mongoReport.rawHtml.includes("&lt;img") ||
             mongoReport.rawHtml.includes("&lt;p&gt;") ||
+            mongoReport.rawHtml.includes("%PDF-") ||
+            (mongoReport.contentType?.includes("pdf") && mongoReport.rawHtml.includes("stream")) ||
             (mongoReport.wordCount > 300 && htmlWordCount < mongoReport.wordCount * 0.35);
 
           if (needsPristineRegen) {
             mongoReport.rawHtml = buildPristineDocumentHtml(
-              mongoReport.extractedText || mongoReport.rawHtml || mongoReport.title || "",
+              mongoReport.extractedText || mongoReport.title || "",
               {
                 id: mongoReport.id,
                 title: mongoReport.title,
@@ -625,6 +840,17 @@ export const getReport = createServerFn({ method: "GET" })
                 analysis: mongoReport.analysis,
               },
             );
+
+            // Persist healed clean HTML back to MongoDB Atlas
+            try {
+              const col = await getThreatIntelCollection();
+              await col.updateOne(
+                { id: mongoReport.id },
+                { $set: { rawHtml: mongoReport.rawHtml } },
+              );
+            } catch (healErr) {
+              console.warn("[getReport] Failed to persist healed HTML to mongo:", healErr);
+            }
           }
 
           if (/<[a-z][\s\S]*>/i.test(mongoReport.extractedText)) {
@@ -936,7 +1162,18 @@ async function persistReport(input: {
   const analysis = analyzeThreatIntelligence(input.text, input.title, classification);
 
   // Generate pristine clean document HTML matching original structure & PDF layout
-  const rawString = typeof input.raw === "string" ? input.raw : new TextDecoder().decode(input.raw);
+  const isPdfDoc =
+    input.contentType?.includes("pdf") ||
+    input.canonical?.toLowerCase().endsWith(".pdf") ||
+    input.url?.toLowerCase().endsWith(".pdf") ||
+    (typeof input.raw !== "string" && input.contentType === "application/pdf");
+
+  const rawString = isPdfDoc
+    ? input.text
+    : typeof input.raw === "string"
+      ? input.raw
+      : new TextDecoder().decode(input.raw);
+
   const cleanHtml = buildPristineDocumentHtml(rawString || input.text, {
     id,
     title: input.title,
@@ -1134,17 +1371,22 @@ export const ingestUrl = createServerFn({ method: "POST" })
 
     try {
       const fetched = await fetchResource(canonical);
-      if (fetched.contentType.includes("pdf")) {
+      if (fetched.contentType.includes("pdf") || canonical.toLowerCase().endsWith(".pdf")) {
+        const pdfRes = await extractTextFromPdfBuffer(fetched.bytes);
+        const pdfFileName = canonical.split("/").pop()?.replace(/\.pdf$/i, "") || "PDF document";
+        const pdfTitle = pdfRes.title || pdfFileName.replace(/[-_]/g, " ");
         return persistReport({
           sourceId,
-          title: canonical.split("/").pop() || "PDF document",
+          title: pdfTitle,
           url: canonical,
           canonical,
-          publishedAt: null,
+          publishedAt: pdfRes.creationDate || null,
           contentType: "application/pdf",
           raw: fetched.bytes,
-          text: `PDF stored by cryptographic hash. Format preserved. Size ${fetched.bytes.byteLength} bytes.`,
+          text: pdfRes.text,
           origin: "live",
+          publisher: pdfRes.author || undefined,
+          author: pdfRes.author || undefined,
           discoveryMethod: "manual_url",
         });
       }
@@ -1594,6 +1836,8 @@ export const getReportPdf = createServerFn({ method: "GET" })
           rawHtml.length < 100 ||
           rawHtml.includes("&lt;img") ||
           rawHtml.includes("&lt;p&gt;") ||
+          rawHtml.includes("%PDF-") ||
+          (doc.contentType?.includes("pdf") && rawHtml.includes("stream")) ||
           (doc.wordCount > 300 && htmlWordCount < doc.wordCount * 0.35);
 
         if (needsPristineRegen) {

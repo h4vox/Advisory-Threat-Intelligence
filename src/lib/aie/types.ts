@@ -7,6 +7,7 @@ export type SourceRecord = {
   category: string;
   priority: number;
   homepageUrl: string;
+  crawlPattern?: string;
   feedUrl?: string;
   researchArchives?: string[];
   paginationPattern?: string;
@@ -15,10 +16,13 @@ export type SourceRecord = {
   trustLevel: TrustLevel;
   notes: string;
   lastIngestAt: string | null;
+  resourceCount?: number;
+  isCurated?: boolean;
   isDiscovered?: boolean;
   discoveredAt?: string;
   discoveredByJobId?: string;
   parentSourceDomain?: string;
+  origin?: "seed" | "agent_discovery" | "crawler_outlink" | "manual";
 };
 
 export type IocKind = "cve" | "technique" | "sha256" | "md5" | "ipv4" | "domain";
@@ -121,12 +125,20 @@ export type ReportRecord = {
   isEmergingTechnique?: boolean;
   noveltyRationale?: string;
   canonicalReportId?: string;
+  tags?: string[];
+  aiVerified?: boolean;
+  aiQualityScore?: number;
+  aiAuditReason?: string;
 };
 
 export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons" | "analysis"> & {
   excerpt: string;
   iocCount: number;
   analysis?: IntelAnalysis | null;
+  tags?: string[];
+  aiVerified?: boolean;
+  aiQualityScore?: number;
+  aiAuditReason?: string;
 };
 
 export type IngestEvent = {
@@ -205,6 +217,16 @@ export type CrawlConfig = {
   dateRangeDays: number | null;
   lastRunAt: string | null;
   nextRunAt: string | null;
+  // AI Agent Enhancement Layer Settings
+  agentDiscoveryEnabled?: boolean;
+  agentTaggingEnabled?: boolean;
+  agentApprovalEnabled?: boolean;
+  agentAutoIngestEnabled?: boolean;
+  agentCrawlSourcesEnabled?: boolean;
+  agentLibraryAuditEnabled?: boolean;
+  agentAutoPruneJunkEnabled?: boolean;
+  agentModel?: string;
+  agentTimeoutSeconds?: number;
 };
 
 export type CrawlPipelineStage =
@@ -266,6 +288,12 @@ export type CrawlJobItem = {
   resourceKind?: ResourceKind;
   discoveryPath?: string[];
   outlinkCount?: number;
+  agentScore?: number;
+  agentApproved?: boolean;
+  agentRationale?: string;
+  agentTags?: string[];
+  agentClassification?: string;
+  agentResourceKind?: ResourceKind;
   createdAt: string;
 };
 
@@ -296,6 +324,12 @@ export type DiscoveredResource = {
   discoveryPath?: string[];
   domainTrustScore?: number;
   isNewSource?: boolean;
+  agentScore?: number;
+  agentApproved?: boolean;
+  agentRationale?: string;
+  agentTags?: string[];
+  agentClassification?: string;
+  agentResourceKind?: ResourceKind;
   createdAt: string;
 };
 
@@ -345,12 +379,17 @@ export type DiscoveredSourceRecord = {
   domain: string;
   name: string;
   homepageUrl: string;
+  crawlPattern?: string;
   parentSource: string;
   parentUrl?: string;
   discoveryPath: string[];
   trustScore: number;
   resourceCount: number;
-  status: "discovered" | "evaluated" | "approved" | "ignored";
+  status: "discovered" | "evaluated" | "approved" | "ignored" | "verified" | "rejected";
+  origin?: "agent_discovery" | "crawler_outlink" | "manual" | "citation_expansion";
+  enabled?: boolean;
+  notes?: string;
+  whyCrawl?: string;
   firstDiscoveredAt: string;
   lastSeenAt: string;
 };
@@ -394,6 +433,15 @@ export type AppSettings = {
   enableSoundAlerts: boolean;
   enableLiveTelemetryStream: boolean;
 
+  // AI Agent Enhancement Layer Controls
+  agentDiscoveryEnabled: boolean;
+  agentTaggingEnabled: boolean;
+  agentApprovalEnabled: boolean;
+  agentAutoIngestEnabled: boolean;
+  agentCrawlSourcesEnabled: boolean;
+  agentModel: string;
+  agentTimeoutSeconds: number;
+
   updatedAt?: string;
 };
 
@@ -431,5 +479,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   pollingIntervalSeconds: 12,
   enableSoundAlerts: false,
   enableLiveTelemetryStream: true,
+  agentDiscoveryEnabled: true,
+  agentTaggingEnabled: true,
+  agentApprovalEnabled: true,
+  agentAutoIngestEnabled: false,
+  agentCrawlSourcesEnabled: true,
+  agentModel: "gemini-3.8-flash-low",
+  agentTimeoutSeconds: 45,
   updatedAt: new Date().toISOString(),
 };

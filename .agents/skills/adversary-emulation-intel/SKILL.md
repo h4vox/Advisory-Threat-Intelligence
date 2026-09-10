@@ -11,13 +11,14 @@ description: >-
 Use this skill to autonomously discover, harvest, and structure real-world infection chains, attack flows, and emulation playbooks without requiring explicit queries.
 
 ## Autonomous Discovery Engine
-When requested to collect $N$ resources:
-1. Autonomously query and explore preferred threat research domains:
-   - **Intrusion Timelines & Chains**: `thedfirreport.com`, `unit42.paloaltonetworks.com`, `sentinelone.com/labs`, `securelist.com`, `crowdstrike.com/blog`, `seqrite.com/blog`, `huntress.com/blog`, `research.checkpoint.com`, `elastic.co/security-labs`, `blog.talosintelligence.com`, `redcanary.com`
-   - **Government & Cloud Advisories**: `cloud.google.com/blog/topics/threat-intelligence`, `microsoft.com/en-us/security/blog`, `cisa.gov`, `zscaler.com/blogs/security-research`, `welivesecurity.com`, `sophos.com`, `volexity.com`
-   - **Emulation Repositories & Tests**: `attack.mitre.org`, `center-for-threat-informed-defense.github.io`, `atomicredteam.io`, `caldera.mitre.org`
-2. Search combinations of:
-   - `"infection chain"`, `"attack chain"`, `"intrusion chain"`, `"attack flow"`, `"multi-stage"`, `"stage 1"`, `"stage 2"`, `"technical analysis"`, `"MITRE ATT&CK"`, `"adversary emulation"`, `"adversary simulation"`, `"campaign analysis"`, `"intrusion timeline"`
+When requested to discover sources or collect $N$ resources:
+1. Perform dynamic, live web searches across the internet targeting authoritative threat research hubs:
+   - **Intrusion Timelines & Threat Research Labs**: Security vendor labs, incident response publications, and DFIR blogs reporting real intrusion sequences.
+   - **CERT & Government Advisories**: National cybersecurity agencies, cloud provider intelligence centers, and critical infrastructure advisories.
+   - **Adversary Emulation & Simulation Repositories**: Threat-informed defense centers, atomic test repositories, and community purple-team playbooks.
+   - **Domain Crawl Root Discovery**: When discovering sources for recursive crawlers, extract the root domain or section root wildcard pattern (`https://<domain>/<section>/*`) stripped of individual article endpoints.
+2. Formulate dynamic search queries combining:
+   - `"infection chain"`, `"attack chain"`, `"intrusion chain"`, `"attack flow"`, `"multi-stage"`, `"stage 1"`, `"stage 2"`, `"technical analysis"`, `"MITRE ATT&CK"`, `"adversary emulation"`, `"adversary simulation"`, `"campaign analysis"`, `"intrusion timeline"`, active malware families, and APT actor names.
 3. For each unique intrusion discovered, extract:
    - **Title & Source**: Exact article title and publisher name
    - **URL & Date**: Source link and release date
