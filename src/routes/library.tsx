@@ -881,10 +881,10 @@ function LibraryPage() {
               data-report-id={r.id}
               data-clean-id={cleanId}
               className={cn(
-                "group relative rounded-xl border bg-bg-elevated p-5 transition-all duration-300",
+                "group relative rounded-xl border bg-bg-elevated p-5",
                 isHighlighted
                   ? "target-card-blink border-accent bg-accent/[0.03]"
-                  : "border-border hover:border-border/80 hover:bg-bg-subtle/40",
+                  : "border-border hover:border-border/80 hover:bg-bg-subtle/40 transition-all duration-300",
                 r.status === "rejected" && "border-danger/40 bg-danger/[0.03]",
               )}
             >
