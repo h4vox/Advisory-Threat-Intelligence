@@ -1017,8 +1017,8 @@ function MatrixPage() {
                           </div>
 
                           <Link
-                            to="/library/$reportId"
-                            params={{ reportId: report.id }}
+                            to="/library"
+                            search={{ selected: report.id }}
                             className="block text-sm font-semibold text-fg hover:underline transition-colors leading-snug"
                           >
                             {report.title}
@@ -1052,11 +1052,11 @@ function MatrixPage() {
                               </Button>
 
                               <Link
-                                to="/library/$reportId"
-                                params={{ reportId: report.id }}
+                                to="/library"
+                                search={{ selected: report.id }}
                                 className="inline-flex h-7 items-center gap-1 rounded-md bg-accent px-2.5 text-xs font-medium text-accent-fg hover:opacity-90 transition-opacity"
                               >
-                                <span>View Report</span>
+                                <span>View in Library</span>
                                 <ArrowRight className="size-3" />
                               </Link>
                             </div>
@@ -1094,11 +1094,11 @@ function MatrixPage() {
 
                 <div className="flex items-center gap-2">
                   <Link
-                    to="/library/$reportId"
-                    params={{ reportId: previewReportId }}
+                    to="/library"
+                    search={{ selected: previewReportId }}
                     className="rounded-lg border border-border bg-bg-subtle px-3 py-1.5 text-xs text-fg hover:bg-bg transition-colors"
                   >
-                    Full Details
+                    View in Library
                   </Link>
 
                   <button

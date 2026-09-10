@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { z } from "zod";
 import {
+  AlertTriangle,
   ArrowUpRight,
   CheckCircle2,
   Download,
@@ -9,6 +11,7 @@ import {
   FileText,
   Filter,
   Flame,
+  MapPin,
   Printer,
   RefreshCw,
   Search,
@@ -26,12 +29,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports, runAiLibraryAudit } from "@/lib/aie/server";
+import { getReportPdf, listReports } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
 
-export const Route = createFileRoute("/library")({ component: LibraryPage });
+const librarySearchSchema = z.object({
+  q: z.string().optional(),
+  selected: z.string().optional(),
+  highlight: z.string().optional(),
+  pdf: z.string().optional(),
+  tag: z.string().optional(),
+  sort: z.enum(["newest", "quality", "iocs", "words", "rejected"]).optional(),
+});
+
+export const Route = createFileRoute("/library")({
+  validateSearch: (search) => librarySearchSchema.parse(search),
+  component: LibraryPage,
+});
 
 const RESOURCE_KINDS: { id: string; label: string }[] = [
   { id: "ALL", label: "All Intelligence" },
@@ -46,31 +61,53 @@ const RESOURCE_KINDS: { id: string; label: string }[] = [
 
 function LibraryPage() {
   const qc = useQueryClient();
-  const [q, setQ] = useState("");
+  const searchParams = Route.useSearch();
+  const navigate = Route.useNavigate();
+
+  const [q, setQ] = useState(searchParams.q || "");
   const [selectedKind, setSelectedKind] = useState("ALL");
-  const [selectedTag, setSelectedTag] = useState("ALL");
+  const [selectedTag, setSelectedTag] = useState(searchParams.tag || "ALL");
   const [selectedActor, setSelectedActor] = useState("ALL");
   const [selectedMalware, setSelectedMalware] = useState("ALL");
   const [selectedTactic, setSelectedTactic] = useState("ALL");
   const [selectedPublisher, setSelectedPublisher] = useState("ALL");
   const [minQuality, setMinQuality] = useState<number>(0);
   const [onlyWithIocs, setOnlyWithIocs] = useState(false);
-  const [sortBy, setSortBy] = useState<"newest" | "quality" | "iocs" | "words">("newest");
-  const [showFilters, setShowFilters] = useState(false);
-  const [previewReportId, setPreviewReportId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<"newest" | "quality" | "iocs" | "words" | "rejected">(
+    searchParams.sort || "newest",
+  );
+  const [showFilters, setShowFilters] = useState(Boolean(searchParams.tag || searchParams.sort));
+  const [previewReportId, setPreviewReportId] = useState<string | null>(searchParams.pdf || null);
   const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
 
-  // AI Library Audit & Verification Mutation
-  const auditLibraryMut = useMutation({
-    mutationFn: (autoPruneJunk?: boolean) => runAiLibraryAudit({ data: { autoPruneJunk } }),
-    onSuccess: (res) => {
-      void qc.invalidateQueries({ queryKey: ["reports-all"] });
-      toast.success(res?.message || "AI Library Audit complete");
-    },
-    onError: () => {
-      toast.error("Failed running AI Library Audit");
-    },
-  });
+  const targetHighlightId = searchParams.selected || searchParams.highlight;
+
+  // Sync URL if pdf parameter arrives or changes
+  useEffect(() => {
+    if (searchParams.pdf && searchParams.pdf !== previewReportId) {
+      setPreviewReportId(searchParams.pdf);
+    }
+  }, [searchParams.pdf]);
+
+  const openPdfModal = (id: string) => {
+    setPreviewReportId(id);
+    void navigate({
+      search: (prev) => ({ ...prev, pdf: id }),
+      replace: true,
+    });
+  };
+
+  const closePdfModal = () => {
+    setPreviewReportId(null);
+    void navigate({
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.pdf;
+        return next;
+      },
+      replace: true,
+    });
+  };
 
   // Fetch all reports to enable rich interactive filtering and instant counts
   const { data: rawReports, isLoading } = useQuery({
@@ -150,12 +187,145 @@ function LibraryPage() {
     };
   }, [allReports]);
 
+  const rejectedCount = useMemo(
+    () => allReports.filter((r) => r.status === "rejected").length,
+    [allReports],
+  );
+
+  // Robust target report resolution: matches by ID, formatted ID, URL, canonical URL, or title
+  const targetReport = useMemo(() => {
+    if (!targetHighlightId || allReports.length === 0) return null;
+    const rawTarget = targetHighlightId.trim();
+    const lower = rawTarget.toLowerCase();
+    const cleanTarget = lower.replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+
+    // 1. Exact ID match (raw mongo id, custom id, or formatted id)
+    const byId = allReports.find((r) => {
+      const rIdLower = r.id.toLowerCase();
+      const cleanR = rIdLower.replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+      return (
+        r.id === rawTarget ||
+        rIdLower === lower ||
+        formatReportId(r.id).toLowerCase() === lower ||
+        cleanR === cleanTarget ||
+        (cleanTarget.length >= 8 && cleanR.includes(cleanTarget)) ||
+        (cleanR.length >= 8 && cleanTarget.includes(cleanR))
+      );
+    });
+    if (byId) return byId;
+
+    // 2. Exact URL or canonicalUrl match
+    const byUrl = allReports.find(
+      (r) =>
+        (r.canonicalUrl && (r.canonicalUrl === rawTarget || r.canonicalUrl.toLowerCase() === lower)) ||
+        (r.url && (r.url === rawTarget || r.url.toLowerCase() === lower)),
+    );
+    if (byUrl) return byUrl;
+
+    // 3. Normalized URL match (ignoring protocol, www., and trailing slashes)
+    const normalizeUrl = (u: string) =>
+      u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
+    const normTarget = normalizeUrl(rawTarget);
+    if (normTarget.length > 5) {
+      const byNormUrl = allReports.find((r) => {
+        const cNorm = r.canonicalUrl ? normalizeUrl(r.canonicalUrl) : "";
+        const uNorm = r.url ? normalizeUrl(r.url) : "";
+        return (
+          cNorm === normTarget ||
+          uNorm === normTarget ||
+          (cNorm.length > 8 && cNorm.includes(normTarget)) ||
+          (normTarget.length > 8 && normTarget.includes(cNorm))
+        );
+      });
+      if (byNormUrl) return byNormUrl;
+    }
+
+    // 4. Exact Title match
+    const byExactTitle = allReports.find(
+      (r) => r.title && r.title.trim().toLowerCase() === lower,
+    );
+    if (byExactTitle) return byExactTitle;
+
+    // 5. Partial Title substring match (at least 3 characters)
+    if (lower.length >= 3) {
+      const byTitle = allReports.find(
+        (r) =>
+          r.title &&
+          (r.title.toLowerCase().includes(lower) || lower.includes(r.title.toLowerCase())),
+      );
+      if (byTitle) return byTitle;
+    }
+
+    return null;
+  }, [targetHighlightId, allReports]);
+
+  // Jump and highlight tracking effect with retry polling until rendered in DOM
+  useEffect(() => {
+    if (!targetHighlightId) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 35;
+
+    const tryScroll = () => {
+      if (cancelled) return;
+      attempts++;
+
+      const matchedId = targetReport?.id || targetHighlightId;
+      const el =
+        document.getElementById(`report-${matchedId}`) ||
+        document.getElementById(`report-${targetHighlightId}`) ||
+        (targetReport ? document.getElementById(`report-${targetReport.id}`) : null) ||
+        document.querySelector(`[data-report-id="${matchedId}"]`) ||
+        document.querySelector(`[data-report-id="${targetHighlightId}"]`);
+
+      if (el) {
+        // 1. Native scrollIntoView
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+
+        // 2. Direct container scrollTo on AppShell <main> scroll container
+        const mainContainer = el.closest("main");
+        if (mainContainer) {
+          const containerRect = mainContainer.getBoundingClientRect();
+          const elRect = el.getBoundingClientRect();
+          const relativeTop = elRect.top - containerRect.top + mainContainer.scrollTop;
+          const targetScrollTop = relativeTop - mainContainer.clientHeight / 3;
+          mainContainer.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: "smooth",
+          });
+        }
+      } else if (attempts < maxAttempts) {
+        setTimeout(tryScroll, 100);
+      }
+    };
+
+    const timer = setTimeout(tryScroll, 120);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [targetHighlightId, targetReport]);
+
   // Filter and sort reports
   const filteredReports = useMemo(() => {
     const query = q.trim().toLowerCase();
 
-    return allReports
+    const list = allReports
       .filter((r) => {
+        // Targeted Jump: Always show the target item being tracked from /ingest or matrix
+        if (targetReport && r.id === targetReport.id) {
+          return true;
+        }
+
+        // If viewing rejected, show ONLY records flagged/rejected by AI quality audit
+        if (sortBy === "rejected") {
+          if (r.status !== "rejected") return false;
+        } else {
+          // Standard view: hide rejected non-threat pages
+          if (r.status === "rejected") return false;
+        }
+
         if (selectedKind !== "ALL") {
           const kind = r.resourceKind || "CAMPAIGN_INTEL";
           if (kind !== selectedKind) return false;
@@ -216,13 +386,28 @@ function LibraryPage() {
         return true;
       })
       .sort((a, b) => {
+        // Priority 1: If targetReport exists, pin it to the very top so user never misses it
+        if (targetReport) {
+          if (a.id === targetReport.id) return -1;
+          if (b.id === targetReport.id) return 1;
+        }
+
+        if (sortBy === "rejected") return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
         if (sortBy === "quality") return b.qualityScore - a.qualityScore;
         if (sortBy === "iocs") return (b.iocCount || 0) - (a.iocCount || 0);
         if (sortBy === "words") return (b.wordCount || 0) - (a.wordCount || 0);
         return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
       });
+
+    // Ensure targetReport is in the list even if current active filters would have excluded it
+    if (targetReport && !list.some((r) => r.id === targetReport.id)) {
+      return [targetReport, ...list];
+    }
+
+    return list;
   }, [
     allReports,
+    targetReport,
     selectedKind,
     selectedTag,
     selectedActor,
@@ -340,19 +525,7 @@ function LibraryPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-9 gap-1.5 text-xs border-emerald-500/40 text-emerald-300 bg-emerald-950/40 hover:bg-emerald-950/70 transition-colors shadow-xs"
-            disabled={auditLibraryMut.isPending}
-            onClick={() => auditLibraryMut.mutate(false)}
-            title="Run AI content analysis, extract tradecraft, assign accurate tags, and verify library intelligence records"
-          >
-            <Sparkles className={cn("size-3.5 text-emerald-400", auditLibraryMut.isPending && "animate-spin")} />
-            <span>{auditLibraryMut.isPending ? "Auditing Library…" : "AI Quality Audit"}</span>
-          </Button>
-
-          <div className="relative w-full sm:w-72">
+          <div className="relative w-full sm:w-80">
             <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
             <Input
               value={q}
@@ -565,6 +738,7 @@ function LibraryPage() {
                 <option value="quality">Quality Score (High to Low)</option>
                 <option value="iocs">Most IOCs</option>
                 <option value="words">Longest Analysis</option>
+                <option value="rejected">AI Rejected / Pruned ({rejectedCount})</option>
               </select>
             </div>
           </div>
@@ -680,12 +854,64 @@ function LibraryPage() {
           const actors = r.analysis?.threatActors || r.extractedEntities?.threatActors || [];
           const malware = r.analysis?.malware || r.extractedEntities?.malwareFamilies || [];
           const cves = r.extractedEntities?.cves || [];
+          const isHighlighted = Boolean(targetReport && targetReport.id === r.id);
 
           return (
             <div
               key={r.id}
-              className="group rounded-xl border border-border bg-bg-elevated p-5 transition-colors hover:border-border/80 hover:bg-bg-subtle/40"
+              id={`report-${r.id}`}
+              data-report-id={r.id}
+              className={cn(
+                "group relative rounded-xl border bg-bg-elevated p-5 transition-all duration-300",
+                isHighlighted
+                  ? "border-accent ring-2 ring-accent/70 shadow-[0_0_30px_rgba(197,208,200,0.35)] bg-accent/[0.04]"
+                  : "border-border hover:border-border/80 hover:bg-bg-subtle/40",
+                r.status === "rejected" && "border-danger/40 bg-danger/[0.03]",
+              )}
             >
+              {/* Jump Target Tracking Banner */}
+              {isHighlighted && (
+                <div className="mb-3 flex items-center justify-between rounded-lg border border-accent/40 bg-accent/15 px-3 py-1.5 text-xs text-fg font-mono animate-in fade-in duration-200">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="size-3.5 text-accent animate-bounce" />
+                    <span className="font-semibold text-accent">Tracking Selected Resource:</span>
+                    <span className="text-muted truncate max-w-xs">{r.title}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigate({
+                        search: (prev) => {
+                          const next = { ...prev };
+                          delete next.selected;
+                          delete next.highlight;
+                          return next;
+                        },
+                        replace: true,
+                      });
+                    }}
+                    className="text-subtle hover:text-fg text-[11px] underline ml-2"
+                  >
+                    Clear Focus
+                  </button>
+                </div>
+              )}
+
+              {/* AI Pruned / Rejected Banner */}
+              {r.status === "rejected" && (
+                <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger/10 p-2.5 text-xs text-danger">
+                  <AlertTriangle className="size-4 shrink-0 mt-0.5 text-danger" />
+                  <div>
+                    <div className="font-semibold uppercase tracking-wider font-mono text-[10px]">
+                      Pruned / Rejected by AI Quality Gate
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-danger/90">
+                      {r.aiAuditReason || "Identified as sub-threshold stub, generic index query, or non-threat marketing."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Standardized AIE ID Bar: RST and DOM with AI Verification Badge on Very Top Right */}
               <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2.5 pb-2 border-b border-border/50">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -761,7 +987,7 @@ function LibraryPage() {
                     size="sm"
                     variant="secondary"
                     className="h-8 gap-1.5 text-xs"
-                    onClick={() => setPreviewReportId(r.id)}
+                    onClick={() => openPdfModal(r.id)}
                     title="View PDF Document Representation"
                   >
                     <Eye className="size-3.5" />
@@ -865,7 +1091,7 @@ function LibraryPage() {
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => setPreviewReportId(r.id)}
+                    onClick={() => openPdfModal(r.id)}
                     className="text-accent hover:underline flex items-center gap-1"
                   >
                     <FileText className="size-3" /> Preview Document & Evidence
@@ -950,7 +1176,7 @@ function LibraryPage() {
 
                 <button
                   type="button"
-                  onClick={() => setPreviewReportId(null)}
+                  onClick={() => closePdfModal()}
                   className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
                 >
                   <X className="size-4" />
@@ -1070,7 +1296,7 @@ function LibraryPage() {
                   onClick={() => {
                     const r = auditModalReport;
                     setAuditModalReport(null);
-                    setPreviewReportId(r.id);
+                    openPdfModal(r.id);
                   }}
                   className="text-xs"
                 >

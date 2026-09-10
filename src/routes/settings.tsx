@@ -1381,15 +1381,15 @@ function SettingsPage() {
                             updateAppField(toggle.key as any, next);
                           }}
                           className={cn(
-                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-1 focus:ring-accent shadow-xs",
+                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center p-0.5 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500/50 shadow-xs",
                             isChecked
-                              ? "bg-accent"
-                              : "bg-zinc-800 border-zinc-700",
+                              ? "bg-emerald-600"
+                              : "bg-neutral-800 border border-neutral-700",
                           )}
                         >
                           <span
                             className={cn(
-                              "pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out",
+                              "pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ease-in-out",
                               isChecked ? "translate-x-5" : "translate-x-0",
                             )}
                           />
@@ -1432,6 +1432,33 @@ function SettingsPage() {
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Direct Save Button for AI Agent Settings */}
+              <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
+                <div className="text-xs text-muted">
+                  {isDirty ? (
+                    <span className="flex items-center gap-1.5 text-amber-400">
+                      <span className="size-2 rounded-full bg-amber-400 animate-pulse" />
+                      Unsaved AI Agent settings
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-sage">
+                      <CheckCircle2 className="size-3.5 text-sage" />
+                      All AI Agent settings saved to DB
+                    </span>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  className="gap-1.5"
+                  disabled={saveMutation.isPending}
+                  onClick={() => saveMutation.mutate()}
+                >
+                  <Save className="size-3.5" />
+                  <span>{saveMutation.isPending ? "Saving..." : "Save AI Agent Settings"}</span>
+                </Button>
               </div>
             </div>
 

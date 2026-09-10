@@ -576,12 +576,6 @@ function IngestPage() {
   });
 
   const sortedAuditItems = [...filteredAuditItems].sort((a, b) => {
-    // Pin awaiting approval decisions to top rows in audit log as well
-    const aPending = isItemAwaitingApproval(a.stage, a.decision);
-    const bPending = isItemAwaitingApproval(b.stage, b.decision);
-    if (aPending && !bPending) return -1;
-    if (!aPending && bPending) return 1;
-
     if (auditSort === "oldest") return (a.createdAt || "").localeCompare(b.createdAt || "");
     return (b.createdAt || "").localeCompare(a.createdAt || "");
   });
@@ -874,7 +868,7 @@ function IngestPage() {
 
       {/* VIEW 1: AUTONOMOUS CRAWLER CONSOLE */}
       {activeView === "crawler" && (
-        <div className="space-y-6">
+        <div className="mt-6 space-y-6">
           {/* Active Job Alert / Live Status */}
           {activeJob && (
             <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-accent/40 bg-accent/5 p-4 sm:flex-row sm:items-center">
@@ -1297,7 +1291,7 @@ function IngestPage() {
 
       {/* VIEW 2: DISCOVERY QUEUE */}
       {activeView === "queue" && (
-        <div className="space-y-4">
+        <div className="mt-6 space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex items-center gap-2">
@@ -1510,7 +1504,7 @@ function IngestPage() {
                       <th className="p-3">Source Domain</th>
                       <th className="p-3">Method</th>
                       <th className="p-3">Score</th>
-                      <th className="p-3 text-right whitespace-nowrap w-[150px]">Actions</th>
+                      <th className="p-3 text-right whitespace-nowrap min-w-[170px] w-[170px]">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -1665,46 +1659,36 @@ function IngestPage() {
                             )}
                           </div>
                         </td>
-                        <td className="p-3 text-right whitespace-nowrap">
+                        <td className="p-3 text-right whitespace-nowrap min-w-[170px] w-[170px]">
                           {res.status === "ingested" ? (
-                            res.reportId ? (
-                              <Link
-                                to="/library/$reportId"
-                                params={{ reportId: res.reportId }}
-                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
-                              >
-                                View in Library
-                              </Link>
-                            ) : (
-                              <Link
-                                to="/library"
-                                search={{ q: res.title }}
-                                className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
-                              >
-                                View in Library
-                              </Link>
-                            )
+                            <Link
+                              to="/library"
+                              search={{ selected: res.reportId || res.canonicalUrl || res.title }}
+                              className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
+                            >
+                              View in Library
+                            </Link>
                           ) : (
                             <Button
                               size="sm"
                               variant={isPending ? "primary" : "secondary"}
                               className={cn(
-                                "h-7 text-xs gap-1.5 whitespace-nowrap shrink-0",
+                                "h-7.5 px-3 text-xs gap-1.5 whitespace-nowrap shrink-0 inline-flex flex-row items-center justify-center font-medium",
                                 isPending && "font-semibold shadow-xs"
                               )}
                               disabled={ingestQueueItem.isPending}
                               onClick={() => ingestQueueItem.mutate(res.id)}
                             >
                               {ingestQueueItem.isPending && ingestingId === res.id ? (
-                                <>
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                                   <RefreshCw className="size-3 animate-spin text-accent shrink-0" />
-                                  <span className="whitespace-nowrap">Acquiring…</span>
-                                </>
+                                  <span>Acquiring…</span>
+                                </span>
                               ) : (
-                                <>
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                                   <Download className="size-3 text-muted shrink-0" />
-                                  <span className="whitespace-nowrap">Acquire & Ingest</span>
-                                </>
+                                  <span>Acquire & Ingest</span>
+                                </span>
                               )}
                             </Button>
                           )}
@@ -1731,7 +1715,7 @@ function IngestPage() {
 
       {/* VIEW 3: DISCOVERY GRAPH & EXPANDED SOURCES */}
       {activeView === "graph" && (
-        <div className="space-y-6">
+        <div className="mt-6 space-y-6">
           <div>
             <h2 className="text-lg font-medium">Discovered Sources & Citation Graph</h2>
             <p className="text-xs text-muted">
@@ -2031,7 +2015,7 @@ function IngestPage() {
 
       {/* VIEW 4: PIPELINE AUDIT LOG */}
       {activeView === "audit" && (
-        <div className="space-y-4">
+        <div className="mt-6 space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex items-center gap-2">
@@ -2250,7 +2234,20 @@ function IngestPage() {
                             <span className="capitalize text-muted">{itm.stage || itm.decision.toLowerCase()}</span>
                           </td>
                           <td className="max-w-[240px] p-3">
-                            <div className="truncate font-medium text-fg">{itm.title || itm.canonicalUrl}</div>
+                            <div className="truncate font-medium text-fg">
+                              {itm.decision === "INGESTED" ? (
+                                <Link
+                                  to="/library"
+                                  search={{ selected: itm.canonicalUrl || itm.title }}
+                                  className="text-accent hover:underline"
+                                  title="View in Library"
+                                >
+                                  {itm.title || itm.canonicalUrl}
+                                </Link>
+                              ) : (
+                                itm.title || itm.canonicalUrl
+                              )}
+                            </div>
                             <div className="truncate font-mono text-[10px] text-subtle">{itm.canonicalUrl}</div>
                           </td>
                           <td className="p-3 font-mono text-muted">
@@ -2290,7 +2287,7 @@ function IngestPage() {
 
       {/* VIEW 5: MANUAL INGEST */}
       {activeView === "manual" && (
-        <div className="max-w-2xl space-y-6">
+        <div className="mt-6 max-w-2xl space-y-6">
           <div>
             <h2 className="text-lg font-medium">Manual Report Acquisition</h2>
             <p className="text-xs text-muted">Directly acquire and parse permalinks or paste raw incident telemetry.</p>

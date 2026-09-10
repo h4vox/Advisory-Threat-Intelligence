@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   ArrowLeft,
@@ -33,7 +33,15 @@ import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 
-export const Route = createFileRoute("/library/$reportId")({ component: ReportPage });
+export const Route = createFileRoute("/library/$reportId")({
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/library",
+      search: { selected: params.reportId },
+    });
+  },
+  component: ReportPage,
+});
 
 const TABS = [
   "Document & PDF Reader",
@@ -104,6 +112,7 @@ function ReportPage() {
       <div className="mb-4 flex items-center justify-between">
         <Link
           to="/library"
+          search={{ selected: reportId }}
           className="inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-fg"
         >
           <ArrowLeft className="size-3.5" /> Back to Library

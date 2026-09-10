@@ -34,6 +34,7 @@ import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
 import { getDashboard } from "@/lib/aie/server";
+import type { ThreatRegionStats, TacticDistributionStats } from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -126,7 +127,17 @@ function Home() {
     staleTime: 15000,
   });
 
-  const [activeRegion, setActiveRegion] = useState<(typeof THREAT_REGIONS)[0] | null>(null);
+  const threatRegions: ThreatRegionStats[] =
+    data?.threatRegions && data.threatRegions.length > 0
+      ? data.threatRegions
+      : (THREAT_REGIONS as ThreatRegionStats[]);
+
+  const tacticDistribution: TacticDistributionStats[] =
+    data?.tacticDistribution && data.tacticDistribution.length > 0
+      ? data.tacticDistribution
+      : TACTIC_PHASE_DISTRIBUTION;
+
+  const [activeRegion, setActiveRegion] = useState<ThreatRegionStats | null>(null);
 
   return (
     <AppShell>
@@ -284,7 +295,7 @@ function Home() {
                 </g>
 
                 {/* Threat Cluster Radar Markers & Labels */}
-                {THREAT_REGIONS.map((region) => {
+                {threatRegions.map((region) => {
                   const isSelected = activeRegion?.name === region.name;
                   const isCritical = region.threatLevel === "critical";
                   const isHigh = region.threatLevel === "high";
@@ -429,7 +440,7 @@ function Home() {
 
             {/* Tactical Phase Bars */}
             <div className="mt-4 space-y-2.5">
-              {TACTIC_PHASE_DISTRIBUTION.slice(0, 7).map((phase) => (
+              {tacticDistribution.slice(0, 7).map((phase) => (
                 <div key={phase.id} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-fg">{phase.name}</span>
@@ -527,8 +538,8 @@ function Home() {
               {data?.recent.map((r) => (
                 <Link
                   key={r.id}
-                  to="/library/$reportId"
-                  params={{ reportId: r.id }}
+                  to="/library"
+                  search={{ selected: r.id }}
                   className="flex items-start justify-between gap-4 px-5 py-4 transition-colors hover:bg-bg-subtle"
                 >
                   <div className="min-w-0">

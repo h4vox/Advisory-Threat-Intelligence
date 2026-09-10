@@ -159,6 +159,24 @@ export type CatalogItem = {
   why: string;
 };
 
+export type ThreatRegionStats = {
+  name: string;
+  x: number;
+  y: number;
+  actors: string[];
+  count: number;
+  threatLevel: "critical" | "high" | "medium" | "low";
+  sectors: string[];
+  topVector: string;
+};
+
+export type TacticDistributionStats = {
+  name: string;
+  id: string;
+  count: number;
+  pct: number;
+};
+
 export type DashboardStats = {
   sourceCount: number;
   enabledSources: number;
@@ -172,6 +190,8 @@ export type DashboardStats = {
   lastCrawlAt: string | null;
   nextCrawlAt: string | null;
   discoveredSourcesCount?: number;
+  threatRegions?: ThreatRegionStats[];
+  tacticDistribution?: TacticDistributionStats[];
 };
 
 export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION";
