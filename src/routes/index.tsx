@@ -124,7 +124,8 @@ function Home() {
     queryKey: ["dashboard"],
     queryFn: () => getDashboard(),
     refetchInterval: 30000,
-    staleTime: 15000,
+    staleTime: 30000,
+    placeholderData: (previousData) => previousData,
   });
 
   const threatRegions: ThreatRegionStats[] =

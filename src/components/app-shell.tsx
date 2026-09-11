@@ -70,6 +70,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={item.to}
                 to={item.to}
+                preload="intent"
                 className={cn(
                   "flex h-11 items-center gap-2.5 rounded-md px-3 text-sm transition-colors duration-150",
                   active ? "bg-bg-subtle text-fg font-medium" : "text-muted hover:bg-bg-elevated hover:text-fg",
@@ -128,6 +129,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={item.to}
                 to={item.to}
+                preload="intent"
                 className={cn(
                   "flex h-14 flex-col items-center justify-center gap-0.5 text-[10px] uppercase tracking-wider",
                   active ? "text-fg" : "text-subtle",

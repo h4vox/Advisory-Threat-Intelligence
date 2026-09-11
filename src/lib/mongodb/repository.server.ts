@@ -37,7 +37,10 @@ let cachedReportsList: { timestamp: number; data: ReportListItem[] } | null = nu
 const CACHE_TTL_MS = 60_000;
 
 let cachedDashboardStats: { timestamp: number; data: DashboardStats } | null = null;
-const DASHBOARD_CACHE_TTL_MS = 15_000;
+const DASHBOARD_CACHE_TTL_MS = 25_000;
+
+let cachedStorageStats: { timestamp: number; data: StorageStats } | null = null;
+const STORAGE_STATS_CACHE_TTL_MS = 15_000;
 
 let cachedCrawlConfig: { timestamp: number; data: CrawlConfig } | null = null;
 const CONFIG_CACHE_TTL_MS = 60_000;
@@ -63,7 +66,11 @@ export function registerScheduleChecker(fn: () => Promise<any>) {
   scheduleCheckFn = fn;
 }
 
+let lastScheduleCheckTimestamp = 0;
 export function triggerScheduleCheck() {
+  const now = Date.now();
+  if (now - lastScheduleCheckTimestamp < 30_000) return;
+  lastScheduleCheckTimestamp = now;
   if (scheduleCheckFn) {
     void scheduleCheckFn().catch((err) => {
       console.warn("[scheduler-hook] triggerScheduleCheck error:", err);
@@ -72,7 +79,8 @@ export function triggerScheduleCheck() {
 }
 
 let cachedCrawlerState: { timestamp: number; data: CrawlerState } | null = null;
-const CRAWLER_STATE_CACHE_TTL_MS = 6_000; // 6s TTL: ultra-fast responses without hammering Atlas
+const CRAWLER_STATE_IDLE_TTL_MS = 20_000; // 20s TTL when idle: 0ms responses without hammering DB
+const CRAWLER_STATE_ACTIVE_TTL_MS = 3_000; // 3s TTL when active job is running
 
 let cachedTelemetrySummary: {
   timestamp: number;
@@ -96,6 +104,7 @@ export function invalidateReportsCache() {
 
 export function invalidateDashboardCache() {
   cachedDashboardStats = null;
+  cachedStorageStats = null;
   logger.cache("INVALIDATE", "dashboard-stats", "Cleared in-memory dashboard cache");
 }
 
@@ -106,6 +115,7 @@ export function invalidateConfigCache() {
 
 export function invalidateSettingsCache() {
   cachedAppSettings = null;
+  cachedStorageStats = null;
   logger.cache("INVALIDATE", "app-settings", "Cleared in-memory app settings cache");
 }
 
@@ -117,12 +127,14 @@ export function invalidateCrawlerStateCache() {
   }
   cachedDiscoveredSources = null;
   cachedTelemetrySummary = null;
+  cachedStorageStats = null;
   logger.cache("INVALIDATE", "crawler-state", "Marked in-memory crawler state cache as stale");
 }
 
 export function purgeAllServerCaches() {
   cachedReportsList = null;
   cachedDashboardStats = null;
+  cachedStorageStats = null;
   cachedCrawlConfig = null;
   cachedAppSettings = null;
   cachedCrawlerState = null;
@@ -1047,6 +1059,11 @@ export async function mongoUpdateAppSettings(updates: Partial<AppSettings>): Pro
 }
 
 export async function mongoGetStorageStats(): Promise<StorageStats> {
+  const now = Date.now();
+  if (cachedStorageStats && now - cachedStorageStats.timestamp < STORAGE_STATS_CACHE_TTL_MS) {
+    return cachedStorageStats.data;
+  }
+
   const col = await getThreatIntelCollection();
   const [
     totalReports,
@@ -1062,7 +1079,7 @@ export async function mongoGetStorageStats(): Promise<StorageStats> {
     col.countDocuments({ docType: "ingest_event" }),
   ]);
 
-  return {
+  const result: StorageStats = {
     configured: isMongoConfigured(),
     databaseName: "threat-intel-DB",
     collectionName: "threat-intel",
@@ -1079,6 +1096,8 @@ export async function mongoGetStorageStats(): Promise<StorageStats> {
     },
     serverUptimeSeconds: Math.floor(process.uptime()),
   };
+  cachedStorageStats = { timestamp: now, data: result };
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1879,7 +1898,9 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
   triggerScheduleCheck();
 
   const now = Date.now();
-  if (cachedCrawlerState && now - cachedCrawlerState.timestamp < CRAWLER_STATE_CACHE_TTL_MS) {
+  const hasActiveJob = Boolean(cachedCrawlerState?.data?.activeJob);
+  const ttl = hasActiveJob ? CRAWLER_STATE_ACTIVE_TTL_MS : CRAWLER_STATE_IDLE_TTL_MS;
+  if (cachedCrawlerState && now - cachedCrawlerState.timestamp < ttl) {
     logger.cache("HIT", "crawler-state", "Returned cached crawler telemetry");
     return cachedCrawlerState.data;
   }
@@ -2340,8 +2361,7 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     reportTotal,
     acquiredTotal,
     discoveredSourcesCount,
-    qualityAgg,
-    iocAgg,
+    metricsAgg,
     recent,
     events,
     config,
@@ -2352,14 +2372,15 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     col.countDocuments({ docType: "report" }),
     col.countDocuments({ docType: "report", status: "acquired" }),
     col.countDocuments({ docType: "discovered_source" }),
-    col.aggregate([
+    col.aggregate<{ _id: null; avgQ: number; totalIocs: number }>([
       { $match: { docType: "report", status: "acquired" } },
-      { $group: { _id: null, avgQ: { $avg: "$qualityScore" } } },
-    ]).toArray(),
-    col.aggregate([
-      { $match: { docType: "report", status: "acquired" } },
-      { $project: { numIocs: { $size: { $ifNull: ["$iocs", []] } } } },
-      { $group: { _id: null, totalIocs: { $sum: "$numIocs" } } },
+      {
+        $group: {
+          _id: null,
+          avgQ: { $avg: "$qualityScore" },
+          totalIocs: { $sum: { $size: { $ifNull: ["$iocs", []] } } },
+        },
+      },
     ]).toArray(),
     mongoListRecentReports(6),
     mongoListRecentIngestEvents(8),
@@ -2367,8 +2388,8 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     col.findOne({ docType: "crawl_job", status: "running" }),
   ]);
 
-  const avgQuality = qualityAgg[0]?.avgQ ? Math.round(Number(qualityAgg[0].avgQ) * 100) / 100 : 0.82;
-  const iocCount = Number(iocAgg[0]?.totalIocs ?? 0);
+  const avgQuality = metricsAgg[0]?.avgQ ? Math.round(Number(metricsAgg[0].avgQ) * 100) / 100 : 0.82;
+  const iocCount = Number(metricsAgg[0]?.totalIocs ?? 0);
 
   logger.mongo(
     "getDashboardStats",

@@ -111,14 +111,18 @@ function SettingsPage() {
   const storageStatsQuery = useQuery({
     queryKey: ["storage-stats"],
     queryFn: () => getStorageStats(),
-    staleTime: 15000,
-    refetchInterval: 20000,
+    enabled: activeSection === "storage",
+    staleTime: 30000,
+    placeholderData: (previousData) => previousData,
+    refetchInterval: () => (activeSection === "storage" ? 25000 : false),
   });
 
   const agentStatusQuery = useQuery({
     queryKey: ["agent-status"],
     queryFn: () => getAgentStatus(),
-    staleTime: 30000,
+    enabled: activeSection === "agent",
+    staleTime: 60000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Local Form States for instantaneous 0ms responsive UI

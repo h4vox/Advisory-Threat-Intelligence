@@ -52,20 +52,24 @@ function SourcesPage() {
   const { data: sources } = useQuery({
     queryKey: ["sources"],
     queryFn: () => listSources(),
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Discovered sources query
   const { data: discoveredSources, isLoading: discoveredLoading } = useQuery({
     queryKey: ["discovered-sources"],
     queryFn: () => listDiscoveredSources(),
-    staleTime: 15000,
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Agent status
   const { data: agentStatus } = useQuery({
     queryKey: ["agent-status"],
     queryFn: () => getAgentStatus(),
-    staleTime: 30000,
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
   // 0ms Optimistic Mutations
