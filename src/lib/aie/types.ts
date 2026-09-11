@@ -168,6 +168,9 @@ export type ThreatRegionStats = {
   threatLevel: "critical" | "high" | "medium" | "low";
   sectors: string[];
   topVector: string;
+  originCountry?: string;
+  targetCountries?: string[];
+  flag?: string;
 };
 
 export type TacticDistributionStats = {
@@ -175,6 +178,49 @@ export type TacticDistributionStats = {
   id: string;
   count: number;
   pct: number;
+};
+
+export type MonitoredActorItem = {
+  name: string;
+  type: string;
+  originCountry: string;
+  flag: string;
+  focus: string;
+  reportCount: number;
+  badge: string;
+  targetSectors: string[];
+  associatedTools: string[];
+};
+
+export type CveVelocityItem = {
+  cveId: string;
+  vendorProduct: string;
+  cvss: number;
+  severity: "critical" | "high" | "medium";
+  exploitStatus: "In the Wild" | "Weaponized" | "PoC Published";
+  reportCount: number;
+  sampleReportId?: string;
+  sampleReportTitle?: string;
+  actors: string[];
+};
+
+export type ThreatFlowItem = {
+  id: string;
+  origin: string;
+  actors: string[];
+  vectors: string[];
+  tools: string[];
+  targets: string[];
+  intensity: number;
+};
+
+export type AttackHeatmapCell = {
+  tacticId: string;
+  tacticName: string;
+  techniqueCount: number;
+  hitCount: number;
+  intensity: number;
+  topTechniques: Array<{ id: string; name: string; count: number }>;
 };
 
 export type DashboardStats = {
@@ -192,6 +238,10 @@ export type DashboardStats = {
   discoveredSourcesCount?: number;
   threatRegions?: ThreatRegionStats[];
   tacticDistribution?: TacticDistributionStats[];
+  topThreatActors?: MonitoredActorItem[];
+  cveVelocity?: CveVelocityItem[];
+  threatFlows?: ThreatFlowItem[];
+  attackHeatmap?: AttackHeatmapCell[];
 };
 
 export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION";

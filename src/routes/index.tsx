@@ -5,7 +5,10 @@ import {
   ArrowRight,
   ArrowUpRight,
   Bot,
+  Bug,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Cpu,
   Database,
   Eye,
@@ -17,6 +20,7 @@ import {
   Layers,
   Library,
   MapPin,
+  Network,
   Play,
   Radar,
   RefreshCw,
@@ -26,7 +30,7 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,7 +38,15 @@ import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
 import { getDashboard } from "@/lib/aie/server";
-import type { ThreatRegionStats, TacticDistributionStats } from "@/lib/aie/types";
+import { computeDashboardAnalytics } from "@/lib/aie/dashboard-analytics";
+import type {
+  ThreatRegionStats,
+  TacticDistributionStats,
+  MonitoredActorItem,
+  CveVelocityItem,
+  ThreatFlowItem,
+  AttackHeatmapCell,
+} from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -128,17 +140,50 @@ function Home() {
     placeholderData: (previousData) => previousData,
   });
 
+  const fallbackAnalytics = computeDashboardAnalytics([]);
+
   const threatRegions: ThreatRegionStats[] =
     data?.threatRegions && data.threatRegions.length > 0
       ? data.threatRegions
-      : (THREAT_REGIONS as ThreatRegionStats[]);
+      : fallbackAnalytics.threatRegions;
 
   const tacticDistribution: TacticDistributionStats[] =
     data?.tacticDistribution && data.tacticDistribution.length > 0
       ? data.tacticDistribution
-      : TACTIC_PHASE_DISTRIBUTION;
+      : fallbackAnalytics.tacticDistribution;
+
+  const topThreatActors: MonitoredActorItem[] =
+    data?.topThreatActors && data.topThreatActors.length > 0
+      ? data.topThreatActors
+      : fallbackAnalytics.topThreatActors;
+
+  const cveVelocity: CveVelocityItem[] =
+    data?.cveVelocity && data.cveVelocity.length > 0
+      ? data.cveVelocity
+      : fallbackAnalytics.cveVelocity;
+
+  const threatFlows: ThreatFlowItem[] =
+    data?.threatFlows && data.threatFlows.length > 0
+      ? data.threatFlows
+      : fallbackAnalytics.threatFlows;
+
+  const attackHeatmap: AttackHeatmapCell[] =
+    data?.attackHeatmap && data.attackHeatmap.length > 0
+      ? data.attackHeatmap
+      : fallbackAnalytics.attackHeatmap;
 
   const [activeRegion, setActiveRegion] = useState<ThreatRegionStats | null>(null);
+  const [selectedFlowId, setSelectedFlowId] = useState<string>("flow_east_asia");
+  const actorCarouselRef = useRef<HTMLDivElement>(null);
+
+  function scrollActors(direction: "left" | "right") {
+    if (actorCarouselRef.current) {
+      const offset = direction === "left" ? -340 : 340;
+      actorCarouselRef.current.scrollBy({ left: offset, behavior: "smooth" });
+    }
+  }
+
+  const activeFlow = threatFlows.find((f) => f.id === selectedFlowId) || threatFlows[0];
 
   return (
     <AppShell>
@@ -356,7 +401,7 @@ function Home() {
                           isSelected ? "fill-fg font-bold" : "fill-fg/80 group-hover:fill-fg",
                         )}
                       >
-                        {region.name} ({region.count})
+                        {region.name} ({region.count ?? 0})
                       </text>
                     </g>
                   );
@@ -365,8 +410,8 @@ function Home() {
 
               {/* Active Region Threat Telemetry HUD Overlay */}
               {activeRegion && (
-                <div className="absolute bottom-2 left-2 right-2 sm:right-auto sm:max-w-md rounded-lg border border-border bg-bg-elevated/95 p-3 shadow-lg backdrop-blur-md text-xs font-mono animate-in fade-in zoom-in-95 duration-100">
-                  <div className="flex items-center justify-between gap-2 border-b border-border pb-1.5 mb-1.5">
+                <div className="absolute bottom-2 left-2 right-2 sm:right-auto sm:max-w-md rounded-lg border border-border bg-bg-elevated/95 p-3.5 shadow-xl backdrop-blur-md text-xs font-mono animate-in fade-in zoom-in-95 duration-100 z-10">
+                  <div className="flex items-center justify-between gap-2 border-b border-border pb-2 mb-2">
                     <div className="flex items-center gap-1.5">
                       <span
                         className={cn(
@@ -378,8 +423,8 @@ function Home() {
                               : "bg-sage",
                         )}
                       />
-                      <span className="font-bold text-fg text-[11px] uppercase tracking-wider">
-                        {activeRegion.name}
+                      <span className="font-bold text-fg text-xs uppercase tracking-wider">
+                        {activeRegion.flag ? `${activeRegion.flag} ` : ""}{activeRegion.name}
                       </span>
                     </div>
                     <Badge
@@ -390,16 +435,28 @@ function Home() {
                             ? "warn"
                             : "sage"
                       }
-                      className="text-[9px] uppercase font-bold"
+                      className="text-[9px] uppercase font-bold px-1.5 py-0.5"
                     >
-                      {activeRegion.threatLevel} · {activeRegion.count} campaigns
+                      {activeRegion.threatLevel} · {activeRegion.count ?? 0} campaigns
                     </Badge>
                   </div>
-                  <div className="space-y-1 text-[11px] text-muted">
+                  <div className="space-y-1.5 text-[11px] text-muted">
+                    {activeRegion.originCountry && (
+                      <div>
+                        <span className="text-subtle">Attribution Origin:</span>{" "}
+                        <span className="text-fg font-medium">{activeRegion.originCountry}</span>
+                      </div>
+                    )}
                     <div>
-                      <span className="text-subtle">Adversary Groups:</span>{" "}
+                      <span className="text-subtle">Primary Threat Actors:</span>{" "}
                       <span className="text-fg font-medium">{activeRegion.actors.join(", ")}</span>
                     </div>
+                    {activeRegion.targetCountries && activeRegion.targetCountries.length > 0 && (
+                      <div>
+                        <span className="text-subtle">Targeted Nations:</span>{" "}
+                        <span className="text-fg">{activeRegion.targetCountries.join(", ")}</span>
+                      </div>
+                    )}
                     <div>
                       <span className="text-subtle">Targeted Sectors:</span>{" "}
                       <span className="text-fg">{activeRegion.sectors.join(", ")}</span>
@@ -407,6 +464,26 @@ function Home() {
                     <div className="truncate">
                       <span className="text-subtle">Top TTP Vector:</span>{" "}
                       <span className="text-fg">{activeRegion.topVector}</span>
+                    </div>
+                    <div className="pt-2 mt-2 border-t border-border flex items-center justify-between">
+                      <Link
+                        to="/library"
+                        search={{ q: activeRegion.actors[0] || activeRegion.name }}
+                        className="inline-flex items-center gap-1 text-[11px] text-accent font-semibold hover:underline"
+                      >
+                        <span>Filter {activeRegion.name} Reports in Library</span>
+                        <ArrowRight className="size-3" />
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveRegion(null);
+                        }}
+                        className="text-[10px] text-subtle hover:text-fg font-mono px-1 py-0.5 rounded hover:bg-bg-subtle"
+                      >
+                        [Dismiss]
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -445,7 +522,7 @@ function Home() {
                 <div key={phase.id} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-fg">{phase.name}</span>
-                    <span className="font-mono text-[11px] text-muted">{phase.count} techniques ({phase.pct}%)</span>
+                    <span className="font-mono text-[11px] text-muted">{phase.count ?? 0} techniques ({phase.pct ?? 0}%)</span>
                   </div>
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg">
                     <div
@@ -469,6 +546,9 @@ function Home() {
         {/* ========================================================================= */}
         {/* ACTIVE ADVERSARY PROFILES & MALWARE FAMILIES STRIP                        */}
         {/* ========================================================================= */}
+        {/* ========================================================================= */}
+        {/* MONITORED THREAT ACTORS & OFFENSIVE TOOLSETS - HORIZONTAL SCROLL CAROUSEL */}
+        {/* ========================================================================= */}
         <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
             <div className="flex items-center gap-2">
@@ -477,43 +557,455 @@ function Home() {
                 Monitored Threat Actors & Offensive Toolsets
               </h2>
             </div>
-            <span className="font-mono text-[11px] text-muted">
-              Auto-extracted from verified vendor threat reports
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[11px] text-muted">
+                {topThreatActors.length} active profiles · Categorized by Sovereign Attribution & CTI Frequency
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => scrollActors("left")}
+                  aria-label="Scroll left"
+                  className="rounded border border-border bg-bg p-1.5 text-muted hover:text-fg hover:bg-bg-subtle transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollActors("right")}
+                  aria-label="Scroll right"
+                  className="rounded border border-border bg-bg p-1.5 text-muted hover:text-fg hover:bg-bg-subtle transition-colors cursor-pointer"
+                >
+                  <ChevronRight className="size-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-            {[
-              { name: "Volt Typhoon", type: "Nation-State", focus: "Living-off-the-Land, WMI", reports: 24, badge: "TA-01" },
-              { name: "Akira Ransomware", type: "Ransomware Gang", focus: "LSASS, AuKill, BYOVD", reports: 31, badge: "FIN" },
-              { name: "Black Basta", type: "Ransomware / Extortion", focus: "AnyDesk, Quick Assist, Chisel", reports: 19, badge: "FIN" },
-              { name: "Midnight Blizzard", type: "APT29 / Russian SVR", focus: "OAuth, Cloud Tokens, Graph API", reports: 17, badge: "APT" },
-              { name: "Scattered Spider", type: "Social Engineering", focus: "SIM Swapping, Okta, MFA Bypass", reports: 14, badge: "UNC" },
-              { name: "LockBit 3.0", type: "Ransomware / Builder", focus: "PsExec, Shadow Copy Inhibit", reports: 28, badge: "RaaS" },
-            ].map((actor) => (
-              <div
+          <div
+            ref={actorCarouselRef}
+            className="flex gap-3 overflow-x-auto pb-2 pt-1 scroll-smooth scrollbar-none"
+          >
+            {topThreatActors.map((actor) => (
+              <Link
                 key={actor.name}
-                className="rounded-lg border border-border bg-bg p-3 hover:border-border-strong transition-colors"
+                to="/library"
+                search={{ q: actor.name }}
+                className="group relative flex-none w-[285px] flex flex-col justify-between rounded-lg border border-border bg-bg p-3.5 hover:border-border-strong hover:bg-bg-subtle/70 transition-all shadow-2xs cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <Badge tone="warn" className="font-mono text-[9px] px-1.5 py-0.2">
-                    {actor.badge}
+                <div>
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm" title={actor.originCountry}>{actor.flag}</span>
+                      <Badge
+                        tone={
+                          actor.badge === "APT"
+                            ? "danger"
+                            : actor.badge === "RaaS"
+                              ? "warn"
+                              : actor.badge === "TOOL"
+                                ? "accent"
+                                : "neutral"
+                        }
+                        className="font-mono text-[9px] px-1.5 py-0.2 uppercase font-bold"
+                      >
+                        {actor.badge}
+                      </Badge>
+                    </div>
+                    <span className="font-mono text-[10px] text-muted font-semibold">
+                      {actor.reportCount} verified papers
+                    </span>
+                  </div>
+
+                  <div className="mt-2.5 flex items-center justify-between">
+                    <div className="text-sm font-bold text-fg leading-tight group-hover:text-accent transition-colors">
+                      {actor.name}
+                    </div>
+                  </div>
+
+                  <div className="mt-1 text-[11px] text-subtle truncate" title={actor.originCountry}>
+                    {actor.originCountry} · {actor.type}
+                  </div>
+
+                  <div className="mt-2 text-[10px] font-mono text-muted line-clamp-2 leading-relaxed bg-bg-subtle/50 p-1.5 rounded border border-border/40">
+                    <span className="text-subtle font-semibold">TTP Focus:</span> {actor.focus}
+                  </div>
+                </div>
+
+                <div className="mt-3 pt-2 border-t border-border space-y-1.5 text-[10px] font-mono">
+                  <div className="flex items-center justify-between text-subtle">
+                    <span className="truncate max-w-[190px]">
+                      🎯 {actor.targetSectors.slice(0, 2).join(", ")}
+                    </span>
+                    <ArrowUpRight className="size-3 text-subtle group-hover:text-fg group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  </div>
+                  {actor.associatedTools && actor.associatedTools.length > 0 && (
+                    <div className="truncate text-muted">
+                      🛠️ {actor.associatedTools.join(", ")}
+                    </div>
+                  )}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* WIDGET 1: MITRE ATT&CK EXECUTION INTENSITY HEATMAP                         */}
+        {/* ========================================================================= */}
+        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Layers className="size-4 text-accent" />
+                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
+                  MITRE ATT&CK Execution Intensity Heatmap
+                </h2>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                Empirical technique execution density and observed procedure volume across primary tactical phases.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[11px] text-muted flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-danger animate-pulse" />
+                <span>Heavy (&gt;80%)</span>
+                <span className="size-2 rounded-full bg-warn ml-2" />
+                <span>Elevated (&gt;65%)</span>
+                <span className="size-2 rounded-full bg-sage ml-2" />
+                <span>Standard</span>
+              </span>
+              <Link to="/matrix" className="text-xs text-accent hover:underline font-mono inline-flex items-center gap-1">
+                Full Matrix →
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8">
+            {attackHeatmap.map((cell) => {
+              const isHigh = cell.intensity >= 80;
+              const isMedium = cell.intensity >= 65;
+              return (
+                <div
+                  key={cell.tacticId}
+                  className="rounded-lg border border-border bg-bg p-3 flex flex-col justify-between hover:border-border-strong hover:bg-bg-subtle/50 transition-all group"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-mono text-[10px] text-subtle font-semibold">{cell.tacticId}</span>
+                      <span
+                        className={cn(
+                          "font-mono text-[10px] font-bold px-1.5 py-0.5 rounded",
+                          isHigh
+                            ? "bg-danger/15 text-danger border border-danger/30"
+                            : isMedium
+                              ? "bg-warn/15 text-warn border border-warn/30"
+                              : "bg-sage/15 text-sage border border-sage/30",
+                        )}
+                      >
+                        {cell.intensity}%
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-fg leading-tight truncate group-hover:text-accent transition-colors" title={cell.tacticName}>
+                      {cell.tacticName}
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] text-muted">
+                      {cell.hitCount} procedures · {cell.techniqueCount} techs
+                    </div>
+
+                    <div className="mt-2 h-1 w-full rounded-full bg-bg-subtle overflow-hidden">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all duration-500",
+                          isHigh ? "bg-danger" : isMedium ? "bg-warn" : "bg-sage",
+                        )}
+                        style={{ width: `${cell.intensity}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-border/80 space-y-1.5">
+                    <span className="text-[9px] font-mono uppercase tracking-wider text-subtle block">
+                      Top Techniques
+                    </span>
+                    {cell.topTechniques.map((tech) => (
+                      <Link
+                        key={tech.id}
+                        to="/matrix"
+                        className="flex items-center justify-between text-[10px] font-mono text-muted hover:text-fg hover:underline truncate"
+                        title={`${tech.id} - ${tech.name}`}
+                      >
+                        <span className="truncate max-w-[85px]">{tech.id}</span>
+                        <span className="text-subtle shrink-0">({tech.count ?? 0})</span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* WIDGET 2: ADVERSARY THREAT FLOW & ATTACK PATH GRAPH MAP                   */}
+        {/* ========================================================================= */}
+        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Network className="size-4 text-accent" />
+                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
+                  Adversary Campaign & Infrastructure Relational Flow
+                </h2>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                Multi-stage operational flow: Threat Origin & Actors ➔ Ingress Vectors ➔ Weaponized Tools ➔ Targeted Sectors.
+              </p>
+            </div>
+            {/* Flow Selector Tabs */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {threatFlows.map((flow) => (
+                <button
+                  key={flow.id}
+                  type="button"
+                  onClick={() => setSelectedFlowId(flow.id)}
+                  className={cn(
+                    "px-2.5 py-1 text-xs font-mono rounded border transition-all cursor-pointer",
+                    selectedFlowId === flow.id
+                      ? "border-accent bg-accent/15 text-fg font-semibold shadow-xs"
+                      : "border-border bg-bg text-muted hover:text-fg hover:border-border-strong",
+                  )}
+                >
+                  {flow.id === "flow_east_asia" && "🇨🇳 East Asia APT"}
+                  {flow.id === "flow_eastern_europe" && "🇷🇺 Eastern Europe"}
+                  {flow.id === "flow_raas_syndicates" && "🏴‍☠️ RaaS Cartels"}
+                  {flow.id === "flow_identity_broker" && "🌐 Identity Brokers"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Active Flow Graph Visualizer */}
+          {activeFlow && (
+            <div className="rounded-lg border border-border bg-bg p-4">
+              <div className="flex items-center justify-between border-b border-border pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <Badge tone="warn" className="font-mono text-[10px] uppercase">
+                    Active Flow Vector
                   </Badge>
-                  <span className="font-mono text-[10px] text-muted font-semibold">
-                    {actor.reports} papers
-                  </span>
+                  <span className="text-xs font-bold text-fg font-mono">{activeFlow.origin}</span>
                 </div>
-                <div className="mt-2 text-xs font-semibold text-fg leading-tight">
-                  {actor.name}
-                </div>
-                <div className="mt-1 text-[11px] text-subtle truncate">
-                  {actor.type}
-                </div>
-                <div className="mt-2 text-[10px] font-mono text-muted line-clamp-1 border-t border-border pt-1.5">
-                  {actor.focus}
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="text-subtle">Execution Intensity:</span>
+                  <Badge tone={activeFlow.intensity >= 90 ? "danger" : "warn"} className="font-bold">
+                    {activeFlow.intensity}%
+                  </Badge>
                 </div>
               </div>
-            ))}
+
+              {/* 4-Stage Horizontal Node Pipeline */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 relative">
+                {/* Stage 1: Origin & Threat Actors */}
+                <div className="rounded-md border border-border bg-bg-elevated/70 p-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="font-mono text-[10px] font-bold text-accent uppercase tracking-wider">
+                        Stage 1 · Origin & Actors
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {activeFlow.actors.map((actor) => (
+                        <Link
+                          key={actor}
+                          to="/library"
+                          search={{ q: actor }}
+                          className="flex items-center justify-between rounded bg-bg px-2 py-1 text-xs font-medium text-fg hover:bg-bg-subtle hover:text-accent transition-colors border border-border/60"
+                        >
+                          <span>{actor}</span>
+                          <ArrowRight className="size-3 text-subtle" />
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-subtle mt-3 pt-2 border-t border-border">
+                    Sovereign / Cartel Origin
+                  </span>
+                </div>
+
+                {/* Stage 2: Ingress & Vector */}
+                <div className="rounded-md border border-border bg-bg-elevated/70 p-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="font-mono text-[10px] font-bold text-warn uppercase tracking-wider">
+                        Stage 2 · Ingress Vectors
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {activeFlow.vectors.map((vec) => (
+                        <div
+                          key={vec}
+                          className="rounded bg-bg px-2 py-1 text-xs text-muted border border-border/60 truncate"
+                          title={vec}
+                        >
+                          {vec}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-subtle mt-3 pt-2 border-t border-border">
+                    Initial Access & Foothold
+                  </span>
+                </div>
+
+                {/* Stage 3: Offensive Toolsets */}
+                <div className="rounded-md border border-border bg-bg-elevated/70 p-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="font-mono text-[10px] font-bold text-danger uppercase tracking-wider">
+                        Stage 3 · Weaponized Tools
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {activeFlow.tools.map((tool) => (
+                        <Link
+                          key={tool}
+                          to="/library"
+                          search={{ q: tool }}
+                          className="flex items-center justify-between rounded bg-bg px-2 py-1 text-xs font-mono font-medium text-fg hover:bg-bg-subtle hover:text-danger transition-colors border border-border/60"
+                        >
+                          <span className="truncate">{tool}</span>
+                          <Terminal className="size-3 text-subtle shrink-0" />
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-subtle mt-3 pt-2 border-t border-border">
+                    Payload & C2 Infrastructure
+                  </span>
+                </div>
+
+                {/* Stage 4: Targeted Critical Sectors */}
+                <div className="rounded-md border border-border bg-bg-elevated/70 p-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="font-mono text-[10px] font-bold text-sage uppercase tracking-wider">
+                        Stage 4 · Targeted Sectors
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {activeFlow.targets.map((tgt) => (
+                        <div
+                          key={tgt}
+                          className="rounded bg-bg px-2 py-1 text-xs text-fg border border-border/60 truncate font-medium"
+                          title={tgt}
+                        >
+                          {tgt}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-subtle mt-3 pt-2 border-t border-border">
+                    Impact & Sector Blast Radius
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center justify-between text-xs text-muted">
+                <span className="font-mono text-[11px]">
+                  Correlated with {data?.acquiredCount ?? 0} acquired threat reports in store
+                </span>
+                <Link
+                  to="/library"
+                  search={{ q: activeFlow.actors[0] }}
+                  className="font-mono text-accent hover:underline flex items-center gap-1 text-[11px]"
+                >
+                  <span>Query {activeFlow.actors[0]} Reports in Library</span>
+                  <ArrowRight className="size-3" />
+                </Link>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ========================================================================= */}
+        {/* WIDGET 3: EXPLOITED CVES & VULNERABILITY VELOCITY GAUGE                   */}
+        {/* ========================================================================= */}
+        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Bug className="size-4 text-danger" />
+                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
+                  Exploited CVEs & Vulnerability Velocity Gauge
+                </h2>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                Known exploited vulnerabilities actively observed across ingested adversary campaign intelligence.
+              </p>
+            </div>
+            <Link to="/library" className="text-xs text-muted hover:text-fg hover:underline font-mono inline-flex items-center gap-1">
+              <span>Inspect All CVEs in Library</span>
+              <ArrowRight className="size-3" />
+            </Link>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {cveVelocity.slice(0, 8).map((cve) => {
+              const isCrit = cve.cvss >= 9.0;
+              return (
+                <Link
+                  key={cve.cveId}
+                  to="/library"
+                  search={{ q: cve.cveId }}
+                  className="rounded-lg border border-border bg-bg p-3.5 hover:border-border-strong hover:bg-bg-subtle transition-all flex flex-col justify-between group cursor-pointer"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-1 mb-2">
+                      <span className="font-mono text-xs font-bold text-fg group-hover:text-accent transition-colors">
+                        {cve.cveId}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <Badge
+                          tone={isCrit ? "danger" : "warn"}
+                          className="font-mono text-[9px] font-bold px-1.5 py-0.5"
+                        >
+                          CVSS {cve.cvss}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="text-xs font-medium text-fg leading-snug line-clamp-2">
+                      {cve.vendorProduct}
+                    </div>
+
+                    <div className="mt-2 flex items-center gap-2 font-mono text-[10px]">
+                      <span className="flex items-center gap-1">
+                        <span
+                          className={cn(
+                            "size-1.5 rounded-full",
+                            cve.exploitStatus === "In the Wild"
+                              ? "bg-danger animate-pulse"
+                              : cve.exploitStatus === "Weaponized"
+                                ? "bg-warn"
+                                : "bg-sage",
+                          )}
+                        />
+                        <span className="text-muted">{cve.exploitStatus}</span>
+                      </span>
+                      <span className="text-subtle">·</span>
+                      <span className="text-muted">{cve.reportCount} papers</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-border flex items-center justify-between text-[10px] font-mono text-subtle">
+                    <span className="truncate max-w-[170px]">
+                      {cve.actors?.slice(0, 2).join(", ") || "General APT"}
+                    </span>
+                    <ArrowUpRight className="size-3 text-subtle group-hover:text-fg group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         </div>
 

@@ -25,6 +25,7 @@ import type {
   TacticDistributionStats,
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
+import { computeDashboardAnalytics } from "../aie/dashboard-analytics";
 import { excerptOf } from "../aie/extract";
 import { logger } from "../aie/logger";
 import { SOURCE_SEED } from "../aie/catalog";
@@ -2366,6 +2367,7 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     events,
     config,
     activeJob,
+    analyticsReports,
   ] = await Promise.all([
     col.countDocuments({ docType: "source" }),
     col.countDocuments({ docType: "source", enabled: true }),
@@ -2386,6 +2388,26 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     mongoListRecentIngestEvents(8),
     mongoGetCrawlConfig(),
     col.findOne({ docType: "crawl_job", status: "running" }),
+    col
+      .find({ docType: "report", status: { $ne: "rejected" } })
+      .project({
+        id: 1,
+        title: 1,
+        url: 1,
+        ingestedAt: 1,
+        tags: 1,
+        "analysis.threatActors": 1,
+        "analysis.malware": 1,
+        "analysis.attackChain": 1,
+        "analysis.ttps": 1,
+        "analysis.vulnerabilities": 1,
+        "extractedEntities.threatActors": 1,
+        "extractedEntities.malwareFamilies": 1,
+        "extractedEntities.cves": 1,
+        "extractedEntities.tactics": 1,
+        "extractedEntities.techniques": 1,
+      })
+      .toArray(),
   ]);
 
   const avgQuality = metricsAgg[0]?.avgQ ? Math.round(Number(metricsAgg[0].avgQ) * 100) / 100 : 0.82;
@@ -2429,11 +2451,8 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
         ? "scheduled"
         : "disabled";
 
-  // Dynamically compute threat regions and tactic distribution from acquired reports
-  const [threatRegions, tacticDistribution] = await Promise.all([
-    mongoGetThreatRegions(col),
-    mongoGetTacticDistribution(col),
-  ]);
+  // Dynamically compute threat actors, CVEs, flows, matrix heatmap, regions and tactics from real reports
+  const analytics = computeDashboardAnalytics(analyticsReports || []);
 
   const stats: DashboardStats = {
     sourceCount: sourceTotal,
@@ -2448,8 +2467,12 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
     lastCrawlAt: config.lastRunAt,
     nextCrawlAt: config.nextRunAt,
     discoveredSourcesCount,
-    threatRegions,
-    tacticDistribution,
+    threatRegions: analytics.threatRegions,
+    tacticDistribution: analytics.tacticDistribution,
+    topThreatActors: analytics.topThreatActors,
+    cveVelocity: analytics.cveVelocity,
+    threatFlows: analytics.threatFlows,
+    attackHeatmap: analytics.attackHeatmap,
   };
 
   cachedDashboardStats = { timestamp: Date.now(), data: stats };

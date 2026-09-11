@@ -23,6 +23,7 @@ import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { discoverAgentSources, evaluateResourceWithAgent, isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { SEED_REPORTS } from "./seed-reports";
+import { computeDashboardAnalytics } from "./dashboard-analytics";
 import type {
   AppSettings,
   CatalogItem,
@@ -450,6 +451,8 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
   const runningJobs = await sql<{ id: string }>`select id from crawl_jobs where status = 'running' limit 1`;
   const crawlerStatus = runningJobs.length > 0 ? "running" : config.paused ? "paused" : config.enabled ? "scheduled" : "disabled";
 
+  const analytics = computeDashboardAnalytics([]);
+
   return {
     sourceCount: Number(src[0]?.c ?? 0),
     enabledSources: Number(src[0]?.e ?? 0),
@@ -471,6 +474,12 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
     crawlerStatus,
     lastCrawlAt: config.lastRunAt,
     nextCrawlAt: config.nextRunAt,
+    threatRegions: analytics.threatRegions,
+    tacticDistribution: analytics.tacticDistribution,
+    topThreatActors: analytics.topThreatActors,
+    cveVelocity: analytics.cveVelocity,
+    threatFlows: analytics.threatFlows,
+    attackHeatmap: analytics.attackHeatmap,
   };
 });
 
