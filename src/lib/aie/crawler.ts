@@ -21,6 +21,7 @@ import { parseRssOrAtomXml } from "./feeds";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { safeFetchResource, validateSafePublicUrl } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
+import { runUnifiedSourceDiscovery, runUnifiedResourceEvaluation } from "./ai-manager";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
   CrawlConfig,
@@ -327,10 +328,10 @@ export async function executeCrawlJob(
           }
         } catch {}
 
-        const agentResult = await discoverAgentSources({
+        const agentResult = await runUnifiedSourceDiscovery({
           limit: 4,
           existingDomains: Array.from(new Set(knownDomains)),
-          model: config.agentModel || "gemini-3.8-flash-low",
+          model: config.agentModel || "AGY: gemini-3.8-flash-low",
           timeoutSeconds: config.agentTimeoutSeconds || 45,
         });
 
@@ -1332,13 +1333,13 @@ export async function executeCrawlJob(
       let agentResult: AgentEvaluationResult | null = null;
       if (config.agentTaggingEnabled || config.agentApprovalEnabled) {
         try {
-          agentResult = await evaluateResourceWithAgent({
+          agentResult = await runUnifiedResourceEvaluation({
             text: textContent,
             title: docTitle,
             url: current.canonicalUrl,
             domain: current.domain,
             timeoutSeconds: config.agentTimeoutSeconds || 45,
-            model: config.agentModel || "gemini-3.8-flash-low",
+            model: config.agentModel || "AGY: gemini-3.8-flash-low",
           });
           if (agentResult.success && !agentResult.fallback) {
             logger.agent(

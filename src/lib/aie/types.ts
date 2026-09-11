@@ -511,6 +511,7 @@ export type AppSettings = {
   agentCrawlSourcesEnabled: boolean;
   agentModel: string;
   agentTimeoutSeconds: number;
+  activeAgentProvider?: string;
 
   updatedAt?: string;
 };
@@ -554,7 +555,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   agentApprovalEnabled: true,
   agentAutoIngestEnabled: false,
   agentCrawlSourcesEnabled: true,
-  agentModel: "gemini-3.8-flash-low",
+  agentModel: "AGY: gemini-3.8-flash-low",
   agentTimeoutSeconds: 45,
+  activeAgentProvider: "agy_agent",
   updatedAt: new Date().toISOString(),
 };

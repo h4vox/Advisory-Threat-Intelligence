@@ -29,6 +29,13 @@ import { computeDashboardAnalytics } from "../aie/dashboard-analytics";
 import { excerptOf } from "../aie/extract";
 import { logger } from "../aie/logger";
 import { SOURCE_SEED } from "../aie/catalog";
+import type { IntegrationItem, MarketplaceState } from "../aie/marketplace-types";
+import {
+  DEFAULT_INTEGRATIONS,
+  DEFAULT_CURATED_RESOURCES,
+  DEFAULT_POWERUPS,
+  DEFAULT_PLAYBOOKS,
+} from "../aie/marketplace-registry";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -2747,3 +2754,182 @@ export async function mongoAuditLibraryWithAi(options: {
     }.`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Marketplace & Response Integration Repository Methods
+// ---------------------------------------------------------------------------
+
+let memoryIntegrations: IntegrationItem[] = JSON.parse(JSON.stringify(DEFAULT_INTEGRATIONS));
+let cachedMarketplaceIntegrations: { timestamp: number; data: IntegrationItem[] } | null = null;
+const MARKETPLACE_CACHE_TTL_MS = 15_000;
+
+export function invalidateMarketplaceCache() {
+  cachedMarketplaceIntegrations = null;
+}
+
+export async function mongoGetMarketplaceIntegrations(): Promise<IntegrationItem[]> {
+  if (cachedMarketplaceIntegrations && Date.now() - cachedMarketplaceIntegrations.timestamp < MARKETPLACE_CACHE_TTL_MS) {
+    return cachedMarketplaceIntegrations.data;
+  }
+
+  if (!isMongoConfigured()) {
+    cachedMarketplaceIntegrations = { timestamp: Date.now(), data: memoryIntegrations };
+    return memoryIntegrations;
+  }
+
+  try {
+    const col = await getThreatIntelCollection();
+    const docs = await col.find({ docType: "marketplace_integration" }).toArray();
+
+    const dbMap = new Map<string, any>();
+    for (const d of docs) {
+      if (d.id) dbMap.set(d.id, d);
+    }
+
+    // Merge defaults with DB records
+    const result: IntegrationItem[] = DEFAULT_INTEGRATIONS.map((def) => {
+      const saved = dbMap.get(def.id);
+      if (!saved) return def;
+      return {
+        ...def,
+        status: saved.status ?? def.status,
+        version: saved.version ?? def.version,
+        config: {
+          ...def.config,
+          ...saved.config,
+        },
+      };
+    });
+
+    memoryIntegrations = result;
+    cachedMarketplaceIntegrations = { timestamp: Date.now(), data: result };
+    return result;
+  } catch (err) {
+    logger.error("MARKETPLACE", "Failed to load marketplace integrations from DB, falling back to memory", err);
+    return memoryIntegrations;
+  }
+}
+
+export async function mongoSaveMarketplaceIntegration(item: IntegrationItem): Promise<IntegrationItem> {
+  invalidateMarketplaceCache();
+
+  // Update in-memory
+  const idx = memoryIntegrations.findIndex((x) => x.id === item.id);
+  if (idx >= 0) {
+    memoryIntegrations[idx] = { ...memoryIntegrations[idx], ...item };
+  } else {
+    memoryIntegrations.push(item);
+  }
+
+  if (!isMongoConfigured()) {
+    return item;
+  }
+
+  try {
+    const col = await getThreatIntelCollection();
+    await col.updateOne(
+      { docType: "marketplace_integration", id: item.id },
+      {
+        $set: {
+          docType: "marketplace_integration",
+          id: item.id,
+          name: item.name,
+          category: item.category,
+          type: item.type,
+          provider: item.provider,
+          version: item.version,
+          status: item.status,
+          config: item.config,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    logger.error("MARKETPLACE", `Failed to persist integration ${item.id} to DB`, err);
+  }
+
+  return item;
+}
+
+export async function mongoUninstallMarketplaceIntegration(id: string): Promise<{ success: boolean; id: string }> {
+  invalidateMarketplaceCache();
+
+  // Reset to default uninstalled state
+  const def = DEFAULT_INTEGRATIONS.find((x) => x.id === id);
+  const resetItem: IntegrationItem = def
+    ? {
+        ...def,
+        status: "not_installed",
+        config: undefined,
+      }
+    : {
+        id,
+        name: id,
+        category: "Intelligence",
+        type: "cli_agent",
+        provider: "Unknown",
+        version: "v1.0.0",
+        releaseDate: new Date().toISOString(),
+        status: "not_installed",
+        description: "",
+        overview: "",
+        actions: [],
+        connectors: [],
+        tags: [],
+        supportedModels: [],
+      };
+
+  const idx = memoryIntegrations.findIndex((x) => x.id === id);
+  if (idx >= 0) {
+    memoryIntegrations[idx] = resetItem;
+  }
+
+  if (isMongoConfigured()) {
+    try {
+      const col = await getThreatIntelCollection();
+      await col.updateOne(
+        { docType: "marketplace_integration", id },
+        {
+          $set: {
+            status: "not_installed",
+            config: {},
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      );
+    } catch (err) {
+      logger.error("MARKETPLACE", `Failed to mark integration ${id} uninstalled in DB`, err);
+    }
+  }
+
+  // Check if active agent in AppSettings needs reset
+  try {
+    const settings = await mongoGetAppSettings();
+    if (settings.activeAgentProvider === id) {
+      await mongoUpdateAppSettings({
+        activeAgentProvider: "agy_agent",
+        agentModel: "AGY: gemini-3.8-flash-low",
+      });
+    }
+  } catch (err) {
+    console.warn("[marketplace] failed to reset active provider on uninstall:", err);
+  }
+
+  return { success: true, id };
+}
+
+export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
+  const integrations = await mongoGetMarketplaceIntegrations();
+  const settings = await mongoGetAppSettings();
+
+  return {
+    activeProviderId: settings.activeAgentProvider || "agy_agent",
+    activeModel: settings.agentModel || "AGY: gemini-3.8-flash-low",
+    integrations,
+    curatedResources: DEFAULT_CURATED_RESOURCES,
+    powerups: DEFAULT_POWERUPS,
+    playbooks: DEFAULT_PLAYBOOKS,
+  };
+}
+

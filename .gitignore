@@ -67,3 +67,6 @@ Thumbs.db
 *.sln
 *.sw?
 *~
+
+# Documentation & Plan directory
+plan/

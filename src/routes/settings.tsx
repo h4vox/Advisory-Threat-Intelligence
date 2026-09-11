@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -46,6 +46,7 @@ import {
   updateAppSettings,
   updateCrawlerConfig,
   getAgentStatus,
+  getMarketplaceData,
 } from "@/lib/aie/server";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
@@ -123,6 +124,12 @@ function SettingsPage() {
     enabled: activeSection === "agent",
     staleTime: 60000,
     placeholderData: (previousData) => previousData,
+  });
+
+  const marketplaceQuery = useQuery({
+    queryKey: ["marketplace_state"],
+    queryFn: () => getMarketplaceData(),
+    staleTime: 30000,
   });
 
   // Local Form States for instantaneous 0ms responsive UI
@@ -1468,25 +1475,77 @@ function SettingsPage() {
 
             {/* Agent Model & Timeout */}
             <div className="rounded-xl border border-border bg-bg-elevated p-5">
-              <h3 className="flex items-center gap-2 text-sm font-medium">
-                <Zap className="size-4 text-accent" />
-                Model & Performance
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-medium">
+                  <Zap className="size-4 text-accent" />
+                  Model & Performance
+                </h3>
+                <Link
+                  to="/marketplace"
+                  className="text-xs text-accent hover:underline flex items-center gap-1 font-medium"
+                >
+                  <span>Manage in Marketplace</span>
+                  <Bot className="size-3" />
+                </Link>
+              </div>
+
+              {/* Active Provider Indicator */}
+              <div className="mt-3 p-3 rounded-lg bg-bg-subtle border border-border flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-subtle">Active AI Agent:</span>
+                  <span className="font-semibold text-fg">
+                    {marketplaceQuery.data?.integrations.find(
+                      (x) => x.id === (appForm.activeAgentProvider || "agy_agent")
+                    )?.name || "Antigravity AGY Agent"}
+                  </span>
+                </div>
+                <Badge className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
+                  Configured
+                </Badge>
+              </div>
+
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
                   <label className="block text-xs font-medium text-muted mb-1.5">Agent Model</label>
                   <select
-                    value={crawlForm.agentModel || "gemini-3.8-flash-low"}
+                    value={crawlForm.agentModel || "AGY: gemini-3.8-flash-low"}
                     onChange={(e) => {
-                      setCrawlForm((prev) => ({ ...prev, agentModel: e.target.value }));
+                      const selectedVal = e.target.value;
+                      setCrawlForm((prev) => ({ ...prev, agentModel: selectedVal }));
+                      const matchedItem = marketplaceQuery.data?.integrations.find((it) =>
+                        it.supportedModels.includes(selectedVal)
+                      );
+                      if (matchedItem) {
+                        setAppForm((prev) => ({ ...prev, activeAgentProvider: matchedItem.id }));
+                      }
                       setIsDirty(true);
                     }}
-                    className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
+                    className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs font-mono text-fg focus:border-accent focus:outline-none"
                   >
-                    <option value="gemini-3.8-flash-low">Gemini 3.8 Flash (Low Latency)</option>
-                    <option value="gemini-3.8-flash-medium">Gemini 3.8 Flash (Medium)</option>
-                    <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High)</option>
-                    <option value="gemini-3.7-flash-high">Gemini 3.7 Flash (High)</option>
+                    {marketplaceQuery.data?.integrations && marketplaceQuery.data.integrations.length > 0 ? (
+                      marketplaceQuery.data.integrations.map((integration) => (
+                        <optgroup
+                          key={integration.id}
+                          label={`${integration.name} (${integration.status === "installed" ? "Installed" : "Not Installed"})`}
+                        >
+                          {integration.supportedModels.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))
+                    ) : (
+                      <>
+                        <option value="AGY: gemini-3.8-flash-low">AGY: gemini-3.8-flash-low</option>
+                        <option value="AGY: gemini-3.8-flash-medium">AGY: gemini-3.8-flash-medium</option>
+                        <option value="AGY: gemini-3.8-flash-high">AGY: gemini-3.8-flash-high</option>
+                        <option value="AGY: gemini-3.8-pro">AGY: gemini-3.8-pro</option>
+                        <option value="Claude Code: claude-3-7-sonnet">Claude Code: claude-3-7-sonnet</option>
+                        <option value="Gemini API: gemini-2.5-flash">Gemini API: gemini-2.5-flash</option>
+                        <option value="Claude API: claude-3-7-sonnet">Claude API: claude-3-7-sonnet</option>
+                      </>
+                    )}
                   </select>
                 </div>
                 <div>

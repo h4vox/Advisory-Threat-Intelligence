@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
+import { Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const NAV = [
@@ -9,6 +9,7 @@ const NAV = [
   { to: "/sources", label: "Sources", icon: Globe2 },
   { to: "/ingest", label: "Ingest", icon: Upload },
   { to: "/library", label: "Library", icon: Library },
+  { to: "/marketplace", label: "Marketplace", icon: Cpu },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 

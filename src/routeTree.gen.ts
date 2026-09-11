@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IngestRouteImport } from './routes/ingest'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as MarketplaceRouteImport } from './routes/marketplace'
 import { Route as MatrixRouteImport } from './routes/matrix'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SourcesRouteImport } from './routes/sources'
@@ -30,6 +31,11 @@ const IngestRoute = IngestRouteImport.update({
 const LibraryRoute = LibraryRouteImport.update({
   id: '/library',
   path: '/library',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MarketplaceRoute = MarketplaceRouteImport.update({
+  id: '/marketplace',
+  path: '/marketplace',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MatrixRoute = MatrixRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ingest'
     | '/library'
+    | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ingest'
     | '/library'
+    | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ingest'
     | '/library'
+    | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IngestRoute: typeof IngestRoute
   LibraryRoute: typeof LibraryRouteWithChildren
+  MarketplaceRoute: typeof MarketplaceRoute
   MatrixRoute: typeof MatrixRoute
   SettingsRoute: typeof SettingsRoute
   SourcesRoute: typeof SourcesRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/library'
       fullPath: '/library'
       preLoaderRoute: typeof LibraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/marketplace': {
+      id: '/marketplace'
+      path: '/marketplace'
+      fullPath: '/marketplace'
+      preLoaderRoute: typeof MarketplaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/matrix': {
@@ -189,6 +209,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IngestRoute: IngestRoute,
   LibraryRoute: LibraryRouteWithChildren,
+  MarketplaceRoute: MarketplaceRoute,
   MatrixRoute: MatrixRoute,
   SettingsRoute: SettingsRoute,
   SourcesRoute: SourcesRoute,
