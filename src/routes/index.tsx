@@ -449,17 +449,17 @@ function Home() {
                     )}
                     <div>
                       <span className="text-subtle">Primary Threat Actors:</span>{" "}
-                      <span className="text-fg font-medium">{activeRegion.actors.join(", ")}</span>
+                      <span className="text-fg font-medium">{(activeRegion.actors ?? []).join(", ")}</span>
                     </div>
                     {activeRegion.targetCountries && activeRegion.targetCountries.length > 0 && (
                       <div>
                         <span className="text-subtle">Targeted Nations:</span>{" "}
-                        <span className="text-fg">{activeRegion.targetCountries.join(", ")}</span>
+                        <span className="text-fg">{(activeRegion.targetCountries ?? []).join(", ")}</span>
                       </div>
                     )}
                     <div>
                       <span className="text-subtle">Targeted Sectors:</span>{" "}
-                      <span className="text-fg">{activeRegion.sectors.join(", ")}</span>
+                      <span className="text-fg">{(activeRegion.sectors ?? []).join(", ")}</span>
                     </div>
                     <div className="truncate">
                       <span className="text-subtle">Top TTP Vector:</span>{" "}
@@ -468,7 +468,7 @@ function Home() {
                     <div className="pt-2 mt-2 border-t border-border flex items-center justify-between">
                       <Link
                         to="/library"
-                        search={{ q: activeRegion.actors[0] || activeRegion.name }}
+                        search={{ q: activeRegion.actors?.[0] || activeRegion.name }}
                         className="inline-flex items-center gap-1 text-[11px] text-accent font-semibold hover:underline"
                       >
                         <span>Filter {activeRegion.name} Reports in Library</span>
@@ -814,7 +814,7 @@ function Home() {
                       </span>
                     </div>
                     <div className="space-y-1.5">
-                      {activeFlow.actors.map((actor) => (
+                      {(activeFlow.actors ?? []).map((actor) => (
                         <Link
                           key={actor}
                           to="/library"
@@ -841,7 +841,7 @@ function Home() {
                       </span>
                     </div>
                     <div className="space-y-1.5">
-                      {activeFlow.vectors.map((vec) => (
+                      {(activeFlow.vectors ?? []).map((vec) => (
                         <div
                           key={vec}
                           className="rounded bg-bg px-2 py-1 text-xs text-muted border border-border/60 truncate"
@@ -866,7 +866,7 @@ function Home() {
                       </span>
                     </div>
                     <div className="space-y-1.5">
-                      {activeFlow.tools.map((tool) => (
+                      {(activeFlow.tools ?? []).map((tool) => (
                         <Link
                           key={tool}
                           to="/library"
@@ -893,7 +893,7 @@ function Home() {
                       </span>
                     </div>
                     <div className="space-y-1.5">
-                      {activeFlow.targets.map((tgt) => (
+                      {(activeFlow.targets ?? []).map((tgt) => (
                         <div
                           key={tgt}
                           className="rounded bg-bg px-2 py-1 text-xs text-fg border border-border/60 truncate font-medium"

@@ -1,4 +1,4 @@
-import { MAX_BYTES } from "./extract";
+export const MAX_BYTES = 1_500_000;
 
 // Disallowed hostnames and domains
 const BLOCKED_HOSTNAMES = new Set([
@@ -8,7 +8,9 @@ const BLOCKED_HOSTNAMES = new Set([
   "::1",
   "::",
   "metadata.google.internal",
+  "metadata.goog",
   "instance-data",
+  "169.254.169.254",
 ]);
 
 const BLOCKED_EXTENSIONS = [
@@ -22,7 +24,14 @@ const BLOCKED_EXTENSIONS = [
   ".test",
   ".example",
   ".invalid",
+  ".nip.io",
+  ".sslip.io",
+  ".localtest.me",
+  ".lvh.me",
 ];
+
+const EMBEDDED_PRIVATE_IP_REGEX =
+  /(^|\.)(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|0\.0\.0\.0)(\.|$)/i;
 
 /**
  * Checks whether an IPv4 numeric representation falls into private, loopback,
@@ -81,23 +90,47 @@ function isPrivateOrReservedIpv4(ipNum: number): boolean {
  * Parses dotted decimal or integer IPv4 string and returns 32-bit unsigned number.
  */
 function parseIpv4ToNumber(host: string): number | null {
-  // Dotted decimal: 1.2.3.4
-  const dotted = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (dotted) {
-    const octets = [Number(dotted[1]), Number(dotted[2]), Number(dotted[3]), Number(dotted[4])];
-    if (octets.some((o) => o > 255)) return null;
-    return (((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0);
-  }
+  if (host.startsWith("[") || host.includes(":")) return null;
 
-  // Single integer (e.g. 2130706433 for 127.0.0.1) or hex/octal notation
-  if (/^0x[0-9a-fA-F]+$/.test(host)) {
+  // Single integer (e.g. 2130706433 for 127.0.0.1) or hex
+  if (/^0x[0-9a-fA-F]+$/i.test(host)) {
     const num = parseInt(host, 16);
-    if (num >= 0 && num <= 0xffffffff) return num >>> 0;
+    return num >= 0 && num <= 0xffffffff ? num >>> 0 : null;
   }
-
   if (/^\d+$/.test(host)) {
     const num = Number(host);
-    if (num >= 0 && num <= 0xffffffff) return num >>> 0;
+    return num >= 0 && num <= 0xffffffff ? num >>> 0 : null;
+  }
+
+  // Dotted notation: supports 2, 3, or 4 parts with decimal, octal (0...), or hex (0x...)
+  const parts = host.split(".");
+  if (parts.length >= 2 && parts.length <= 4) {
+    const parsedParts: number[] = [];
+    for (const part of parts) {
+      let val: number;
+      if (/^0x[0-9a-fA-F]+$/i.test(part)) {
+        val = parseInt(part, 16);
+      } else if (/^0[0-7]+$/.test(part)) {
+        val = parseInt(part, 8); // Octal notation bypass protection
+      } else if (/^\d+$/.test(part)) {
+        val = parseInt(part, 10);
+      } else {
+        return null;
+      }
+      if (isNaN(val) || val < 0) return null;
+      parsedParts.push(val);
+    }
+
+    if (parts.length === 4) {
+      if (parsedParts.some((p) => p > 255)) return null;
+      return (((parsedParts[0] << 24) | (parsedParts[1] << 16) | (parsedParts[2] << 8) | parsedParts[3]) >>> 0);
+    } else if (parts.length === 3) {
+      if (parsedParts[0] > 255 || parsedParts[1] > 255 || parsedParts[2] > 65535) return null;
+      return (((parsedParts[0] << 24) | (parsedParts[1] << 16) | parsedParts[2]) >>> 0);
+    } else if (parts.length === 2) {
+      if (parsedParts[0] > 255 || parsedParts[1] > 16777215) return null;
+      return (((parsedParts[0] << 24) | parsedParts[1]) >>> 0);
+    }
   }
 
   return null;
@@ -197,6 +230,10 @@ export function validateSafePublicUrl(rawUrl: string): SafeUrlValidationResult {
     if (host.endsWith(ext)) {
       return { safe: false, error: `Access to internal domain ending in "${ext}" is forbidden.` };
     }
+  }
+
+  if (EMBEDDED_PRIVATE_IP_REGEX.test(host)) {
+    return { safe: false, error: "Access to domains embedding private, loopback, or metadata IP addresses is forbidden." };
   }
 
   // 5. IPv4 check
