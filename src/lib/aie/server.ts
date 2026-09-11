@@ -20,6 +20,7 @@ import {
   toIsoString,
 } from "./extract";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { safeFetchResource, validateSafePublicUrl, sanitizeDocumentHtml } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { SEED_REPORTS } from "./seed-reports";
@@ -644,6 +645,12 @@ export const addDiscoveredSource = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data }) => {
+    if (data.homepageUrl) {
+      const check = validateSafePublicUrl(data.homepageUrl);
+      if (!check.safe) {
+        return { ok: false as const, error: `Invalid source URL: ${check.error}` };
+      }
+    }
     if (isMongoConfigured()) {
       try {
         const created = await mongoCreateDiscoveredSource({
@@ -866,6 +873,10 @@ export const getReport = createServerFn({ method: "GET" })
             mongoReport.extractedText = htmlToText(mongoReport.extractedText).text;
           }
 
+          if (mongoReport.rawHtml) {
+            mongoReport.rawHtml = sanitizeDocumentHtml(mongoReport.rawHtml);
+          }
+
           return mongoReport;
         }
         return null;
@@ -917,7 +928,7 @@ export const getReport = createServerFn({ method: "GET" })
     return {
       ...toListItem(r),
       extractedText: cleanText,
-      rawHtml: pristineHtml,
+      rawHtml: sanitizeDocumentHtml(pristineHtml),
       pdfUrl: r.pdf_url || "",
       qualityReasons: parseJson<QualityReason[]>(r.quality_reasons, []),
       analysis,
@@ -1201,6 +1212,8 @@ async function persistReport(input: {
     analysis,
   });
 
+  const sanitizedHtml = sanitizeDocumentHtml(cleanHtml);
+
   // Store in MongoDB Atlas
   if (isMongoConfigured()) {
     try {
@@ -1231,7 +1244,7 @@ async function persistReport(input: {
         parentSource: effectiveSourceName,
         sourceDomain: domain,
         version: targetId ? 2 : 1,
-        rawHtml: cleanHtml,
+        rawHtml: sanitizedHtml,
         pdfUrl: "",
         analysis,
       });
@@ -1290,7 +1303,7 @@ async function persistReport(input: {
         ${JSON.stringify(iocs)}, ${input.origin}, ${input.publisher ?? domain},
         ${input.author ?? domain}, ${classification}, ${input.discoveryMethod ?? 'manual'},
         ${input.discoveryQuery ?? ''}, ${input.publisher ?? domain}, ${domain}, 1,
-        ${JSON.stringify(analysis)}, ${cleanHtml}
+        ${JSON.stringify(analysis)}, ${sanitizedHtml}
       )
     `;
     await sql`update sources set last_ingest_at = now() where id = ${effectiveSourceId}`;
@@ -1307,38 +1320,6 @@ async function persistReport(input: {
   return { ok: true, reportId: id, duplicate: false, qualityScore: score, title: input.title };
 }
 
-async function fetchResource(url: string): Promise<{
-  contentType: string;
-  body: string;
-  bytes: Uint8Array;
-}> {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 18000);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Retrieval/3.0)",
-        accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
-      },
-    });
-    if (!res.ok) {
-      throw new Error(`Source returned HTTP ${res.status}`);
-    }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength > MAX_BYTES) {
-      throw new Error("Document exceeds 1.5 MB ingest limit");
-    }
-    const contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-    return { contentType, body, bytes: buf };
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 export const ingestUrl = createServerFn({ method: "POST" })
   .validator(
     z.object({
@@ -1353,6 +1334,11 @@ export const ingestUrl = createServerFn({ method: "POST" })
       canonical = canonicalizeUrl(data.url);
     } catch {
       return { ok: false, error: "URL is not valid." };
+    }
+
+    const urlCheck = validateSafePublicUrl(canonical);
+    if (!urlCheck.safe) {
+      return { ok: false, error: `Security check rejected URL: ${urlCheck.error}` };
     }
 
     const sourceId = await matchSource(canonical);
@@ -1379,7 +1365,12 @@ export const ingestUrl = createServerFn({ method: "POST" })
     }
 
     try {
-      const fetched = await fetchResource(canonical);
+      const fetched = await safeFetchResource(canonical, {
+        timeoutMs: 18000,
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Retrieval/3.0)",
+        acceptHeader: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
+      });
       if (fetched.contentType.includes("pdf") || canonical.toLowerCase().endsWith(".pdf")) {
         const pdfRes = await extractTextFromPdfBuffer(fetched.bytes);
         const pdfFileName = canonical.split("/").pop()?.replace(/\.pdf$/i, "") || "PDF document";
@@ -1877,7 +1868,7 @@ export const getReportPdf = createServerFn({ method: "GET" })
           title: doc.title,
           url: doc.url,
           canonicalUrl: doc.canonicalUrl,
-          rawHtml,
+          rawHtml: sanitizeDocumentHtml(rawHtml),
           pdfUrl: doc.pdfUrl || "",
           pdfBase64: doc.pdfBase64 || "",
           qualityScore: doc.qualityScore,
@@ -1914,7 +1905,7 @@ export const getReportPdf = createServerFn({ method: "GET" })
       title: r.title,
       url: r.url,
       canonicalUrl: r.canonical_url,
-      rawHtml: r.raw_html || "",
+      rawHtml: sanitizeDocumentHtml(r.raw_html || ""),
       pdfUrl: "",
       pdfBase64: "",
       qualityScore: Number(r.quality_score),

@@ -1201,7 +1201,7 @@ function LibraryPage() {
                   title="Document PDF Preview"
                   srcDoc={previewData.rawHtml}
                   className="size-full border-0 bg-white"
-                  sandbox="allow-same-origin allow-scripts allow-popups"
+                  sandbox="allow-scripts allow-popups"
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">

@@ -171,6 +171,10 @@ export async function ensureMongoIndexes() {
         { key: { docType: 1, classification: 1 }, background: true },
         { key: { docType: 1, resourceKind: 1 }, background: true },
         { key: { docType: 1, status: 1 }, background: true },
+        { key: { docType: 1, status: 1, ingestedAt: -1 }, background: true },
+        { key: { docType: 1, status: 1, qualityScore: -1 }, background: true },
+        { key: { docType: 1, classification: 1, ingestedAt: -1 }, background: true },
+        { key: { docType: 1, resourceKind: 1, ingestedAt: -1 }, background: true },
         { key: { docType: 1, priority: 1 }, background: true },
         { key: { docType: 1, createdAt: -1 }, background: true },
         { key: { docType: 1, domain: 1 }, background: true },
@@ -398,7 +402,7 @@ export async function mongoListReports(params?: {
   }
 
   if (params?.actor) {
-    const actorRegex = new RegExp(params.actor.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const actorRegex = new RegExp(params.actor.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     andConditions.push({
       $or: [
         { "analysis.threatActors": { $regex: actorRegex } },
@@ -408,7 +412,7 @@ export async function mongoListReports(params?: {
   }
 
   if (params?.malware) {
-    const malwareRegex = new RegExp(params.malware.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const malwareRegex = new RegExp(params.malware.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     andConditions.push({
       $or: [
         { "analysis.malware": { $regex: malwareRegex } },
@@ -418,7 +422,7 @@ export async function mongoListReports(params?: {
   }
 
   if (params?.tactic) {
-    const tacticRegex = new RegExp(params.tactic.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const tacticRegex = new RegExp(params.tactic.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     andConditions.push({
       $or: [
         { "analysis.attackChain.tactic": { $regex: tacticRegex } },
@@ -428,7 +432,7 @@ export async function mongoListReports(params?: {
   }
 
   if (params?.publisher && params.publisher !== "ALL") {
-    const pubRegex = new RegExp(params.publisher.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const pubRegex = new RegExp(params.publisher.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     andConditions.push({
       $or: [
         { publisher: { $regex: pubRegex } },
@@ -447,7 +451,7 @@ export async function mongoListReports(params?: {
   }
 
   if (params?.q?.trim()) {
-    const regex = new RegExp(params.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const regex = new RegExp(params.q.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     andConditions.push({
       $or: [
         { title: { $regex: regex } },

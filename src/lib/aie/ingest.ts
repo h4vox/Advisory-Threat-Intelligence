@@ -10,6 +10,7 @@ import {
   sha256Hex,
 } from "./extract";
 import { newId } from "./ids";
+import { safeFetchResource } from "./security";
 import { SEED_REPORTS } from "./seed-reports";
 import type {
   IngestEvent,
@@ -292,7 +293,7 @@ export async function matchOrCreateSource(url: string, publisherHint?: string): 
 
 export async function fetchResource(
   url: string,
-  opts?: { timeoutMs?: number; userAgent?: string },
+  opts?: { timeoutMs?: number; userAgent?: string; maxBytes?: number; acceptHeader?: string },
 ): Promise<{
   contentType: string;
   body: string;
@@ -301,39 +302,12 @@ export async function fetchResource(
   lastModified: string | null;
   finalUrl: string;
 }> {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 18000);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: {
-        "user-agent":
-          opts?.userAgent ??
-          "AIE-Crawler/0.2 (+research; public-cti ingest; respectful; contact: security-research)",
-        accept: "text/html,application/xhtml+xml,application/pdf,application/rss+xml,text/xml,text/plain;q=0.9,*/*;q=0.5",
-      },
-    });
-    if (!res.ok) {
-      throw new Error(`Source returned HTTP ${res.status}`);
-    }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength > MAX_BYTES) {
-      throw new Error("Document exceeds 1.5 MB ingest limit");
-    }
-    const contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-    return {
-      contentType,
-      body,
-      bytes: buf,
-      etag: res.headers.get("etag"),
-      lastModified: res.headers.get("last-modified"),
-      finalUrl: res.url || url,
-    };
-  } finally {
-    clearTimeout(t);
-  }
+  return safeFetchResource(url, {
+    timeoutMs: opts?.timeoutMs,
+    userAgent: opts?.userAgent,
+    maxBytes: opts?.maxBytes,
+    acceptHeader: opts?.acceptHeader,
+  });
 }
 
 export type PersistInput = {

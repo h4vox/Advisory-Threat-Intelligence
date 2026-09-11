@@ -19,6 +19,7 @@ import {
 } from "./extract";
 import { parseRssOrAtomXml } from "./feeds";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { safeFetchResource, validateSafePublicUrl } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
@@ -493,6 +494,7 @@ export async function executeCrawlJob(
 
     const enqueue = (item: FrontierItem) => {
       if (enqueuedUrls.has(item.canonicalUrl)) return;
+      if (!validateSafePublicUrl(item.canonicalUrl).safe) return;
 
       // Strict Scoped Research Endpoint Guard:
       // If the resource belongs to a source with a defined crawlPattern, enforce strict path scoping.
@@ -1016,47 +1018,39 @@ export async function executeCrawlJob(
             await new Promise((r) => setTimeout(r, Math.min(config.rateLimitMs, 250)));
           }
 
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 4500);
-
-          const res = await fetch(current.canonicalUrl, {
-            signal: controller.signal,
-            headers: {
-              "user-agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Crawler/3.0)",
-              accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
-            },
+          const fetched = await safeFetchResource(current.canonicalUrl, {
+            timeoutMs: 4500,
+            userAgent:
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Crawler/3.0)",
+            acceptHeader: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
           });
-          clearTimeout(timeout);
 
-          if (res.ok) {
-            const buf = new Uint8Array(await res.arrayBuffer());
-            rawBytes = buf;
-            contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
+          rawBytes = fetched.bytes;
+          contentType = fetched.contentType;
 
-            if (contentType.includes("pdf")) {
-              // Extract real text from PDF buffer using pdf-parse / pypdf fallback
-              try {
-                const pdfResult = await extractTextFromPdfBuffer(Buffer.from(buf));
-                if (pdfResult.text && pdfResult.text.length > 50) {
-                  textContent = pdfResult.text;
-                  if (pdfResult.title && pdfResult.title !== "Untitled report") {
-                    docTitle = pdfResult.title;
-                  }
-                  if (pdfResult.author) {
-                    current.author = pdfResult.author;
-                  }
-                  console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
-                } else {
-                  textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+          if (contentType.includes("pdf")) {
+            // Extract real text from PDF buffer using pdf-parse / pypdf fallback
+            try {
+              const pdfResult = await extractTextFromPdfBuffer(Buffer.from(fetched.bytes));
+              if (pdfResult.text && pdfResult.text.length > 50) {
+                textContent = pdfResult.text;
+                if (pdfResult.title && pdfResult.title !== "Untitled report") {
+                  docTitle = pdfResult.title;
                 }
-              } catch (pdfErr) {
-                console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
+                if (pdfResult.author) {
+                  current.author = pdfResult.author;
+                }
+                console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
+              } else {
                 textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
               }
-            } else {
-              const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-              fetchedHtmlBody = body;
+            } catch (pdfErr) {
+              console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
+              textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+            }
+          } else {
+            const body = fetched.body;
+            fetchedHtmlBody = body;
               const extracted = htmlToText(body);
               if (extracted.text && extracted.text.length > textContent.length) {
                 textContent = extracted.text;

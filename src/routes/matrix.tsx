@@ -1123,6 +1123,7 @@ function MatrixPage() {
                     title="PDF Preview"
                     srcDoc={previewData.rawHtml}
                     className="h-full w-full border-none bg-white"
+                    sandbox="allow-scripts allow-popups"
                   />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center text-muted">

@@ -265,7 +265,7 @@ function ReportPage() {
                     srcDoc={data.rawHtml}
                     title={data.title}
                     className="size-full border-0"
-                    sandbox="allow-same-origin"
+                    sandbox="allow-scripts allow-popups"
                   />
                 ) : (
                   <div className="flex size-full items-center justify-center p-8 text-sm text-neutral-500">
