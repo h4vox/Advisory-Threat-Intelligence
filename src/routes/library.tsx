@@ -1310,7 +1310,7 @@ function LibraryPage() {
                 </Button>
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   onClick={() => setAuditModalReport(null)}
                   className="text-xs"
                 >

@@ -1070,7 +1070,6 @@ export async function executeCrawlJob(
                 current.publisher = "Google Threat Intelligence Group";
                 current.author = htmlMeta.author || "Google Threat Intelligence Group";
               }
-            }
           }
         } catch (fetchErr) {
           // If we already had preloadedText, keep it; otherwise track failure
