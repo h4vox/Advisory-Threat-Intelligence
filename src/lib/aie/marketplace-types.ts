@@ -42,6 +42,7 @@ export type IntegrationItem = {
   isDefault?: boolean;
   description: string;
   overview: string;
+  endpointUrl?: string;
   installCommand?: string;
   authUrl?: string;
   actions: IntegrationAction[];
@@ -55,6 +56,8 @@ export type IntegrationItem = {
     selectedModel?: string;
     installedAt?: string;
     lastTestedAt?: string;
+    lastReconfiguredAt?: string;
+    logs?: string[];
     isConfigured?: boolean;
   };
 };

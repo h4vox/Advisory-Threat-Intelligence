@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports } from "@/lib/aie/server";
+import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
@@ -108,15 +108,60 @@ function LibraryPage() {
     });
   };
 
+  const queryClient = useQueryClient();
+  const [isAuditing, setIsAuditing] = useState(false);
+
+  // Debounce search query to trigger server-side full content search
+  const [debouncedQ, setDebouncedQ] = useState(q);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQ(q.trim());
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [q]);
+
+  const isDeepSearchActive = debouncedQ.length >= 2;
+
+  // Server-side deep content search: searches full 5,000-word extractedText in MongoDB!
+  const { data: searchResults, isLoading: isSearchLoading } = useQuery({
+    queryKey: ["reports-search", debouncedQ],
+    queryFn: () => listReports({ data: { q: debouncedQ } }),
+    enabled: isDeepSearchActive,
+    staleTime: 30_000,
+  });
+
   // Fetch all reports to enable rich interactive filtering and instant counts
-  const { data: rawReports, isLoading } = useQuery({
+  const { data: rawReports, isLoading: isBaseLoading } = useQuery({
     queryKey: ["reports-all"],
     queryFn: () => listReports({ data: {} }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
 
+  const isLoading = isDeepSearchActive ? isSearchLoading : isBaseLoading;
+
   const allReports = useMemo(() => rawReports || [], [rawReports]);
+  const activeReportsPool = useMemo(() => {
+    if (isDeepSearchActive && searchResults) {
+      return searchResults;
+    }
+    return allReports;
+  }, [isDeepSearchActive, searchResults, allReports]);
+
+  const handleRunAiAudit = async () => {
+    setIsAuditing(true);
+    toast.info("AI Quality Gate active. Auditing reports with Antigravity Agent...");
+    try {
+      const res = await auditLibraryWithAi({ data: {} });
+      toast.success(`AI Audit Complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged/pruned.`);
+      void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
+      void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
+    } catch (err: any) {
+      toast.error(`AI Audit failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsAuditing(false);
+    }
+  };
 
   // Compute category counts
   const categoryCounts = useMemo(() => {
@@ -320,7 +365,7 @@ function LibraryPage() {
   const filteredReports = useMemo(() => {
     const query = q.trim().toLowerCase();
 
-    const list = allReports
+    const list = activeReportsPool
       .filter((r) => {
         // Targeted Jump: Always show the target item being tracked from /ingest or matrix
         if (targetReport && r.id === targetReport.id) {
@@ -379,7 +424,8 @@ function LibraryPage() {
           return false;
         }
 
-        if (query) {
+        // For single-character or instant client typing before debounce
+        if (query && !isDeepSearchActive) {
           const repId = formatReportId(r.id);
           const domId = formatDomainId(r.sourceDomain || r.url);
           const tagsStr = r.tags?.join(" ") || "";
@@ -416,18 +462,20 @@ function LibraryPage() {
 
     return list;
   }, [
-    allReports,
+    activeReportsPool,
+    isDeepSearchActive,
     targetReport,
+    targetHighlightId,
+    q,
+    sortBy,
     selectedKind,
-    selectedTag,
     selectedActor,
     selectedMalware,
     selectedTactic,
     selectedPublisher,
+    selectedTag,
     minQuality,
     onlyWithIocs,
-    q,
-    sortBy,
   ]);
 
   const activeFiltersCount = useMemo(() => {
@@ -453,7 +501,7 @@ function LibraryPage() {
     setQ("");
   };
 
-  const { data: previewData, isLoading: isPreviewLoading } = useQuery({
+  const { data: previewData, isLoading: isPreviewLoading, isError: isPreviewError, refetch: refetchPreview } = useQuery({
     queryKey: ["report-pdf", previewReportId],
     queryFn: () => (previewReportId ? getReportPdf({ data: { id: previewReportId } }) : null),
     enabled: Boolean(previewReportId),
@@ -566,6 +614,18 @@ function LibraryPage() {
                 {activeFiltersCount}
               </span>
             )}
+          </Button>
+
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={isAuditing}
+            onClick={handleRunAiAudit}
+            className="h-9 gap-1.5 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+            title="Trigger intelligent AGY evaluation & verification across acquired intelligence reports"
+          >
+            <Sparkles className={cn("size-3.5", isAuditing && "animate-spin text-emerald-400")} />
+            <span>{isAuditing ? "Auditing with AI..." : "Audit with AI"}</span>
           </Button>
         </div>
       </div>
@@ -922,7 +982,7 @@ function LibraryPage() {
                     title="Click to view AI Quality Gate Audit Details"
                   >
                     <CheckCircle2 className="size-2.5 text-sage" />
-                    AI Verified
+                    AI Verified {r.aiQualityScore ? `· ${r.aiQualityScore}%` : ""}
                   </button>
                 ) : (
                   <button
@@ -977,6 +1037,17 @@ function LibraryPage() {
                     {r.title}
                   </h2>
                   <p className="mt-1.5 line-clamp-2 text-xs text-muted leading-relaxed">{r.excerpt}</p>
+                  {r.matchedSnippet && (
+                    <div className="mt-2.5 p-2 rounded-lg bg-black/40 border border-accent/40 text-[11px] font-mono">
+                      <div className="flex items-center gap-1.5 text-[9.5px] uppercase font-semibold text-accent mb-1">
+                        <Sparkles className="size-3 text-accent" />
+                        <span>Deep Content Match:</span>
+                      </div>
+                      <div className="text-fg/90 select-text whitespace-pre-wrap leading-relaxed">
+                        "{r.matchedSnippet}"
+                      </div>
+                    </div>
+                  )}
                 </button>
 
                 <div className="flex shrink-0 items-center gap-2 pt-1">
@@ -1196,6 +1267,25 @@ function LibraryPage() {
                 <div className="flex h-full items-center justify-center text-muted text-sm">
                   Loading high-fidelity PDF document representation...
                 </div>
+              ) : isPreviewError || (previewData && !previewData.ok) ? (
+                <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">
+                  <AlertTriangle className="size-8 text-warn mb-2.5" />
+                  <p className="text-sm font-medium text-fg">Unable to load document representation</p>
+                  <p className="mt-1 text-xs text-muted max-w-sm">
+                    {previewData && !previewData.ok && previewData.error
+                      ? previewData.error
+                      : "A network error occurred or the server connection was interrupted."}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="mt-4 text-xs gap-1.5"
+                    onClick={() => refetchPreview()}
+                  >
+                    <RefreshCw className="size-3" />
+                    <span>Retry Loading</span>
+                  </Button>
+                </div>
               ) : previewData?.rawHtml ? (
                 <iframe
                   title="Document PDF Preview"
@@ -1264,6 +1354,136 @@ function LibraryPage() {
                   <span className="text-accent font-semibold">
                     {auditModalReport.resourceKind?.replace(/_/g, " ") || "CAMPAIGN INTEL"}
                   </span>
+                </div>
+              </div>
+
+              {/* 5-DIMENSIONAL VALIDATION SCORECARD */}
+              <div className="rounded-lg border border-border bg-bg p-3.5 space-y-2.5">
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-muted font-semibold uppercase tracking-wider">5D Validation Scorecard:</span>
+                  <span className="text-accent font-bold text-xs">
+                    {auditModalReport.scoreBreakdown?.totalScore ?? Math.round(auditModalReport.qualityScore * 100)} / 100
+                  </span>
+                </div>
+
+                {/* Dimension 1: Procedural Depth (0-30) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-muted">
+                    <span>Procedural Depth (Commands/LOLBins)</span>
+                    <span className="text-fg font-semibold">
+                      {auditModalReport.scoreBreakdown?.proceduralDepth ?? Math.round(auditModalReport.qualityScore * 30)} / 30
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            (((auditModalReport.scoreBreakdown?.proceduralDepth ?? Math.round(auditModalReport.qualityScore * 30))) / 30) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Dimension 2: Attack Progression (0-25) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-muted">
+                    <span>Attack Progression (Multi-Stage Flow)</span>
+                    <span className="text-fg font-semibold">
+                      {auditModalReport.scoreBreakdown?.attackProgression ?? Math.round(auditModalReport.qualityScore * 25)} / 25
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            (((auditModalReport.scoreBreakdown?.attackProgression ?? Math.round(auditModalReport.qualityScore * 25))) / 25) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Dimension 3: Attribution & Context (0-15) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-muted">
+                    <span>Attribution & Threat Context</span>
+                    <span className="text-fg font-semibold">
+                      {auditModalReport.scoreBreakdown?.attributionContext ?? Math.round(auditModalReport.qualityScore * 15)} / 15
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            (((auditModalReport.scoreBreakdown?.attributionContext ?? Math.round(auditModalReport.qualityScore * 15))) / 15) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Dimension 4: Emulation Utility (0-20) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-muted">
+                    <span>Emulation & Detection Utility</span>
+                    <span className="text-fg font-semibold">
+                      {auditModalReport.scoreBreakdown?.emulationUtility ?? Math.round(auditModalReport.qualityScore * 20)} / 20
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            (((auditModalReport.scoreBreakdown?.emulationUtility ?? Math.round(auditModalReport.qualityScore * 20))) / 20) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Dimension 5: IOC Verifiability (0-10) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-muted">
+                    <span>IOC & Telemetry Verifiability</span>
+                    <span className="text-fg font-semibold">
+                      {auditModalReport.scoreBreakdown?.iocVerifiability ?? Math.round(auditModalReport.qualityScore * 10)} / 10
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-cyan-500 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            (((auditModalReport.scoreBreakdown?.iocVerifiability ?? Math.round(auditModalReport.qualityScore * 10))) / 10) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 

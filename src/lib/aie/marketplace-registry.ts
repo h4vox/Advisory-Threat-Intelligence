@@ -5,6 +5,161 @@ import type {
   PowerupItem,
 } from "./marketplace-types";
 
+function rightRotate(value: number, amount: number): number {
+  return (value >>> amount) | (value << (32 - amount));
+}
+
+function computeSha256Hex(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+
+  let H0 = 0x6a09e667, H1 = 0xbb67ae85, H2 = 0x3c6ef372, H3 = 0xa54ff53a;
+  let H4 = 0x510e527f, H5 = 0x9b05688c, H6 = 0x1f83d9ab, H7 = 0x5be0cd19;
+
+  const bitLength = bytes.length * 8;
+  const newByteLength = (((bytes.length + 8) >> 6) + 1) << 6;
+  const padded = new Uint8Array(newByteLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+
+  const view = new DataView(padded.buffer);
+  view.setUint32(newByteLength - 4, bitLength, false);
+
+  const W = new Uint32Array(64);
+
+  for (let i = 0; i < newByteLength; i += 64) {
+    for (let t = 0; t < 16; t++) {
+      W[t] = view.getUint32(i + t * 4, false);
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = rightRotate(W[t - 15], 7) ^ rightRotate(W[t - 15], 18) ^ (W[t - 15] >>> 3);
+      const s1 = rightRotate(W[t - 2], 17) ^ rightRotate(W[t - 2], 19) ^ (W[t - 2] >>> 10);
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;
+    }
+
+    let a = H0, b = H1, c = H2, d = H3, e = H4, f = H5, g = H6, h = H7;
+
+    for (let t = 0; t < 64; t++) {
+      const S1 = rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
+      const S0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) | 0;
+    }
+
+    H0 = (H0 + a) | 0;
+    H1 = (H1 + b) | 0;
+    H2 = (H2 + c) | 0;
+    H3 = (H3 + d) | 0;
+    H4 = (H4 + e) | 0;
+    H5 = (H5 + f) | 0;
+    H6 = (H6 + g) | 0;
+    H7 = (H7 + h) | 0;
+  }
+
+  const hashWords = [H0, H1, H2, H3, H4, H5, H6, H7];
+  return hashWords.map((w) => (w >>> 0).toString(16).padStart(8, "0")).join("");
+}
+
+function hexToBase64Url(hex: string): string {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function generateRandomBase64Url(byteLength = 32): string {
+  const bytes = new Uint8Array(byteLength);
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < byteLength; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+export interface AgyOAuthSession {
+  authUrl: string;
+  state: string;
+  codeVerifier: string;
+  codeChallenge: string;
+  createdAt: string;
+}
+
+/**
+ * Generates a dynamic PKCE authorization URL for Google Cloud OAuth 2.0.
+ * Automatically computes a unique high-entropy code_verifier, derives the
+ * S256 code_challenge, and embeds a cryptographically random session state.
+ */
+export function generateAgyOAuthSession(options?: { state?: string; codeVerifier?: string }): AgyOAuthSession {
+  const codeVerifier = options?.codeVerifier || generateRandomBase64Url(32);
+  const codeChallenge = hexToBase64Url(computeSha256Hex(codeVerifier));
+  const state = options?.state || generateRandomBase64Url(16);
+
+  const params = new URLSearchParams({
+    access_type: "offline",
+    client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    prompt: "consent",
+    redirect_uri: "https://antigravity.google/oauth-callback",
+    response_type: "code",
+    scope:
+      "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs https://www.googleapis.com/auth/aicode openid",
+    state,
+  });
+
+  return {
+    authUrl: `https://accounts.google.com/o/oauth2/auth?${params.toString()}`,
+    state,
+    codeVerifier,
+    codeChallenge,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function generateAgyOAuthUrl(options?: { state?: string; codeVerifier?: string }): string {
+  return generateAgyOAuthSession(options).authUrl;
+}
+
+export const OFFICIAL_AGY_OAUTH_URL = generateAgyOAuthUrl();
+
 export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
   {
     id: "agy_agent",
@@ -21,7 +176,7 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
     overview:
       "Antigravity AGY Agent provides deep cognitive research for the AIE crawler. It traverses threat blogs, uncovers hidden advisory endpoints, extracts technical procedure command-lines, and cross-references behaviors directly with MITRE ATT&CK techniques with zero single point of failure.",
     installCommand: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-    authUrl: "https://antigravity.google/oauth/authorize?client_id=agy-cli&scope=gemini.models",
+    authUrl: generateAgyOAuthUrl(),
     actions: [
       {
         id: "source_discovery",
@@ -47,14 +202,9 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
     connectors: [
       {
         type: "oauth_cli",
-        label: "Google Account OAuth (Browser Flow)",
-        description: "Runs `agy auth login` to obtain scoped credentials from Google Cloud / Gemini AI.",
-        authUrl: "https://antigravity.google/oauth/authorize?client_id=agy-cli&scope=gemini.models",
-      },
-      {
-        type: "binary",
-        label: "Local CLI Binary (`agy`)",
-        description: "Spawns the local Node/Bash child process `agy` located in PATH or ~/.gemini/bin.",
+        label: "Google Account OAuth (PKCE Flow)",
+        description: "Authenticates `agy` CLI via dynamic Google Cloud OAuth 2.0 PKCE challenge.",
+        authUrl: generateAgyOAuthUrl(),
       },
     ],
     tags: ["AI Security", "Google Gemini", "CLI Agent", "Autonomous", "Adversary Emulation"],
@@ -111,11 +261,6 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
         description: "Authenticates via browser OAuth redirect or CLI token.",
         authUrl: "https://console.anthropic.com/settings/keys",
       },
-      {
-        type: "binary",
-        label: "Local CLI Binary (`claude`)",
-        description: "Spawns the globally installed `@anthropic-ai/claude-code` binary.",
-      },
     ],
     tags: ["AI Security", "Anthropic", "CLI Agent", "Deep Reasoning", "Code Analysis"],
     supportedModels: [
@@ -157,11 +302,6 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
         label: "OpenAI Account OAuth",
         description: "Performs device code or browser-based OAuth authorization.",
         authUrl: "https://platform.openai.com/api-keys",
-      },
-      {
-        type: "binary",
-        label: "Local CLI Binary (`codex`)",
-        description: "Spawns the local `codex` CLI runtime.",
       },
     ],
     tags: ["AI Security", "OpenAI", "CLI Agent", "API Parsing", "Reasoning"],

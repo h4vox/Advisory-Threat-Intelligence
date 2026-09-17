@@ -36,6 +36,7 @@ import {
   DEFAULT_POWERUPS,
   DEFAULT_PLAYBOOKS,
 } from "../aie/marketplace-registry";
+import { evaluateResourceWithAgent } from "../aie/agy-agent";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -186,6 +187,40 @@ export async function ensureMongoIndexes() {
         { key: { docType: 1, createdAt: -1 }, background: true },
         { key: { docType: 1, domain: 1 }, background: true },
       ]);
+
+      // Ensure Full-Text Search index across content, titles, attack chains, and TTPs
+      try {
+        await col.createIndex(
+          {
+            title: "text",
+            extractedText: "text",
+            "analysis.threatActors": "text",
+            "analysis.malware": "text",
+            "extractedEntities.cves": "text",
+            "extractedEntities.techniques": "text",
+            "analysis.attackChain.description": "text",
+            "analysis.attackChain.techniqueName": "text",
+          },
+          {
+            weights: {
+              title: 10,
+              "analysis.threatActors": 8,
+              "analysis.malware": 8,
+              "extractedEntities.cves": 8,
+              "extractedEntities.techniques": 7,
+              "analysis.attackChain.description": 6,
+              "analysis.attackChain.techniqueName": 6,
+              extractedText: 2,
+            },
+            name: "threat_intel_fulltext_search_index",
+            background: true,
+          }
+        );
+      } catch (textIdxErr) {
+        // May already exist with compatible or existing schema
+        console.debug("[mongodb] Full-text index check:", (textIdxErr as Error).message);
+      }
+
       indexesEnsured = true;
     } catch (err) {
       console.warn("[mongodb] failed ensuring indexes:", err);
@@ -204,7 +239,24 @@ export async function ensureMongoIndexes() {
 export async function mongoGetReportById(id: string): Promise<ReportRecord | null> {
   const startTime = Date.now();
   const col = await getThreatIntelCollection();
-  const doc = await col.findOne({ docType: "report", id });
+  let doc = await col.findOne({ docType: "report", id: id.trim() });
+
+  if (!doc) {
+    const cleanId = id.trim().toLowerCase();
+    const hexPart = cleanId.replace(/^(rpt[-_]|report[-_])/i, "").replace(/[^a-z0-9]/g, "");
+    if (hexPart.length >= 4) {
+      doc = await col.findOne({
+        docType: "report",
+        $or: [
+          { id: cleanId },
+          { id: `rpt_${hexPart}` },
+          { id: { $regex: `^rpt_${hexPart}`, $options: "i" } },
+          { id: { $regex: hexPart, $options: "i" } },
+        ],
+      });
+    }
+  }
+
   logger.mongo(
     "findOne",
     "threat-intel",
@@ -246,6 +298,14 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     pdfUrl: doc.pdfUrl || "",
     pdfBase64: doc.pdfBase64 || "",
     analysis: (doc.analysis as IntelAnalysis) || null,
+    scoreBreakdown: doc.scoreBreakdown,
+    simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+    isEmergingTechnique: Boolean(doc.isEmergingTechnique),
+    noveltyRationale: (doc.noveltyRationale as string) || undefined,
+    tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
+    aiVerified: Boolean(doc.aiVerified ?? (doc.qualityScore && Number(doc.qualityScore) >= 0.5)),
+    aiQualityScore: typeof doc.aiQualityScore === "number" ? doc.aiQualityScore : (doc.qualityScore ? Math.round(Number(doc.qualityScore) * 100) : undefined),
+    aiAuditReason: (doc.aiAuditReason as string) || undefined,
   };
 }
 
@@ -457,24 +517,52 @@ export async function mongoListReports(params?: {
     andConditions.push({ "iocs.0": { $exists: true } });
   }
 
-  if (params?.q?.trim()) {
-    const regex = new RegExp(params.q.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    andConditions.push({
-      $or: [
-        { title: { $regex: regex } },
-        { publisher: { $regex: regex } },
-        { sourceName: { $regex: regex } },
-        { url: { $regex: regex } },
-        { canonicalUrl: { $regex: regex } },
-        { classification: { $regex: regex } },
-        { resourceKind: { $regex: regex } },
-        { "analysis.threatActors": { $regex: regex } },
-        { "analysis.malware": { $regex: regex } },
-        { "extractedEntities.cves": { $regex: regex } },
-        { "extractedEntities.tactics": { $regex: regex } },
-        { "iocs.value": { $regex: regex } },
-      ],
-    });
+  const hasQuery = Boolean(params?.q?.trim());
+  let searchTokens: string[] = [];
+
+  if (hasQuery) {
+    const rawQ = params!.q!.trim();
+    const cleanEscaped = rawQ.slice(0, 150).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(cleanEscaped, "i");
+    searchTokens = rawQ.split(/\s+/).filter((w) => w.length >= 2).slice(0, 6);
+    const tokenRegexes = searchTokens.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+
+    const orConditions: Filter<Document>[] = [
+      { title: { $regex: regex } },
+      { extractedText: { $regex: regex } },
+      { publisher: { $regex: regex } },
+      { sourceName: { $regex: regex } },
+      { url: { $regex: regex } },
+      { canonicalUrl: { $regex: regex } },
+      { classification: { $regex: regex } },
+      { resourceKind: { $regex: regex } },
+      { "analysis.threatActors": { $regex: regex } },
+      { "analysis.malware": { $regex: regex } },
+      { "extractedEntities.cves": { $regex: regex } },
+      { "extractedEntities.techniques": { $regex: regex } },
+      { "extractedEntities.tactics": { $regex: regex } },
+      { "analysis.attackChain.description": { $regex: regex } },
+      { "analysis.attackChain.techniqueName": { $regex: regex } },
+      { "iocs.value": { $regex: regex } },
+    ];
+
+    // If multiple words entered (e.g. "powershell encoded" or "lazarus sideload"),
+    // also match documents that contain all terms anywhere in text/title/actors
+    if (searchTokens.length > 1) {
+      orConditions.push({
+        $and: tokenRegexes.map((tr) => ({
+          $or: [
+            { title: { $regex: tr } },
+            { extractedText: { $regex: tr } },
+            { "analysis.threatActors": { $regex: tr } },
+            { "analysis.malware": { $regex: tr } },
+            { "analysis.attackChain.description": { $regex: tr } },
+          ],
+        })),
+      });
+    }
+
+    andConditions.push({ $or: orConditions });
   }
 
   if (andConditions.length > 0) {
@@ -482,47 +570,51 @@ export async function mongoListReports(params?: {
   }
 
   const startTime = Date.now();
-  const cursor = col
-    .find(filter)
-    .sort({ ingestedAt: -1 })
-    .project({
-      id: 1,
-      sourceId: 1,
-      sourceName: 1,
-      title: 1,
-      url: 1,
-      canonicalUrl: 1,
-      publishedAt: 1,
-      contentType: 1,
-      status: 1,
-      rawHash: 1,
-      textHash: 1,
-      qualityScore: 1,
-      wordCount: 1,
-      iocs: 1,
-      ingestOrigin: 1,
-      ingestedAt: 1,
-      publisher: 1,
-      author: 1,
-      classification: 1,
-      resourceKind: 1,
-      extractedEntities: 1,
-      discoveryMethod: 1,
-      discoveryQuery: 1,
-      parentSource: 1,
-      sourceDomain: 1,
-      version: 1,
-      analysis: 1,
-      simulationScore: 1,
-      isEmergingTechnique: 1,
-      noveltyRationale: 1,
-      tags: 1,
-      aiVerified: 1,
-      aiQualityScore: 1,
-      aiAuditReason: 1,
-      // Fetch pre-stored excerpt directly without expensive runtime $substrCP
-      excerpt: 1,
-    });
+  const projection: Record<string, number> = {
+    id: 1,
+    sourceId: 1,
+    sourceName: 1,
+    title: 1,
+    url: 1,
+    canonicalUrl: 1,
+    publishedAt: 1,
+    contentType: 1,
+    status: 1,
+    rawHash: 1,
+    textHash: 1,
+    qualityScore: 1,
+    wordCount: 1,
+    iocs: 1,
+    ingestOrigin: 1,
+    ingestedAt: 1,
+    publisher: 1,
+    author: 1,
+    classification: 1,
+    resourceKind: 1,
+    extractedEntities: 1,
+    discoveryMethod: 1,
+    discoveryQuery: 1,
+    parentSource: 1,
+    sourceDomain: 1,
+    version: 1,
+    analysis: 1,
+    simulationScore: 1,
+    isEmergingTechnique: 1,
+    noveltyRationale: 1,
+    tags: 1,
+    aiVerified: 1,
+    aiQualityScore: 1,
+    aiAuditReason: 1,
+    excerpt: 1,
+    scoreBreakdown: 1,
+  };
+
+  // When searching, also load extractedText to compute exact matched snippets
+  if (hasQuery) {
+    projection.extractedText = 1;
+  }
+
+  const cursor = col.find(filter).sort({ ingestedAt: -1 }).project(projection);
 
   const docs = await cursor.toArray();
   logger.mongo(
@@ -557,6 +649,26 @@ export async function mongoListReports(params?: {
         calculatedKind = "THREAT_ACTOR_DOSSIER";
       } else {
         calculatedKind = "CAMPAIGN_INTEL";
+      }
+    }
+
+    let matchedSnippet: string | undefined = undefined;
+    if (hasQuery && doc.extractedText) {
+      const fullText = (doc.extractedText as string) || "";
+      const queryLower = params!.q!.trim().toLowerCase();
+      let matchIdx = fullText.toLowerCase().indexOf(queryLower);
+      if (matchIdx < 0 && searchTokens.length > 0) {
+        for (const token of searchTokens) {
+          matchIdx = fullText.toLowerCase().indexOf(token.toLowerCase());
+          if (matchIdx >= 0) break;
+        }
+      }
+      if (matchIdx >= 0) {
+        const start = Math.max(0, matchIdx - 60);
+        const end = Math.min(fullText.length, matchIdx + 160);
+        const prefix = start > 0 ? "..." : "";
+        const suffix = end < fullText.length ? "..." : "";
+        matchedSnippet = `${prefix}${fullText.slice(start, end).replace(/\s+/g, " ").trim()}${suffix}`;
       }
     }
 
@@ -600,6 +712,8 @@ export async function mongoListReports(params?: {
       aiVerified: Boolean(doc.aiVerified ?? (doc.qualityScore && Number(doc.qualityScore) >= 0.5)),
       aiQualityScore: typeof doc.aiQualityScore === "number" ? doc.aiQualityScore : (doc.qualityScore ? Math.round(Number(doc.qualityScore) * 100) : undefined),
       aiAuditReason: (doc.aiAuditReason as string) || undefined,
+      scoreBreakdown: doc.scoreBreakdown,
+      matchedSnippet,
     };
   });
 
@@ -2641,10 +2755,10 @@ export async function mongoAuditLibraryWithAi(options: {
       }
     }
 
-    // LEGITIMATE INTEL: Assign canonical ResourceKind & enriched tags
     let calculatedKind = (doc.resourceKind as ResourceKind) || null;
     const cls = (doc.classification || "").toUpperCase();
     const fullTextUpper = (text + " " + title).toUpperCase();
+    const tags = Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any);
 
     if (
       cls.includes("INTRUSION") ||
@@ -2697,11 +2811,60 @@ export async function mongoAuditLibraryWithAi(options: {
       calculatedKind = "CAMPAIGN_INTEL";
     }
 
-    const tags = deriveReportTags({
-      ...doc,
-      resourceKind: calculatedKind,
-    });
+    // Live AI Evaluation with Bulletproof Fallback:
+    // Attempts autonomous evaluation via AGY/Gemini for unverified reports
+    let aiEvaluationResult: any = null;
+    if (!doc.aiVerified && verifiedCount < 8 && text.length > 100) {
+      try {
+        const evalRes = await evaluateResourceWithAgent({
+          title,
+          url,
+          text,
+          domain: (doc.sourceDomain as string) || undefined,
+          timeoutSeconds: 15,
+        });
+        if (evalRes.success && !evalRes.fallback) {
+          aiEvaluationResult = evalRes;
+        }
+      } catch (err) {
+        console.debug("[audit] Live AI evaluation skipped for doc:", doc.id, (err as Error).message);
+      }
+    }
 
+    if (aiEvaluationResult) {
+      calculatedKind = aiEvaluationResult.resourceKind || calculatedKind;
+      const aiScore = aiEvaluationResult.passScore;
+      const isApproved = aiEvaluationResult.recommendApproval && aiScore >= 50;
+
+      const updatedAnalysis: any = { ...(doc.analysis || {}) };
+      if (aiEvaluationResult.threatActors && aiEvaluationResult.threatActors.length > 0) {
+        const existingActors = new Set(updatedAnalysis.threatActors || []);
+        for (const act of aiEvaluationResult.threatActors) existingActors.add(act);
+        updatedAnalysis.threatActors = Array.from(existingActors);
+      }
+
+      await col.updateOne(
+        { id: doc.id, docType: "report" },
+        {
+          $set: {
+            status: isApproved ? "acquired" : "rejected",
+            classification: aiEvaluationResult.classification || doc.classification,
+            resourceKind: calculatedKind,
+            tags,
+            aiVerified: isApproved,
+            aiQualityScore: aiScore,
+            aiAuditReason: `AI Agent Audit: ${aiEvaluationResult.rationale}`,
+            analysis: updatedAnalysis,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      );
+      if (isApproved) verifiedCount++;
+      else prunedCount++;
+      continue;
+    }
+
+    // Heuristic Fallback Audit (active when AI agent is offline or times out)
     const aiQualityScore = Math.min(
       Math.max(
         Math.round(
@@ -2724,7 +2887,7 @@ export async function mongoAuditLibraryWithAi(options: {
           tags,
           aiVerified: true,
           aiQualityScore,
-          aiAuditReason: "Verified technical threat intelligence with actionable tradecraft",
+          aiAuditReason: "Heuristic Verification: Verified technical threat intelligence with actionable tradecraft",
           updatedAt: new Date().toISOString(),
         },
       }

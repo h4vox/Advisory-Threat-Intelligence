@@ -1,0 +1,23 @@
+services:
+  aie-agent-sandbox:
+    container_name: aie-agent-sandbox
+    build:
+      context: .
+      dockerfile: docker/agent-sandbox/Dockerfile
+    image: aie-agent-sandbox:latest
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    volumes:
+      - aie-agent-vault:/root/.gemini
+      - /home/havox/.local/bin/agy:/usr/local/bin/agy:ro
+      - /home/havox/.gemini/antigravity-cli/antigravity-oauth-token:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro
+    environment:
+      - AGENT_ENV=isolated_sandbox
+      - PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+      - HOME=/root
+    network_mode: bridge
+
+volumes:
+  aie-agent-vault:
+    name: aie-agent-vault

@@ -129,6 +129,17 @@ export type ReportRecord = {
   aiVerified?: boolean;
   aiQualityScore?: number;
   aiAuditReason?: string;
+  matchedSnippet?: string;
+  scoreBreakdown?: AgentScoreBreakdown;
+};
+
+export type AgentScoreBreakdown = {
+  proceduralDepth: number;     // 0 - 30 (Execution commands, LOLBins, APIs, process injection)
+  attackProgression: number;   // 0 - 25 (Multi-stage flow: Initial Access -> Execution -> Lateral -> C2 -> Impact)
+  attributionContext: number;  // 0 - 15 (Threat actor attribution, campaign tracking, targeted CVEs)
+  emulationUtility: number;    // 0 - 20 (Atomic tests, Caldera blueprints, Sigma/YARA rules, hunting queries)
+  iocVerifiability: number;    // 0 - 10 (Defanged hashes, C2 IPs/domains, Event IDs, Sysmon)
+  totalScore: number;          // 0 - 100
 };
 
 export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReasons" | "analysis"> & {
@@ -139,6 +150,8 @@ export type ReportListItem = Omit<ReportRecord, "extractedText" | "qualityReason
   aiVerified?: boolean;
   aiQualityScore?: number;
   aiAuditReason?: string;
+  matchedSnippet?: string;
+  scoreBreakdown?: AgentScoreBreakdown;
 };
 
 export type IngestEvent = {
@@ -364,6 +377,7 @@ export type CrawlJobItem = {
   agentTags?: string[];
   agentClassification?: string;
   agentResourceKind?: ResourceKind;
+  scoreBreakdown?: AgentScoreBreakdown;
   createdAt: string;
 };
 
@@ -400,6 +414,7 @@ export type DiscoveredResource = {
   agentTags?: string[];
   agentClassification?: string;
   agentResourceKind?: ResourceKind;
+  scoreBreakdown?: AgentScoreBreakdown;
   createdAt: string;
 };
 

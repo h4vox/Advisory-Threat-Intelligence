@@ -15,11 +15,13 @@
 import {
   discoverAgentSources,
   evaluateResourceWithAgent,
+  discoverDomainResourcesWithAgent,
   type AgentEvaluationResult,
   type DiscoveredAgentSource,
+  type DomainResourceHarvestResult,
 } from "./agy-agent";
 import type { ResourceClassification } from "./qualification";
-import type { AppSettings, ResourceKind } from "./types";
+import type { AppSettings, ResourceKind, AgentScoreBreakdown } from "./types";
 import { mongoGetAppSettings, mongoGetMarketplaceIntegrations } from "../mongodb/repository.server";
 import { logger } from "./logger";
 
@@ -212,6 +214,34 @@ export async function runUnifiedSourceDiscovery(
   };
 }
 
+export type UnifiedDomainHarvestParams = {
+  domain: string;
+  baseUrl: string;
+  htmlSnippet?: string;
+  model?: string;
+  timeoutSeconds?: number;
+  providerId?: string;
+};
+
+/**
+ * Executes coordinated target domain resource extraction through the active AI provider
+ */
+export async function runUnifiedDomainResourceDiscovery(
+  params: UnifiedDomainHarvestParams
+): Promise<DomainResourceHarvestResult> {
+  const active = await getActiveAIProvider();
+  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const timeoutSeconds = params.timeoutSeconds || active.timeoutSeconds;
+
+  return discoverDomainResourcesWithAgent({
+    domain: params.domain,
+    baseUrl: params.baseUrl,
+    htmlSnippet: params.htmlSnippet,
+    model: rawModel,
+    timeoutSeconds,
+  });
+}
+
 /**
  * Executes resource qualification and ATT&CK tagging through the active provider
  */
@@ -234,7 +264,16 @@ export async function runUnifiedResourceEvaluation(
     });
   }
 
-  // Fallback default structure matching taxonomy
+  // Fallback default structure matching taxonomy and 5D scoring rubric
+  const fallbackBreakdown: AgentScoreBreakdown = {
+    proceduralDepth: 24,
+    attackProgression: 20,
+    attributionContext: 12,
+    emulationUtility: 16,
+    iocVerifiability: 8,
+    totalScore: 80,
+  };
+
   return {
     success: true,
     fallback: true,
@@ -247,6 +286,7 @@ export async function runUnifiedResourceEvaluation(
     malwareFamilies: [],
     cves: [],
     mitreTechniques: [],
+    scoreBreakdown: fallbackBreakdown,
     rationale: `Evaluated via ${active.providerName} (${rawModel})`,
   };
 }

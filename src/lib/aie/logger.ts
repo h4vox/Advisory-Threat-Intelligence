@@ -3,6 +3,8 @@
  * High-visibility, structured ANSI color logging for monitoring and debugging.
  */
 
+import { appendSandboxLog } from "./agent-sandbox";
+
 // ANSI Color Codes
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -76,10 +78,12 @@ export const logger = {
       console.log(
         `${FG_GRAY}${time}${RESET} ${FG_MAGENTA}[SERVER-FN]${RESET} ${BOLD}${name}${RESET} ${FG_GREEN}✓ completed${RESET}${ms}${metaStr}`,
       );
+      appendSandboxLog("INFO", "system", `[SERVER-FN] ${name} completed ${typeof durationMs === "number" ? `(${durationMs}ms)` : ""}`, typeof meta === "object" ? meta : undefined);
     } else {
       console.log(
         `${FG_GRAY}${time}${RESET} ${FG_RED}[SERVER-FN]${RESET} ${BOLD}${name}${RESET} ${FG_RED}✗ FAILED${RESET}${metaStr}`,
       );
+      appendSandboxLog("ERROR", "system", `[SERVER-FN] ${name} FAILED`, typeof meta === "object" ? meta : undefined);
     }
   },
 
@@ -92,6 +96,7 @@ export const logger = {
       console.log(
         `${FG_GRAY}${time}${RESET} ${FG_BLUE}[MONGO:CACHE]${RESET} ${BOLD}${op}${RESET} on ${FG_CYAN}${collection}${RESET} ${FG_GREEN}⚡ memory-hit (0ms)${RESET} ${details ? `${FG_GRAY}› ${details}${RESET}` : ""}`,
       );
+      appendSandboxLog("DEBUG", "system", `[MONGO:CACHE] ${op} on ${collection} (0ms cache hit) ${details || ""}`);
       return;
     }
 
@@ -101,6 +106,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} ${FG_BLUE}[MONGO]${RESET} ${BOLD}${op}${RESET} ${FG_CYAN}${collection}${RESET} ${msColor}(${ms})${RESET} ${details ? `${FG_GRAY}› ${details}${RESET}` : ""}`,
     );
+    appendSandboxLog("DEBUG", "system", `[MONGO] ${op} on ${collection} (${ms}) ${details || ""}`);
   },
 
   /**
@@ -112,6 +118,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} ${actColor}[CACHE:${action}]${RESET} ${key} ${details ? `${FG_GRAY}› ${details}${RESET}` : ""}`,
     );
+    appendSandboxLog("DEBUG", "system", `[CACHE:${action}] ${key} ${details || ""}`);
   },
 
   /**
@@ -133,6 +140,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} ${FG_GREEN}[CRAWLER]${RESET} ${BOLD}${step}${RESET}: ${message}${metaStr}`,
     );
+    appendSandboxLog("INFO", "system", `[CRAWLER] ${step}: ${message}`, typeof meta === "object" ? meta : undefined);
   },
 
   /**
@@ -144,6 +152,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} ${FG_YELLOW}[QUALIFY]${RESET} ${outColor} [Score: ${score.toFixed(2)}] ${url} ${FG_GRAY}› ${reason}${RESET}`,
     );
+    appendSandboxLog(outcome === "PASS" ? "INFO" : "WARN", "system", `[QUALIFY] ${outcome} (${score.toFixed(2)}) ${url} › ${reason}`);
   },
 
   /**
@@ -154,6 +163,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} ${FG_CYAN}[INGEST]${RESET} ${BOLD}${action}${RESET}: "${titleOrUrl}" ${details ? `${FG_GRAY}› ${details}${RESET}` : ""}`,
     );
+    appendSandboxLog("INFO", "system", `[INGEST] ${action}: "${titleOrUrl}" ${details || ""}`);
   },
 
   /**
@@ -174,6 +184,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} \x1b[38;5;208m${BOLD}[AI:AGENT]${RESET} ${FG_CYAN}${BOLD}${action}${RESET}: ${message}${metaStr}`,
     );
+    appendSandboxLog("INFO", "agent", `[AI:AGENT] ${action}: ${message}`, typeof meta === "object" ? meta : undefined);
   },
 
   /**
@@ -184,6 +195,7 @@ export const logger = {
     console.log(
       `${FG_GRAY}${time}${RESET} \x1b[38;5;141m[MITRE]\x1b[0m ${action} ${FG_GRAY}› ${details}${RESET}`,
     );
+    appendSandboxLog("INFO", "system", `[MITRE] ${action} › ${details}`);
   },
 
   /**
@@ -192,6 +204,7 @@ export const logger = {
   info(tag: string, message: string, ...args: unknown[]) {
     const time = getTimestamp();
     console.log(`${FG_GRAY}${time}${RESET} ${FG_CYAN}[${tag}]${RESET} ${message}`, ...args);
+    appendSandboxLog("INFO", "system", `[${tag}] ${message}`);
   },
 
   /**
@@ -200,6 +213,7 @@ export const logger = {
   warn(tag: string, message: string, ...args: unknown[]) {
     const time = getTimestamp();
     console.warn(`${FG_GRAY}${time}${RESET} ${FG_YELLOW}[${tag}] WARN:${RESET} ${message}`, ...args);
+    appendSandboxLog("WARN", "system", `[${tag}] ${message}`);
   },
 
   /**
@@ -213,5 +227,6 @@ export const logger = {
     } else if (err) {
       console.error(err);
     }
+    appendSandboxLog("ERROR", "system", `[${tag}] ${message} ${err instanceof Error ? err.message : ""}`);
   },
 };

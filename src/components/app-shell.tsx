@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
+import { Bot, Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
 
 const NAV = [
   { to: "/", label: "Overview", icon: Radar },
@@ -23,9 +24,18 @@ function AieMark({ className }: { className?: string }) {
   );
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  className,
+  flush,
+}: {
+  children: ReactNode;
+  className?: string;
+  flush?: boolean;
+}) {
   const pathname = useRouterState({ select: (s) => s?.location?.pathname ?? "" }) ?? "";
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("aie_theme") as "dark" | "light" | null;
@@ -104,6 +114,22 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Database className="size-3.5" />
               <span className="font-mono text-[11px] uppercase tracking-wider hidden sm:inline">Retrieval store</span>
             </div>
+
+            {/* AI Agent Drawer Trigger Button */}
+            <button
+              type="button"
+              onClick={() => setAgentDrawerOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-accent/30 bg-accent/10 hover:bg-accent/20 text-accent transition-colors cursor-pointer group"
+              title="Open AI Agent Cognitive Chat & IPC Console"
+            >
+              <span className="relative flex size-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
+              </span>
+              <Bot className="size-3.5 text-accent" />
+              <span className="font-mono text-[11px] font-medium hidden sm:inline">AI Agent</span>
+            </button>
+
             <button
               type="button"
               onClick={toggleTheme}
@@ -115,15 +141,29 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        {/* Scrollable Main Content Container */}
-        <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 pb-20 md:pb-8 w-full">
+        {/* Main Content Container */}
+        <main
+          className={cn(
+            "flex-1 w-full",
+            flush
+              ? "overflow-hidden p-0 flex flex-col"
+              : "overflow-y-auto px-4 py-6 md:px-8 md:py-8 pb-20 md:pb-8",
+            className
+          )}
+        >
           {children}
         </main>
       </div>
 
+      {/* Global AI Agent Slide-Over Chat Drawer (Matches 1/4 Screen Width) */}
+      <AieAgentChatDrawer
+        isOpen={agentDrawerOpen}
+        onClose={() => setAgentDrawerOpen(false)}
+      />
+
       {/* Mobile Bottom Navigation: Fixed to bottom */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 backdrop-blur md:hidden">
-        <div className="grid grid-cols-6">
+        <div className="grid grid-cols-7">
           {NAV.map((item) => {
             const active = item.to === "/" ? pathname === "/" : Boolean(pathname && pathname.startsWith(item.to));
             return (
