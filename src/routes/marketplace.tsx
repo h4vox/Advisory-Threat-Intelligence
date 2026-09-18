@@ -142,25 +142,28 @@ function MarketplacePage() {
     queryFn: () => detectLocalAgentSession(),
   });
 
-  // Query isolated agent sandbox runtime status
+  // Query isolated agent sandbox runtime status (adaptive: 10s when modal open, 45s idle)
   const { data: sandboxStatus, refetch: refetchSandbox } = useQuery({
     queryKey: ["agent_sandbox_status"],
     queryFn: () => getAgentSandboxStatus(),
-    refetchInterval: 12000,
+    refetchInterval: configModalItem ? 10000 : 45000,
+    staleTime: 10000,
   });
 
-  // Query global live sandbox diagnostics logs
+  // Query global live sandbox diagnostics logs (only poll when logs drawer is expanded)
   const { data: sandboxLogsData, refetch: refetchLogs } = useQuery({
     queryKey: ["agent_sandbox_logs"],
     queryFn: () => getAgentSandboxLogs(),
-    refetchInterval: 3000,
+    refetchInterval: isLogsExpanded ? 3000 : false,
+    staleTime: 3000,
   });
 
-  // Query live detailed container metrics & host telemetry
+  // Query live detailed container metrics & host telemetry (only poll when telemetry strip is open)
   const { data: containerMetrics, refetch: refetchMetrics } = useQuery({
     queryKey: ["container_detailed_metrics"],
     queryFn: () => getContainerDetailedMetrics(),
-    refetchInterval: 4000,
+    refetchInterval: isLogsExpanded ? 4000 : false,
+    staleTime: 4000,
   });
 
   // Clear sandbox logs mutation

@@ -121,7 +121,7 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
     domainAllowlist: [],
     domainBlocklist: [],
     rateLimitMs: 150,
-    concurrency: 2,
+    concurrency: 4,
     maxPdfDownloads: 10,
     autoIngest: true,
     autoAnalyze: true,
@@ -932,211 +932,252 @@ export async function executeCrawlJob(
     const maxRunTimeMinutes = config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0 ? config.maxRunTimeMinutes : 5;
     const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
 
-    // 4. MAIN FRONTIER PROCESSING LOOP
-    // Dynamically pops the highest-priority resource and explores outbound relationships
-    while (frontierQueue.length > 0 && evaluatedCount < maxTotalResources) {
-      if (jobControl.cancel) {
-        console.log(`[crawler] Job ${jobId} cancellation requested, halting queue processing.`);
-        break;
-      }
-      if (Date.now() - jobStartTime > MAX_JOB_EXECUTION_TIME_MS) {
-        console.warn(`[crawler] Job ${jobId} reached execution limit (${maxRunTimeMinutes}m). Finalizing smoothly with acquired items.`);
-        break;
-      }
+    // 4. ADAPTIVE CONCURRENT WORKER POOL & HOST-AWARE DISPATCHER
+    // Distributes extraction across multiple target domains concurrently while respecting polite per-host spacing
+    const maxConcurrency = Math.min(Math.max(config.concurrency || 4, 1), 8);
+    const activeWorkerTasks = new Set<Promise<void>>();
+    const activeDomains = new Set<string>();
+    const domainLastAccessTimes = new Map<string, number>();
+    const currentlyProcessingUrls = new Set<string>();
+    let lastReportedProgressTime = 0;
 
-      // Sort by priority descending to dequeue the most technically relevant resource
-      frontierQueue.sort((a, b) => b.priorityScore - a.priorityScore);
-      const current = frontierQueue.shift()!;
+    async function reportLiveProgress(force = false) {
+      const now = Date.now();
+      if (!force && now - lastReportedProgressTime < 1000) return;
+      lastReportedProgressTime = now;
 
-      // Enforce per-domain limit on seed source homepage crawling to prevent getting trapped in site navigation,
-      // but allow citation outlinks and live search discovery to explore external domains freely
-      const currentDomainCount = domainVisitCounts.get(current.domain) || 0;
-      if (currentDomainCount >= maxPerDomain && current.depth > 0 && current.discoveryMethod === "seed_source") {
-        continue;
-      }
+      const elapsedSec = Math.max((now - jobStartTime) / 1000, 1);
+      const throughputDocsPerSec = Number((evaluatedCount / elapsedSec).toFixed(2));
+      const activeUrlList = Array.from(currentlyProcessingUrls);
 
-      // 4.1 Deduplication Check
-      let isDuplicate = false;
-      if (config.dedupMethod === "canonical_url" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") {
-        if (storedCanonicalUrls.has(current.canonicalUrl)) {
-          isDuplicate = true;
-        }
-      }
-
-      if (isDuplicate) {
-        duplicateCount++;
-        const itemId = newId("itm");
-        const jobItem: CrawlJobItem = {
-          id: itemId,
-          jobId,
-          sourceId: current.sourceId || null,
-          url: current.url,
-          canonicalUrl: current.canonicalUrl,
-          title: current.title || "Untitled",
-          classification: "THREAT_REPORT",
-          decision: "DUPLICATE",
-          reason: "Canonical URL already acquired in knowledge base",
-          stage: "duplicate",
-          discoveryMethod: current.discoveryMethod,
-          discoveryQuery: "",
-          parentUrl: current.parentUrl,
-          depth: current.depth,
-          publisher: current.publisher || current.domain,
-          discoveryPath: current.discoveryPath,
-          createdAt: new Date().toISOString(),
-        };
-
-        if (isMongoConfigured()) {
-          await mongoInsertCrawlJobItem(jobItem);
-        }
-        if (sql) {
-          try {
-            await sql`
-              insert into crawl_job_items (
-                id, job_id, source_id, url, canonical_url, title, classification,
-                decision, reason, discovery_method, discovery_query, depth, publisher
-              ) values (
-                ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-                ${current.title ?? 'Untitled'}, 'THREAT_REPORT', 'DUPLICATE',
-                'Canonical URL already acquired in knowledge base',
-                ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-              )
-            `;
-          } catch {
-            /* ignore sql fallback error */
-          }
-        }
-
-        // Deep Graph Expansion: Even if canonical report is already acquired,
-        // extract its outbound citations to discover fresh external threat papers and repositories!
-        if (config.recursiveDiscovery !== false && current.depth < maxDepth) {
-          try {
-            let storedHtml = "";
-            if (isMongoConfigured()) {
-              const existing = await mongoFindReportByCanonical(current.canonicalUrl);
-              storedHtml = existing?.rawHtml || existing?.extractedText || "";
-            }
-            if (storedHtml && storedHtml.length > 200) {
-              const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
-                storedHtml,
-                current.canonicalUrl,
-                {
-                  sourceId: current.sourceId,
-                  publisher: current.publisher,
-                  parentPath: current.discoveryPath,
-                  depth: current.depth + 1,
-                  allowExternalDomains: config.allowExternalDomains !== false,
-                  domainAllowlist: config.domainAllowlist,
-                  domainBlocklist: config.domainBlocklist,
-                },
-              );
-
-              if (isMongoConfigured()) {
-                for (const newSrc of newDiscoveredSources) {
-                  await mongoInsertDiscoveredSource(newSrc);
-                  newSourcesCount++;
-                }
-                for (const edge of graphEdges) {
-                  await mongoInsertGraphEdge({ ...edge, jobId });
-                }
-              }
-
-              for (const outlink of discoveredLinks) {
-                enqueue({
-                  url: outlink.url,
-                  canonicalUrl: outlink.canonicalUrl,
-                  depth: current.depth + 1,
-                  priorityScore: outlink.priorityScore,
-                  parentUrl: current.canonicalUrl,
-                  parentSource: current.publisher || current.domain,
-                  discoveryPath: outlink.discoveryPath,
-                  discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
-                  sourceId: current.sourceId,
-                  publisher: outlink.publisher,
-                  domain: outlink.domain,
-                  title: outlink.title,
-                });
-              }
-            }
-          } catch {
-            /* ignore outlink expansion error */
-          }
-        }
-
-        continue;
-      }
-
-      // 4.2 Content Acquisition & Evaluation Increment
-      evaluatedCount++;
-      domainVisitCounts.set(current.domain, currentDomainCount + 1);
-
-      // Log progress to MongoDB in real time
-      if (isMongoConfigured() && evaluatedCount % 5 === 0) {
-        await mongoUpdateCrawlJob(jobId, {
-          discoveredCount,
-          evaluatedCount,
-          qualifiedCount,
-          ingestedCount,
-          duplicateCount,
-          failedCount,
-          rejectedCount,
-          skippedCount,
-          newSourcesCount,
-          pdfGeneratedCount,
-          currentUrl: current.url,
-          currentStage: "evaluated",
-        });
-      }
-
-      let textContent = current.preloadedText || "";
-      let docTitle = current.title || "Threat Intelligence Report";
-      let contentType = "text/html";
-      let rawBytes: Uint8Array | string = current.preloadedText || "";
-      let fetchedHtmlBody = "";
-
-      const currentWordCount = textContent.split(/\s+/).filter(Boolean).length;
-      const needsFullArticleFetch = currentWordCount < 300;
-
-      if (needsFullArticleFetch) {
+      if (isMongoConfigured()) {
         try {
-          // Polite rate limit delay
-          if (config.rateLimitMs > 0) {
-            await new Promise((r) => setTimeout(r, Math.min(config.rateLimitMs, 250)));
+          await mongoUpdateCrawlJob(jobId, {
+            discoveredCount,
+            evaluatedCount,
+            qualifiedCount,
+            ingestedCount,
+            duplicateCount,
+            failedCount,
+            rejectedCount,
+            skippedCount,
+            newSourcesCount,
+            pdfGeneratedCount,
+            currentUrl: activeUrlList[0] || (activeDomains.size > 0 ? `Spidertree across ${activeDomains.size} hosts` : "Exploring frontier..."),
+            currentStage: "evaluated",
+            activeWorkers: activeWorkerTasks.size,
+            activeDomains: Array.from(activeDomains),
+            throughputDocsPerSec,
+          });
+        } catch {
+          /* non-critical telemetry update error */
+        }
+      }
+    }
+
+    function pickNextItem(): FrontierItem | null {
+      if (frontierQueue.length === 0) return null;
+      frontierQueue.sort((a, b) => b.priorityScore - a.priorityScore);
+
+      for (let i = 0; i < frontierQueue.length; i++) {
+        const item = frontierQueue[i];
+        const currentDomainCount = domainVisitCounts.get(item.domain) || 0;
+        if (currentDomainCount >= maxPerDomain && item.depth > 0 && item.discoveryMethod === "seed_source") {
+          frontierQueue.splice(i, 1);
+          i--;
+          continue;
+        }
+        if (!activeDomains.has(item.domain)) {
+          frontierQueue.splice(i, 1);
+          return item;
+        }
+      }
+
+      // If all items belong to busy domains, pop only if no workers are active
+      if (activeWorkerTasks.size === 0 && frontierQueue.length > 0) {
+        return frontierQueue.shift()!;
+      }
+      return null;
+    }
+
+    async function processFrontierItem(current: FrontierItem): Promise<void> {
+      currentlyProcessingUrls.add(current.url);
+      activeDomains.add(current.domain);
+
+      try {
+        const currentDomainCount = domainVisitCounts.get(current.domain) || 0;
+        if (currentDomainCount >= maxPerDomain && current.depth > 0 && current.discoveryMethod === "seed_source") {
+          return;
+        }
+
+        // 4.1 Deduplication Check
+        let isDuplicate = false;
+        if (config.dedupMethod === "canonical_url" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") {
+          if (storedCanonicalUrls.has(current.canonicalUrl)) {
+            isDuplicate = true;
+          }
+        }
+
+        if (isDuplicate) {
+          duplicateCount++;
+          const itemId = newId("itm");
+          const jobItem: CrawlJobItem = {
+            id: itemId,
+            jobId,
+            sourceId: current.sourceId || null,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
+            title: current.title || "Untitled",
+            classification: "THREAT_REPORT",
+            decision: "DUPLICATE",
+            reason: "Canonical URL already acquired in knowledge base",
+            stage: "duplicate",
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentUrl: current.parentUrl,
+            depth: current.depth,
+            publisher: current.publisher || current.domain,
+            discoveryPath: current.discoveryPath,
+            createdAt: new Date().toISOString(),
+          };
+
+          if (isMongoConfigured()) {
+            await mongoInsertCrawlJobItem(jobItem);
+          }
+          if (sql) {
+            try {
+              await sql`
+                insert into crawl_job_items (
+                  id, job_id, source_id, url, canonical_url, title, classification,
+                  decision, reason, discovery_method, discovery_query, depth, publisher
+                ) values (
+                  ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+                  ${current.title ?? 'Untitled'}, 'THREAT_REPORT', 'DUPLICATE',
+                  'Canonical URL already acquired in knowledge base',
+                  ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+                )
+              `;
+            } catch {
+              /* ignore sql fallback error */
+            }
           }
 
-          const fetched = await safeFetchResource(current.canonicalUrl, {
-            timeoutMs: 4500,
-            userAgent:
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Crawler/3.0)",
-            acceptHeader: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
-          });
-
-          rawBytes = fetched.bytes;
-          contentType = fetched.contentType;
-
-          if (contentType.includes("pdf")) {
-            // Extract real text from PDF buffer using pdf-parse / pypdf fallback
+          // Deep Graph Expansion: Even if canonical report is already acquired,
+          // extract its outbound citations to discover fresh external threat papers and repositories!
+          if (config.recursiveDiscovery !== false && current.depth < maxDepth) {
             try {
-              const pdfResult = await extractTextFromPdfBuffer(Buffer.from(fetched.bytes));
-              if (pdfResult.text && pdfResult.text.length > 50) {
-                textContent = pdfResult.text;
-                if (pdfResult.title && pdfResult.title !== "Untitled report") {
-                  docTitle = pdfResult.title;
+              let storedHtml = "";
+              if (isMongoConfigured()) {
+                const existing = await mongoFindReportByCanonical(current.canonicalUrl);
+                storedHtml = existing?.rawHtml || existing?.extractedText || "";
+              }
+              if (storedHtml && storedHtml.length > 200) {
+                const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
+                  storedHtml,
+                  current.canonicalUrl,
+                  {
+                    sourceId: current.sourceId,
+                    publisher: current.publisher,
+                    parentPath: current.discoveryPath,
+                    depth: current.depth + 1,
+                    allowExternalDomains: config.allowExternalDomains !== false,
+                    domainAllowlist: config.domainAllowlist,
+                    domainBlocklist: config.domainBlocklist,
+                  },
+                );
+
+                if (isMongoConfigured()) {
+                  for (const newSrc of newDiscoveredSources) {
+                    await mongoInsertDiscoveredSource(newSrc);
+                    newSourcesCount++;
+                  }
+                  for (const edge of graphEdges) {
+                    await mongoInsertGraphEdge({ ...edge, jobId });
+                  }
                 }
-                if (pdfResult.author) {
-                  current.author = pdfResult.author;
+
+                for (const outlink of discoveredLinks) {
+                  enqueue({
+                    url: outlink.url,
+                    canonicalUrl: outlink.canonicalUrl,
+                    depth: current.depth + 1,
+                    priorityScore: outlink.priorityScore,
+                    parentUrl: current.canonicalUrl,
+                    parentSource: current.publisher || current.domain,
+                    discoveryPath: outlink.discoveryPath,
+                    discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
+                    sourceId: current.sourceId,
+                    publisher: outlink.publisher,
+                    domain: outlink.domain,
+                    title: outlink.title,
+                  });
                 }
-                console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
-              } else {
+              }
+            } catch {
+              /* ignore outlink expansion error */
+            }
+          }
+
+          return;
+        }
+
+        // 4.2 Content Acquisition & Evaluation Increment
+        evaluatedCount++;
+        domainVisitCounts.set(current.domain, currentDomainCount + 1);
+        void reportLiveProgress();
+
+        let textContent = current.preloadedText || "";
+        let docTitle = current.title || "Threat Intelligence Report";
+        let contentType = "text/html";
+        let rawBytes: Uint8Array | string = current.preloadedText || "";
+        let fetchedHtmlBody = "";
+
+        const currentWordCount = textContent.split(/\s+/).filter(Boolean).length;
+        const needsFullArticleFetch = currentWordCount < 300;
+
+        if (needsFullArticleFetch) {
+          try {
+            // Polite per-domain rate limit delay (only pauses requests to the SAME domain, allowing other domains to run concurrently!)
+            const lastDomainHit = domainLastAccessTimes.get(current.domain) || 0;
+            const timeSinceDomainHit = Date.now() - lastDomainHit;
+            const politeDelay = Math.min(config.rateLimitMs ?? 150, 300);
+            if (timeSinceDomainHit < politeDelay) {
+              await new Promise((r) => setTimeout(r, politeDelay - timeSinceDomainHit));
+            }
+            domainLastAccessTimes.set(current.domain, Date.now());
+
+            const fetched = await safeFetchResource(current.canonicalUrl, {
+              timeoutMs: 4500,
+              userAgent:
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Crawler/3.0)",
+              acceptHeader: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
+            });
+
+            rawBytes = fetched.bytes;
+            contentType = fetched.contentType;
+
+            if (contentType.includes("pdf")) {
+              try {
+                const pdfResult = await extractTextFromPdfBuffer(Buffer.from(fetched.bytes));
+                if (pdfResult.text && pdfResult.text.length > 50) {
+                  textContent = pdfResult.text;
+                  if (pdfResult.title && pdfResult.title !== "Untitled report") {
+                    docTitle = pdfResult.title;
+                  }
+                  if (pdfResult.author) {
+                    current.author = pdfResult.author;
+                  }
+                  console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
+                } else {
+                  textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+                }
+              } catch (pdfErr) {
+                console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
                 textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
               }
-            } catch (pdfErr) {
-              console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
-              textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
-            }
-          } else {
-            const body = fetched.body;
-            fetchedHtmlBody = body;
+            } else {
+              const body = fetched.body;
+              fetchedHtmlBody = body;
               const extracted = htmlToText(body);
               if (extracted.text && extracted.text.length > textContent.length) {
                 textContent = extracted.text;
@@ -1156,24 +1197,71 @@ export async function executeCrawlJob(
                 current.publisher = "Google Threat Intelligence Group";
                 current.author = htmlMeta.author || "Google Threat Intelligence Group";
               }
+            }
+          } catch (fetchErr) {
+            if (!textContent) {
+              failedCount++;
+              const itemId = newId("itm");
+              const errMsg = fetchErr instanceof Error ? fetchErr.message : "Fetch failed";
+              const jobItem: CrawlJobItem = {
+                id: itemId,
+                jobId,
+                sourceId: current.sourceId || null,
+                url: current.url,
+                canonicalUrl: current.canonicalUrl,
+                title: current.title || "Fetch Failure",
+                classification: "OTHER",
+                decision: "FAILED",
+                reason: errMsg,
+                stage: "failed",
+                discoveryMethod: current.discoveryMethod,
+                discoveryQuery: "",
+                parentUrl: current.parentUrl,
+                depth: current.depth,
+                publisher: current.publisher || current.domain,
+                discoveryPath: current.discoveryPath,
+                createdAt: new Date().toISOString(),
+              };
+
+              if (isMongoConfigured()) {
+                await mongoInsertCrawlJobItem(jobItem);
+              }
+              return;
+            }
           }
-        } catch (fetchErr) {
-          // If we already had preloadedText, keep it; otherwise track failure
-          if (!textContent) {
-            failedCount++;
+        }
+
+        // Check Content Hash Deduplication
+        const textHash = sha256Hex(textContent);
+        if (
+          (config.dedupMethod === "content_hash" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") &&
+          storedHashes.has(textHash)
+        ) {
+          duplicateCount++;
+          return;
+        }
+
+        // Check Near-Duplicate & Syndication with SimHash
+        if (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both") {
+          const candidateSimhash = computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`);
+          const nearDuplicate = storedSimhashes.find(
+            (s) => computeHammingDistance(s.simhash, candidateSimhash) <= 3,
+          );
+          if (nearDuplicate) {
+            duplicateCount++;
+            console.log(`[crawler] SYNDICATED / NEAR-DUPLICATE of ${nearDuplicate.id}: "${docTitle.slice(0, 60)}"`);
             const itemId = newId("itm");
-            const errMsg = fetchErr instanceof Error ? fetchErr.message : "Fetch failed";
             const jobItem: CrawlJobItem = {
               id: itemId,
               jobId,
               sourceId: current.sourceId || null,
               url: current.url,
               canonicalUrl: current.canonicalUrl,
-              title: current.title || "Fetch Failure",
-              classification: "OTHER",
-              decision: "FAILED",
-              reason: errMsg,
-              stage: "failed",
+              title: docTitle,
+              classification: "THREAT_REPORT",
+              decision: "DUPLICATE",
+              reason: `Syndicated or near-duplicate reproduction of canonical report ${nearDuplicate.id} ("${nearDuplicate.title.slice(0, 50)}")`,
+              stage: "duplicate",
               discoveryMethod: current.discoveryMethod,
               discoveryQuery: "",
               parentUrl: current.parentUrl,
@@ -1182,36 +1270,149 @@ export async function executeCrawlJob(
               discoveryPath: current.discoveryPath,
               createdAt: new Date().toISOString(),
             };
-
             if (isMongoConfigured()) {
               await mongoInsertCrawlJobItem(jobItem);
             }
-            continue;
+            return;
           }
         }
-      }
 
+        // Check dateRangeDays filter if configured
+        if (config.dateRangeDays && config.dateRangeDays > 0) {
+          const pubDateMatch = textContent.slice(0, 1500).match(/\b(202[0-6])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
+          if (pubDateMatch) {
+            const parsedPubDate = new Date(pubDateMatch[0]).getTime();
+            const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
+            if (!isNaN(parsedPubDate) && parsedPubDate < cutoff) {
+              skippedCount++;
+              return;
+            }
+          }
+        }
 
-      // Check Content Hash Deduplication
-      const textHash = sha256Hex(textContent);
-      if (
-        (config.dedupMethod === "content_hash" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") &&
-        storedHashes.has(textHash)
-      ) {
-        duplicateCount++;
-        continue;
-      }
+        // Check maxPdfDownloads limit
+        const isPdf = contentType.includes("pdf") || /\.pdf$/i.test(current.canonicalUrl);
+        if (isPdf && pdfGeneratedCount >= (config.maxPdfDownloads || 10)) {
+          skippedCount++;
+          return;
+        }
 
-      // Check Near-Duplicate & Syndication with SimHash
-      if (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both") {
-        const candidateSimhash = computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`);
-        const nearDuplicate = storedSimhashes.find(
-          (s) => computeHammingDistance(s.simhash, candidateSimhash) <= 3,
-        );
-        if (nearDuplicate) {
-          duplicateCount++;
-          console.log(`[crawler] SYNDICATED / NEAR-DUPLICATE of ${nearDuplicate.id}: "${docTitle.slice(0, 60)}"`);
+        // 4.3 Recursive Citation & Graph Outlink Exploration
+        if (
+          config.recursiveDiscovery !== false &&
+          current.depth < maxDepth &&
+          fetchedHtmlBody &&
+          discoveredCount < maxTotalResources * 2
+        ) {
+          const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
+            fetchedHtmlBody,
+            current.canonicalUrl,
+            {
+              sourceId: current.sourceId,
+              publisher: current.publisher,
+              parentPath: current.discoveryPath,
+              depth: current.depth + 1,
+              allowExternalDomains: config.allowExternalDomains !== false,
+              domainAllowlist: config.domainAllowlist,
+              domainBlocklist: config.domainBlocklist,
+            },
+          );
+
+          if (isMongoConfigured()) {
+            for (const newSrc of newDiscoveredSources) {
+              await mongoInsertDiscoveredSource(newSrc);
+              newSourcesCount++;
+            }
+            for (const edge of graphEdges) {
+              await mongoInsertGraphEdge({ ...edge, jobId });
+            }
+          }
+
+          for (const outlink of discoveredLinks) {
+            enqueue({
+              url: outlink.url,
+              canonicalUrl: outlink.canonicalUrl,
+              depth: current.depth + 1,
+              priorityScore: outlink.priorityScore,
+              parentUrl: current.canonicalUrl,
+              parentSource: current.publisher || current.domain,
+              discoveryPath: outlink.discoveryPath,
+              discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
+              sourceId: current.sourceId,
+              publisher: outlink.publisher,
+              domain: outlink.domain,
+              title: outlink.title,
+            });
+          }
+        }
+
+        // 4.4 Heuristic Qualification Baseline & 5-Dimensional AI Agent Validation
+        const isFeedEntry = current.discoveryMethod === "rss_feed";
+        const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
+
+        let agentResult: AgentEvaluationResult | null = null;
+
+        const shouldRunAgent =
+          (config.agentTaggingEnabled || config.agentApprovalEnabled) &&
+          !qual.isIndexOrGeneric &&
+          textContent.trim().length > 60;
+
+        if (shouldRunAgent) {
+          try {
+            agentResult = await runUnifiedResourceEvaluation({
+              text: textContent,
+              title: docTitle,
+              url: current.canonicalUrl,
+              domain: current.domain,
+              timeoutSeconds: config.agentTimeoutSeconds || 45,
+              model: config.agentModel || "AGY: gemini-3.8-flash-low",
+            });
+
+            if (agentResult.success && !agentResult.fallback) {
+              logger.agent(
+                "EVALUATE:5D_DONE",
+                `"${docTitle.slice(0, 50)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
+                {
+                  breakdown: agentResult.scoreBreakdown,
+                  actors: agentResult.threatActors?.length || 0,
+                  malware: agentResult.malwareFamilies?.length || 0,
+                  tech: agentResult.mitreTechniques?.length || 0,
+                }
+              );
+              console.log(
+                `[crawler][agent] 5D Evaluated "${docTitle.slice(0, 60)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
+              );
+
+              if (agentResult.passScore >= 50 || agentResult.recommendApproval) {
+                qual.qualified = true;
+                qual.classification = agentResult.classification;
+                qual.resourceKind = agentResult.resourceKind;
+                qual.score = Math.max(qual.score, agentResult.passScore / 100);
+                if (agentResult.scoreBreakdown) {
+                  qual.simulationScore = Math.max(
+                    qual.simulationScore,
+                    agentResult.scoreBreakdown.emulationUtility / 20,
+                  );
+                }
+              } else {
+                qual.qualified = false;
+                qual.rejectionReason = agentResult.rationale || `Rejected by AI Agent: 5D score (${agentResult.passScore}/100) below threshold`;
+              }
+            } else if (agentResult.error) {
+              logger.agent("FALLBACK", `Agent fallback for "${docTitle.slice(0, 40)}": ${agentResult.error} — adhering to heuristic verdict (${qual.qualified})`);
+            }
+          } catch (agentErr) {
+            logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
+            agentResult = null;
+          }
+        }
+
+        if (!qual.qualified) {
+          rejectedCount++;
           const itemId = newId("itm");
+          const rejectMsg = qual.rejectionReason || "Below qualification threshold";
+          logger.qualification(current.canonicalUrl, "REJECT", qual.score, rejectMsg);
+
           const jobItem: CrawlJobItem = {
             id: itemId,
             jobId,
@@ -1219,222 +1420,20 @@ export async function executeCrawlJob(
             url: current.url,
             canonicalUrl: current.canonicalUrl,
             title: docTitle,
-            classification: "THREAT_REPORT",
-            decision: "DUPLICATE",
-            reason: `Syndicated or near-duplicate reproduction of canonical report ${nearDuplicate.id} ("${nearDuplicate.title.slice(0, 50)}")`,
-            stage: "duplicate",
+            classification: qual.classification,
+            decision: "REJECTED",
+            reason: rejectMsg,
+            stage: "rejected",
             discoveryMethod: current.discoveryMethod,
             discoveryQuery: "",
             parentUrl: current.parentUrl,
             depth: current.depth,
             publisher: current.publisher || current.domain,
-            discoveryPath: current.discoveryPath,
-            createdAt: new Date().toISOString(),
-          };
-          if (isMongoConfigured()) {
-            await mongoInsertCrawlJobItem(jobItem);
-          }
-          continue;
-        }
-      }
-
-      // Check dateRangeDays filter if configured
-      if (config.dateRangeDays && config.dateRangeDays > 0) {
-        const pubDateMatch = textContent.slice(0, 1500).match(/\b(202[0-6])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
-        if (pubDateMatch) {
-          const parsedPubDate = new Date(pubDateMatch[0]).getTime();
-          const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
-          if (!isNaN(parsedPubDate) && parsedPubDate < cutoff) {
-            skippedCount++;
-            continue;
-          }
-        }
-      }
-
-      // Check maxPdfDownloads limit
-      const isPdf = contentType.includes("pdf") || /\.pdf$/i.test(current.canonicalUrl);
-      if (isPdf && pdfGeneratedCount >= (config.maxPdfDownloads || 10)) {
-        skippedCount++;
-        continue;
-      }
-
-      // 4.3 Recursive Citation & Graph Outlink Exploration
-      // When a report contains links to new domains or papers, expand outward!
-      if (
-        config.recursiveDiscovery !== false &&
-        current.depth < maxDepth &&
-        fetchedHtmlBody &&
-        discoveredCount < maxTotalResources * 2
-      ) {
-        const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
-          fetchedHtmlBody,
-          current.canonicalUrl,
-          {
-            sourceId: current.sourceId,
-            publisher: current.publisher,
-            parentPath: current.discoveryPath,
-            depth: current.depth + 1,
-            allowExternalDomains: config.allowExternalDomains !== false,
-            domainAllowlist: config.domainAllowlist,
-            domainBlocklist: config.domainBlocklist,
-          },
-        );
-
-        if (isMongoConfigured()) {
-          for (const newSrc of newDiscoveredSources) {
-            await mongoInsertDiscoveredSource(newSrc);
-            newSourcesCount++;
-          }
-          for (const edge of graphEdges) {
-            await mongoInsertGraphEdge({ ...edge, jobId });
-          }
-        }
-
-        // Push discovered citations, PDFs, and external research papers into the frontier!
-        for (const outlink of discoveredLinks) {
-          enqueue({
-            url: outlink.url,
-            canonicalUrl: outlink.canonicalUrl,
-            depth: current.depth + 1,
-            priorityScore: outlink.priorityScore,
-            parentUrl: current.canonicalUrl,
-            parentSource: current.publisher || current.domain,
-            discoveryPath: outlink.discoveryPath,
-            discoveryMethod: outlink.isExternalDomain ? "outlink_citation" : "seed_source",
-            sourceId: current.sourceId,
-            publisher: outlink.publisher,
-            domain: outlink.domain,
-            title: outlink.title,
-          });
-        }
-      }
-
-      // 4.4 Heuristic Qualification Baseline & 5-Dimensional AI Agent Validation
-      const isFeedEntry = current.discoveryMethod === "rss_feed";
-      const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
-
-      let agentResult: AgentEvaluationResult | null = null;
-
-      // Run AI Agent 5-Dimensional Evaluation if enabled and not an obvious generic navigation path
-      const shouldRunAgent =
-        (config.agentTaggingEnabled || config.agentApprovalEnabled) &&
-        !qual.isIndexOrGeneric &&
-        textContent.trim().length > 60;
-
-      if (shouldRunAgent) {
-        try {
-          agentResult = await runUnifiedResourceEvaluation({
-            text: textContent,
-            title: docTitle,
-            url: current.canonicalUrl,
-            domain: current.domain,
-            timeoutSeconds: config.agentTimeoutSeconds || 45,
-            model: config.agentModel || "AGY: gemini-3.8-flash-low",
-          });
-
-          if (agentResult.success && !agentResult.fallback) {
-            logger.agent(
-              "EVALUATE:5D_DONE",
-              `"${docTitle.slice(0, 50)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
-              {
-                breakdown: agentResult.scoreBreakdown,
-                actors: agentResult.threatActors?.length || 0,
-                malware: agentResult.malwareFamilies?.length || 0,
-                tech: agentResult.mitreTechniques?.length || 0,
-              }
-            );
-            console.log(
-              `[crawler][agent] 5D Evaluated "${docTitle.slice(0, 60)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
-            );
-
-            // Agent Decision overrides heuristic blind spots or catches marketing fluff:
-            if (agentResult.passScore >= 50 || agentResult.recommendApproval) {
-              // Rescued/Approved by AI Agent: genuine technical adversary intelligence identified!
-              qual.qualified = true;
-              qual.classification = agentResult.classification;
-              qual.resourceKind = agentResult.resourceKind;
-              qual.score = Math.max(qual.score, agentResult.passScore / 100);
-              if (agentResult.scoreBreakdown) {
-                qual.simulationScore = Math.max(
-                  qual.simulationScore,
-                  agentResult.scoreBreakdown.emulationUtility / 20,
-                );
-              }
-            } else {
-              // Agent confirmed sub-threshold noise or marketing
-              qual.qualified = false;
-              qual.rejectionReason = agentResult.rationale || `Rejected by AI Agent: 5D score (${agentResult.passScore}/100) below threshold`;
-            }
-          } else if (agentResult.error) {
-            logger.agent("FALLBACK", `Agent fallback for "${docTitle.slice(0, 40)}": ${agentResult.error} — adhering to heuristic verdict (${qual.qualified})`);
-          }
-        } catch (agentErr) {
-          logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
-          agentResult = null;
-        }
-      }
-
-      if (!qual.qualified) {
-        rejectedCount++;
-        const itemId = newId("itm");
-        const rejectMsg = qual.rejectionReason || "Below qualification threshold";
-        logger.qualification(current.canonicalUrl, "REJECT", qual.score, rejectMsg);
-
-        const jobItem: CrawlJobItem = {
-          id: itemId,
-          jobId,
-          sourceId: current.sourceId || null,
-          url: current.url,
-          canonicalUrl: current.canonicalUrl,
-          title: docTitle,
-          classification: qual.classification,
-          decision: "REJECTED",
-          reason: rejectMsg,
-          stage: "rejected",
-          discoveryMethod: current.discoveryMethod,
-          discoveryQuery: "",
-          parentUrl: current.parentUrl,
-          depth: current.depth,
-          publisher: current.publisher || current.domain,
-          qualityScore: qual.score,
-          simulationScore: qual.simulationScore,
-          isEmergingTechnique: qual.isEmergingTechnique,
-          noveltyRationale: qual.noveltyRationale,
-          resourceKind: qual.resourceKind,
-          discoveryPath: current.discoveryPath,
-          agentScore: agentResult?.passScore,
-          agentApproved: agentResult?.recommendApproval,
-          agentRationale: agentResult?.rationale,
-          agentTags: agentResult?.mitreTechniques,
-          agentClassification: agentResult?.classification,
-          agentResourceKind: agentResult?.resourceKind,
-          scoreBreakdown: agentResult?.scoreBreakdown,
-          createdAt: new Date().toISOString(),
-        };
-
-        if (isMongoConfigured()) {
-          await mongoInsertCrawlJobItem(jobItem);
-          await mongoUpsertDiscoveredResource({
-            id: newId("dsc"),
-            canonicalUrl: current.canonicalUrl,
-            url: current.url,
-            sourceId: current.sourceId || null,
-            title: docTitle,
-            publisher: current.publisher || current.domain,
-            classification: qual.classification,
-            resourceKind: qual.resourceKind,
-            discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
-            parentSource: current.parentSource || current.domain,
-            parentUrl: current.parentUrl,
-            sourceDomain: current.domain,
-            contentType,
-            status: "rejected",
-            rejectReason: rejectMsg,
             qualityScore: qual.score,
             simulationScore: qual.simulationScore,
             isEmergingTechnique: qual.isEmergingTechnique,
             noveltyRationale: qual.noveltyRationale,
+            resourceKind: qual.resourceKind,
             discoveryPath: current.discoveryPath,
             agentScore: agentResult?.passScore,
             agentApproved: agentResult?.recommendApproval,
@@ -1443,221 +1442,11 @@ export async function executeCrawlJob(
             agentClassification: agentResult?.classification,
             agentResourceKind: agentResult?.resourceKind,
             scoreBreakdown: agentResult?.scoreBreakdown,
-          });
-        }
+            createdAt: new Date().toISOString(),
+          };
 
-        if (sql) {
-          try {
-            await sql`
-              insert into crawl_job_items (
-                id, job_id, source_id, url, canonical_url, title, classification,
-                decision, reason, discovery_method, discovery_query, depth, publisher
-              ) values (
-                ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-                ${docTitle}, ${qual.classification}, 'REJECTED', ${rejectMsg},
-                ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-              )
-            `;
-
-            await sql`
-              insert into discovered_resources (
-                id, canonical_url, url, source_id, title, publisher, classification,
-                discovery_method, discovery_query, parent_source, source_domain,
-                content_type, status, reject_reason, quality_score
-              ) values (
-                ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
-                ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
-                '', ${current.parentSource ?? current.domain}, ${current.domain},
-                ${contentType}, 'rejected', ${rejectMsg}, ${qual.score}
-              )
-              on conflict (canonical_url) do update
-              set status = 'rejected', reject_reason = excluded.reject_reason, updated_at = now()
-            `;
-          } catch {
-            /* ignore sql fallback error */
-          }
-        }
-        continue;
-      }
-
-      qualifiedCount++;
-      logger.qualification(
-        current.canonicalUrl,
-        "PASS",
-        qual.score,
-        `Classification: ${qual.classification}, Resource: ${qual.resourceKind}`,
-      );
-
-      // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
-      const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
-      const iocs = harvestIocs(textContent);
-      const rawHash = sha256Hex(rawBytes || textContent);
-      const reportId = newId("rpt");
-
-      let intelAnalysis = null;
-      let extractedEntities = undefined;
-      if (config.autoAnalyze) {
-        intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
-        extractedEntities = extractStructuredEntities(textContent, docTitle, qual.classification, intelAnalysis);
-      }
-
-      // High-Fidelity PDF & HTML Layout Generation
-      let pristineHtml = "";
-      if (config.generatePdf !== false) {
-        const isPdfResource = contentType.includes("pdf") || current.canonicalUrl.toLowerCase().endsWith(".pdf");
-        pristineHtml = buildPristineDocumentHtml(isPdfResource ? textContent : (fetchedHtmlBody || textContent), {
-          id: reportId,
-          title: docTitle,
-          url: current.url,
-          canonicalUrl: current.canonicalUrl,
-          publisher: current.publisher || current.domain,
-          author: current.publisher || current.domain,
-          publishedAt: new Date().toISOString().slice(0, 10),
-          ingestedAt: new Date().toISOString(),
-          classification: qual.classification,
-          rawHash,
-          textHash,
-          qualityScore: score,
-          wordCount,
-          iocs,
-          analysis: intelAnalysis,
-        });
-        pdfGeneratedCount++;
-      }
-
-      // 4.6 Ingestion vs Human Review Queue
-      const shouldAutoIngest =
-        Boolean(config.autoIngest) ||
-        Boolean(config.agentAutoIngestEnabled && agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 65);
-
-      if (shouldAutoIngest) {
-        ingestedCount++;
-        storedCanonicalUrls.add(current.canonicalUrl);
-        storedHashes.add(textHash);
-        logger.ingest(
-          "ACQUIRED",
-          docTitle,
-          `Classification: ${qual.resourceKind}, Score: ${score.toFixed(2)}, Words: ${wordCount}, IOCs: ${iocs.length}, TTPs: ${intelAnalysis?.attackChain?.length ?? 0}`,
-        );
-
-        // Persist to MongoDB Atlas
-        if (isMongoConfigured()) {
-          try {
-            const isGoogle = current.domain === "cloud.google.com" || current.sourceId === "src_mandiant";
-            const effectivePublisher = current.publisher || (isGoogle ? "Google Threat Intelligence Group" : current.domain);
-            const effectiveAuthor = current.author || effectivePublisher;
-            const effectiveSourceName = isGoogle ? "Google Threat Intelligence" : current.publisher || current.domain;
-            const effectiveSourceId = current.sourceId || (isGoogle ? "src_mandiant" : "src_expanded");
-
-            const isAiVerified = Boolean(agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 50);
-            const aiScore = agentResult?.passScore ? agentResult.passScore : Math.round(score * 100);
-            const aiReason = agentResult?.rationale || "Verified by CTI Heuristic Qualification Gate";
-
-            if (agentResult) {
-              if (agentResult.threatActors?.length) {
-                intelAnalysis = intelAnalysis || {
-                  method: "llm" as const,
-                  classification: qual.classification || "General Threat Intel",
-                  threatActors: [],
-                  malware: [],
-                  vulnerabilities: [],
-                  ttps: [],
-                  ioas: [],
-                  attackChain: [],
-                  detections: [],
-                  hunting: [],
-                  emulation: [],
-                };
-                const mergedActors = new Set([...(intelAnalysis.threatActors || []), ...agentResult.threatActors]);
-                intelAnalysis.threatActors = Array.from(mergedActors);
-              }
-              if (agentResult.mitreTechniques?.length) {
-                extractedEntities = extractedEntities || {
-                  threatActors: [],
-                  malwareFamilies: [],
-                  cves: [],
-                  tactics: [],
-                  techniques: [],
-                  procedures: [],
-                  detectionRules: [],
-                  mitigations: [],
-                  campaign: null,
-                };
-                const existingIds = new Set((extractedEntities.techniques || []).map((t) => t.id));
-                for (const techId of agentResult.mitreTechniques) {
-                  if (!existingIds.has(techId)) {
-                    extractedEntities.techniques.push({
-                      id: techId,
-                      name: techId,
-                      tactic: "Execution",
-                    });
-                    existingIds.add(techId);
-                  }
-                }
-              }
-            }
-
-            await mongoInsertReport({
-              id: reportId,
-              sourceId: effectiveSourceId,
-              sourceName: effectiveSourceName,
-              title: docTitle,
-              url: current.url,
-              canonicalUrl: current.canonicalUrl,
-              publishedAt: new Date().toISOString().slice(0, 10),
-              contentType,
-              status: "acquired",
-              rawHash,
-              textHash,
-              qualityScore: score,
-              qualityReasons: reasons,
-              wordCount,
-              extractedText: textContent,
-              iocs,
-              ingestOrigin: current.depth > 0 ? "citation_expansion" : "crawl",
-              ingestedAt: new Date().toISOString(),
-              publisher: effectivePublisher,
-              author: effectiveAuthor,
-              classification: qual.classification,
-              resourceKind: qual.resourceKind,
-              extractedEntities,
-              discoveryMethod: current.discoveryMethod,
-              discoveryQuery: "",
-              parentSource: current.parentSource || current.domain,
-              sourceDomain: current.domain,
-              version: 1,
-              rawHtml: pristineHtml,
-              pdfUrl: "",
-              analysis: intelAnalysis,
-              discoveryPath: current.discoveryPath,
-              simulationScore: qual.simulationScore,
-              isEmergingTechnique: qual.isEmergingTechnique,
-              noveltyRationale: qual.noveltyRationale,
-              aiVerified: isAiVerified,
-              aiQualityScore: aiScore,
-              aiAuditReason: aiReason,
-              scoreBreakdown: agentResult?.scoreBreakdown,
-            });
-
-            storedSimhashes.push({
-              id: reportId,
-              simhash: computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`),
-              title: docTitle,
-            });
-
-            if (current.sourceId) {
-              await mongoUpdateSourceLastIngest(current.sourceId);
-            }
-
-            await mongoInsertIngestEvent({
-              id: newId("evt"),
-              reportId,
-              url: current.url,
-              outcome: "acquired",
-              detail: `[${qual.resourceKind}] quality ${score} (sim: ${qual.simulationScore}) · ${wordCount} words · ${iocs.length} IOCs · Depth ${current.depth} (${current.domain})`,
-              createdAt: new Date().toISOString(),
-            });
-
+          if (isMongoConfigured()) {
+            await mongoInsertCrawlJobItem(jobItem);
             await mongoUpsertDiscoveredResource({
               id: newId("dsc"),
               canonicalUrl: current.canonicalUrl,
@@ -1673,204 +1462,386 @@ export async function executeCrawlJob(
               parentUrl: current.parentUrl,
               sourceDomain: current.domain,
               contentType,
-              status: "ingested",
-              qualityScore: score,
+              status: "rejected",
+              rejectReason: rejectMsg,
+              qualityScore: qual.score,
               simulationScore: qual.simulationScore,
               isEmergingTechnique: qual.isEmergingTechnique,
               noveltyRationale: qual.noveltyRationale,
-              reportId,
               discoveryPath: current.discoveryPath,
-              // AI Agent enhancement fields (when available)
-              ...(agentResult && agentResult.success && !agentResult.fallback
-                ? {
-                    agentScore: agentResult.passScore,
-                    agentApproved: agentResult.recommendApproval,
-                    agentRationale: agentResult.rationale,
-                    agentClassification: agentResult.classification,
-                    agentResourceKind: agentResult.resourceKind,
-                    scoreBreakdown: agentResult.scoreBreakdown,
-                    agentTags: [
-                      ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
-                      ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
-                      ...(agentResult.cves || []).map((c) => `cve:${c}`),
-                      ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
-                    ],
-                  }
-                : {}),
+              agentScore: agentResult?.passScore,
+              agentApproved: agentResult?.recommendApproval,
+              agentRationale: agentResult?.rationale,
+              agentTags: agentResult?.mitreTechniques,
+              agentClassification: agentResult?.classification,
+              agentResourceKind: agentResult?.resourceKind,
+              scoreBreakdown: agentResult?.scoreBreakdown,
             });
-          } catch (mongoErr) {
-            console.warn("[mongodb] report persistence error:", mongoErr);
           }
-        }
 
-        // Persist to SQL store (optional fallback)
-        if (sql) {
-          try {
-            const isGoogle = current.domain === "cloud.google.com" || current.sourceId === "src_mandiant";
-            const effectivePublisher = current.publisher || (isGoogle ? "Google Threat Intelligence Group" : current.domain);
-            const effectiveAuthor = current.author || effectivePublisher;
-            const effectiveSourceId = current.sourceId || (isGoogle ? "src_mandiant" : "src_dfir");
+          if (sql) {
+            try {
+              await sql`
+                insert into crawl_job_items (
+                  id, job_id, source_id, url, canonical_url, title, classification,
+                  decision, reason, discovery_method, discovery_query, depth, publisher
+                ) values (
+                  ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+                  ${docTitle}, ${qual.classification}, 'REJECTED', ${rejectMsg},
+                  ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+                )
+              `;
 
-            await sql`
-              insert into reports (
-                id, source_id, title, url, canonical_url, published_at, content_type,
-                status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
-                extracted_text, iocs_json, ingest_origin, publisher, author,
-                classification, discovery_method, discovery_query, parent_source,
-                source_domain, version, analysis_json, raw_html
-              ) values (
-                ${reportId}, ${effectiveSourceId}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
-                ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
-                ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
-                ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
-                ${effectivePublisher}, ${effectiveAuthor},
-                ${qual.classification}, ${current.discoveryMethod}, '', ${current.parentSource ?? current.domain},
-                ${current.domain}, 1, ${JSON.stringify(intelAnalysis)}, ${pristineHtml}
-              )
-            `;
-
-            await sql`
-              insert into discovered_resources (
-                id, canonical_url, url, source_id, title, publisher, classification,
-                discovery_method, discovery_query, parent_source, source_domain,
-                content_type, status, quality_score, report_id
-              ) values (
-                ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
-                ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
-                '', ${current.parentSource ?? current.domain}, ${current.domain},
-                ${contentType}, 'ingested', ${score}, ${reportId}
-              )
-              on conflict (canonical_url) do update
-              set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
-            `;
-          } catch {
-            /* ignore SQL fallback error */
+              await sql`
+                insert into discovered_resources (
+                  id, canonical_url, url, source_id, title, publisher, classification,
+                  discovery_method, discovery_query, parent_source, source_domain,
+                  content_type, status, reject_reason, quality_score
+                ) values (
+                  ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+                  ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+                  '', ${current.parentSource ?? current.domain}, ${current.domain},
+                  ${contentType}, 'rejected', ${rejectMsg}, ${qual.score}
+                )
+                on conflict (canonical_url) do update
+                set status = 'rejected', reject_reason = excluded.reject_reason, updated_at = now()
+              `;
+            } catch {
+              /* ignore sql fallback error */
+            }
           }
+          return;
         }
 
-        const itemId = newId("itm");
-        const jobItem: CrawlJobItem = {
-          id: itemId,
-          jobId,
-          sourceId: current.sourceId || null,
-          url: current.url,
-          canonicalUrl: current.canonicalUrl,
-          title: docTitle,
-          classification: qual.classification,
-          decision: "INGESTED",
-          reason: `Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`,
-          stage: "ingested",
-          discoveryMethod: current.discoveryMethod,
-          discoveryQuery: "",
-          parentUrl: current.parentUrl,
-          depth: current.depth,
-          publisher: current.publisher || current.domain,
-          qualityScore: score,
-          resourceKind: qual.resourceKind,
-          discoveryPath: current.discoveryPath,
-          createdAt: new Date().toISOString(),
-          // AI Agent enrichment (when available)
-          ...(agentResult && agentResult.success && !agentResult.fallback
-            ? {
-                agentScore: agentResult.passScore,
-                agentApproved: agentResult.recommendApproval,
-                agentRationale: agentResult.rationale,
-                agentClassification: agentResult.classification,
-                agentResourceKind: agentResult.resourceKind,
-                scoreBreakdown: agentResult.scoreBreakdown,
-                agentTags: [
-                  ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
-                  ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
-                  ...(agentResult.cves || []).map((c) => `cve:${c}`),
-                  ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
-                ],
-              }
-            : {}),
-        };
+        qualifiedCount++;
+        logger.qualification(
+          current.canonicalUrl,
+          "PASS",
+          qual.score,
+          `Classification: ${qual.classification}, Resource: ${qual.resourceKind}`,
+        );
 
-        if (isMongoConfigured()) {
-          await mongoInsertCrawlJobItem(jobItem);
-        }
-        if (sql) {
-          try {
-            await sql`
-              insert into crawl_job_items (
-                id, job_id, source_id, url, canonical_url, title, classification,
-                decision, reason, discovery_method, discovery_query, depth, publisher
-              ) values (
-                ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-                ${docTitle}, ${qual.classification}, 'INGESTED',
-                ${`Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`},
-                ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-              )
-            `;
-          } catch {
-            /* ignore */
-          }
-        }
-      } else {
-        // Auto-ingest is OFF: Hold in queue with explicit state for analyst review
-        skippedCount++;
-        const itemId = newId("itm");
-        const jobItem: CrawlJobItem = {
-          id: itemId,
-          jobId,
-          sourceId: current.sourceId || null,
-          url: current.url,
-          canonicalUrl: current.canonicalUrl,
-          title: docTitle,
-          classification: qual.classification,
-          decision: "AWAITING_APPROVAL",
-          reason: `Qualified (${qual.resourceKind}): quality ${score}. Auto-ingest is disabled in settings; held in Discovery Queue for approval.`,
-          stage: "qualified",
-          discoveryMethod: current.discoveryMethod,
-          discoveryQuery: "",
-          parentUrl: current.parentUrl,
-          depth: current.depth,
-          publisher: current.publisher || current.domain,
-          qualityScore: score,
-          resourceKind: qual.resourceKind,
-          discoveryPath: current.discoveryPath,
-          createdAt: new Date().toISOString(),
-          // AI Agent enrichment (when available)
-          ...(agentResult && agentResult.success && !agentResult.fallback
-            ? {
-                agentScore: agentResult.passScore,
-                agentApproved: agentResult.recommendApproval,
-                agentRationale: agentResult.rationale,
-                agentClassification: agentResult.classification,
-                agentResourceKind: agentResult.resourceKind,
-                agentTags: [
-                  ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
-                  ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
-                  ...(agentResult.cves || []).map((c) => `cve:${c}`),
-                  ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
-                ],
-              }
-            : {}),
-        };
+        // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
+        const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
+        const iocs = harvestIocs(textContent);
+        const rawHash = sha256Hex(rawBytes || textContent);
+        const reportId = newId("rpt");
 
-        if (isMongoConfigured()) {
-          await mongoInsertCrawlJobItem(jobItem);
-          await mongoUpsertDiscoveredResource({
-            id: newId("dsc"),
-            canonicalUrl: current.canonicalUrl,
-            url: current.url,
-            sourceId: current.sourceId || null,
+        let intelAnalysis = null;
+        let extractedEntities = undefined;
+        if (config.autoAnalyze) {
+          intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
+          extractedEntities = extractStructuredEntities(textContent, docTitle, qual.classification, intelAnalysis);
+        }
+
+        // High-Fidelity PDF & HTML Layout Generation
+        let pristineHtml = "";
+        if (config.generatePdf !== false) {
+          const isPdfResource = contentType.includes("pdf") || current.canonicalUrl.toLowerCase().endsWith(".pdf");
+          pristineHtml = buildPristineDocumentHtml(isPdfResource ? textContent : (fetchedHtmlBody || textContent), {
+            id: reportId,
             title: docTitle,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
             publisher: current.publisher || current.domain,
+            author: current.publisher || current.domain,
+            publishedAt: new Date().toISOString().slice(0, 10),
+            ingestedAt: new Date().toISOString(),
             classification: qual.classification,
-            resourceKind: qual.resourceKind,
+            rawHash,
+            textHash,
+            qualityScore: score,
+            wordCount,
+            iocs,
+            analysis: intelAnalysis,
+          });
+          pdfGeneratedCount++;
+        }
+
+        // 4.6 Ingestion vs Human Review Queue
+        const shouldAutoIngest =
+          Boolean(config.autoIngest) ||
+          Boolean(config.agentAutoIngestEnabled && agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 65);
+
+        if (shouldAutoIngest) {
+          ingestedCount++;
+          storedCanonicalUrls.add(current.canonicalUrl);
+          storedHashes.add(textHash);
+          logger.ingest(
+            "ACQUIRED",
+            docTitle,
+            `Classification: ${qual.resourceKind}, Score: ${score.toFixed(2)}, Words: ${wordCount}, IOCs: ${iocs.length}, TTPs: ${intelAnalysis?.attackChain?.length ?? 0}`,
+          );
+
+          if (isMongoConfigured()) {
+            try {
+              const isGoogle = current.domain === "cloud.google.com" || current.sourceId === "src_mandiant";
+              const effectivePublisher = current.publisher || (isGoogle ? "Google Threat Intelligence Group" : current.domain);
+              const effectiveAuthor = current.author || effectivePublisher;
+              const effectiveSourceName = isGoogle ? "Google Threat Intelligence" : current.publisher || current.domain;
+              const effectiveSourceId = current.sourceId || (isGoogle ? "src_mandiant" : "src_expanded");
+
+              const isAiVerified = Boolean(agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 50);
+              const aiScore = agentResult?.passScore ? agentResult.passScore : Math.round(score * 100);
+              const aiReason = agentResult?.rationale || "Verified by CTI Heuristic Qualification Gate";
+
+              if (agentResult) {
+                if (agentResult.threatActors?.length) {
+                  intelAnalysis = intelAnalysis || {
+                    method: "llm" as const,
+                    classification: qual.classification || "General Threat Intel",
+                    threatActors: [],
+                    malware: [],
+                    vulnerabilities: [],
+                    ttps: [],
+                    ioas: [],
+                    attackChain: [],
+                    detections: [],
+                    hunting: [],
+                    emulation: [],
+                  };
+                  const mergedActors = new Set([...(intelAnalysis.threatActors || []), ...agentResult.threatActors]);
+                  intelAnalysis.threatActors = Array.from(mergedActors);
+                }
+                if (agentResult.mitreTechniques?.length) {
+                  extractedEntities = extractedEntities || {
+                    threatActors: [],
+                    malwareFamilies: [],
+                    cves: [],
+                    tactics: [],
+                    techniques: [],
+                    procedures: [],
+                    detectionRules: [],
+                    mitigations: [],
+                    campaign: null,
+                  };
+                  const existingIds = new Set((extractedEntities.techniques || []).map((t) => t.id));
+                  for (const techId of agentResult.mitreTechniques) {
+                    if (!existingIds.has(techId)) {
+                      extractedEntities.techniques.push({
+                        id: techId,
+                        name: techId,
+                        tactic: "Execution",
+                      });
+                      existingIds.add(techId);
+                    }
+                  }
+                }
+              }
+
+              await mongoInsertReport({
+                id: reportId,
+                sourceId: effectiveSourceId,
+                sourceName: effectiveSourceName,
+                title: docTitle,
+                url: current.url,
+                canonicalUrl: current.canonicalUrl,
+                publishedAt: new Date().toISOString().slice(0, 10),
+                contentType,
+                status: "acquired",
+                rawHash,
+                textHash,
+                qualityScore: score,
+                qualityReasons: reasons,
+                wordCount,
+                extractedText: textContent,
+                iocs,
+                ingestOrigin: current.depth > 0 ? "citation_expansion" : "crawl",
+                ingestedAt: new Date().toISOString(),
+                publisher: effectivePublisher,
+                author: effectiveAuthor,
+                classification: qual.classification,
+                resourceKind: qual.resourceKind,
+                extractedEntities,
+                discoveryMethod: current.discoveryMethod,
+                discoveryQuery: "",
+                parentSource: current.parentSource || current.domain,
+                sourceDomain: current.domain,
+                version: 1,
+                rawHtml: pristineHtml,
+                pdfUrl: "",
+                analysis: intelAnalysis,
+                discoveryPath: current.discoveryPath,
+                simulationScore: qual.simulationScore,
+                isEmergingTechnique: qual.isEmergingTechnique,
+                noveltyRationale: qual.noveltyRationale,
+                aiVerified: isAiVerified,
+                aiQualityScore: aiScore,
+                aiAuditReason: aiReason,
+                scoreBreakdown: agentResult?.scoreBreakdown,
+              });
+
+              storedSimhashes.push({
+                id: reportId,
+                simhash: computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`),
+                title: docTitle,
+              });
+
+              if (current.sourceId) {
+                await mongoUpdateSourceLastIngest(current.sourceId);
+              }
+
+              await mongoUpsertDiscoveredResource({
+                id: newId("dsc"),
+                canonicalUrl: current.canonicalUrl,
+                url: current.url,
+                sourceId: current.sourceId || null,
+                title: docTitle,
+                publisher: effectivePublisher,
+                classification: qual.classification,
+                resourceKind: qual.resourceKind,
+                discoveryMethod: current.discoveryMethod,
+                discoveryQuery: "",
+                parentSource: current.parentSource || current.domain,
+                parentUrl: current.parentUrl,
+                sourceDomain: current.domain,
+                contentType,
+                status: "ingested",
+                qualityScore: score,
+                simulationScore: qual.simulationScore,
+                isEmergingTechnique: qual.isEmergingTechnique,
+                noveltyRationale: qual.noveltyRationale,
+                discoveryPath: current.discoveryPath,
+                reportId,
+                agentScore: agentResult?.passScore,
+                agentApproved: agentResult?.recommendApproval,
+                agentRationale: agentResult?.rationale,
+                agentTags: agentResult?.mitreTechniques,
+                agentClassification: agentResult?.classification,
+                agentResourceKind: agentResult?.resourceKind,
+                scoreBreakdown: agentResult?.scoreBreakdown,
+              });
+            } catch (mongoErr) {
+              console.warn("[mongodb] report persistence error:", mongoErr);
+            }
+          }
+
+          if (sql) {
+            try {
+              const isGoogle = current.domain === "cloud.google.com" || current.sourceId === "src_mandiant";
+              const effectivePublisher = current.publisher || (isGoogle ? "Google Threat Intelligence Group" : current.domain);
+              const effectiveAuthor = current.author || effectivePublisher;
+              const effectiveSourceId = current.sourceId || (isGoogle ? "src_mandiant" : "src_dfir");
+
+              await sql`
+                insert into reports (
+                  id, source_id, title, url, canonical_url, published_at, content_type,
+                  status, raw_hash, text_hash, quality_score, quality_reasons, word_count,
+                  extracted_text, iocs_json, ingest_origin, publisher, author,
+                  classification, discovery_method, discovery_query, parent_source,
+                  source_domain, version, analysis_json, raw_html
+                ) values (
+                  ${reportId}, ${effectiveSourceId}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
+                  ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
+                  ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
+                  ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
+                  ${effectivePublisher}, ${effectiveAuthor},
+                  ${qual.classification}, ${current.discoveryMethod}, '', ${current.parentSource ?? current.domain},
+                  ${current.domain}, 1, ${JSON.stringify(intelAnalysis)}, ${pristineHtml}
+                )
+              `;
+
+              await sql`
+                insert into discovered_resources (
+                  id, canonical_url, url, source_id, title, publisher, classification,
+                  discovery_method, discovery_query, parent_source, source_domain,
+                  content_type, status, quality_score, report_id
+                ) values (
+                  ${newId("dsc")}, ${current.canonicalUrl}, ${current.url}, ${current.sourceId ?? null}, ${docTitle},
+                  ${current.publisher ?? current.domain}, ${qual.classification}, ${current.discoveryMethod},
+                  '', ${current.parentSource ?? current.domain}, ${current.domain},
+                  ${contentType}, 'ingested', ${score}, ${reportId}
+                )
+                on conflict (canonical_url) do update
+                set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
+              `;
+            } catch {
+              /* ignore SQL fallback error */
+            }
+          }
+
+          const itemId = newId("itm");
+          const jobItem: CrawlJobItem = {
+            id: itemId,
+            jobId,
+            sourceId: current.sourceId || null,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
+            title: docTitle,
+            classification: qual.classification,
+            decision: "INGESTED",
+            reason: `Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`,
+            stage: "ingested",
             discoveryMethod: current.discoveryMethod,
             discoveryQuery: "",
-            parentSource: current.parentSource || current.domain,
             parentUrl: current.parentUrl,
-            sourceDomain: current.domain,
-            contentType,
-            status: "awaiting_approval",
+            depth: current.depth,
+            publisher: current.publisher || current.domain,
             qualityScore: score,
+            resourceKind: qual.resourceKind,
             discoveryPath: current.discoveryPath,
-            // AI Agent enhancement fields (when available)
+            createdAt: new Date().toISOString(),
+            ...(agentResult && agentResult.success && !agentResult.fallback
+              ? {
+                  agentScore: agentResult.passScore,
+                  agentApproved: agentResult.recommendApproval,
+                  agentRationale: agentResult.rationale,
+                  agentClassification: agentResult.classification,
+                  agentResourceKind: agentResult.resourceKind,
+                  scoreBreakdown: agentResult.scoreBreakdown,
+                  agentTags: [
+                    ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                    ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                    ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                    ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                  ],
+                }
+              : {}),
+          };
+
+          if (isMongoConfigured()) {
+            await mongoInsertCrawlJobItem(jobItem);
+          }
+          if (sql) {
+            try {
+              await sql`
+                insert into crawl_job_items (
+                  id, job_id, source_id, url, canonical_url, title, classification,
+                  decision, reason, discovery_method, discovery_query, depth, publisher
+                ) values (
+                  ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+                  ${docTitle}, ${qual.classification}, 'INGESTED',
+                  ${`Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`},
+                  ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+                )
+              `;
+            } catch {
+              /* ignore */
+            }
+          }
+        } else {
+          skippedCount++;
+          const itemId = newId("itm");
+          const jobItem: CrawlJobItem = {
+            id: itemId,
+            jobId,
+            sourceId: current.sourceId || null,
+            url: current.url,
+            canonicalUrl: current.canonicalUrl,
+            title: docTitle,
+            classification: qual.classification,
+            decision: "AWAITING_APPROVAL",
+            reason: `Qualified (${qual.resourceKind}): quality ${score}. Auto-ingest is disabled in settings; held in Discovery Queue for approval.`,
+            stage: "qualified",
+            discoveryMethod: current.discoveryMethod,
+            discoveryQuery: "",
+            parentUrl: current.parentUrl,
+            depth: current.depth,
+            publisher: current.publisher || current.domain,
+            qualityScore: score,
+            resourceKind: qual.resourceKind,
+            discoveryPath: current.discoveryPath,
+            createdAt: new Date().toISOString(),
             ...(agentResult && agentResult.success && !agentResult.fallback
               ? {
                   agentScore: agentResult.passScore,
@@ -1886,28 +1857,118 @@ export async function executeCrawlJob(
                   ],
                 }
               : {}),
-          });
-        }
+          };
 
-        if (sql) {
-          try {
-            await sql`
-              insert into crawl_job_items (
-                id, job_id, source_id, url, canonical_url, title, classification,
-                decision, reason, discovery_method, discovery_query, depth, publisher
-              ) values (
-                ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
-                ${docTitle}, ${qual.classification}, 'AWAITING_APPROVAL',
-                'Qualified by engine; held in Discovery Queue for manual ingestion approval',
-                ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
-              )
-            `;
-          } catch {
-            /* ignore */
+          if (isMongoConfigured()) {
+            try {
+              await mongoInsertCrawlJobItem(jobItem);
+              await mongoUpsertDiscoveredResource({
+                id: newId("dsc"),
+                canonicalUrl: current.canonicalUrl,
+                url: current.url,
+                sourceId: current.sourceId || null,
+                title: docTitle,
+                publisher: current.publisher || current.domain,
+                classification: qual.classification,
+                resourceKind: qual.resourceKind,
+                discoveryMethod: current.discoveryMethod,
+                discoveryQuery: "",
+                parentSource: current.parentSource || current.domain,
+                parentUrl: current.parentUrl,
+                sourceDomain: current.domain,
+                contentType,
+                status: "awaiting_approval",
+                qualityScore: score,
+                discoveryPath: current.discoveryPath,
+                ...(agentResult && agentResult.success && !agentResult.fallback
+                  ? {
+                      agentScore: agentResult.passScore,
+                      agentApproved: agentResult.recommendApproval,
+                      agentRationale: agentResult.rationale,
+                      agentClassification: agentResult.classification,
+                      agentResourceKind: agentResult.resourceKind,
+                      scoreBreakdown: agentResult.scoreBreakdown,
+                      agentTags: [
+                        ...(agentResult.threatActors || []).map((a) => `actor:${a}`),
+                        ...(agentResult.malwareFamilies || []).map((m) => `malware:${m}`),
+                        ...(agentResult.cves || []).map((c) => `cve:${c}`),
+                        ...(agentResult.mitreTechniques || []).map((t) => `technique:${t}`),
+                      ],
+                    }
+                  : {}),
+              });
+            } catch (mongoErr) {
+              console.warn("[mongodb] report persistence error:", mongoErr);
+            }
+          }
+
+          if (sql) {
+            try {
+              await sql`
+                insert into crawl_job_items (
+                  id, job_id, source_id, url, canonical_url, title, classification,
+                  decision, reason, discovery_method, discovery_query, depth, publisher
+                ) values (
+                  ${itemId}, ${jobId}, ${current.sourceId ?? null}, ${current.url}, ${current.canonicalUrl},
+                  ${docTitle}, ${qual.classification}, 'AWAITING_APPROVAL',
+                  'Qualified by engine; held in Discovery Queue for manual ingestion approval',
+                  ${current.discoveryMethod}, '', ${current.depth}, ${current.publisher ?? current.domain}
+                )
+              `;
+            } catch {
+              /* ignore */
+            }
           }
         }
+      } finally {
+        currentlyProcessingUrls.delete(current.url);
+        activeDomains.delete(current.domain);
+        await reportLiveProgress();
       }
     }
+
+    // Adaptive multi-worker concurrent dispatcher loop
+    while ((frontierQueue.length > 0 || activeWorkerTasks.size > 0) && evaluatedCount < configuredMax) {
+      if (Date.now() - jobStartTime > MAX_JOB_EXECUTION_TIME_MS) {
+        console.warn(`[crawler] max execution time (${maxRunTimeMinutes} min) reached; terminating.`);
+        break;
+      }
+
+      while (activeWorkerTasks.size < maxConcurrency && frontierQueue.length > 0 && evaluatedCount + activeWorkerTasks.size < configuredMax) {
+        const nextItem = pickNextItem();
+        if (!nextItem) break;
+
+        const task = (async () => {
+          try {
+            await processFrontierItem(nextItem);
+          } catch (err) {
+            console.error(`[crawler] Error processing URL ${nextItem.url}:`, err);
+          }
+        })();
+
+        activeWorkerTasks.add(task);
+        task.finally(() => {
+          activeWorkerTasks.delete(task);
+        });
+      }
+
+      if (activeWorkerTasks.size === 0 && frontierQueue.length === 0) {
+        break;
+      }
+
+      await Promise.race([
+        ...Array.from(activeWorkerTasks),
+        new Promise((resolve) => setTimeout(resolve, 50)),
+      ]);
+
+      await reportLiveProgress();
+    }
+
+    // Await any remaining active concurrent tasks
+    if (activeWorkerTasks.size > 0) {
+      await Promise.allSettled(Array.from(activeWorkerTasks));
+    }
+    await reportLiveProgress(true);
 
     // 5. Finalize Job
     const latestConfig = isMongoConfigured() ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();

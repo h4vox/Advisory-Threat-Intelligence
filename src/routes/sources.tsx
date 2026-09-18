@@ -15,6 +15,8 @@ import {
   Sparkles,
   Search,
   AlertTriangle,
+  RefreshCw,
+  Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -33,8 +35,9 @@ import {
   addDiscoveredSource,
   triggerAgentSourceDiscovery,
   getAgentStatus,
+  probeSourceFeeds,
 } from "@/lib/aie/server";
-import type { DiscoveredSourceRecord, SourceRecord } from "@/lib/aie/types";
+import type { DiscoveredSourceRecord, SourceProbeResult, SourceRecord } from "@/lib/aie/types";
 
 export const Route = createFileRoute("/sources")({ component: SourcesPage });
 
@@ -47,6 +50,7 @@ function SourcesPage() {
   const [addName, setAddName] = useState("");
   const [addNotes, setAddNotes] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [probeResults, setProbeResults] = useState<Record<string, SourceProbeResult>>({});
 
   // Curated sources query
   const { data: sources } = useQuery({
@@ -70,6 +74,23 @@ function SourcesPage() {
     queryFn: () => getAgentStatus(),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
+  });
+
+  // Concurrent Feed Health Probing Mutation (Architecture Improvement)
+  const probeMut = useMutation({
+    mutationFn: (sourceIds?: string[]) =>
+      probeSourceFeeds({ data: { sourceIds, concurrency: 6 } }),
+    onSuccess: (data) => {
+      const map: Record<string, SourceProbeResult> = {};
+      for (const p of data.probes) {
+        map[p.sourceId] = p;
+      }
+      setProbeResults((prev) => ({ ...prev, ...map }));
+      toast.success("Concurrent Health Probe Completed", {
+        description: `Checked ${data.summary.total} sources in parallel: ${data.summary.healthy} online, ${data.summary.degraded} degraded/offline.`,
+      });
+    },
+    onError: (err: Error) => toast.error(`Health probe failed: ${err.message}`),
   });
 
   // 0ms Optimistic Mutations
@@ -252,9 +273,9 @@ function SourcesPage() {
         </button>
       </div>
 
-      {/* Search Bar */}
-      <div className="mt-4 flex items-center gap-3">
-        <div className="relative flex-1 max-w-md">
+      {/* Search Bar & Actions Toolbar */}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[240px] max-w-md">
           <Search className="absolute left-3 top-2.5 size-4 text-subtle" />
           <input
             type="text"
@@ -264,29 +285,58 @@ function SourcesPage() {
             className="w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-4 py-2 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
           />
         </div>
-        {activeTab === "discovered" && (
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => setShowAddModal(true)}
-              className="gap-1.5"
-            >
-              <Plus className="size-3.5" />
-              Add Source
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              disabled={discoverMut.isPending || !agentStatus?.available}
-              onClick={() => discoverMut.mutate()}
-              className="gap-1.5"
-            >
-              <Sparkles className="size-3.5" />
-              {discoverMut.isPending ? "Discovering..." : "AI Discover"}
-            </Button>
-          </div>
-        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Concurrent Health Probe Button */}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={probeMut.isPending}
+            onClick={() => {
+              const currentList = activeTab === "curated" ? filteredSources : filteredDiscovered;
+              const ids = currentList.map((s) => s.id);
+              probeMut.mutate(ids.length > 0 ? ids : undefined);
+            }}
+            className="gap-1.5 whitespace-nowrap"
+            title="Concurrently probe HTTP latency and reachability across feeds using 6 parallel workers"
+          >
+            {probeMut.isPending ? (
+              <>
+                <RefreshCw className="size-3.5 animate-spin text-accent" />
+                <span>Probing Feeds...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="size-3.5 text-accent" />
+                <span>Probe Feeds</span>
+              </>
+            )}
+          </Button>
+
+          {activeTab === "discovered" && (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setShowAddModal(true)}
+                className="gap-1.5"
+              >
+                <Plus className="size-3.5" />
+                Add Source
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={discoverMut.isPending || !agentStatus?.available}
+                onClick={() => discoverMut.mutate()}
+                className="gap-1.5"
+              >
+                <Sparkles className="size-3.5" />
+                {discoverMut.isPending ? "Discovering..." : "AI Discover"}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Agent Status Indicator */}
@@ -320,6 +370,22 @@ function SourcesPage() {
                   <Badge tone="sage"><Shield className="size-2.5 mr-0.5" />Curated</Badge>
                   <Badge tone="accent">P{s.priority}</Badge>
                   <Badge tone={s.trustLevel === "official" ? "sage" : "neutral"}>{s.trustLevel}</Badge>
+
+                  {/* Concurrent Health Probe Status Badge */}
+                  {probeResults[s.id] && (
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono font-medium",
+                        probeResults[s.id].reachable
+                          ? "bg-emerald-950/50 text-emerald-400 border border-emerald-800/40"
+                          : "bg-rose-950/50 text-rose-400 border border-rose-800/40",
+                      )}
+                      title={probeResults[s.id].reachable ? `HTTP ${probeResults[s.id].statusCode} in ${probeResults[s.id].latencyMs}ms` : (probeResults[s.id].error || "Unreachable")}
+                    >
+                      <span className={cn("size-1.5 rounded-full", probeResults[s.id].reachable ? "bg-emerald-400 animate-pulse" : "bg-rose-400")} />
+                      {probeResults[s.id].reachable ? `${probeResults[s.id].latencyMs}ms · ${probeResults[s.id].statusCode}` : "Offline"}
+                    </span>
+                  )}
                 </div>
 
                 {/* Title & Category */}
@@ -433,6 +499,20 @@ function SourcesPage() {
                     <span className="rounded bg-bg-subtle border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted">
                       Trust: {Math.round(ds.trustScore * 100 > 100 ? ds.trustScore : ds.trustScore * 100)}%
                     </span>
+                    {probeResults[ds.id] && (
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono font-medium",
+                          probeResults[ds.id].reachable
+                            ? "bg-emerald-950/50 text-emerald-400 border border-emerald-800/40"
+                            : "bg-rose-950/50 text-rose-400 border border-rose-800/40",
+                        )}
+                        title={probeResults[ds.id].reachable ? `HTTP ${probeResults[ds.id].statusCode} in ${probeResults[ds.id].latencyMs}ms` : (probeResults[ds.id].error || "Unreachable")}
+                      >
+                        <span className={cn("size-1.5 rounded-full", probeResults[ds.id].reachable ? "bg-emerald-400 animate-pulse" : "bg-rose-400")} />
+                        {probeResults[ds.id].reachable ? `${probeResults[ds.id].latencyMs}ms · ${probeResults[ds.id].statusCode}` : "Offline"}
+                      </span>
+                    )}
                   </div>
 
                   {/* Title */}

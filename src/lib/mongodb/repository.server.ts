@@ -130,14 +130,37 @@ export function invalidateSettingsCache() {
 
 let lastKnownGoodCrawlerState: CrawlerState | null = null;
 
-export function invalidateCrawlerStateCache() {
-  if (cachedCrawlerState) {
-    cachedCrawlerState.timestamp = 0;
+let lastCrawlerInvalidateTime = 0;
+let crawlerInvalidateDebounceTimer: NodeJS.Timeout | null = null;
+
+export function invalidateCrawlerStateCache(force = false) {
+  const now = Date.now();
+  if (force || now - lastCrawlerInvalidateTime > 1200) {
+    lastCrawlerInvalidateTime = now;
+    if (crawlerInvalidateDebounceTimer) {
+      clearTimeout(crawlerInvalidateDebounceTimer);
+      crawlerInvalidateDebounceTimer = null;
+    }
+    if (cachedCrawlerState) {
+      cachedCrawlerState.timestamp = 0;
+    }
+    cachedDiscoveredSources = null;
+    cachedTelemetrySummary = null;
+    cachedStorageStats = null;
+    logger.cache("INVALIDATE", "crawler-state", "Marked in-memory crawler state cache as stale");
+  } else if (!crawlerInvalidateDebounceTimer) {
+    crawlerInvalidateDebounceTimer = setTimeout(() => {
+      crawlerInvalidateDebounceTimer = null;
+      lastCrawlerInvalidateTime = Date.now();
+      if (cachedCrawlerState) {
+        cachedCrawlerState.timestamp = 0;
+      }
+      cachedDiscoveredSources = null;
+      cachedTelemetrySummary = null;
+      cachedStorageStats = null;
+      logger.cache("INVALIDATE", "crawler-state", "Marked in-memory crawler state cache as stale (coalesced)");
+    }, 1200);
   }
-  cachedDiscoveredSources = null;
-  cachedTelemetrySummary = null;
-  cachedStorageStats = null;
-  logger.cache("INVALIDATE", "crawler-state", "Marked in-memory crawler state cache as stale");
 }
 
 export function purgeAllServerCaches() {
@@ -1278,6 +1301,9 @@ export async function mongoListRecentCrawlJobs(limit = 100): Promise<CrawlJob[]>
     errorSummary: d.errorSummary || "",
     currentStage: d.currentStage || undefined,
     currentUrl: d.currentUrl || undefined,
+    activeWorkers: d.activeWorkers !== undefined ? Number(d.activeWorkers) : undefined,
+    activeDomains: Array.isArray(d.activeDomains) ? d.activeDomains : undefined,
+    throughputDocsPerSec: d.throughputDocsPerSec !== undefined ? Number(d.throughputDocsPerSec) : undefined,
     stageCounts: d.stageCounts || undefined,
   }));
 }

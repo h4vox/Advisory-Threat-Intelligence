@@ -7,13 +7,16 @@ import {
   ArrowRight,
   ArrowUpDown,
   Bot,
+  Check,
   CheckCircle2,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
   Clock,
   Compass,
+  Cpu,
   Crosshair,
   Database,
   Download,
@@ -21,6 +24,7 @@ import {
   FileText,
   Filter,
   Flame,
+  Gauge,
   GitBranch,
   Globe,
   Layers,
@@ -36,6 +40,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Upload,
   X,
   XCircle,
@@ -58,6 +63,8 @@ import {
   formatSystemId,
 } from "@/lib/aie/ids";
 import {
+  batchIngestDiscoveredUrls,
+  batchRejectDiscoveredUrls,
   cancelCrawlJob,
   exportSTIXBundle,
   getCrawlerState,
@@ -323,6 +330,7 @@ function IngestPage() {
   const [queueDomain, setQueueDomain] = useState<string>("all");
   const [queueSort, setQueueSort] = useState<"newest" | "oldest" | "score_desc" | "title_asc" | "domain_asc">("newest");
   const [ingestingId, setIngestingId] = useState<string | null>(null);
+  const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
 
   // Pipeline Audit Log State (default 25 per page)
   const [auditPage, setAuditPage] = useState(1);
@@ -362,7 +370,7 @@ function IngestPage() {
     queryFn: () => getCrawlerState(),
     staleTime: 6000,
     placeholderData: (previousData) => previousData,
-    refetchInterval: (query) => (query.state.data?.activeJob ? 3000 : 25000),
+    refetchInterval: (query) => (query.state.data?.activeJob ? 1200 : 25000),
   });
 
   const isCrawlerLoading = crawlerState.isLoading || (!crawlerState.data && !crawlerState.isError);
@@ -456,6 +464,34 @@ function IngestPage() {
       });
     },
     onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Batch Ingest Discovered Items (Concurrent Workers)
+  const batchIngestMutation = useMutation({
+    mutationFn: (discoveredIds: string[]) =>
+      batchIngestDiscoveredUrls({ data: { discoveredIds, concurrency: 4 } }),
+    onSuccess: (res) => {
+      void qc.invalidateQueries();
+      setSelectedCandidates(new Set());
+      toast.success("Batch Ingestion Complete", {
+        description: `Ingested: ${res.succeeded} / ${res.total} · Failed: ${res.failed}${res.durationMs ? ` (${res.durationMs}ms)` : ""}`,
+      });
+    },
+    onError: (e: Error) => toast.error(`Batch ingest failed: ${e.message}`),
+  });
+
+  // Batch Reject Discovered Items
+  const batchRejectMutation = useMutation({
+    mutationFn: (discoveredIds: string[]) =>
+      batchRejectDiscoveredUrls({ data: { discoveredIds } }),
+    onSuccess: (res) => {
+      void qc.invalidateQueries();
+      setSelectedCandidates(new Set());
+      toast.info("Batch Reject Complete", {
+        description: `${res.count} candidate resources marked as rejected.`,
+      });
+    },
+    onError: (e: Error) => toast.error(`Batch reject failed: ${e.message}`),
   });
 
   const exportStix = async () => {
@@ -869,31 +905,109 @@ function IngestPage() {
       {/* VIEW 1: AUTONOMOUS CRAWLER CONSOLE */}
       {activeView === "crawler" && (
         <div className="mt-6 space-y-6">
-          {/* Active Job Alert / Live Status */}
+          {/* Active Job Alert / Live Status Cockpit */}
           {activeJob && (
-            <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-accent/40 bg-accent/5 p-4 sm:flex-row sm:items-center">
-              <div className="flex items-center gap-3">
-                <RefreshCw className="size-5 animate-spin text-accent" />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-fg">
-                      Autonomous Intelligence Discovery Active
-                    </span>
-                    <Badge tone="accent">{activeJob.triggerType}</Badge>
-                    <Badge tone="sage">Stage: {activeJob.currentStage || "evaluated"}</Badge>
+            <div className="rounded-xl border border-accent/40 bg-accent/[0.04] p-4.5 space-y-3.5 shadow-sm">
+              {/* Header: Status, Workers, Throughput, Abort Button */}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10">
+                    <RefreshCw className="size-4 animate-spin text-accent" />
+                    <span className="absolute -top-1 -right-1 size-2 rounded-full bg-accent animate-ping" />
                   </div>
-                  <p className="mt-0.5 text-xs text-muted truncate max-w-xl">
-                    Current Frontier URL: <span className="font-mono text-fg">{activeJob.currentUrl || "Extracting citations & outlinks..."}</span>
-                  </p>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-fg">
+                        Autonomous Intelligence Discovery Active
+                      </span>
+                      <Badge tone="accent">{activeJob.triggerType}</Badge>
+                      <Badge tone="sage">Stage: {activeJob.currentStage || "evaluated"}</Badge>
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent font-medium">
+                        <Cpu className="size-3 text-accent" />
+                        {activeJob.activeWorkers ?? (config.concurrency || 4)} Parallel Workers
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg px-2 py-0.5 font-mono text-[11px] text-muted">
+                        <Gauge className="size-3 text-accent" />
+                        <span>Throughput:</span>
+                        <strong className="text-fg">{activeJob.throughputDocsPerSec ? activeJob.throughputDocsPerSec.toFixed(1) : "0.0"}</strong>
+                        <span className="text-[10px] text-subtle">docs/sec</span>
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted truncate max-w-xl">
+                      Current Frontier URL:{" "}
+                      <span className="font-mono text-fg">{activeJob.currentUrl || "Extracting citations & outlinks..."}</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => cancelCrawl.mutate(activeJob.id)}
+                    disabled={cancelCrawl.isPending}
+                    className="border-danger/40 text-danger hover:bg-danger/10 hover:border-danger text-xs font-mono h-7.5 px-2.5 cursor-pointer"
+                  >
+                    {cancelCrawl.isPending ? (
+                      <RefreshCw className="size-3 animate-spin mr-1.5" />
+                    ) : (
+                      <Square className="size-3 mr-1.5 fill-danger/30" />
+                    )}
+                    Abort Crawl
+                  </Button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-4 font-mono text-xs text-muted">
+              {/* Concurrency Telemetry: Active Target Hosts */}
+              {activeJob.activeDomains && activeJob.activeDomains.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs border-t border-border/40">
+                  <span className="font-mono text-[11px] text-subtle flex items-center gap-1 mr-1">
+                    <Globe className="size-3 text-accent" /> Active Concurrent Hosts:
+                  </span>
+                  {activeJob.activeDomains.map((dom) => (
+                    <span
+                      key={dom}
+                      className="inline-flex items-center gap-1 rounded border border-accent/30 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent animate-pulse"
+                    >
+                      {dom}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Live Run Progress Bar */}
+              <div className="space-y-1.5 pt-1 border-t border-border/40">
+                <div className="flex items-center justify-between text-xs font-mono text-muted">
+                  <span className="flex items-center gap-2">
+                    <span className="text-subtle">Job Progress:</span>
+                    <strong className="text-fg">
+                      {activeJob.evaluatedCount || activeJob.ingestedCount || 0} / {activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35} items
+                    </strong>
+                  </span>
+                  <span className="text-accent font-semibold">
+                    {Math.min(100, Math.round(((activeJob.evaluatedCount || activeJob.ingestedCount || 0) / (activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35)) * 100))}%
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg border border-border/60">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-accent to-sage transition-all duration-500 ease-out"
+                    style={{
+                      width: `${Math.min(100, Math.max(4, Math.round(((activeJob.evaluatedCount || activeJob.ingestedCount || 0) / (activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35)) * 100)))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Metrics Counters Footer */}
+              <div className="flex flex-wrap items-center gap-4 pt-1 font-mono text-xs text-muted border-t border-border/40">
                 <span>Discovered: <strong className="text-fg">{activeJob.discoveredCount}</strong></span>
                 <span>Evaluated: <strong className="text-fg">{activeJob.evaluatedCount || 0}</strong></span>
                 <span>Qualified: <strong className="text-sage">{activeJob.qualifiedCount}</strong></span>
                 <span>Ingested: <strong className="text-accent">{activeJob.ingestedCount}</strong></span>
                 <span>Duplicates: <strong className="text-warn">{activeJob.duplicateCount}</strong></span>
+                {activeJob.failedCount !== undefined && activeJob.failedCount > 0 && (
+                  <span>Failed/Timed out: <strong className="text-danger">{activeJob.failedCount}</strong></span>
+                )}
               </div>
             </div>
           )}
@@ -1065,6 +1179,17 @@ function IngestPage() {
                     <div className="flex justify-between border-b border-border pb-2">
                       <dt className="text-subtle">Strictness Mode</dt>
                       <dd className="text-fg capitalize">{config.strictnessMode || "balanced"}</dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Parallel Workers</dt>
+                      <dd className="text-accent font-semibold flex items-center gap-1">
+                        <Cpu className="size-3 text-accent" />
+                        {config.concurrency || 4} threads (host-aware)
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-border pb-2">
+                      <dt className="text-subtle">Polite Host Spacing</dt>
+                      <dd className="text-fg">{config.rateLimitMs || 150}ms per domain</dd>
                     </div>
                     <div className="flex justify-between border-b border-border pb-2">
                       <dt className="text-subtle">Autonomous Cadence</dt>
@@ -1494,10 +1619,106 @@ function IngestPage() {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Multi-Candidate Batch Action Toolbar */}
+              {selectedCandidates.size > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/[0.08] p-3.5 shadow-md">
+                  <div className="flex items-center gap-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-accent/20 px-2.5 py-1 text-xs font-semibold text-accent">
+                      <CheckSquare className="size-3.5" />
+                      {selectedCandidates.size} Candidates Selected
+                    </span>
+                    <span className="hidden text-xs text-muted sm:inline-flex items-center gap-1.5">
+                      <Cpu className="size-3 text-accent" />
+                      Dispatching across 4 concurrent worker threads
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={batchIngestMutation.isPending || batchRejectMutation.isPending}
+                      onClick={() => batchIngestMutation.mutate(Array.from(selectedCandidates))}
+                      className="gap-1.5 whitespace-nowrap"
+                    >
+                      {batchIngestMutation.isPending ? (
+                        <>
+                          <RefreshCw className="size-3.5 animate-spin text-bg" />
+                          <span>Batch Ingesting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="size-3.5 fill-current" />
+                          <span>Ingest Selected (Parallel)</span>
+                        </>
+                      )}
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={batchIngestMutation.isPending || batchRejectMutation.isPending}
+                      onClick={() => batchRejectMutation.mutate(Array.from(selectedCandidates))}
+                      className="gap-1.5 text-danger hover:text-danger whitespace-nowrap"
+                    >
+                      {batchRejectMutation.isPending ? (
+                        <>
+                          <RefreshCw className="size-3.5 animate-spin" />
+                          <span>Rejecting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <XCircle className="size-3.5" />
+                          <span>Reject Selected</span>
+                        </>
+                      )}
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedCandidates(new Set())}
+                      className="text-xs text-subtle hover:text-fg"
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               <div className="overflow-x-auto rounded-xl border border-border bg-bg-elevated">
                 <table className="w-full min-w-[800px] text-left text-xs">
                   <thead className="border-b border-border bg-bg-subtle font-mono text-[10px] uppercase text-subtle">
                     <tr>
+                      <th className="w-10 p-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={
+                            pagedDiscovered.length > 0 &&
+                            pagedDiscovered.filter((i) => i.status !== "ingested").length > 0 &&
+                            pagedDiscovered
+                              .filter((i) => i.status !== "ingested")
+                              .every((item) => selectedCandidates.has(item.id))
+                          }
+                          onChange={(e) => {
+                            const next = new Set(selectedCandidates);
+                            if (e.target.checked) {
+                              for (const item of pagedDiscovered) {
+                                if (item.status !== "ingested") {
+                                  next.add(item.id);
+                                }
+                              }
+                            } else {
+                              for (const item of pagedDiscovered) {
+                                next.delete(item.id);
+                              }
+                            }
+                            setSelectedCandidates(next);
+                          }}
+                          aria-label="Select all candidate resources on this page"
+                          className="size-3.5 rounded border-border bg-bg-subtle text-accent focus:ring-accent focus:ring-offset-0 cursor-pointer"
+                        />
+                      </th>
                       <th className="p-3">Status</th>
                       <th className="p-3">Resource Kind</th>
                       <th className="p-3">Title / Canonical URL</th>
@@ -1510,6 +1731,7 @@ function IngestPage() {
                   <tbody className="divide-y divide-border">
                     {pagedDiscovered.map((res) => {
                       const isPending = isItemAwaitingApproval(res.status);
+                      const isSelected = selectedCandidates.has(res.id);
                       const outcomeMeta = formatOutcomeId(res.status, res.reportId || res.id, res.canonicalUrl);
                       const prefix =
                         res.status === "ingested"
@@ -1527,11 +1749,31 @@ function IngestPage() {
                           key={res.id || res.canonicalUrl}
                           className={cn(
                             "transition-colors",
-                            isPending
-                              ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
-                              : "hover:bg-bg-subtle/30",
+                            isSelected
+                              ? "bg-accent/[0.08] hover:bg-accent/[0.12]"
+                              : isPending
+                                ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
+                                : "hover:bg-bg-subtle/30",
                           )}
                         >
+                          <td className="p-3 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={res.status === "ingested"}
+                              onChange={() => {
+                                const next = new Set(selectedCandidates);
+                                if (next.has(res.id)) {
+                                  next.delete(res.id);
+                                } else {
+                                  next.add(res.id);
+                                }
+                                setSelectedCandidates(next);
+                              }}
+                              aria-label={`Select ${res.title}`}
+                              className="size-3.5 rounded border-border bg-bg-subtle text-accent focus:ring-accent focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                            />
+                          </td>
                           <td className="p-3">
                             <div className="flex flex-col items-start gap-1">
                               <IdBadge

@@ -6,6 +6,10 @@ import {
   AlertTriangle,
   ArrowUpRight,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   Eye,
   FileText,
@@ -58,6 +62,144 @@ const RESOURCE_KINDS: { id: string; label: string }[] = [
   { id: "THREAT_ACTOR_DOSSIER", label: "Threat Actor Dossiers" },
 ];
 
+function paginateList<T>(list: T[], page: number, pageSize: number | "all"): T[] {
+  if (pageSize === "all") return list;
+  const start = (page - 1) * pageSize;
+  return list.slice(start, start + pageSize);
+}
+
+function PaginationControls({
+  currentPage,
+  pageSize,
+  totalItems,
+  onPageChange,
+  onPageSizeChange,
+  itemLabel = "intelligence records",
+}: {
+  currentPage: number;
+  pageSize: number | "all";
+  totalItems: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number | "all") => void;
+  itemLabel?: string;
+}) {
+  const numericSize = pageSize === "all" ? Math.max(1, totalItems) : pageSize;
+  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / numericSize));
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const startItem = totalItems === 0 ? 0 : (safePage - 1) * numericSize + 1;
+  const endItem = pageSize === "all" ? totalItems : Math.min(totalItems, safePage * numericSize);
+
+  const pages: (number | "...")[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (safePage > 3) pages.push("...");
+    const start = Math.max(2, safePage - 1);
+    const end = Math.min(totalPages - 1, safePage + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (safePage < totalPages - 2) pages.push("...");
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-t border-border/60 pt-4 text-xs">
+      <div className="flex flex-wrap items-center gap-3 text-muted">
+        <span>
+          Showing <span className="font-mono text-fg font-medium">{startItem}–{endItem}</span> of{" "}
+          <span className="font-mono text-fg font-medium">{totalItems}</span> {itemLabel}
+        </span>
+        <div className="flex items-center gap-1.5 pl-2 border-l border-border/80">
+          <span className="text-[11px] text-subtle">Per page:</span>
+          <div className="flex rounded-md border border-border bg-bg-elevated p-0.5">
+            {([20, 40, 60, 100, "all"] as const).map((sz) => (
+              <button
+                key={sz}
+                type="button"
+                onClick={() => {
+                  onPageSizeChange(sz);
+                  onPageChange(1);
+                }}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[11px] font-mono transition-colors cursor-pointer",
+                  pageSize === sz ? "bg-accent/20 text-accent font-semibold" : "text-subtle hover:text-fg",
+                )}
+              >
+                {sz === "all" ? "All" : sz}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={safePage <= 1}
+            onClick={() => onPageChange(1)}
+            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+            title="First page"
+          >
+            <ChevronsLeft className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={safePage <= 1}
+            onClick={() => onPageChange(safePage - 1)}
+            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+            title="Previous page"
+          >
+            <ChevronLeft className="size-3.5" />
+          </button>
+
+          <div className="flex items-center gap-1 px-1">
+            {pages.map((p, idx) =>
+              p === "..." ? (
+                <span key={`ellipsis-${idx}`} className="px-1 text-muted text-xs">…</span>
+              ) : (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => onPageChange(p)}
+                  className={cn(
+                    "flex h-7 min-w-[28px] items-center justify-center rounded px-1.5 text-xs font-mono transition-colors cursor-pointer",
+                    safePage === p
+                      ? "bg-accent text-bg font-semibold shadow-xs"
+                      : "border border-border/60 bg-bg-elevated text-muted hover:text-fg hover:bg-bg-subtle",
+                  )}
+                >
+                  {p}
+                </button>
+              )
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={safePage >= totalPages}
+            onClick={() => onPageChange(safePage + 1)}
+            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+            title="Next page"
+          >
+            <ChevronRight className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={safePage >= totalPages}
+            onClick={() => onPageChange(totalPages)}
+            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+            title="Last page"
+          >
+            <ChevronsRight className="size-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LibraryPage() {
   const qc = useQueryClient();
   const searchParams = Route.useSearch();
@@ -78,6 +220,10 @@ function LibraryPage() {
   const [showFilters, setShowFilters] = useState(Boolean(searchParams.tag || searchParams.sort));
   const [previewReportId, setPreviewReportId] = useState<string | null>(searchParams.pdf || null);
   const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
+
+  // High-performance client-side pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number | "all">(20);
 
   const targetHighlightId = searchParams.selected || searchParams.highlight;
 
@@ -490,6 +636,52 @@ function LibraryPage() {
     return count;
   }, [selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
 
+  // Reset pagination to page 1 on filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    q,
+    selectedKind,
+    selectedTag,
+    selectedActor,
+    selectedMalware,
+    selectedTactic,
+    selectedPublisher,
+    minQuality,
+    onlyWithIocs,
+    sortBy,
+  ]);
+
+  // Automatically navigate to page containing targetReport or targetHighlightId
+  useEffect(() => {
+    if (!targetHighlightId || filteredReports.length === 0 || pageSize === "all") return;
+    const cleanTarget = targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+    const targetIdx = filteredReports.findIndex(
+      (r) =>
+        r.id === targetHighlightId ||
+        r.id.toLowerCase() === targetHighlightId.toLowerCase() ||
+        formatReportId(r.id).toLowerCase() === targetHighlightId.toLowerCase() ||
+        (cleanTarget.length >= 8 && r.id.toLowerCase().includes(cleanTarget)) ||
+        (targetReport && r.id === targetReport.id),
+    );
+    if (targetIdx !== -1) {
+      const targetPage = Math.floor(targetIdx / pageSize) + 1;
+      if (currentPage !== targetPage) {
+        setCurrentPage(targetPage);
+      }
+    }
+  }, [targetHighlightId, targetReport, filteredReports, pageSize, currentPage]);
+
+  const pagedReports = useMemo(
+    () => paginateList(filteredReports, currentPage, pageSize),
+    [filteredReports, currentPage, pageSize],
+  );
+
+  const handlePageChange = (newPage: number) => {
+    setCurrentPage(newPage);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const resetFilters = () => {
     setSelectedTag("ALL");
     setSelectedActor("ALL");
@@ -886,11 +1078,26 @@ function LibraryPage() {
       )}
 
       {/* Result Counter */}
-      <div className="mt-4 flex items-center justify-between text-xs text-muted">
-        <span>
-          Showing <strong className="text-fg">{filteredReports.length}</strong> of{" "}
-          <strong className="text-fg">{allReports.length}</strong> intelligence records
-        </span>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+        <div className="flex items-center gap-2">
+          <span>
+            Showing{" "}
+            <strong className="text-fg">
+              {filteredReports.length === 0
+                ? 0
+                : `${(currentPage - 1) * (pageSize === "all" ? filteredReports.length : pageSize) + 1}–${pageSize === "all" ? filteredReports.length : Math.min(filteredReports.length, currentPage * pageSize)}`}
+            </strong>{" "}
+            of <strong className="text-fg">{filteredReports.length}</strong> filtered records
+            {filteredReports.length !== allReports.length && (
+              <span className="text-subtle"> ({allReports.length} total in store)</span>
+            )}
+          </span>
+          {pageSize !== "all" && filteredReports.length > pageSize && (
+            <span className="rounded bg-bg-elevated border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
+              Page {currentPage} of {Math.max(1, Math.ceil(filteredReports.length / pageSize))}
+            </span>
+          )}
+        </div>
         {selectedKind !== "ALL" && (
           <span className="font-mono text-[11px] text-subtle">
             Category: {RESOURCE_KINDS.find((k) => k.id === selectedKind)?.label}
@@ -920,7 +1127,7 @@ function LibraryPage() {
           </div>
         ) : null}
 
-        {filteredReports.map((r) => {
+        {pagedReports.map((r) => {
           const actors = r.analysis?.threatActors || r.extractedEntities?.threatActors || [];
           const malware = r.analysis?.malware || r.extractedEntities?.malwareFamilies || [];
           const cves = r.extractedEntities?.cves || [];
@@ -1171,6 +1378,23 @@ function LibraryPage() {
           );
         })}
       </div>
+
+      {/* High-Performance Pagination Toolbar */}
+      {filteredReports.length > 0 && (
+        <div className="mt-4 mb-2">
+          <PaginationControls
+            currentPage={currentPage}
+            pageSize={pageSize}
+            totalItems={filteredReports.length}
+            onPageChange={handlePageChange}
+            onPageSizeChange={(sz) => {
+              setPageSize(sz);
+              setCurrentPage(1);
+            }}
+            itemLabel="intelligence records"
+          />
+        </div>
+      )}
 
       {/* PDF / DOCUMENT VIEW MODAL */}
       {previewReportId && (

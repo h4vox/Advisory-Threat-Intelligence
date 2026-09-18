@@ -472,43 +472,43 @@ function SettingsPage() {
 
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-xs">
-                    <label className="font-medium">Concurrency Workers</label>
-                    <span className="font-mono text-accent">{currentCrawl.concurrency ?? 2} workers</span>
+                    <label className="font-medium">Parallel Fetch Workers</label>
+                    <span className="font-mono text-accent">{currentCrawl.concurrency ?? 4} workers</span>
                   </div>
                   <input
                     type="range"
                     min="1"
-                    max="6"
+                    max="8"
                     step="1"
-                    value={currentCrawl.concurrency ?? 2}
+                    value={currentCrawl.concurrency ?? 4}
                     onChange={(e) => updateCrawlField("concurrency", parseInt(e.target.value, 10))}
-                    className="w-full accent-accent"
+                    className="w-full accent-accent cursor-pointer"
                   />
                   <div className="flex justify-between text-[10px] font-mono text-subtle">
-                    <span>1 worker</span>
-                    <span>3 workers</span>
-                    <span>6 workers</span>
+                    <span>1 (sequential)</span>
+                    <span>4 (recommended)</span>
+                    <span>8 (high-throughput)</span>
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-xs">
-                    <label className="font-medium">Polite Rate Limit</label>
+                    <label className="font-medium">Polite Per-Domain Delay</label>
                     <span className="font-mono text-accent">{currentCrawl.rateLimitMs ?? 150}ms</span>
                   </div>
                   <input
                     type="range"
                     min="50"
-                    max="1000"
-                    step="50"
+                    max="500"
+                    step="25"
                     value={currentCrawl.rateLimitMs ?? 150}
                     onChange={(e) => updateCrawlField("rateLimitMs", parseInt(e.target.value, 10))}
-                    className="w-full accent-accent"
+                    className="w-full accent-accent cursor-pointer"
                   />
                   <div className="flex justify-between text-[10px] font-mono text-subtle">
-                    <span>50ms (fast)</span>
-                    <span>250ms</span>
-                    <span>1s (polite)</span>
+                    <span>50ms (ultra-fast)</span>
+                    <span>150ms (optimal)</span>
+                    <span>500ms (polite)</span>
                   </div>
                 </div>
               </div>

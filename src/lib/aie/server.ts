@@ -28,6 +28,7 @@ import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
 import type {
   AppSettings,
+  BatchIngestResult,
   CatalogItem,
   CrawlConfig,
   CrawlerState,
@@ -42,6 +43,7 @@ import type {
   QualityReason,
   ReportListItem,
   ReportRecord,
+  SourceProbeResult,
   SourceRecord,
   StorageStats,
   TrustLevel,
@@ -2065,6 +2067,239 @@ export const ingestDiscoveredUrl = createServerFn({ method: "POST" })
 
     invalidateCrawlerStateCache();
     return result;
+  });
+
+export const batchIngestDiscoveredUrls = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      discoveredIds: z.array(z.string()).min(1),
+      concurrency: z.number().min(1).max(8).optional().default(4),
+    }),
+  )
+  .handler(async ({ data }): Promise<BatchIngestResult> => {
+    await ensureSeeded();
+    const startTime = Date.now();
+    const { discoveredIds, concurrency } = data;
+    const results: BatchIngestResult["results"] = [];
+    let succeeded = 0;
+    let failed = 0;
+
+    const queue = [...discoveredIds];
+    const workerCount = Math.min(concurrency, queue.length);
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const id = queue.shift();
+        if (!id) break;
+
+        try {
+          const res = await ingestDiscoveredUrl({ data: { discoveredId: id } });
+          if (res.ok) {
+            succeeded++;
+            results.push({
+              discoveredId: id,
+              canonicalUrl: (res as any).canonicalUrl || (res as any).title,
+              ok: true,
+              reportId: res.reportId,
+            });
+          } else {
+            failed++;
+            results.push({
+              discoveredId: id,
+              ok: false,
+              error: res.error || "Ingest failed",
+            });
+          }
+        } catch (err: any) {
+          failed++;
+          results.push({
+            discoveredId: id,
+            ok: false,
+            error: err?.message || "Internal error",
+          });
+        }
+      }
+    };
+
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+
+    invalidateCrawlerStateCache(true);
+    return {
+      total: discoveredIds.length,
+      succeeded,
+      failed,
+      durationMs: Date.now() - startTime,
+      results,
+    };
+  });
+
+export const batchRejectDiscoveredUrls = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      discoveredIds: z.array(z.string()).min(1),
+      reason: z.string().optional().default("Analyst rejected candidate resource"),
+    }),
+  )
+  .handler(async ({ data }): Promise<{ ok: boolean; count: number }> => {
+    await ensureSeeded();
+    let updatedCount = 0;
+
+    if (isMongoConfigured()) {
+      try {
+        const col = await getThreatIntelCollection();
+        const res = await col.updateMany(
+          {
+            docType: "discovered_resource",
+            $or: [
+              { id: { $in: data.discoveredIds } },
+              { canonicalUrl: { $in: data.discoveredIds } },
+            ],
+          },
+          {
+            $set: {
+              status: "rejected",
+              decision: "REJECTED",
+              rejectReason: data.reason,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        );
+        updatedCount = res.modifiedCount;
+      } catch (err) {
+        console.warn("[mongodb] batchRejectDiscoveredUrls error:", err);
+      }
+    }
+
+    try {
+      const sql = await getSql();
+      for (const id of data.discoveredIds) {
+        await sql`
+          update discovered_resources
+          set status = 'rejected', updated_at = now()
+          where id = ${id} or canonical_url = ${id}
+        `;
+      }
+    } catch {
+      /* ignore sql fallback */
+    }
+
+    invalidateCrawlerStateCache(true);
+    return { ok: true, count: updatedCount || data.discoveredIds.length };
+  });
+
+export const probeSourceFeeds = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      sourceIds: z.array(z.string()).optional(),
+      concurrency: z.number().min(1).max(8).optional().default(4),
+    }),
+  )
+  .handler(async ({ data }): Promise<{ probes: SourceProbeResult[]; summary: { total: number; healthy: number; degraded: number } }> => {
+    const curatedSources: SourceRecord[] = await listSources();
+    const discovered: DiscoveredSourceRecord[] = await listDiscoveredSources();
+
+    const allSources = [
+      ...curatedSources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        domain: (() => {
+          try {
+            return new URL(s.homepageUrl).hostname;
+          } catch {
+            return s.name.toLowerCase().replace(/\s+/g, "");
+          }
+        })(),
+        url: s.homepageUrl || s.feedUrl || "",
+        enabled: s.enabled,
+      })),
+      ...discovered.map((ds) => ({
+        id: ds.id,
+        name: ds.name,
+        domain: ds.domain,
+        url: ds.homepageUrl || `https://${ds.domain}`,
+        enabled: ds.enabled !== false,
+      })),
+    ].filter((s) => Boolean(s.url));
+
+    const targetSources = data.sourceIds && data.sourceIds.length > 0
+      ? allSources.filter((s) => data.sourceIds!.includes(s.id))
+      : allSources.filter((s) => s.enabled);
+
+    const probes: SourceProbeResult[] = [];
+    const queue = [...targetSources];
+    const workerCount = Math.min(data.concurrency || 4, Math.max(1, queue.length));
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const src = queue.shift();
+        if (!src) break;
+
+        const startTime = Date.now();
+        const targetUrl = src.url;
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+          const res = await fetch(targetUrl, {
+            method: "HEAD",
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Advisory-Threat-Intelligence/2.0",
+              "Accept": "text/html,application/xhtml+xml,application/xml,application/rss+xml,*/*",
+            },
+          }).catch(async () => {
+            return await fetch(targetUrl, {
+              method: "GET",
+              signal: controller.signal,
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Advisory-Threat-Intelligence/2.0",
+                "Range": "bytes=0-1024",
+              },
+            });
+          });
+
+          clearTimeout(timeoutId);
+          const latencyMs = Date.now() - startTime;
+          const reachable = res.status >= 200 && res.status < 400;
+
+          probes.push({
+            sourceId: src.id,
+            url: targetUrl,
+            domain: src.domain,
+            statusCode: res.status,
+            latencyMs,
+            reachable,
+            contentType: res.headers.get("content-type") || "unknown",
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err: any) {
+          probes.push({
+            sourceId: src.id,
+            url: targetUrl,
+            domain: src.domain,
+            statusCode: 0,
+            latencyMs: Date.now() - startTime,
+            reachable: false,
+            contentType: "none",
+            error: err?.name === "AbortError" ? "Request timed out (>4000ms)" : err?.message || "Connection refused",
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const healthy = probes.filter((p) => p.reachable).length;
+    return {
+      probes,
+      summary: {
+        total: probes.length,
+        healthy,
+        degraded: probes.length - healthy,
+      },
+    };
   });
 
 export const exportSTIXBundle = createServerFn({ method: "GET" }).handler(async () => {

@@ -345,6 +345,10 @@ export type CrawlJob = {
   errorSummary: string;
   currentStage?: CrawlPipelineStage;
   currentUrl?: string;
+  activeWorkers?: number;
+  activeDomains?: string[];
+  throughputDocsPerSec?: number;
+  maxResourcesPerRun?: number;
   stageCounts?: Record<CrawlPipelineStage, number>;
 };
 
@@ -575,3 +579,29 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   activeAgentProvider: "agy_agent",
   updatedAt: new Date().toISOString(),
 };
+
+export interface BatchIngestResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  durationMs?: number;
+  results: Array<{
+    discoveredId: string;
+    canonicalUrl?: string;
+    ok: boolean;
+    reportId?: string;
+    error?: string;
+  }>;
+}
+
+export interface SourceProbeResult {
+  sourceId: string;
+  url: string;
+  domain: string;
+  statusCode: number;
+  latencyMs: number;
+  reachable: boolean;
+  contentType: string;
+  error?: string;
+  timestamp: string;
+}
