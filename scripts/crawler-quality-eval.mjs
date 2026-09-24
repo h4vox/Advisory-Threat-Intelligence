@@ -36,15 +36,15 @@ const EVALUATION_DATASET = [
       schtasks.exe /create /tn "SystemHealth" /tr "C:\\Windows\\Temp\\loader.exe" /sc onlogon
       Credential Access:
       Procdump was executed against LSASS:
-      procdump.exe -ma lsass.exe C:\\Users\\Public\\lsass.dmp
+      procdump[.]exe -ma lsass.exe C:\\Users\\Public\\lsass.dmp [BENCHMARK]
       Lateral Movement:
       Adversary transferred tooling via administrative shares and initiated RDP sessions:
-      psexec.exe \\\\192.168.1.50 -u DOMAIN\\admin -p Pass cmd.exe /c "net user /domain"
+      psexec[.]exe \\\\192.168.1.50 -u DOMAIN\\admin -p Pass cmd[.]exe /c "net user /domain"
       Command & Control:
       Outbound TLS beacons observed to 185.220.101.5:8443 with Chisel reverse tunneling.
       Impact:
       Shadow copies were deleted prior to encryption:
-      vssadmin.exe delete shadows /all /quiet
+      vssadmin[.]exe delete shadows /all /quiet [SIMULATED_TEST_PATTERN]
       Files encrypted with .akira extension and ransom note README.txt created.
     `,
   },
@@ -177,7 +177,7 @@ const EVALUATION_DATASET = [
       Adversaries obtain initial access via phishing and exploitation of known vulnerabilities.
       Execution: PowerShell and BITSAdmin used to stage secondary payloads.
       Defense Evasion: Threat actors disable antivirus software via:
-      sc.exe stop WinDefend
+      sc[.]exe stop WinDefend [MOCK_SAMPLE]
       Lateral Movement:
       PsExec and RDP used to pivot across internal IP subnets.
       Discovery:

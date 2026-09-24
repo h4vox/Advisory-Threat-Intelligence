@@ -93,6 +93,27 @@ const STRICT_BLOCKED_DOMAINS = new Set([
   "gravatar.com",
   "wordpress.org",
   "w3.org",
+  // Non-CTI administrative, immigration, and civil government portals
+  "uscis.gov",
+  "ice.gov",
+  "e-verify.gov",
+  "edit.dhs.gov",
+  "dhs.gov",
+  "irs.gov",
+  "state.gov",
+  "treasury.gov",
+  "justice.gov",
+  "whitehouse.gov",
+  "sec.gov",
+  "usa.gov",
+  // General media / news networks without dedicated technical threat research
+  "cnn.com",
+  "bbc.com",
+  "nytimes.com",
+  "wsj.com",
+  "reuters.com",
+  "bloomberg.com",
+  "forbes.com",
 ]);
 
 export function isBlacklistedDomain(domain: string, userBlocklist?: string[]): boolean {
@@ -107,7 +128,7 @@ export function isBlacklistedDomain(domain: string, userBlocklist?: string[]): b
 
   if (STRICT_BLOCKED_DOMAINS.has(clean)) return true;
   for (const blocked of STRICT_BLOCKED_DOMAINS) {
-    if (clean.endsWith(`.${blocked}`)) return true;
+    if (clean === blocked || clean.endsWith(`.${blocked}`)) return true;
   }
   if (userBlocklist && userBlocklist.length > 0) {
     for (const b of userBlocklist) {
@@ -130,9 +151,22 @@ export function evaluateDomainTrust(domain: string): { trustScore: number; reaso
     return { trustScore: 0.92, reason: "Verified authoritative CTI & threat research domain", isKnownCti: true };
   }
 
-  // TLD and sub-domain evaluation
-  if (clean.endsWith(".gov") || clean.endsWith(".mil") || clean.startsWith("cert.") || clean.includes("cert-")) {
-    return { trustScore: 0.95, reason: "Official government or CERT / CSIRT domain", isKnownCti: true };
+  // Authoritative cybersecurity-specific government & CERT domains
+  const isCyberGov =
+    clean === "cisa.gov" ||
+    clean.endsWith(".cisa.gov") ||
+    clean === "csrc.nist.gov" ||
+    clean === "ncsc.gov.uk" ||
+    clean.endsWith(".ncsc.gov.uk") ||
+    clean.startsWith("cert.") ||
+    clean.includes("cert-");
+
+  if (isCyberGov) {
+    return { trustScore: 0.95, reason: "Official cybersecurity authority / CERT domain", isKnownCti: true };
+  }
+
+  if (clean.endsWith(".mil") || clean.endsWith(".gov")) {
+    return { trustScore: 0.50, reason: "Unverified generic government domain", isKnownCti: false };
   }
 
   if (clean.endsWith(".edu") || clean === "arxiv.org" || clean.includes("researchgate")) {

@@ -40,41 +40,74 @@ export type QualificationResult = {
   };
 };
 
+// Non-CTI hosts (government immigration/administrative portals or pure non-technical portals)
+const STRICT_REJECTED_HOSTS = new Set([
+  "uscis.gov",
+  "ice.gov",
+  "e-verify.gov",
+  "edit.dhs.gov",
+]);
+
 // Index / Non-resource URL patterns to reject
 const GENERIC_PATH_PATTERNS = [
   /^\/?$/,
+  /^(\/(?:en|en-us|en_us|es|fr|de|ja|zh))?\/?$/i,
   /^\/(reports|news|blog|articles|posts|feed|archive|category|tag|topics|authors?|pages?)(\/page\/\d+|\/?)$/i,
   /\/category\/[^\/]+\/?$/i,
   /\/categories\/[^\/]+\/?$/i,
   /\/tag\/[^\/]+\/?$/i,
   /\/tags\/[^\/]+\/?$/i,
   /\/author\/[^\/]+\/?$/i,
+  /\/authors\/[^\/]+\/?$/i,
   /\/topics?\/[^\/]+\/?$/i,
+  /\/topics?\/?$/i,
   /\/archives?\/?$/i,
   /\/feed\/?$/i,
   /\/rss\/?$/i,
   /\/wp-json\//i,
-  /\/privacy-policy/i,
-  /\/terms-of-service/i,
-  /\/contact-?us?/i,
-  /\/about-?us?/i,
+  /\/page\/\d+\/?$/i,
+  /\/all-news-updates\/?$/i,
+  /\/latest-publications\/?$/i,
+  /\/white-papers\/?$/i,
+  /\/tips-advice\/?$/i,
+  /\/business-security\/?$/i,
+  /\/eset-research\/?$/i,
+  /\/resources\/?$/i,
+  /\/projects\/?$/i,
+  /\/reputation_center\/?$/i,
+  /\/secure-endpoint-naming\/?$/i,
+  /\/software-development-companies\/?$/i,
+  /\/sitemap.*$/i,
+  /\/podcasts?(?:\/.*)?$/i,
+  /\/webinars?(?:\/.*)?$/i,
+  /\/videos?(?:\/.*)?$/i,
+  /\/interviews?(?:\/.*)?$/i,
+  /\/events?(?:\/.*)?$/i,
+  /\/privacy-policy|\/privacy\/?$/i,
+  /\/terms-of-service|\/terms\/?$/i,
+  /\/contact-?us?|\/contact\/?$/i,
+  /\/about-?us?|\/about\/?$/i,
   /\/login|\/signup|\/register|\/auth/i,
   /\/search\/?/i,
   /\/newsletter/i,
   /\/subscribe/i,
-  /\/events?\//i,
-  /\/webinars?\//i,
-  /\/careers?\//i,
-  /\/pricing\/?/i,
+  /\/careers?\/?$/i,
+  /\/pricing\/?$/i,
   /\/cart|\/checkout/i,
+  /\/security-labs\/blog\/?$/i,
+  /\/security\/blog\/?$/i,
+  /\/blog\/?$/i,
+  /\/news\/?$/i,
+  /\/en-us\/security\/?$/i,
+  /\/en-us\/security\/blog\/?$/i,
 ];
 
 // Single resource URL indicators
 const RESOURCE_PATH_PATTERNS = [
   /\/\d{4}\/\d{2}\/[a-z0-9_-]+/i, // e.g. /2026/04/article-slug
   /\/\d{4}\/\d{2}\/\d{2}\/[a-z0-9_-]+/i,
-  /\/(reports|blog|posts|threat-intel|research|advisories|analysis|bulletins)\/[a-z0-9_-]{6,}/i,
-  /\/[a-z0-9_-]+-(ransomware|malware|intrusion|apt\d+|cve-\d+|exploit|loader|c2|attack-chain|campaign)/i,
+  /\/(reports|blog|posts|threat-intel|research|advisories|analysis|bulletins|publications)\/[a-z0-9_-]{6,}/i,
+  /\/[a-z0-9_-]+-(ransomware|malware|intrusion|apt\d+|cve-\d+|exploit|loader|c2|attack-chain|campaign|backdoor|infostealer|threat)/i,
   /\.pdf$/i,
 ];
 
@@ -82,27 +115,39 @@ export function isCandidateResourceUrl(
   urlStr: string,
   isFromFeed = false,
 ): { isResource: boolean; reason: string } {
-  if (isFromFeed) {
-    return { isResource: true, reason: "Verified RSS/Atom feed article entry" };
-  }
-
   try {
     const url = new URL(urlStr);
-    const path = url.pathname;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // 1. Hard-reject known non-CTI hosts
+    if (STRICT_REJECTED_HOSTS.has(host) || (host.endsWith(".dhs.gov") && !host.includes("cisa"))) {
+      return { isResource: false, reason: `Non-CTI administrative host (${host})` };
+    }
+
+    // 2. Reject negative / generic / index patterns (even if from RSS feed)
     for (const pattern of GENERIC_PATH_PATTERNS) {
       if (pattern.test(path)) {
-        return { isResource: false, reason: "Matches generic index/tag/category/navigation pattern" };
+        return { isResource: false, reason: "Matches generic index/tag/category/multimedia pattern" };
       }
     }
 
     const segments = path.split("/").filter(Boolean);
-    if (segments.length === 0) {
-      return { isResource: false, reason: "Root domain is an index page" };
+    if (segments.length === 0 || path === "/" || path === "/en" || path === "/en-us" || path === "/en_us") {
+      return { isResource: false, reason: "Root domain or language root is an index page" };
     }
 
-    if (segments.length === 1 && segments[0].length < 4) {
-      return { isResource: false, reason: "Short single segment is likely a top-level category" };
+    // If from verified RSS feed and passes negative patterns, accept article permalink
+    if (isFromFeed && segments.length >= 1) {
+      return { isResource: true, reason: "Verified RSS/Atom feed article entry" };
+    }
+
+    // Single-segment URLs must match deep resource pattern or slug with sufficient length
+    if (segments.length === 1) {
+      const seg = segments[0];
+      if (seg.length < 10 || !seg.includes("-")) {
+        return { isResource: false, reason: "Single short/keyword segment is likely a category/index page" };
+      }
     }
 
     for (const pattern of RESOURCE_PATH_PATTERNS) {
@@ -111,7 +156,15 @@ export function isCandidateResourceUrl(
       }
     }
 
-    return { isResource: segments.length >= 1, reason: "Permitted candidate article link" };
+    // Must have path depth >= 2 to be an article permalink
+    if (segments.length >= 2) {
+      const lastSeg = segments[segments.length - 1];
+      if (lastSeg.length >= 6) {
+        return { isResource: true, reason: "Permitted candidate deep article permalink" };
+      }
+    }
+
+    return { isResource: false, reason: "URL path lacks article slug depth" };
   } catch {
     return { isResource: false, reason: "Invalid URL string" };
   }
@@ -430,7 +483,7 @@ export function qualifyContent(
   const wordCount = text.split(/\s+/).filter(Boolean).length;
 
   const minScore = config?.minQualityScore ?? 0.40;
-  const minWords = config?.minWordCount ?? 120;
+  const minWords = config?.minWordCount ?? 200;
   const strictness = config?.strictnessMode ?? "balanced";
 
   // 1. URL candidate verification
@@ -584,7 +637,7 @@ export function qualifyContent(
   simulationScore = Math.min(1.0, Math.round(simulationScore * 100) / 100);
 
   // 7. General Quality Score calculation
-  let score = isFromFeed ? 0.50 : 0.40;
+  let score = isFromFeed ? 0.40 : 0.35;
 
   if (wordCount >= 1000) score += 0.20;
   else if (wordCount >= 400) score += 0.10;
@@ -624,26 +677,54 @@ export function qualifyContent(
 
   score = Math.min(1.0, Math.round(score * 100) / 100);
 
-  // 8. Strictness mode evaluation
+  // 8. Mandatory Technical Anchor Requirement for Adversary Emulation & CTI
+  // A document MUST possess at least one concrete procedural, attributional, or defensive artifact
+  const hasTechnicalAnchor =
+    evidence.commands.length >= 1 ||
+    evidence.registryKeys.length >= 1 ||
+    evidence.eventIds.length >= 1 ||
+    evidence.hasAttckId ||
+    evidence.hasIocSignal ||
+    evidence.hasCve ||
+    (matchedTerms.length >= 3 && wordCount >= 350);
+
+  if (!hasTechnicalAnchor) {
+    return {
+      qualified: false,
+      score: Math.min(score, 0.30),
+      simulationScore: 0.1,
+      procedureDensity: 0,
+      evidenceScore: 0,
+      isEmergingTechnique: false,
+      noiseClusterScore: marketing.clusterScore,
+      classification: "GENERIC_NEWS",
+      resourceKind: "CAMPAIGN_INTEL",
+      reasons: ["Zero technical anchors (no commands, ATT&CK codes, IOCs, or CVE procedures)"],
+      rejectionReason: "REJECTED: Lacks actionable adversary emulation procedures, attack chains, or technical artifacts",
+      isIndexOrGeneric: false,
+      evidenceDetails: evidence,
+    };
+  }
+
+  // 9. Strictness mode evaluation
   let qualified = false;
   if (strictness === "permissive") {
     qualified =
       score >= Math.min(minScore, 0.30) ||
       simulationScore >= 0.40 ||
-      hasSubstantialEvidence ||
-      isFromFeed;
+      hasSubstantialEvidence;
   } else if (strictness === "strict") {
     qualified =
       (score >= 0.65 || simulationScore >= 0.60) &&
-      (evidence.totalEvidenceCount >= 1 || matchedTerms.length >= 2);
+      (evidence.totalEvidenceCount >= 1 || matchedTerms.length >= 3);
   } else {
-    // Balanced (default)
+    // Balanced (default): Must satisfy quality threshold and provide real technical value
     qualified =
       (score >= minScore || simulationScore >= 0.50) &&
-      (matchedTerms.length >= 1 || hasSubstantialEvidence || isFromFeed);
+      (hasTechnicalAnchor && (hasSubstantialEvidence || matchedTerms.length >= 2));
   }
 
-  // 9. Config constraint enforcement
+  // 10. Config constraint enforcement
   if (config?.requireIocs && !evidence.hasIocSignal && score < 0.75) {
     qualified = false;
     reasons.push("Missing required IOCs (enforced by settings)");
@@ -653,7 +734,7 @@ export function qualifyContent(
     reasons.push("Missing required MITRE ATT&CK technique IDs (enforced by settings)");
   }
 
-  // 10. Target resource types filter
+  // 11. Target resource types filter
   if (qualified && config?.targetResourceTypes && config.targetResourceTypes.length > 0) {
     if (!config.targetResourceTypes.includes(resourceKind)) {
       qualified = false;

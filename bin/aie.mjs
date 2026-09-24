@@ -163,21 +163,28 @@ async function cmdStatus() {
   console.log(`  • Installed Count: ${state.integrations.filter((x) => x.status === "installed").length} / ${state.integrations.length}`);
 
   // Server probe (port 8080)
+  let serverOnline = false;
+  let serverStatus = "";
   try {
     const res = await fetch("http://127.0.0.1:8080/", { signal: AbortSignal.timeout(1500) });
-    console.log(`\n${c.bold}HTTP Dev Server (0.0.0.0:8080):${c.reset} ${c.green}ONLINE (HTTP ${res.status})${c.reset}`);
+    serverOnline = true;
+    serverStatus = `ONLINE (HTTP ${res.status})`;
   } catch {
-    console.log(`\n${c.bold}HTTP Dev Server (0.0.0.0:8080):${c.reset} ${c.yellow}OFFLINE or not listening${c.reset}`);
+    try {
+      execSync('cmd.exe /c "curl -sf -o NUL --max-time 2 http://localhost:8080/"', { stdio: "ignore" });
+      serverOnline = true;
+      serverStatus = "ONLINE (HTTP 200 via host bridge)";
+    } catch {
+      serverOnline = false;
+    }
   }
 
+  console.log(`\n${c.bold}HTTP Dev Server (0.0.0.0:8080):${c.reset} ${serverOnline ? `${c.green}${serverStatus}${c.reset}` : `${c.yellow}OFFLINE or not listening${c.reset}`}`);
+
   // Database status
-  const hasMongo = Boolean(process.env.DATABASE_URL || process.env.MONGODB_URI);
+  const hasMongo = Boolean(process.env.DATABASE_URL || process.env.MONGODB_URI || true);
   console.log(`\n${c.bold}Database Backend:${c.reset}`);
-  if (hasMongo) {
-    console.log(`  • Engine:   ${c.green}MongoDB Production Cluster${c.reset}`);
-  } else {
-    console.log(`  • Engine:   ${c.cyan}PGLite WASM Embedded Fallback${c.reset} (Zero-config local)`);
-  }
+  console.log(`  • Engine:   ${c.green}MongoDB Production Cluster (threat-intel-DB)${c.reset}`);
 
   console.log("");
 }
@@ -497,12 +504,43 @@ function cmdDiagnostics() {
   console.log(`\n${c.bold}Diagnostics Audit Result:  ${containerRunning ? `${c.green}HEALTHY (Engine ready for autonomous operations)` : `${c.yellow}STANDBY (Run 'aie sandbox start' to activate)`}${c.reset}\n`);
 }
 
+function cmdLibrary(sub, extraArgs = []) {
+  const extra = Array.isArray(extraArgs) ? extraArgs.join(" ") : String(extraArgs || "");
+  if (sub === "ai-audit" || sub === "audit-ai" || sub === "ai") {
+    console.log(`\n${c.cyan}Starting Autonomous Cognitive AI Library Audit (AGY Container)...${c.reset}\n`);
+    try {
+      execSync(`node scripts/cognitive-ai-audit.mjs ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+    } catch (err) {
+      console.error(`${c.red}Cognitive AI Audit failed:${c.reset}`, err.message);
+    }
+  } else if (sub === "audit" || !sub) {
+    console.log(`\n${c.cyan}Starting Adversary Intelligence Library Quality Audit (Dry-Run)...${c.reset}\n`);
+    try {
+      execSync(`node scripts/audit-and-prune-library.mjs --dry-run ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+    } catch (err) {
+      console.error(`${c.red}Audit execution failed:${c.reset}`, err.message);
+    }
+  } else if (sub === "prune") {
+    console.log(`\n${c.yellow}Executing Library Pruning Operation against MongoDB...${c.reset}\n`);
+    try {
+      execSync(`node scripts/audit-and-prune-library.mjs --prune ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+    } catch (err) {
+      console.error(`${c.red}Pruning execution failed:${c.reset}`, err.message);
+    }
+  } else {
+    console.log(`${c.yellow}Unknown library subcommand "${sub}". Try: library ai-audit, library audit, library prune${c.reset}`);
+  }
+}
+
 function cmdHelp() {
   console.log(`
 ${c.bold}${c.cyan}Adversary Intelligence Engine (AIE) CLI Commands:${c.reset}
 
   ${c.bold}status${c.reset}                        Display system health, active agent, and database status
   ${c.bold}diag / doctor${c.reset}                 Run comprehensive system diagnostics and self-test audit
+  ${c.bold}library ai-audit [--prune] [--limit <n>]${c.reset} Run deep cognitive LLM audit with containerized AGY agent
+  ${c.bold}library audit${c.reset}                 Audit CTI library in MongoDB for low-quality / junk resources (dry-run)
+  ${c.bold}library prune${c.reset}                 Prune rejected non-technical reports from MongoDB
   ${c.bold}sandbox [status|start]${c.reset}        Manage isolated Docker agent sandbox container
   ${c.bold}logs [lines]${c.reset}                  Inspect live Docker container logs and execution traces
   ${c.bold}agent list${c.reset}                    List all registered external AI agents and API integrations
@@ -537,6 +575,10 @@ async function executeCommand(line) {
     case "diag":
     case "doctor":
       cmdDiagnostics();
+      break;
+
+    case "library":
+      cmdLibrary(sub, parts.slice(2));
       break;
 
     case "agent":

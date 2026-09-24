@@ -24,6 +24,7 @@ import {
   Sparkles,
   Tag,
   X,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -32,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
+import { getReportPdf, listReports, auditLibraryWithAi, evaluateReportWithAi } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
@@ -294,18 +295,58 @@ function LibraryPage() {
     return allReports;
   }, [isDeepSearchActive, searchResults, allReports]);
 
+  const [isEvaluatingSingle, setIsEvaluatingSingle] = useState(false);
+
   const handleRunAiAudit = async () => {
     setIsAuditing(true);
     toast.info("AI Quality Gate active. Auditing reports with Antigravity Agent...");
     try {
-      const res = await auditLibraryWithAi({ data: {} });
-      toast.success(`AI Audit Complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged/pruned.`);
+      const res = await auditLibraryWithAi({ data: { limit: 10 } });
+      toast.success(res.message || `AI Audit Complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged/pruned (${res.aiEvaluatedCount ?? 0} deep AI evaluations).`);
       void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
       void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
     } catch (err: any) {
       toast.error(`AI Audit failed: ${err?.message || "Unknown error"}`);
     } finally {
       setIsAuditing(false);
+    }
+  };
+
+  const handleEvaluateSingle = async (reportId: string) => {
+    setIsEvaluatingSingle(true);
+    toast.info("Running authentic 5-dimensional rubric evaluation via containerized AGY agent...");
+    try {
+      const res = await evaluateReportWithAi({ data: { id: reportId } });
+      if (res.success && res.result) {
+        if (res.isApproved) {
+          toast.success(`Report Approved by AI Agent (${res.result.passScore}/100)!`);
+        } else {
+          toast.warning(`Report Rejected by AI Agent (${res.result.passScore}/100): ${res.result.rationale}`);
+        }
+        setAuditModalReport((prev) => {
+          if (!prev || prev.id !== reportId) return prev;
+          return {
+            ...prev,
+            aiVerified: res.isApproved,
+            aiQualityScore: res.result.passScore,
+            aiAuditReason: res.isApproved
+              ? `AI Cognitive Approval (${res.result.passScore}/100): ${res.result.rationale}`
+              : `Rejected by AI Cognitive Gate (${res.result.passScore}/100): ${res.result.rationale}`,
+            scoreBreakdown: res.result.scoreBreakdown,
+            status: res.isApproved ? "acquired" : "rejected",
+            classification: res.result.classification || prev.classification,
+            resourceKind: res.result.resourceKind || prev.resourceKind,
+          };
+        });
+        void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
+        void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
+      } else {
+        toast.error(`Evaluation failed: ${res.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      toast.error(`Agent evaluation failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsEvaluatingSingle(false);
     }
   };
 
@@ -1180,7 +1221,7 @@ function LibraryPage() {
                   )}
                 </div>
 
-                {/* Small green AI Verified badge on very top right */}
+                {/* AI Verification status badge on very top right */}
                 {r.aiVerified ? (
                   <button
                     type="button"
@@ -1191,6 +1232,16 @@ function LibraryPage() {
                     <CheckCircle2 className="size-2.5 text-sage" />
                     AI Verified {r.aiQualityScore ? `· ${r.aiQualityScore}%` : ""}
                   </button>
+                ) : r.status === "rejected" ? (
+                  <button
+                    type="button"
+                    onClick={() => setAuditModalReport(r)}
+                    className="inline-flex items-center gap-1 rounded-full bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 px-2 py-0.5 text-[10px] font-mono font-medium transition-colors cursor-pointer"
+                    title="Click to view AI Rejection Details"
+                  >
+                    <XCircle className="size-2.5 text-red-400" />
+                    Rejected by AI
+                  </button>
                 ) : (
                   <button
                     type="button"
@@ -1198,7 +1249,7 @@ function LibraryPage() {
                     className="inline-flex items-center gap-1 rounded-full bg-muted/10 hover:bg-muted/20 text-muted border border-border px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer"
                     title="Click to view Crawler & AI Audit Details"
                   >
-                    Crawler Ingested
+                    Pending AI Audit
                   </button>
                 )}
               </div>
@@ -1553,9 +1604,13 @@ function LibraryPage() {
                   <span className="inline-flex items-center gap-1 rounded-full bg-sage/15 text-sage border border-sage/30 px-2.5 py-0.5 font-mono font-medium">
                     <CheckCircle2 className="size-3 text-sage" /> AI Quality Gate Verified
                   </span>
+                ) : auditModalReport.status === "rejected" ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 px-2.5 py-0.5 font-mono font-medium">
+                    <XCircle className="size-3 text-red-400" /> Rejected by Cognitive Gate
+                  </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 rounded-full bg-muted/15 text-muted border border-border px-2.5 py-0.5 font-mono">
-                    Crawler Direct Ingested
+                    Pending Cognitive AI Turn
                   </span>
                 )}
               </div>
@@ -1739,27 +1794,46 @@ function LibraryPage() {
                 </div>
               )}
 
-              <div className="pt-2 flex justify-end gap-2 border-t border-border">
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border">
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => {
-                    const r = auditModalReport;
-                    setAuditModalReport(null);
-                    openPdfModal(r.id);
-                  }}
-                  className="text-xs"
+                  disabled={isEvaluatingSingle}
+                  onClick={() => handleEvaluateSingle(auditModalReport.id)}
+                  className="text-xs border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 gap-1.5"
                 >
-                  <Eye className="size-3.5 mr-1" /> View High-Fidelity PDF
+                  <Sparkles className={cn("size-3.5", isEvaluatingSingle && "animate-spin text-emerald-400")} />
+                  <span>
+                    {isEvaluatingSingle
+                      ? "Evaluating with Agent..."
+                      : auditModalReport.aiVerified
+                        ? "Re-evaluate with AI Agent"
+                        : "Evaluate with AI Agent"}
+                  </span>
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setAuditModalReport(null)}
-                  className="text-xs"
-                >
-                  Close
-                </Button>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      const r = auditModalReport;
+                      setAuditModalReport(null);
+                      openPdfModal(r.id);
+                    }}
+                    className="text-xs"
+                  >
+                    <Eye className="size-3.5 mr-1" /> View High-Fidelity PDF
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setAuditModalReport(null)}
+                    className="text-xs"
+                  >
+                    Close
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

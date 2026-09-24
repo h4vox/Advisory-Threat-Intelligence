@@ -1,0 +1,104 @@
+{
+  "auditedAt": "2026-09-23T09:49:40.646Z",
+  "model": "gemini-3.8-flash-low",
+  "totalAudited": 2,
+  "approvedCount": 2,
+  "rejectedCount": 0,
+  "results": [
+    {
+      "id": "rpt_seed_lynx",
+      "title": "Lynx ransomware via a single valid RDP logon",
+      "url": "https://thedfirreport.com/2025/12/17/cats-got-your-files-lynx-ransomware/",
+      "score": 68,
+      "isApproved": true,
+      "evalOutput": {
+        "passScore": 68,
+        "recommendApproval": true,
+        "classification": "INTRUSION_REPORT",
+        "resourceKind": "FULL_ATTACK_CHAIN",
+        "threatActors": [],
+        "malwareFamilies": [
+          "Lynx",
+          "rclone"
+        ],
+        "cves": [],
+        "mitreTechniques": [
+          "T1078",
+          "T1021.001",
+          "T1059.001",
+          "T1003.001",
+          "T1003.003",
+          "T1087",
+          "T1018",
+          "T1021.002",
+          "T1560",
+          "T1048",
+          "T1486",
+          "T1490",
+          "T1562.001"
+        ],
+        "scoreBreakdown": {
+          "proceduralDepth": 17,
+          "attackProgression": 24,
+          "attributionContext": 8,
+          "emulationUtility": 14,
+          "iocVerifiability": 5,
+          "totalScore": 68
+        },
+        "rationale": "The snippet presents a comprehensive end-to-end 7-stage attack progression (Initial Access through Impact) with clear MITRE ATT&CK mapping and actionable detection hypotheses (PowerShell reconnaissance, ProcDump staging, NTDS dumping, and ASN-based RDP hunting). Procedural depth is moderate as exact command-line arguments, hashes, and specific C2/victim telemetry artifacts are summarized rather than fully articulated."
+      },
+      "elapsedMs": 31730
+    },
+    {
+      "id": "rpt_seed_akira",
+      "title": "SEO-poisoned installer to Akira ransomware",
+      "url": "https://thedfirreport.com/2026/06/29/from-bing-search-to-ransomware-bumblebee-and-adaptixc2-deliver-akira-3/",
+      "score": 68,
+      "isApproved": true,
+      "evalOutput": {
+        "passScore": 68,
+        "recommendApproval": true,
+        "classification": "INTRUSION_REPORT",
+        "resourceKind": "FULL_ATTACK_CHAIN",
+        "threatActors": [
+          "Akira"
+        ],
+        "malwareFamilies": [
+          "Bumblebee",
+          "AdaptixC2",
+          "Rclone",
+          "Akira"
+        ],
+        "cves": [],
+        "mitreTechniques": [
+          "T1189",
+          "T1204.002",
+          "T1574.002",
+          "T1059",
+          "T1059.001",
+          "T1053.005",
+          "T1555.003",
+          "T1003.001",
+          "T1046",
+          "T1482",
+          "T1021",
+          "T1021.001",
+          "T1550.002",
+          "T1071.001",
+          "T1567",
+          "T1486"
+        ],
+        "scoreBreakdown": {
+          "proceduralDepth": 14,
+          "attackProgression": 23,
+          "attributionContext": 11,
+          "emulationUtility": 12,
+          "iocVerifiability": 8,
+          "totalScore": 68
+        },
+        "rationale": "The snippet documents a full end-to-end intrusion chain spanning SEO poisoning and initial access to DLL side-loading, AdaptixC2 staging, credential dumping, exfiltration, and Akira ransomware deployment. While specific command-line syntax and explicit rule blocks (YARA/Sigma) are condensed in this snippet, strong progression, explicit hunting hypotheses, tool inventory, and complete ATT&CK mapping provide solid emulation and detection value."
+      },
+      "elapsedMs": 24578
+    }
+  ]
+}

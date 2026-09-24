@@ -130,10 +130,10 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
     htmlDiscovery: true,
     searchDiscovery: true,
     recursiveDiscovery: true,
-    keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-    noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy",
-    minQualityScore: 0.35,
-    minWordCount: 100,
+    keywords: 'ransomware, "attack chain", "infection chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
+    noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy, podcast, videointerview",
+    minQualityScore: 0.40,
+    minWordCount: 200,
     strictnessMode: "balanced",
     requireIocs: false,
     requireAttck: false,
@@ -536,6 +536,13 @@ export async function executeCrawlJob(
     const enqueue = (item: FrontierItem) => {
       if (enqueuedUrls.has(item.canonicalUrl)) return;
       if (!validateSafePublicUrl(item.canonicalUrl).safe) return;
+
+      // Candidate Resource Gate: Filter out index, category roots, podcasts, webinars, and sitemaps early
+      const isFeed = item.discoveryMethod === "rss_feed";
+      const candCheck = isCandidateResourceUrl(item.canonicalUrl, isFeed);
+      if (!candCheck.isResource) {
+        return;
+      }
 
       // Strict Scoped Research Endpoint Guard:
       // If the resource belongs to a source with a defined crawlPattern, enforce strict path scoping.
@@ -1383,7 +1390,13 @@ export async function executeCrawlJob(
                 `[crawler][agent] 5D Evaluated "${docTitle.slice(0, 60)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
               );
 
-              if (agentResult.passScore >= 50 || agentResult.recommendApproval) {
+              const isApproved =
+                agentResult.recommendApproval &&
+                agentResult.passScore >= 50 &&
+                agentResult.classification !== "OTHER" &&
+                agentResult.classification !== "GENERIC_NEWS";
+
+              if (isApproved) {
                 qual.qualified = true;
                 qual.classification = agentResult.classification;
                 qual.resourceKind = agentResult.resourceKind;
@@ -1396,10 +1409,16 @@ export async function executeCrawlJob(
                 }
               } else {
                 qual.qualified = false;
-                qual.rejectionReason = agentResult.rationale || `Rejected by AI Agent: 5D score (${agentResult.passScore}/100) below threshold`;
+                qual.rejectionReason = agentResult.rationale
+                  ? `Rejected by AI Agent (score: ${agentResult.passScore}/100, class: ${agentResult.classification}): ${agentResult.rationale}`
+                  : `Rejected by AI Agent: 5D score (${agentResult.passScore}/100) below adversary emulation threshold or classified as ${agentResult.classification}`;
+                logger.agent(
+                  "REJECTED_BY_AI",
+                  `"${docTitle.slice(0, 50)}" rejected by cognitive AI: ${qual.rejectionReason}`,
+                );
               }
             } else if (agentResult.error) {
-              logger.agent("FALLBACK", `Agent fallback for "${docTitle.slice(0, 40)}": ${agentResult.error} — adhering to heuristic verdict (${qual.qualified})`);
+              logger.agent("FALLBACK", `Agent evaluation error for "${docTitle.slice(0, 40)}": ${agentResult.error} — adhering to strict heuristic verdict (${qual.qualified})`);
             }
           } catch (agentErr) {
             logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
@@ -1581,9 +1600,16 @@ export async function executeCrawlJob(
               const effectiveSourceName = isGoogle ? "Google Threat Intelligence" : current.publisher || current.domain;
               const effectiveSourceId = current.sourceId || (isGoogle ? "src_mandiant" : "src_expanded");
 
-              const isAiVerified = Boolean(agentResult?.recommendApproval && (agentResult.passScore ?? 0) >= 50);
+              const isAiVerified = Boolean(
+                agentResult?.recommendApproval &&
+                (agentResult.passScore ?? 0) >= 50 &&
+                agentResult.classification !== "OTHER" &&
+                agentResult.classification !== "GENERIC_NEWS"
+              );
               const aiScore = agentResult?.passScore ? agentResult.passScore : Math.round(score * 100);
-              const aiReason = agentResult?.rationale || "Verified by CTI Heuristic Qualification Gate";
+              const aiReason = isAiVerified
+                ? `AI Cognitive Approval (${agentResult?.passScore}/100): ${agentResult?.rationale || "Verified by 5D rubric"}`
+                : "Structural CTI Signal Qualified (Pending Cognitive AI Agent Evaluation)";
 
               if (agentResult) {
                 if (agentResult.threatActors?.length) {

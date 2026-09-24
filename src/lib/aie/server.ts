@@ -87,6 +87,8 @@ import {
   mongoToggleDiscoveredSource,
   mongoValidateDiscoveredSource,
   mongoAuditLibraryWithAi,
+  invalidateReportsCache,
+  invalidateDashboardCache,
   mongoGetMarketplaceState,
   mongoGetMarketplaceIntegrations,
   mongoSaveMarketplaceIntegration,
@@ -748,12 +750,128 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
   });
 
 export const runAiLibraryAudit = createServerFn({ method: "POST" })
-  .validator(z.object({ autoPruneJunk: z.boolean().optional() }).optional())
+  .validator(
+    z
+      .object({
+        autoPruneJunk: z.boolean().optional(),
+        limit: z.number().optional(),
+        unverifiedOnly: z.boolean().optional(),
+        forceAll: z.boolean().optional(),
+      })
+      .optional()
+  )
   .handler(async ({ data }) => {
-    return await mongoAuditLibraryWithAi({ autoPruneJunk: data?.autoPruneJunk });
+    return await mongoAuditLibraryWithAi({
+      autoPruneJunk: data?.autoPruneJunk,
+      limit: data?.limit,
+      unverifiedOnly: data?.unverifiedOnly,
+      forceAll: data?.forceAll,
+    });
   });
 
 export const auditLibraryWithAi = runAiLibraryAudit;
+
+export const evaluateReportWithAi = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.string(),
+      autoPrune: z.boolean().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    const col = await getThreatIntelCollection();
+    const doc = await col.findOne({ id: data.id, docType: "report" });
+    if (!doc) {
+      throw new Error(`Report not found: ${data.id}`);
+    }
+
+    const title = (doc.title as string) || "";
+    const url = (doc.url as string) || "";
+    const text = (doc.extractedText as string) || (doc.summary as string) || "";
+
+    const evalRes = await evaluateResourceWithAgent({
+      title,
+      url,
+      text,
+      domain: (doc.sourceDomain as string) || undefined,
+      timeoutSeconds: 40,
+    });
+
+    if (!evalRes.success || evalRes.fallback) {
+      return {
+        success: false,
+        error: evalRes.error || "AI Agent evaluation timed out or returned empty response",
+        result: evalRes,
+      };
+    }
+
+    const isApproved =
+      evalRes.recommendApproval &&
+      evalRes.passScore >= 50 &&
+      evalRes.classification !== "OTHER" &&
+      evalRes.classification !== "GENERIC_NEWS";
+
+    if (isApproved) {
+      const updatedAnalysis: any = { ...(doc.analysis || {}) };
+      if (evalRes.threatActors && evalRes.threatActors.length > 0) {
+        const existingActors = new Set(updatedAnalysis.threatActors || []);
+        for (const act of evalRes.threatActors) existingActors.add(act);
+        updatedAnalysis.threatActors = Array.from(existingActors);
+      }
+      if (evalRes.mitreTechniques && evalRes.mitreTechniques.length > 0) {
+        const existingTechs = new Set(updatedAnalysis.techniques || []);
+        for (const t of evalRes.mitreTechniques) existingTechs.add(t);
+        updatedAnalysis.techniques = Array.from(existingTechs);
+      }
+
+      await col.updateOne(
+        { id: doc.id, docType: "report" },
+        {
+          $set: {
+            status: "acquired",
+            classification: evalRes.classification || doc.classification,
+            resourceKind: evalRes.resourceKind || doc.resourceKind,
+            aiVerified: true,
+            aiQualityScore: evalRes.passScore,
+            aiAuditReason: `AI Cognitive Approval (${evalRes.passScore}/100): ${evalRes.rationale}`,
+            scoreBreakdown: evalRes.scoreBreakdown,
+            analysis: updatedAnalysis,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      );
+    } else {
+      if (data.autoPrune) {
+        await col.deleteOne({ id: doc.id, docType: "report" });
+      } else {
+        await col.updateOne(
+          { id: doc.id, docType: "report" },
+          {
+            $set: {
+              status: "rejected",
+              classification: evalRes.classification || "OTHER",
+              resourceKind: evalRes.resourceKind || doc.resourceKind,
+              aiVerified: false,
+              aiQualityScore: evalRes.passScore || 0,
+              aiAuditReason: `Rejected by AI Cognitive Gate (${evalRes.passScore}/100): ${evalRes.rationale}`,
+              scoreBreakdown: evalRes.scoreBreakdown,
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+      }
+    }
+
+    invalidateReportsCache();
+    invalidateDashboardCache();
+
+    return {
+      success: true,
+      isApproved,
+      pruned: !isApproved && Boolean(data.autoPrune),
+      result: evalRes,
+    };
+  });
 
 export const listReports = createServerFn({ method: "GET" })
   .validator(

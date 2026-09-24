@@ -253,40 +253,12 @@ export async function runUnifiedResourceEvaluation(
   const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
   const timeoutSeconds = params.timeoutSeconds || active.timeoutSeconds;
 
-  if (providerId === "agy_agent") {
-    return evaluateResourceWithAgent({
-      url: params.url,
-      domain: params.domain,
-      title: params.title || "",
-      text: params.text,
-      model: rawModel,
-      timeoutSeconds,
-    });
-  }
-
-  // Fallback default structure matching taxonomy and 5D scoring rubric
-  const fallbackBreakdown: AgentScoreBreakdown = {
-    proceduralDepth: 24,
-    attackProgression: 20,
-    attributionContext: 12,
-    emulationUtility: 16,
-    iocVerifiability: 8,
-    totalScore: 80,
-  };
-
-  return {
-    success: true,
-    fallback: true,
-    isRelevant: true,
-    passScore: 80,
-    recommendApproval: true,
-    classification: "INTRUSION_REPORT",
-    resourceKind: "FULL_ATTACK_CHAIN",
-    threatActors: [],
-    malwareFamilies: [],
-    cves: [],
-    mitreTechniques: [],
-    scoreBreakdown: fallbackBreakdown,
-    rationale: `Evaluated via ${active.providerName} (${rawModel})`,
-  };
+  return evaluateResourceWithAgent({
+    url: params.url,
+    domain: params.domain,
+    title: params.title || "",
+    text: params.text,
+    model: rawModel,
+    timeoutSeconds,
+  });
 }

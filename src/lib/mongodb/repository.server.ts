@@ -968,10 +968,10 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   htmlDiscovery: true,
   searchDiscovery: true,
   recursiveDiscovery: true,
-  keywords: 'ransomware, "attack chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
-  noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy",
-  minQualityScore: 0.35,
-  minWordCount: 100,
+  keywords: 'ransomware, "attack chain", "infection chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"',
+  noiseKeywords: "webinar, discount, pricing, subscribe, careers, terms of service, privacy policy, podcast, videointerview",
+  minQualityScore: 0.40,
+  minWordCount: 200,
   strictnessMode: "balanced",
   requireIocs: false,
   requireAttck: false,
@@ -2663,13 +2663,17 @@ export async function mongoGetExistingReportsDedupIndex(): Promise<
  * and safely prunes confirmed non-threat content (generic index queries, webinars, podcasts, error pages)
  * if autoPruneJunk is enabled.
  */
-export async function mongoAuditLibraryWithAi(options: {
+export async function mongoAuditLibraryWithAi(options?: {
   autoPruneJunk?: boolean;
+  limit?: number;
+  unverifiedOnly?: boolean;
+  forceAll?: boolean;
 }): Promise<{
   success: boolean;
   totalAudited: number;
   verifiedCount: number;
   prunedCount: number;
+  aiEvaluatedCount: number;
   prunedTitles: string[];
   message: string;
 }> {
@@ -2678,7 +2682,7 @@ export async function mongoAuditLibraryWithAi(options: {
   const col = await getThreatIntelCollection();
 
   // If autoPruneJunk is not explicitly specified, check CrawlConfig
-  let shouldPrune = options.autoPruneJunk;
+  let shouldPrune = options?.autoPruneJunk;
   if (shouldPrune === undefined) {
     const cfg = await mongoGetCrawlConfig();
     shouldPrune = Boolean(cfg.agentAutoPruneJunkEnabled);
@@ -2687,7 +2691,9 @@ export async function mongoAuditLibraryWithAi(options: {
   const reports = await col.find({ docType: "report" }).toArray();
   let verifiedCount = 0;
   let prunedCount = 0;
+  let aiEvaluatedCount = 0;
   const prunedTitles: string[] = [];
+  const maxAiEvaluations = options?.limit ?? 10;
 
   for (const doc of reports) {
     const iocCount = Array.isArray(doc.iocs) ? doc.iocs.length : 0;
@@ -2707,11 +2713,60 @@ export async function mongoAuditLibraryWithAi(options: {
       (analysis?.attackChain && analysis.attackChain.length > 0) ||
       qualityScore >= 0.70;
 
-    // Check for junk patterns
+    // Check for junk patterns (structural quality pre-screening)
     let isJunk = false;
     let junkReason = "";
 
-    if (!hasProtectedSignals) {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.replace(/^www\./, "").toLowerCase();
+      const path = u.pathname.replace(/\/+$/, "") || "/";
+      if (
+        host === "uscis.gov" ||
+        host === "ice.gov" ||
+        host === "e-verify.gov" ||
+        host === "edit.dhs.gov" ||
+        (host.endsWith(".dhs.gov") && !host.includes("cisa"))
+      ) {
+        isJunk = true;
+        junkReason = `Non-CTI administrative host: ${host}`;
+      } else if (
+        path === "" ||
+        path === "/" ||
+        path === "/en" ||
+        path === "/en-us" ||
+        path === "/en_us" ||
+        /sitemap/i.test(path)
+      ) {
+        isJunk = true;
+        junkReason = `Homepage or root sitemap: ${path || "/"}`;
+      } else if (
+        path.endsWith("/podcasts") ||
+        path.includes("/podcasts/") ||
+        path.endsWith("/webinars") ||
+        path.endsWith("/white-papers") ||
+        path.endsWith("/tips-advice") ||
+        path.endsWith("/business-security") ||
+        path.endsWith("/disclosure-policy") ||
+        path.endsWith("/privacy-policy") ||
+        path.endsWith("/privacy") ||
+        path.endsWith("/terms") ||
+        path.endsWith("/contact") ||
+        path.endsWith("/about") ||
+        path.endsWith("/sitemap1.aspx") ||
+        path.endsWith("/latest-publications") ||
+        path.endsWith("/resources") ||
+        path.endsWith("/projects") ||
+        path.endsWith("/nice")
+      ) {
+        isJunk = true;
+        junkReason = `Index / Resource aggregator path: ${path}`;
+      }
+    } catch {
+      // Invalid URL
+    }
+
+    if (!isJunk && !hasProtectedSignals) {
       const lowerUrl = url.toLowerCase();
       const lowerTitle = title.toLowerCase();
 
@@ -2725,7 +2780,7 @@ export async function mongoAuditLibraryWithAi(options: {
         junkReason = "Generic portal search/filter index page with zero IOCs";
       }
       // 2. Podcast audio landing pages
-      else if ((lowerUrl.includes("/podcasts/") || lowerTitle.includes("podcast")) && iocCount === 0) {
+      else if ((lowerUrl.includes("/podcasts/") || lowerTitle.includes("podcast") || lowerUrl.includes("talos_takes")) && iocCount === 0) {
         isJunk = true;
         junkReason = "Podcast episode / audio landing page without technical indicators";
       }
@@ -2739,8 +2794,10 @@ export async function mongoAuditLibraryWithAi(options: {
       }
       // 4. Utility pages (contact, privacy, 404)
       else if (
-        lowerUrl.endsWith("/contact") ||
-        lowerUrl.endsWith("/privacy") ||
+        lowerTitle === "podcasts" ||
+        lowerTitle === "white papers" ||
+        lowerTitle === "tips & advice" ||
+        lowerTitle === "privacy policy" ||
         lowerTitle.includes("contact us") ||
         lowerTitle.includes("page not found") ||
         lowerTitle.includes("404 not found")
@@ -2749,7 +2806,7 @@ export async function mongoAuditLibraryWithAi(options: {
         junkReason = "Corporate utility / 404 / contact page";
       }
       // 5. Bare shell (<120 words with 0 IOCs and 0 techniques)
-      else if (wordCount < 120 && iocCount === 0 && (!entities?.tactics || entities.tactics.length === 0)) {
+      else if (wordCount < 120 && iocCount === 0 && (!entities?.tactics || entities.tactics.length === 0) && (!entities?.techniques || entities.techniques.length === 0)) {
         isJunk = true;
         junkReason = "Sub-threshold stub content with no technical evidence";
       }
@@ -2762,15 +2819,14 @@ export async function mongoAuditLibraryWithAi(options: {
         prunedTitles.push(title || url);
         continue;
       } else {
-        // Mark as rejected in DB so it can be filtered & reviewed under "Rejected by AI"
         await col.updateOne(
           { id: doc.id, docType: "report" },
           {
             $set: {
               status: "rejected",
               aiVerified: false,
-              aiQualityScore: Math.min(Math.round(qualityScore * 100), 20),
-              aiAuditReason: `Rejected by AI Quality Gate: ${junkReason}`,
+              aiQualityScore: 0,
+              aiAuditReason: `Rejected by Quality Gate: ${junkReason}`,
               updatedAt: new Date().toISOString(),
             },
           }
@@ -2837,61 +2893,107 @@ export async function mongoAuditLibraryWithAi(options: {
       calculatedKind = "CAMPAIGN_INTEL";
     }
 
-    // Live AI Evaluation with Bulletproof Fallback:
-    // Attempts autonomous evaluation via AGY/Gemini for unverified reports
-    let aiEvaluationResult: any = null;
-    if (!doc.aiVerified && verifiedCount < 8 && text.length > 100) {
+    // Cognitive AI Agent Evaluation:
+    // Dispatches unverified or low-confidence reports to the containerized AGY agent
+    // for authentic 5-dimensional adversary tradecraft rubric evaluation
+    const needsAiEvaluation =
+      (Boolean(options?.forceAll) || (!doc.aiVerified && doc.status !== "rejected") || doc.status === "pending") &&
+      aiEvaluatedCount < maxAiEvaluations &&
+      text.length > 80;
+
+    if (needsAiEvaluation) {
+      aiEvaluatedCount++;
       try {
         const evalRes = await evaluateResourceWithAgent({
           title,
           url,
           text,
           domain: (doc.sourceDomain as string) || undefined,
-          timeoutSeconds: 15,
+          timeoutSeconds: 35,
         });
+
         if (evalRes.success && !evalRes.fallback) {
-          aiEvaluationResult = evalRes;
+          const isApproved =
+            evalRes.recommendApproval &&
+            evalRes.passScore >= 50 &&
+            evalRes.classification !== "OTHER" &&
+            evalRes.classification !== "GENERIC_NEWS";
+
+          if (isApproved) {
+            calculatedKind = evalRes.resourceKind || calculatedKind;
+            const updatedAnalysis: any = { ...(doc.analysis || {}) };
+            if (evalRes.threatActors && evalRes.threatActors.length > 0) {
+              const existingActors = new Set(updatedAnalysis.threatActors || []);
+              for (const act of evalRes.threatActors) existingActors.add(act);
+              updatedAnalysis.threatActors = Array.from(existingActors);
+            }
+            if (evalRes.mitreTechniques && evalRes.mitreTechniques.length > 0) {
+              const existingTechs = new Set(updatedAnalysis.techniques || []);
+              for (const t of evalRes.mitreTechniques) existingTechs.add(t);
+              updatedAnalysis.techniques = Array.from(existingTechs);
+            }
+
+            await col.updateOne(
+              { id: doc.id, docType: "report" },
+              {
+                $set: {
+                  status: "acquired",
+                  classification: evalRes.classification || doc.classification,
+                  resourceKind: calculatedKind,
+                  tags,
+                  aiVerified: true,
+                  aiQualityScore: evalRes.passScore,
+                  aiAuditReason: `AI Agent Approval (${evalRes.passScore}/100): ${evalRes.rationale}`,
+                  analysis: updatedAnalysis,
+                  updatedAt: new Date().toISOString(),
+                },
+              }
+            );
+            verifiedCount++;
+            continue;
+          } else {
+            // AI Agent strictly rejected this report
+            if (shouldPrune) {
+              await col.deleteOne({ id: doc.id, docType: "report" });
+              prunedCount++;
+              prunedTitles.push(title || url);
+              continue;
+            } else {
+              await col.updateOne(
+                { id: doc.id, docType: "report" },
+                {
+                  $set: {
+                    status: "rejected",
+                    classification: evalRes.classification || "OTHER",
+                    resourceKind: evalRes.resourceKind || calculatedKind,
+                    tags,
+                    aiVerified: false,
+                    aiQualityScore: evalRes.passScore || 0,
+                    aiAuditReason: `Rejected by AI Agent (${evalRes.passScore}/100): ${evalRes.rationale}`,
+                    updatedAt: new Date().toISOString(),
+                  },
+                }
+              );
+              prunedCount++;
+              prunedTitles.push(title || url);
+              continue;
+            }
+          }
         }
       } catch (err) {
-        console.debug("[audit] Live AI evaluation skipped for doc:", doc.id, (err as Error).message);
+        console.debug("[audit] Live AI evaluation error for doc:", doc.id, (err as Error).message);
       }
     }
 
-    if (aiEvaluationResult) {
-      calculatedKind = aiEvaluationResult.resourceKind || calculatedKind;
-      const aiScore = aiEvaluationResult.passScore;
-      const isApproved = aiEvaluationResult.recommendApproval && aiScore >= 50;
-
-      const updatedAnalysis: any = { ...(doc.analysis || {}) };
-      if (aiEvaluationResult.threatActors && aiEvaluationResult.threatActors.length > 0) {
-        const existingActors = new Set(updatedAnalysis.threatActors || []);
-        for (const act of aiEvaluationResult.threatActors) existingActors.add(act);
-        updatedAnalysis.threatActors = Array.from(existingActors);
-      }
-
-      await col.updateOne(
-        { id: doc.id, docType: "report" },
-        {
-          $set: {
-            status: isApproved ? "acquired" : "rejected",
-            classification: aiEvaluationResult.classification || doc.classification,
-            resourceKind: calculatedKind,
-            tags,
-            aiVerified: isApproved,
-            aiQualityScore: aiScore,
-            aiAuditReason: `AI Agent Audit: ${aiEvaluationResult.rationale}`,
-            analysis: updatedAnalysis,
-            updatedAt: new Date().toISOString(),
-          },
-        }
-      );
-      if (isApproved) verifiedCount++;
-      else prunedCount++;
+    // Retain verified status if already verified by AI agent previously
+    if (doc.aiVerified) {
+      verifiedCount++;
       continue;
     }
 
-    // Heuristic Fallback Audit (active when AI agent is offline or times out)
-    const aiQualityScore = Math.min(
+    // Structural CTI Signal Qualified (Pending deep AI cognitive turn in a future batch)
+    // NEVER fake aiVerified: true without cognitive model evaluation
+    const scoreVal = Math.min(
       Math.max(
         Math.round(
           ((qualityScore || 0.5) * 0.45 +
@@ -2899,9 +3001,9 @@ export async function mongoAuditLibraryWithAi(options: {
             (iocCount > 0 ? 0.2 : 0.05)) *
             100,
         ),
-        45,
+        40,
       ),
-      99,
+      95,
     );
 
     await col.updateOne(
@@ -2911,9 +3013,9 @@ export async function mongoAuditLibraryWithAi(options: {
           status: "acquired",
           resourceKind: calculatedKind,
           tags,
-          aiVerified: true,
-          aiQualityScore,
-          aiAuditReason: "Heuristic Verification: Verified technical threat intelligence with actionable tradecraft",
+          aiVerified: false,
+          aiQualityScore: scoreVal,
+          aiAuditReason: "Structural CTI Signal Qualified (Pending Cognitive AI Audit Batch)",
           updatedAt: new Date().toISOString(),
         },
       }
@@ -2929,7 +3031,7 @@ export async function mongoAuditLibraryWithAi(options: {
     "auditLibraryWithAi",
     "threat-intel",
     Date.now() - startTime,
-    `Audited ${reports.length} reports: ${verifiedCount} verified, ${prunedCount} pruned`,
+    `Audited ${reports.length} reports: ${verifiedCount} verified (${aiEvaluatedCount} deep AI agent evaluations), ${prunedCount} pruned`,
   );
 
   return {
@@ -2937,8 +3039,9 @@ export async function mongoAuditLibraryWithAi(options: {
     totalAudited: reports.length,
     verifiedCount,
     prunedCount,
+    aiEvaluatedCount,
     prunedTitles: prunedTitles.slice(0, 10),
-    message: `Audited ${reports.length} reports: verified ${verifiedCount} technical intelligence records with AI tags${
+    message: `Audited ${reports.length} reports: verified ${verifiedCount} technical intelligence records (${aiEvaluatedCount} evaluated by Antigravity Agent)${
       prunedCount > 0 ? ` and pruned ${prunedCount} non-threat pages` : ""
     }.`,
   };
