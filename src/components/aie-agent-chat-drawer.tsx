@@ -148,7 +148,7 @@ export function AieAgentChatDrawer({
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         isError: !res.success,
         trace: res.trace as any,
-        logs: res.logs,
+        logs: (res as any).logs,
         sources: (res as any).sources,
       };
 

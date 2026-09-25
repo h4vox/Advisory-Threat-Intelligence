@@ -447,7 +447,7 @@ Return pure JSON only.`;
         );
 
         return {
-          method: "ai_synthesized",
+          method: "llm",
           classification: parsed.classification || heuristicFallback.classification,
           threatActors: Array.isArray(parsed.threatActors) && parsed.threatActors.length > 0 ? parsed.threatActors.map(String) : heuristicFallback.threatActors,
           malware: Array.isArray(parsed.malware) && parsed.malware.length > 0 ? parsed.malware.map(String) : heuristicFallback.malware,

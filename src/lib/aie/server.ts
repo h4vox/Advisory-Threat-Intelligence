@@ -32,6 +32,7 @@ import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
+import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL } from "./marketplace-registry";
 import type {
   AppSettings,
   BatchIngestResult,

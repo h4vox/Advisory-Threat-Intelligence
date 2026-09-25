@@ -694,7 +694,7 @@ Return pure JSON only.`;
           mitreTechniques,
           rationale: parsed.rationale || "5-dimensional adversary procedure evaluation completed by AI provider.",
           scoreBreakdown,
-          tokensUsed: res.tokensUsed,
+          tokensUsed: res.tokensUsed || res.tokens,
           providerId,
           providerName: active.providerName,
         };

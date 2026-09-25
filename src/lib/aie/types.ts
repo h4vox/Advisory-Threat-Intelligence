@@ -131,6 +131,8 @@ export type ReportRecord = {
   aiAuditReason?: string;
   matchedSnippet?: string;
   scoreBreakdown?: AgentScoreBreakdown;
+  aiTokensUsed?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  aiProvider?: string;
 };
 
 export type AgentScoreBreakdown = {

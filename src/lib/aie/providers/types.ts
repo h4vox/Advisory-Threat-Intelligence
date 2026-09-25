@@ -43,6 +43,7 @@ export interface LLMGenerateResult {
   providerId: AIProviderId | string;
   latencyMs: number;
   tokens?: LLMTokenUsage;
+  tokensUsed?: LLMTokenUsage;
   error?: string;
   rawResponse?: any;
 }
