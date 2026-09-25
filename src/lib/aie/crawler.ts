@@ -1390,11 +1390,28 @@ export async function executeCrawlJob(
                 `[crawler][agent] 5D Evaluated "${docTitle.slice(0, 60)}" → score=${agentResult.passScore}, approved=${agentResult.recommendApproval}, class=${agentResult.classification}`,
               );
 
+              const docWords = textContent.split(/\s+/).filter(Boolean).length;
+              const hasEvidenceInQual = Boolean(
+                qual.evidenceDetails &&
+                (qual.evidenceDetails.commands.length > 0 ||
+                  qual.evidenceDetails.registryKeys.length > 0 ||
+                  qual.evidenceDetails.filePaths.length > 0 ||
+                  qual.evidenceDetails.eventIds.length > 0)
+              );
+              const hasConcreteEvidence =
+                hasEvidenceInQual ||
+                Boolean(agentResult.threatActors && agentResult.threatActors.length > 0) ||
+                Boolean(agentResult.mitreTechniques && agentResult.mitreTechniques.length > 0) ||
+                Boolean(agentResult.cves && agentResult.cves.length > 0) ||
+                Boolean(qual.isEmergingTechnique);
+
               const isApproved =
                 agentResult.recommendApproval &&
                 agentResult.passScore >= 50 &&
                 agentResult.classification !== "OTHER" &&
-                agentResult.classification !== "GENERIC_NEWS";
+                agentResult.classification !== "GENERIC_NEWS" &&
+                docWords >= 200 &&
+                hasConcreteEvidence;
 
               if (isApproved) {
                 qual.qualified = true;

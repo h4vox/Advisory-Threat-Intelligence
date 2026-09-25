@@ -632,7 +632,7 @@ Return pure JSON only.`;
       if (res.success && res.text) {
         const parsed = extractJsonFromLlmText(res.text);
 
-        let classification: ResourceClassification = "THREAT_REPORT";
+        let classification: ResourceClassification = "OTHER";
         if (parsed.classification && VALID_CLASSIFICATIONS.has(parsed.classification as ResourceClassification)) {
           classification = parsed.classification as ResourceClassification;
         }
@@ -660,7 +660,7 @@ Return pure JSON only.`;
             totalScore: Math.min(Math.max(Number(rawBreakdown.totalScore ?? computedTotal), 0), 100),
           };
         } else {
-          const s = Math.min(Math.max(Number(parsed.passScore ?? 50), 0), 100);
+          const s = Math.min(Math.max(Number(parsed.passScore ?? 0), 0), 100);
           scoreBreakdown = {
             proceduralDepth: Math.round(s * 0.30),
             attackProgression: Math.round(s * 0.25),
@@ -672,7 +672,7 @@ Return pure JSON only.`;
         }
 
         const passScore = scoreBreakdown.totalScore;
-        const recommendApproval = Boolean(parsed.recommendApproval ?? (passScore >= 50));
+        const recommendApproval = Boolean(parsed.recommendApproval && (passScore >= 50));
 
         const mitreTechniques: string[] = Array.isArray(parsed.mitreTechniques)
           ? parsed.mitreTechniques
@@ -683,7 +683,7 @@ Return pure JSON only.`;
         return {
           success: true,
           fallback: false,
-          isRelevant: Boolean(parsed.isRelevant ?? (passScore >= 40)),
+          isRelevant: Boolean(parsed.isRelevant && (passScore >= 50)),
           passScore,
           recommendApproval,
           classification,

@@ -352,9 +352,9 @@ export function extractOutlinksAndCitations(
         priorityScore += 0.25;
       }
 
-      // Penalty for marketing or index-heavy paths
-      if (/tag\/|category\/|author\/|webinar|event|news-release|press-release/i.test(cleanUrl)) {
-        priorityScore -= 0.20;
+      // Hard skip for marketing, commercial trials, product app pages, and index-heavy paths
+      if (/tag\/|category\/|author\/|webinar|event|news-release|press-release|free-trial|trial|request-demo|demo|\/apps\/|\/forms\/whitepapers|we-live-progress|culture-at-speed|skanowanie/i.test(cleanUrl)) {
+        continue;
       }
 
       priorityScore = Math.max(0.1, Math.min(1.0, Math.round(priorityScore * 100) / 100));

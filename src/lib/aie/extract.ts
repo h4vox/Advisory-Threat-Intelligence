@@ -90,14 +90,34 @@ export function canonicalizeUrl(raw: string): string {
 }
 
 export function htmlToText(html: string): { title: string; text: string } {
-  let rawTitle =
-    html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]?.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() ??
-    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ??
-    "Untitled report";
+  const ogTitle =
+    html.match(/<meta\s+[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta\s+[^>]*name=["']twitter:title["'][^>]*content=["']([^"']+)["']/i)?.[1];
+
+  const articleH1 = html.match(/<(?:article|main)[^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const firstH1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const pageTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+
+  const cleanHeader = (s?: string) => (s ? s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() : "");
+  const isGenericHeading = (s?: string) =>
+    !s || s.length < 4 || /social media|social mediach|newsletter|subscribe|menu|navigation|footer|search|kontakt|baza wiedzy/i.test(s);
+
+  let rawTitle = "";
+  if (articleH1 && !isGenericHeading(cleanHeader(articleH1))) {
+    rawTitle = cleanHeader(articleH1);
+  } else if (ogTitle && !isGenericHeading(ogTitle)) {
+    rawTitle = ogTitle.trim();
+  } else if (pageTitle && !isGenericHeading(cleanHeader(pageTitle))) {
+    rawTitle = cleanHeader(pageTitle);
+  } else if (firstH1 && !isGenericHeading(cleanHeader(firstH1))) {
+    rawTitle = cleanHeader(firstH1);
+  } else {
+    rawTitle = cleanHeader(pageTitle) || cleanHeader(firstH1) || "Untitled report";
+  }
 
   // Clean blog / publisher branding suffixes from title
   rawTitle = rawTitle
-    .replace(/\s*[|–—]\s*(Google Cloud Blog|The DFIR Report|Microsoft Security Blog|Unit 42|SentinelOne|Cisco Talos|Huntress|BleepingComputer|Mandiant).*$/i, "")
+    .replace(/\s*[|–—]\s*(Google Cloud Blog|The DFIR Report|Microsoft Security Blog|Unit 42|SentinelOne|Cisco Talos|Huntress|BleepingComputer|Mandiant|CERT Polska).*$/i, "")
     .trim();
 
   // If page contains an <article> or <main> container with substantial content, prioritize it

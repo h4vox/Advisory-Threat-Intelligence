@@ -41,6 +41,8 @@ const JUNK_HOSTS = new Set([
   "ice.gov",
   "e-verify.gov",
   "edit.dhs.gov",
+  "webbook.nist.gov",
+  "arxiv.org",
 ]);
 
 // Known index / landing / marketing path patterns that are not technical reports
@@ -77,6 +79,16 @@ const JUNK_URL_SUBSTRINGS = [
   "/security/blog",
   "/security-labs/blog",
   "/nice",
+  "/free-trial-new",
+  "/free-trial",
+  "/apps/",
+  "/apps",
+  "/forms/whitepapers",
+  "/demo",
+  "/forms",
+  "/we-live-progress",
+  "/publications/conference-paper",
+  "/publications/project-description",
 ];
 
 // Title indicators of pure non-report / aggregator / marketing pages
@@ -100,6 +112,27 @@ const JUNK_TITLE_PATTERNS = [
   /^cloud security solutions \| microsoft security$/i,
   /^qualys cybersecurity resources/i,
   /^nice$/i,
+  /free\s+\d+[- ]day\s+trial/i,
+  /request\s+(?:a\s+)?demo/i,
+  /^asset visibility$/i,
+  /^we live progress/i,
+  /^raport roczny/i,
+  /physical access control systems/i,
+  /^using personal identity verification/i,
+  /^guidelines for derived personal identity verification/i,
+  /^culture at speed/i,
+  /^computer science\s*>\s*artificial intelligence/i,
+  /active context compression/i,
+  /automated patch management/i,
+  /enterprise trurisk management/i,
+  /safe exploit validation\s*\|\s*qualys/i,
+  /^search\s*\|\s*csrc/i,
+  /^power apps/i,
+  /^reports$/i,
+  /^cybercrime$/i,
+  /^intelligence center$/i,
+  /sent (?:another )?letter|certified letter/i,
+  /cybersecurity ir workshop/i,
 ];
 
 export function evaluateReportQuality(report) {
@@ -135,6 +168,12 @@ export function evaluateReportQuality(report) {
       (title && /\bcve-\d{4}-\d{4,}\b/i.test(title)) ||
       (report.summary && /\bcve-\d{4}-\d{4,}\b/i.test(report.summary)),
   );
+  const threatActorsCount =
+    (Array.isArray(report.analysis?.threatActors) ? report.analysis.threatActors.length : 0) +
+    (Array.isArray(report.extractedEntities?.threatActors) ? report.extractedEntities.threatActors.length : 0);
+  const malwareCount =
+    (Array.isArray(report.analysis?.malware) ? report.analysis.malware.length : 0) +
+    (Array.isArray(report.extractedEntities?.malwareFamilies) ? report.extractedEntities.malwareFamilies.length : 0);
   const score = Number(report.qualityScore) || 0;
 
   // 1. Non-CTI host filter
@@ -202,8 +241,43 @@ export function evaluateReportQuality(report) {
     };
   }
 
+  // 6b. Non-CTI Academic preprints (e.g. arXiv CS.AI papers on memory/compression with zero threat intelligence)
+  if (
+    (host.includes("arxiv.org") || title.includes("arXiv:")) &&
+    iocCount === 0 &&
+    attackChainStages === 0 &&
+    mitreTechniques === 0 &&
+    !hasCve
+  ) {
+    return {
+      action: "PRUNE",
+      reason: "Academic preprint without actionable threat intelligence, CVEs, or attack chain telemetry",
+      wordCount,
+      iocCount,
+      attackChainStages,
+      mitreTechniques,
+    };
+  }
+
+  // 6c. Commercial sales, marketing brochures, and product trial pages
+  if (
+    /free\s+\d+[- ]day\s+trial|request\s+(?:a\s+)?demo|asset visibility|we live progress|culture at speed/i.test(title) ||
+    /free-trial|truconfirm|trurisk|apps\/|request-demo/i.test(url)
+  ) {
+    if (iocCount === 0 && attackChainStages === 0 && !hasCve) {
+      return {
+        action: "PRUNE",
+        reason: "Commercial product marketing / sales brochure with zero adversary telemetry",
+        wordCount,
+        iocCount,
+        attackChainStages,
+        mitreTechniques,
+      };
+    }
+  }
+
   // 7. Pure zero-signal short stubs
-  if (wordCount < 200 && iocCount === 0 && attackChainStages === 0 && mitreTechniques === 0 && !hasCve) {
+  if (wordCount < 250 && iocCount === 0 && attackChainStages === 0 && mitreTechniques === 0 && !hasCve) {
     return {
       action: "PRUNE",
       reason: `Stub overview (${wordCount} words) with zero technical indicators, chain stages, or MITRE techniques`,
@@ -227,7 +301,7 @@ export function evaluateReportQuality(report) {
   }
 
   // 9. Reports with score 0 and zero technical findings
-  if (score <= 0.10 && iocCount === 0 && attackChainStages === 0 && mitreTechniques === 0 && !hasCve) {
+  if (score <= 0.10 && iocCount === 0 && attackChainStages === 0 && mitreTechniques === 0 && !hasCve && threatActorsCount === 0 && malwareCount === 0) {
     return {
       action: "PRUNE",
       reason: `Zero/near-zero quality score (${score}) with zero technical evidence`,
@@ -238,18 +312,53 @@ export function evaluateReportQuality(report) {
     };
   }
 
-  // High-value CTI detection
+  // 10. Strict Adversary Emulation Quality Gate:
+  // A document with ZERO IOCs, ZERO attack chain stages, ZERO MITRE techniques, ZERO CVEs,
+  // ZERO threat actors, and ZERO malware families has NO actionable adversary intelligence.
+  if (
+    iocCount === 0 &&
+    attackChainStages === 0 &&
+    mitreTechniques === 0 &&
+    !hasCve &&
+    threatActorsCount === 0 &&
+    malwareCount === 0
+  ) {
+    return {
+      action: "PRUNE",
+      reason: `Zero adversary intelligence artifacts (0 IOCs, 0 attack chain stages, 0 MITRE techniques, 0 CVEs, 0 threat actors, 0 malware families)`,
+      wordCount,
+      iocCount,
+      attackChainStages,
+      mitreTechniques,
+    };
+  }
+
+  // High-value CTI detection & strict retention
   const reasonsToKeep = [];
   if (attackChainStages > 0) reasonsToKeep.push(`${attackChainStages} attack chain stages`);
   if (iocCount > 0) reasonsToKeep.push(`${iocCount} verified IOCs`);
   if (mitreTechniques > 0) reasonsToKeep.push(`${mitreTechniques} MITRE techniques`);
   if (hasCve) reasonsToKeep.push("Verified CVE reference");
+  if (threatActorsCount > 0) reasonsToKeep.push(`${threatActorsCount} threat actors`);
+  if (malwareCount > 0) reasonsToKeep.push(`${malwareCount} malware families`);
+
+  if (reasonsToKeep.length === 0) {
+    return {
+      action: "PRUNE",
+      reason: "No actionable adversary intelligence or technical anchors found",
+      wordCount,
+      iocCount,
+      attackChainStages,
+      mitreTechniques,
+    };
+  }
+
   if (wordCount >= 800) reasonsToKeep.push(`Detailed technical writeup (${wordCount} words)`);
   if (score >= 0.60) reasonsToKeep.push(`High tradecraft quality score (${score})`);
 
   return {
     action: "KEEP",
-    reason: reasonsToKeep.join("; ") || "Qualified CTI report",
+    reason: reasonsToKeep.join("; "),
     wordCount,
     iocCount,
     attackChainStages,
@@ -394,7 +503,35 @@ async function runAudit() {
         docType: "report",
         id: { $in: pruneIds },
       });
-      console.log(`Successfully deleted ${deleteResult.deletedCount} documents from MongoDB!`);
+      console.log(`Successfully deleted ${deleteResult.deletedCount} report documents from MongoDB!`);
+
+      const pruneUrls = toPrune.map((p) => p.url).filter(Boolean);
+      const junkItemsResult = await col.deleteMany({
+        docType: { $in: ["discovered_resource", "crawl_job_item"] },
+        $or: [
+          { url: { $in: pruneUrls } },
+          { url: /qualys\.com\/(?:free-trial|apps|forms|demo)/i },
+          { url: /dragos\.com\/cybersecurity-platform\/asset-visibility/i },
+          { url: /welivesecurity\.com\/en\/we-live-progress/i },
+          { url: /arxiv\.org/i },
+          { url: /csrc\.nist\.gov\/publications\/project-description/i },
+          { url: /csrc\.nist\.gov\/publications\/conference-paper/i },
+          { title: /free\s+\d+[- ]day\s+trial/i },
+          { title: /active context compression/i },
+          { title: /asset visibility/i },
+          { title: /we live progress/i },
+        ],
+      });
+      console.log(`Successfully deleted ${junkItemsResult.deletedCount} junk discovered resources / crawl items from MongoDB!`);
+
+      // Clean up misnamed title for genuine CTI report rpt_7549af5342c144df
+      const titleFix = await col.updateOne(
+        { id: "rpt_7549af5342c144df" },
+        { $set: { title: "Autonomiczny proces fuzzingu pod nadzorem LLM" } },
+      );
+      if (titleFix.modifiedCount > 0) {
+        console.log(`Updated title for report rpt_7549af5342c144df to: "Autonomiczny proces fuzzingu pod nadzorem LLM"`);
+      }
     } else {
       console.log("No documents matched prune criteria.");
     }
