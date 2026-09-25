@@ -1695,6 +1695,8 @@ export async function executeCrawlJob(
                 aiQualityScore: aiScore,
                 aiAuditReason: aiReason,
                 scoreBreakdown: agentResult?.scoreBreakdown,
+                aiTokensUsed: agentResult?.tokensUsed,
+                aiProvider: agentResult?.providerName,
               });
 
               storedSimhashes.push({

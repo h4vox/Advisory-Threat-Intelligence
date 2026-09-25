@@ -28,6 +28,7 @@ interface ChatMessage {
   text: string;
   latencyMs?: number;
   model?: string;
+  providerName?: string;
   timestamp: string;
   isError?: boolean;
   trace?: {
@@ -143,6 +144,7 @@ export function AieAgentChatDrawer({
         text: res.reply,
         latencyMs: res.latencyMs,
         model: res.model,
+        providerName: (res as any).providerName,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         isError: !res.success,
         trace: res.trace as any,
@@ -257,8 +259,13 @@ export function AieAgentChatDrawer({
             >
               <div className="flex items-center gap-1.5 mb-1 px-1">
                 <span className="text-[10px] font-mono text-subtle font-medium">
-                  {msg.sender === "user" ? "You" : "Antigravity AGY"}
+                  {msg.sender === "user" ? "You" : msg.providerName || "AIE Agent"}
                 </span>
+                {msg.model && msg.sender !== "user" && (
+                  <span className="text-[9px] font-mono text-subtle/70 max-w-[140px] truncate" title={msg.model}>
+                    ({msg.model})
+                  </span>
+                )}
                 <span className="text-[9px] text-subtle/70">·</span>
                 <span className="text-[9px] text-subtle/70">{msg.timestamp}</span>
                 {msg.latencyMs && (

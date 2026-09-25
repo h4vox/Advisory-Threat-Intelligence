@@ -62,6 +62,9 @@ export type AgentEvaluationResult = {
   rationale: string;
   discoveredSources?: Array<{ name: string; domain: string; url: string }>;
   scoreBreakdown?: AgentScoreBreakdown;
+  tokensUsed?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  providerId?: string;
+  providerName?: string;
   error?: string;
 };
 

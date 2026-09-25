@@ -30,7 +30,10 @@ const DEFAULT_MONGO_URI =
   "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
 
 export function getMongoUri(): string | undefined {
-  const envUri = process.env.MONGODB_URI;
+  let envUri = process.env.MONGODB_URI;
+  if (envUri && (envUri.includes("<") && envUri.includes(">") || envUri.includes("NEW_PASSWORD"))) {
+    envUri = undefined;
+  }
   if (!envUri) return DEFAULT_MONGO_URI;
   if (envUri.includes("cluster0.gr9ihel.mongodb.net")) {
     const direct = getDirectSeedUri(envUri);

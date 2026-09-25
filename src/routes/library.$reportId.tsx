@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   ArrowLeft,
@@ -22,6 +22,12 @@ import {
   Terminal,
   Workflow,
   Zap,
+  Sparkles,
+  RefreshCw,
+  X,
+  FileCode,
+  Check,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -29,17 +35,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReport } from "@/lib/aie/server";
+import {
+  getReport,
+  synthesizeReportAttackChain,
+  generateReportSigmaRule,
+  generateReportEmulationPlan,
+  evaluateReportWithAi,
+} from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/library/$reportId")({
-  beforeLoad: ({ params }) => {
-    throw redirect({
-      to: "/library",
-      search: { selected: params.reportId },
-    });
-  },
   component: ReportPage,
 });
 
@@ -59,10 +65,106 @@ function ReportPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Document & PDF Reader");
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  const queryClient = useQueryClient();
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const [isGeneratingSigma, setIsGeneratingSigma] = useState(false);
+  const [isGeneratingEmulation, setIsGeneratingEmulation] = useState(false);
+  const [isAuditingAi, setIsAuditingAi] = useState(false);
+  const [sigmaModalData, setSigmaModalData] = useState<{ open: boolean; content: string; filename: string } | null>(null);
+  const [emulationModalData, setEmulationModalData] = useState<{ open: boolean; content: string; filename: string } | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["report", reportId],
     queryFn: () => getReport({ data: { id: reportId } }),
   });
+
+  const handleSynthesizeAttackChain = async () => {
+    setIsSynthesizing(true);
+    toast.info("Synthesizing multi-stage attack chain and tradecraft via AI Provider...");
+    try {
+      const res = await synthesizeReportAttackChain({ data: { reportId } });
+      if (res.success) {
+        toast.success(`Attack chain synthesized (${res.analysis.attackChain.length} stages)!`);
+        void queryClient.invalidateQueries({ queryKey: ["report", reportId] });
+        void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
+        setTab("Attack Chain & TTPs");
+      } else {
+        toast.error("Failed to synthesize attack chain");
+      }
+    } catch (err: any) {
+      toast.error(`Synthesis failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
+  const handleGenerateSigmaRule = async () => {
+    setIsGeneratingSigma(true);
+    toast.info("Generating production-ready defensive Sigma YAML rule via AI Provider...");
+    try {
+      const res = await generateReportSigmaRule({ data: { reportId } });
+      if (res.success && res.rule) {
+        setSigmaModalData({
+          open: true,
+          content: res.rule,
+          filename: res.filename || "sigma_detection_rule.yml",
+        });
+        toast.success("Defensive Sigma rule generated!");
+      } else {
+        toast.error(`Sigma generation failed: ${res.error || "No rule returned"}`);
+      }
+    } catch (err: any) {
+      toast.error(`Sigma generation failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsGeneratingSigma(false);
+    }
+  };
+
+  const handleGenerateEmulationPlan = async () => {
+    setIsGeneratingEmulation(true);
+    toast.info("Generating Atomic Red Team adversary emulation blueprint via AI Provider...");
+    try {
+      const res = await generateReportEmulationPlan({ data: { reportId, platform: "windows" } });
+      if (res.success && res.plan) {
+        const cleanName = (data?.title || "adversary").toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 30);
+        setEmulationModalData({
+          open: true,
+          content: res.plan,
+          filename: `${cleanName}_atomic_emulation_plan.md`,
+        });
+        toast.success("Adversary emulation plan synthesized!");
+      } else {
+        toast.error(`Emulation generation failed: ${res.error || "No plan returned"}`);
+      }
+    } catch (err: any) {
+      toast.error(`Emulation generation failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsGeneratingEmulation(false);
+    }
+  };
+
+  const handleAuditReportAi = async () => {
+    setIsAuditingAi(true);
+    toast.info("Running cognitive 5D rubric evaluation via active AI Provider...");
+    try {
+      const res = await evaluateReportWithAi({ data: { id: reportId } });
+      if (res.success && res.result) {
+        if (res.isApproved) {
+          toast.success(`Report Approved by AI Agent (${res.result.passScore}/100)!`);
+        } else {
+          toast.warning(`Report Flagged by AI Agent (${res.result.passScore}/100): ${res.result.rationale}`);
+        }
+        void queryClient.invalidateQueries({ queryKey: ["report", reportId] });
+        void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
+      } else {
+        toast.error(`Audit failed: ${res.error || "Evaluation error"}`);
+      }
+    } catch (err: any) {
+      toast.error(`AI Audit failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsAuditingAi(false);
+    }
+  };
 
   const copyToClipboard = (text: string, label: string) => {
     void navigator.clipboard.writeText(text);
@@ -192,6 +294,80 @@ function ReportPage() {
             <span>{data.wordCount} words</span>
           </div>
 
+          {/* AI Cognitive Operations Toolbar */}
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/25 bg-accent/5 p-3.5 backdrop-blur-sm">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-accent">
+                <Sparkles className="size-4" />
+                <span>AI Cognitive Operations:</span>
+              </div>
+              {data.aiVerified ? (
+                <Badge tone="sage" className="gap-1 font-mono text-xs">
+                  <CheckCircle2 className="size-3" />
+                  AI Verified {data.aiQualityScore ? `· ${data.aiQualityScore}/100` : ""}
+                </Badge>
+              ) : data.status === "rejected" ? (
+                <Badge tone="danger" className="gap-1 font-mono text-xs">
+                  <AlertTriangle className="size-3" />
+                  Rejected by AI {data.aiQualityScore ? `· ${data.aiQualityScore}/100` : ""}
+                </Badge>
+              ) : (
+                <Badge tone="neutral" className="font-mono text-xs">
+                  Pending AI Audit
+                </Badge>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1 border-accent/30 text-accent hover:bg-accent/10"
+                disabled={isAuditingAi}
+                onClick={handleAuditReportAi}
+                title="Execute 5-dimensional rubric scoring across Procedural Depth, Attack Progression, Attribution, Emulation, and Telemetry"
+              >
+                <RefreshCw className={cn("size-3", isAuditingAi && "animate-spin")} />
+                <span>{isAuditingAi ? "Auditing Rubric..." : "Run AI 5D Audit"}</span>
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1.5 bg-bg-elevated hover:bg-bg border border-border shadow-xs"
+                disabled={isSynthesizing}
+                onClick={handleSynthesizeAttackChain}
+                title="Synthesize chronological attack chain stages, threat actors, and MITRE techniques using AI"
+              >
+                <Workflow className={cn("size-3 text-accent", isSynthesizing && "animate-spin")} />
+                <span>{isSynthesizing ? "Synthesizing Chain..." : "AI Attack Chain"}</span>
+              </Button>
+
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1.5 bg-bg-elevated hover:bg-bg border border-border shadow-xs"
+                disabled={isGeneratingSigma}
+                onClick={handleGenerateSigmaRule}
+                title="Generate production-ready defensive Sigma YAML detection rule"
+              >
+                <Shield className={cn("size-3 text-sage", isGeneratingSigma && "animate-spin")} />
+                <span>{isGeneratingSigma ? "Generating Sigma..." : "AI Sigma Rule"}</span>
+              </Button>
+
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1.5 bg-bg-elevated hover:bg-bg border border-border shadow-xs"
+                disabled={isGeneratingEmulation}
+                onClick={handleGenerateEmulationPlan}
+                title="Synthesize Atomic Red Team adversary emulation replay commands"
+              >
+                <Terminal className={cn("size-3 text-warn", isGeneratingEmulation && "animate-spin")} />
+                <span>{isGeneratingEmulation ? "Synthesizing Plan..." : "AI Emulation Plan"}</span>
+              </Button>
+            </div>
+          </div>
+
           {/* Navigation Tabs */}
           <div className="mt-8 flex flex-wrap gap-1 border-b border-border">
             {TABS.map((t) => (
@@ -318,10 +494,31 @@ function ReportPage() {
 
               {/* Reconstructed Attack Chain Sequence */}
               <div>
-                <h2 className="text-base font-medium">Reconstructed Attack Chain Sequence</h2>
-                <p className="text-xs text-muted">
-                  Chronological progression of adversary tactics and mapped MITRE ATT&CK techniques.
-                </p>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-medium">Reconstructed Attack Chain Sequence</h2>
+                      {analysis?.method && (
+                        <Badge tone={analysis.method === "ai_structured" ? "accent" : "neutral"} className="text-[10px] font-mono">
+                          {analysis.method === "ai_structured" ? "AI Synthesized" : "Heuristic"}
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted">
+                      Chronological progression of adversary tactics and mapped MITRE ATT&CK techniques.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 gap-1.5 text-xs bg-bg-elevated hover:bg-bg border border-border shrink-0"
+                    disabled={isSynthesizing}
+                    onClick={handleSynthesizeAttackChain}
+                  >
+                    <Workflow className={cn("size-3.5 text-accent", isSynthesizing && "animate-spin")} />
+                    <span>{isSynthesizing ? "Synthesizing Chain..." : "Re-Synthesize Chain (AI)"}</span>
+                  </Button>
+                </div>
 
                 {(!analysis?.attackChain || analysis.attackChain.length === 0) ? (
                   <div className="mt-4 rounded-xl border border-border bg-bg-elevated p-8 text-center text-sm text-muted">
@@ -378,13 +575,27 @@ function ReportPage() {
             <div className="mt-6 space-y-6">
               {/* Adversary Simulation Scenarios */}
               <div className="rounded-xl border border-border bg-bg-elevated p-5">
-                <div className="flex items-center gap-2">
-                  <Terminal className="size-4 text-accent" />
-                  <h2 className="text-base font-medium">Adversary Emulation Commands (Atomic Red Team)</h2>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Terminal className="size-4 text-accent" />
+                      <h2 className="text-base font-medium">Adversary Emulation Commands (Atomic Red Team)</h2>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">
+                      Executable tests to validate purple-team detection coverage against observed techniques.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 gap-1.5 text-xs bg-bg-elevated hover:bg-bg border border-border shrink-0"
+                    disabled={isGeneratingEmulation}
+                    onClick={handleGenerateEmulationPlan}
+                  >
+                    <Zap className={cn("size-3.5 text-warn", isGeneratingEmulation && "animate-spin")} />
+                    <span>{isGeneratingEmulation ? "Synthesizing Plan..." : "Generate Emulation Plan (AI)"}</span>
+                  </Button>
                 </div>
-                <p className="mt-1 text-xs text-muted">
-                  Executable tests to validate purple-team detection coverage against observed techniques.
-                </p>
 
                 <div className="mt-4 space-y-3">
                   {analysis?.emulation && analysis.emulation.length > 0 ? (
@@ -411,13 +622,27 @@ function ReportPage() {
 
               {/* Sigma & Detection Engineering Rules */}
               <div className="rounded-xl border border-border bg-bg-elevated p-5">
-                <div className="flex items-center gap-2">
-                  <Shield className="size-4 text-sage" />
-                  <h2 className="text-base font-medium">Detection Opportunities & Sigma Rules</h2>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Shield className="size-4 text-sage" />
+                      <h2 className="text-base font-medium">Detection Opportunities & Sigma Rules</h2>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">
+                      Defensive detection opportunities tailored to the adversary procedure in this report.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 gap-1.5 text-xs bg-bg-elevated hover:bg-bg border border-border shrink-0"
+                    disabled={isGeneratingSigma}
+                    onClick={handleGenerateSigmaRule}
+                  >
+                    <FileCode className={cn("size-3.5 text-sage", isGeneratingSigma && "animate-spin")} />
+                    <span>{isGeneratingSigma ? "Generating Sigma..." : "Generate Sigma Rule (AI)"}</span>
+                  </Button>
                 </div>
-                <p className="mt-1 text-xs text-muted">
-                  Defensive detection opportunities tailored to the adversary procedure in this report.
-                </p>
 
                 <div className="mt-4 space-y-2">
                   {analysis?.detections?.map((d, idx) => (
@@ -558,6 +783,94 @@ function ReportPage() {
                   </li>
                 ))}
               </ul>
+
+              {/* Cognitive 5D Rubric Breakdown */}
+              {data.scoreBreakdown && (
+                <div className="mt-6 pt-5 border-t border-border">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-accent uppercase tracking-wider">
+                      Cognitive 5-Dimensional Tradecraft Rubric
+                    </span>
+                    <span className="font-mono text-xs font-bold text-fg">
+                      {data.scoreBreakdown.totalScore} / 100
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-muted">Procedural Depth (Execution, LOLBins, APIs)</span>
+                        <span className="font-mono text-fg">{data.scoreBreakdown.proceduralDepth} / 30</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-bg-subtle rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent rounded-full transition-all"
+                          style={{ width: `${(data.scoreBreakdown.proceduralDepth / 30) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-muted">Attack Progression (Multi-stage Kill Chain)</span>
+                        <span className="font-mono text-fg">{data.scoreBreakdown.attackProgression} / 25</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-bg-subtle rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent rounded-full transition-all"
+                          style={{ width: `${(data.scoreBreakdown.attackProgression / 25) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-muted">Attribution & Context (Actors, Malware, CVEs)</span>
+                        <span className="font-mono text-fg">{data.scoreBreakdown.attributionContext} / 15</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-bg-subtle rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent rounded-full transition-all"
+                          style={{ width: `${(data.scoreBreakdown.attributionContext / 15) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-muted">Emulation Utility (Atomic Red Team, Detections)</span>
+                        <span className="font-mono text-fg">{data.scoreBreakdown.emulationUtility} / 20</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-bg-subtle rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent rounded-full transition-all"
+                          style={{ width: `${(data.scoreBreakdown.emulationUtility / 20) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-muted">IOC & Telemetry Verifiability</span>
+                        <span className="font-mono text-fg">{data.scoreBreakdown.iocVerifiability} / 10</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-bg-subtle rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent rounded-full transition-all"
+                          style={{ width: `${(data.scoreBreakdown.iocVerifiability / 10) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {data.aiAuditReason && (
+                    <div className="mt-4 p-3 rounded-lg bg-bg-subtle border border-border text-xs text-muted">
+                      <span className="font-semibold text-fg">AI Audit Rationale: </span>
+                      {data.aiAuditReason}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -618,6 +931,119 @@ function ReportPage() {
           )}
         </>
       ) : null}
+      {/* AI SIGMA RULE MODAL */}
+      {sigmaModalData && sigmaModalData.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="flex w-full max-w-3xl flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-border bg-bg px-5 py-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex size-8 items-center justify-center rounded-lg bg-sage/15 text-sage border border-sage/30">
+                  <Shield className="size-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-fg">Defensive Sigma Rule (YAML)</h3>
+                  <p className="text-xs text-muted font-mono">{sigmaModalData.filename}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => copyToClipboard(sigmaModalData.content, "Sigma YAML")}
+                >
+                  <Copy className="size-3.5" />
+                  <span>Copy YAML</span>
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => {
+                    const blob = new Blob([sigmaModalData.content], { type: "text/yaml;charset=utf-8" });
+                    const dlUrl = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = dlUrl;
+                    a.download = sigmaModalData.filename;
+                    a.click();
+                    URL.revokeObjectURL(dlUrl);
+                    toast.success("Sigma Rule downloaded");
+                  }}
+                >
+                  <Download className="size-3.5" />
+                  <span>Download .yml</span>
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setSigmaModalData(null)}
+                  className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-4 bg-neutral-950 font-mono text-xs text-neutral-200 select-text leading-relaxed">
+              <pre className="whitespace-pre-wrap">{sigmaModalData.content}</pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI ADVERSARY EMULATION PLAN MODAL */}
+      {emulationModalData && emulationModalData.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="flex w-full max-w-4xl flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-border bg-bg px-5 py-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex size-8 items-center justify-center rounded-lg bg-warn/15 text-warn border border-warn/30">
+                  <Terminal className="size-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-fg">Adversary Emulation Execution Plan (Atomic Red Team)</h3>
+                  <p className="text-xs text-muted font-mono">{emulationModalData.filename}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => copyToClipboard(emulationModalData.content, "Emulation Plan")}
+                >
+                  <Copy className="size-3.5" />
+                  <span>Copy Markdown</span>
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => {
+                    const blob = new Blob([emulationModalData.content], { type: "text/markdown;charset=utf-8" });
+                    const dlUrl = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = dlUrl;
+                    a.download = emulationModalData.filename;
+                    a.click();
+                    URL.revokeObjectURL(dlUrl);
+                    toast.success("Emulation Plan downloaded");
+                  }}
+                >
+                  <Download className="size-3.5" />
+                  <span>Download .md</span>
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setEmulationModalData(null)}
+                  className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-5 bg-neutral-950 font-mono text-xs text-neutral-200 select-text leading-relaxed">
+              <pre className="whitespace-pre-wrap">{emulationModalData.content}</pre>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

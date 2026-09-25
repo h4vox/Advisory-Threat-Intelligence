@@ -36,7 +36,7 @@ import {
   DEFAULT_POWERUPS,
   DEFAULT_PLAYBOOKS,
 } from "../aie/marketplace-registry";
-import { evaluateResourceWithAgent } from "../aie/agy-agent";
+import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -2904,11 +2904,17 @@ export async function mongoAuditLibraryWithAi(options?: {
     if (needsAiEvaluation) {
       aiEvaluatedCount++;
       try {
-        const evalRes = await evaluateResourceWithAgent({
+        let evalDomain = (doc.sourceDomain as string) || "";
+        if (!evalDomain && url) {
+          try {
+            evalDomain = new URL(url).hostname.replace(/^www\./, "");
+          } catch {}
+        }
+        const evalRes = await runUnifiedResourceEvaluation({
           title,
           url,
           text,
-          domain: (doc.sourceDomain as string) || undefined,
+          domain: evalDomain || "unknown",
           timeoutSeconds: 35,
         });
 

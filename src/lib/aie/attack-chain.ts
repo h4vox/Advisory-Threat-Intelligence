@@ -1,4 +1,8 @@
 import type { AttackStep, IntelAnalysis } from "./types";
+import { getActiveAIProvider, stripModelPrefix, extractJsonFromLlmText } from "./ai-manager";
+import { getProviderAdapter } from "./providers";
+import { executeInAgentSandbox } from "./agent-sandbox";
+import { logger } from "./logger";
 
 const KNOWN_ACTORS = [
   "APT28", "Fancy Bear",
@@ -331,3 +335,291 @@ export function extractStructuredEntities(
     campaign,
   };
 }
+
+/**
+ * AI-Powered Attack Chain Re-synthesizer
+ *
+ * Employs the active AI provider (Gemini REST, Claude REST, OpenAI, or AGY Sandbox)
+ * to perform deep chronological kill-chain reconstruction, extraction of concrete command lines,
+ * generation of production-ready Sigma YAML detection rules, and Atomic Red Team test plans.
+ *
+ * Guarantees zero-SPOF: if AI times out or errors, automatically falls back to heuristic analysis.
+ */
+export async function synthesizeThreatIntelligenceWithAI(
+  text: string,
+  title: string,
+  classification: string = "THREAT_REPORT",
+  options?: { model?: string; timeoutSeconds?: number; providerId?: string }
+): Promise<IntelAnalysis> {
+  const heuristicFallback = analyzeThreatIntelligence(text, title, classification);
+  const active = await getActiveAIProvider();
+  const providerId = options?.providerId || active.providerId;
+  const rawModel = options?.model ? stripModelPrefix(options?.model) : active.rawModel;
+  const timeoutSeconds = options?.timeoutSeconds || active.timeoutSeconds;
+  const snippet = text.slice(0, 4800);
+
+  const prompt = `You are the Lead Adversary Emulation & CTI Reconstruction Specialist operating under the AIE platform.
+Analyze this threat intelligence report and synthesize a high-fidelity, chronological multi-stage attack chain with concrete procedures, MITRE ATT&CK techniques, detection rules, and purple team emulation commands.
+
+TITLE: ${title}
+CONTENT SNIPPET:
+${snippet}
+
+INSTRUCTIONS:
+1. Reconstruct the CHRONOLOGICAL ATTACK CHAIN in sequential order (Stage 1 to N, e.g. Initial Access -> Execution -> Persistence -> Lateral Movement -> Impact).
+2. For each stage, identify the exact MITRE ATT&CK tactic, technique IDs (e.g. T1059.001), and a technical summary.
+3. Identify threat actors, malware families, CVEs, concrete procedures/commands, IOAs (Indicators of Attack), detection rules (Sigma/hunting), and emulation actions.
+
+OUTPUT FORMAT:
+Return pure valid JSON with this exact structure:
+{
+  "classification": "${classification}",
+  "threatActors": ["Threat Actor Name"],
+  "malware": ["Malware or Tool Name"],
+  "vulnerabilities": ["CVE-YYYY-XXXXX"],
+  "ttps": ["T1190: Exploit Public-Facing Application", "T1059.001: PowerShell"],
+  "ioas": ["High-entropy process spawned from w3wp.exe"],
+  "attackChain": [
+    {
+      "order": 1,
+      "tactic": "Initial Access",
+      "techniques": ["T1190"],
+      "summary": "Weaponization of CVE-2023-46805 in perimeter gateway"
+    },
+    {
+      "order": 2,
+      "tactic": "Execution",
+      "techniques": ["T1059.001"],
+      "summary": "Execution of obfuscated base64 PowerShell downloader scriptlet"
+    }
+  ],
+  "detections": [
+    "Sigma: Suspicious PowerShell execution with encoded command arguments",
+    "Hunting: Query for outbound C2 beacons to unclassified IP addresses"
+  ],
+  "hunting": [
+    "Hunting: Inspect process handles granted to lsass.exe by non-system accounts"
+  ],
+  "emulation": [
+    "Atomic Test: powershell.exe -NoP -NonI -W Hidden -Exec Bypass -Command \\"Write-Host 'Emulated Execution'\\""
+  ]
+}
+Return pure JSON only.`;
+
+  try {
+    const adapter = getProviderAdapter(providerId);
+    let outputText = "";
+
+    if (adapter && active.isRest) {
+      const res = await adapter.generate({
+        prompt,
+        model: rawModel,
+        apiKey: active.apiKey,
+        timeoutMs: timeoutSeconds * 1000,
+        responseFormat: "json",
+      });
+      if (res.success && res.text) {
+        outputText = res.text;
+      }
+    } else {
+      const res = await executeInAgentSandbox(
+        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+        { timeoutMs: timeoutSeconds * 1000, category: "agent" }
+      );
+      if (res.success && res.output) {
+        outputText = res.output;
+      }
+    }
+
+    if (outputText) {
+      const parsed = extractJsonFromLlmText(outputText);
+      if (parsed && Array.isArray(parsed.attackChain) && parsed.attackChain.length > 0) {
+        const orderSteps: AttackStep[] = parsed.attackChain.map((s: any, idx: number) => ({
+          order: typeof s.order === "number" ? s.order : idx + 1,
+          tactic: String(s.tactic || "Execution"),
+          techniques: Array.isArray(s.techniques) ? s.techniques.map(String) : [],
+          summary: String(s.summary || ""),
+        }));
+
+        logger.agent(
+          "SYNTHESIS",
+          `AI synthesized attack chain for "${title.slice(0, 40)}" (${orderSteps.length} stages via ${rawModel})`
+        );
+
+        return {
+          method: "ai_synthesized",
+          classification: parsed.classification || heuristicFallback.classification,
+          threatActors: Array.isArray(parsed.threatActors) && parsed.threatActors.length > 0 ? parsed.threatActors.map(String) : heuristicFallback.threatActors,
+          malware: Array.isArray(parsed.malware) && parsed.malware.length > 0 ? parsed.malware.map(String) : heuristicFallback.malware,
+          vulnerabilities: Array.isArray(parsed.vulnerabilities) && parsed.vulnerabilities.length > 0 ? parsed.vulnerabilities.map(String) : heuristicFallback.vulnerabilities,
+          ttps: Array.isArray(parsed.ttps) && parsed.ttps.length > 0 ? parsed.ttps.map(String) : heuristicFallback.ttps,
+          ioas: Array.isArray(parsed.ioas) && parsed.ioas.length > 0 ? parsed.ioas.map(String) : heuristicFallback.ioas,
+          attackChain: orderSteps,
+          detections: Array.isArray(parsed.detections) && parsed.detections.length > 0 ? parsed.detections.map(String) : heuristicFallback.detections,
+          hunting: Array.isArray(parsed.hunting) && parsed.hunting.length > 0 ? parsed.hunting.map(String) : heuristicFallback.hunting,
+          emulation: Array.isArray(parsed.emulation) && parsed.emulation.length > 0 ? parsed.emulation.map(String) : heuristicFallback.emulation,
+        };
+      }
+    }
+  } catch (err: any) {
+    logger.agent("FAILSAFE", `AI attack chain synthesis failed (${err.message}), returned heuristic analysis.`);
+  }
+
+  return heuristicFallback;
+}
+
+/**
+ * Generates a production-ready Sigma YAML detection rule for observed adversary procedures
+ */
+export async function generateSigmaRuleWithAI(params: {
+  title: string;
+  techniques: string[];
+  procedures?: string[];
+  textSnippet?: string;
+  model?: string;
+}): Promise<{ success: boolean; sigmaYaml: string; title: string; level: string; error?: string }> {
+  const active = await getActiveAIProvider();
+  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const prompt = `You are a Lead Detection Engineer.
+Generate a valid, production-ready Sigma detection rule in standard Sigma YAML format based on the following threat intelligence report and adversary techniques.
+
+TITLE: ${params.title}
+TECHNIQUES: ${params.techniques.join(", ")}
+OBSERVED PROCEDURES: ${(params.procedures || []).join("\n")}
+CONTEXT: ${(params.textSnippet || "").slice(0, 2000)}
+
+INSTRUCTIONS:
+1. Output MUST be valid Sigma YAML (logsource: category: process_creation, detection, condition, tags, level: high/critical).
+2. Include concrete command-line substrings or process image matches matching the observed tradecraft.
+3. Return pure JSON with:
+{
+  "title": "Rule Title",
+  "level": "high",
+  "sigmaYaml": "title: ...\\nlogsource: ...\\ndetection: ...\\ncondition: ...\\nlevel: high"
+}
+Return pure JSON only.`;
+
+  try {
+    const adapter = getProviderAdapter(active.providerId);
+    let output = "";
+    if (adapter && active.isRest) {
+      const res = await adapter.generate({
+        prompt,
+        model: rawModel,
+        apiKey: active.apiKey,
+        responseFormat: "json",
+      });
+      if (res.success) output = res.text;
+    } else {
+      const res = await executeInAgentSandbox(
+        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+        { timeoutMs: 35000, category: "agent" }
+      );
+      if (res.success) output = res.output;
+    }
+
+    if (output) {
+      const parsed = extractJsonFromLlmText(output);
+      return {
+        success: true,
+        sigmaYaml: parsed.sigmaYaml || output,
+        title: parsed.title || `Detection for ${params.title}`,
+        level: parsed.level || "high",
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      sigmaYaml: "",
+      title: params.title,
+      level: "medium",
+      error: err.message,
+    };
+  }
+
+  return {
+    success: false,
+    sigmaYaml: "",
+    title: params.title,
+    level: "medium",
+    error: "Model did not return Sigma rule output.",
+  };
+}
+
+/**
+ * Generates an Atomic Red Team adversary emulation blueprint with concrete execution commands
+ */
+export async function generateEmulationPlanWithAI(params: {
+  title: string;
+  techniques: string[];
+  procedures?: string[];
+  platform?: "windows" | "linux" | "macos";
+  model?: string;
+}): Promise<{ success: boolean; testName: string; executor: string; command: string; cleanupCommand?: string; description: string }> {
+  const active = await getActiveAIProvider();
+  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const platform = params.platform || "windows";
+
+  const prompt = `You are a Red Team / Adversary Emulation Specialist.
+Generate a safe, executable Atomic Red Team style emulation test procedure targeting the adversary TTPs described below.
+
+TITLE: ${params.title}
+TECHNIQUES: ${params.techniques.join(", ")}
+PROCEDURES: ${(params.procedures || []).join("\n")}
+PLATFORM: ${platform}
+
+INSTRUCTIONS:
+1. Provide a non-destructive emulation command line that exercises the telemetry detection opportunity without harming systems.
+2. Provide executor ("powershell" or "bash" or "sh").
+3. Provide cleanup command if artifacts are created.
+4. Return pure JSON:
+{
+  "testName": "Emulate T1059.001 Execution",
+  "executor": "powershell",
+  "command": "powershell.exe -NoP -NonI -W Hidden -Exec Bypass -Command \\"Write-Host 'Emulated adversary telemetry execution'\\"",
+  "cleanupCommand": "",
+  "description": "Validates EDR and Sysmon EventID 1 process creation logging for high-entropy arguments."
+}
+Return pure JSON only.`;
+
+  try {
+    const adapter = getProviderAdapter(active.providerId);
+    let output = "";
+    if (adapter && active.isRest) {
+      const res = await adapter.generate({
+        prompt,
+        model: rawModel,
+        apiKey: active.apiKey,
+        responseFormat: "json",
+      });
+      if (res.success) output = res.text;
+    } else {
+      const res = await executeInAgentSandbox(
+        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+        { timeoutMs: 35000, category: "agent" }
+      );
+      if (res.success) output = res.output;
+    }
+
+    if (output) {
+      const parsed = extractJsonFromLlmText(output);
+      return {
+        success: true,
+        testName: parsed.testName || `Emulation of ${params.techniques[0] || params.title}`,
+        executor: parsed.executor || (platform === "windows" ? "powershell" : "bash"),
+        command: parsed.command || `echo "Emulating ${params.techniques[0]}"`,
+        cleanupCommand: parsed.cleanupCommand || "",
+        description: parsed.description || "Adversary emulation procedure generated by AI specialist.",
+      };
+    }
+  } catch (err) {}
+
+  return {
+    success: false,
+    testName: `Emulation of ${params.techniques[0] || "TTP"}`,
+    executor: platform === "windows" ? "powershell" : "bash",
+    command: `echo "Emulating ${params.techniques[0] || "TTP"}"`,
+    description: "Default fallback emulation placeholder.",
+  };
+}
+

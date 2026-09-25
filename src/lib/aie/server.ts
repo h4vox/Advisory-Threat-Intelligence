@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { analyzeThreatIntelligence } from "./attack-chain";
+import {
+  analyzeThreatIntelligence,
+  synthesizeThreatIntelligenceWithAI,
+  generateSigmaRuleWithAI,
+  generateEmulationPlanWithAI,
+  extractStructuredEntities,
+} from "./attack-chain";
 import { REPORT_CATALOG, SOURCE_SEED } from "./catalog";
 import {
   cancelJob,
@@ -21,7 +27,7 @@ import {
 } from "./extract";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { safeFetchResource, validateSafePublicUrl, sanitizeDocumentHtml } from "./security";
-import { discoverAgentSources, evaluateResourceWithAgent, isAgentAvailable } from "./agy-agent";
+import { isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
@@ -95,9 +101,14 @@ import {
   mongoUninstallMarketplaceIntegration,
   DEFAULT_CRAWL_CONFIG,
 } from "../mongodb/repository.server";
+import {
+  getAvailableAgentModels,
+  chatWithUnifiedAgent,
+  runUnifiedSourceDiscovery,
+  runUnifiedResourceEvaluation,
+} from "./ai-manager";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
-import { OFFICIAL_AGY_OAUTH_URL, generateAgyOAuthUrl } from "./marketplace-registry";
-import { getAvailableAgentModels } from "./ai-manager";
+import { getProviderAdapter } from "./providers";
 import {
   detectSandboxRuntime,
   ensureAgentSandboxRunning,
@@ -717,7 +728,7 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
       ]),
     );
 
-    const result = await discoverAgentSources({
+    const result = await runUnifiedSourceDiscovery({
       limit,
       existingDomains,
       timeoutSeconds: config.agentTimeoutSeconds ?? 90,
@@ -789,11 +800,18 @@ export const evaluateReportWithAi = createServerFn({ method: "POST" })
     const url = (doc.url as string) || "";
     const text = (doc.extractedText as string) || (doc.summary as string) || "";
 
-    const evalRes = await evaluateResourceWithAgent({
+    let evalDomain = (doc.sourceDomain as string) || "";
+    if (!evalDomain && url) {
+      try {
+        evalDomain = new URL(url).hostname.replace(/^www\./, "");
+      } catch {}
+    }
+
+    const evalRes = await runUnifiedResourceEvaluation({
       title,
       url,
       text,
-      domain: (doc.sourceDomain as string) || undefined,
+      domain: evalDomain || "unknown",
       timeoutSeconds: 40,
     });
 
@@ -1076,6 +1094,128 @@ export const getReport = createServerFn({ method: "GET" })
       qualityReasons: parseJson<QualityReason[]>(r.quality_reasons, []),
       analysis,
     };
+  });
+
+export const synthesizeReportAttackChain = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      reportId: z.string(),
+      model: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    logger.serverFn("synthesizeReportAttackChain", "START", undefined, { id: data.reportId });
+    const col = await getThreatIntelCollection();
+    const report = await col.findOne({ id: data.reportId });
+    if (!report) {
+      throw new Error(`Report ${data.reportId} not found`);
+    }
+
+    const text = report.extractedText || report.title;
+    const analysis = await synthesizeThreatIntelligenceWithAI(
+      text,
+      report.title,
+      report.classification || "THREAT_REPORT",
+      { model: data.model }
+    );
+
+    const extractedEntities = extractStructuredEntities(
+      text,
+      report.title,
+      report.classification || "THREAT_REPORT",
+      analysis
+    );
+
+    await col.updateOne(
+      { id: data.reportId },
+      {
+        $set: {
+          analysis,
+          extractedEntities,
+          version: (report.version || 1) + 1,
+          lastAiAuditedAt: new Date().toISOString(),
+        },
+      }
+    );
+
+    invalidateReportsCache();
+    logger.serverFn("synthesizeReportAttackChain", "DONE", undefined, {
+      id: data.reportId,
+      stages: analysis.attackChain.length,
+      method: analysis.method,
+    });
+
+    return {
+      success: true,
+      reportId: data.reportId,
+      analysis,
+      extractedEntities,
+    };
+  });
+
+export const generateReportSigmaRule = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      reportId: z.string(),
+      model: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    logger.serverFn("generateReportSigmaRule", "START", undefined, { id: data.reportId });
+    const col = await getThreatIntelCollection();
+    const report = await col.findOne({ id: data.reportId });
+    if (!report) {
+      throw new Error(`Report ${data.reportId} not found`);
+    }
+
+    const techniques = (report.extractedEntities?.techniques || report.analysis?.ttps || []).map((t: any) =>
+      typeof t === "string" ? t : t.id
+    );
+    const procedures = report.extractedEntities?.procedures || [];
+
+    const result = await generateSigmaRuleWithAI({
+      title: report.title,
+      techniques,
+      procedures,
+      textSnippet: report.extractedText || "",
+      model: data.model,
+    });
+
+    logger.serverFn("generateReportSigmaRule", "DONE", undefined, { id: data.reportId, success: result.success });
+    return result;
+  });
+
+export const generateReportEmulationPlan = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      reportId: z.string(),
+      platform: z.enum(["windows", "linux", "macos"]).optional(),
+      model: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    logger.serverFn("generateReportEmulationPlan", "START", undefined, { id: data.reportId });
+    const col = await getThreatIntelCollection();
+    const report = await col.findOne({ id: data.reportId });
+    if (!report) {
+      throw new Error(`Report ${data.reportId} not found`);
+    }
+
+    const techniques = (report.extractedEntities?.techniques || report.analysis?.ttps || []).map((t: any) =>
+      typeof t === "string" ? t : t.id
+    );
+    const procedures = report.extractedEntities?.procedures || [];
+
+    const result = await generateEmulationPlanWithAI({
+      title: report.title,
+      techniques,
+      procedures,
+      platform: data.platform || "windows",
+      model: data.model,
+    });
+
+    logger.serverFn("generateReportEmulationPlan", "DONE", undefined, { id: data.reportId, success: result.success });
+    return result;
   });
 
 export const listCatalog = createServerFn({ method: "GET" }).handler(async (): Promise<
@@ -2706,31 +2846,24 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       }
       addLog("INFO", "system", `Codex Agent profile configured and ready.`);
       rawLogs = logs.join("\n");
-    } else if (data.id === "gemini_api") {
+    } else if (data.id === "gemini_api" || data.id === "claude_api" || data.id === "openai_api") {
+      const adapter = getProviderAdapter(data.id);
       addLog("INFO", "system", `Configuring direct cloud API connection for ${existing.name}...`);
-      addLog("DEBUG", "network", `Endpoint registered: https://generativelanguage.googleapis.com (TLSv1.3)`);
-      addLog("DEBUG", "network", `DNS resolution: generativelanguage.googleapis.com -> 142.250.190.74 (TTL: 300s, Latency: 12ms)`);
-      addLog("AUTH", "auth", `Credential type: Google AI Studio API Key`);
-      addLog("AUTH", "auth", `Portal: https://aistudio.google.com/app/apikey`);
-      if (data.apiKey) {
-        addLog("AUTH", "auth", `API Key verified (Format: AIza...): Encrypted and stored in application vault`);
-        addLog("INFO", "agent", `Probing model endpoints: gemini-2.5-flash, gemini-2.5-pro`);
-        addLog("INFO", "agent", `Quota envelope verified: 60 RPM tier (Pay-As-You-Go / Free Tier compatible)`);
+      if (adapter && data.apiKey) {
+        addLog("AUTH", "auth", `Initiating live credential validation probe with ${existing.name}...`);
+        const probeRes = await adapter.testConnection(data.apiKey, { selectedModel: data.selectedModel });
+        for (const l of probeRes.logs) {
+          logs.push(l);
+        }
+        if (probeRes.success) {
+          addLog("INFO", "system", `Live handshake SUCCESSFUL (${probeRes.latencyMs}ms). Provider validated & ready for CTI operations.`);
+        } else {
+          addLog("WARN", "auth", `Credential verification warning: ${probeRes.message}`);
+        }
+      } else {
+        addLog("INFO", "auth", `API Key saved to secure vault. Run 'Test Connection' in Marketplace to verify live reachability.`);
       }
-      addLog("INFO", "system", `Google Gemini API provider operational.`);
-      rawLogs = logs.join("\n");
-    } else if (data.id === "claude_api") {
-      addLog("INFO", "system", `Configuring direct cloud API connection for ${existing.name}...`);
-      addLog("DEBUG", "network", `Endpoint registered: https://api.anthropic.com/v1/messages (TLSv1.3)`);
-      addLog("DEBUG", "network", `DNS resolution: api.anthropic.com -> 104.18.25.12 (TTL: 300s, Latency: 16ms)`);
-      addLog("AUTH", "auth", `Credential type: Anthropic Console API Key`);
-      addLog("AUTH", "auth", `Portal: https://console.anthropic.com/settings/keys`);
-      if (data.apiKey) {
-        addLog("AUTH", "auth", `API Key verified (Format: sk-ant-api03-...): Encrypted and stored in application vault`);
-        addLog("INFO", "agent", `Probing model endpoints: claude-3-7-sonnet, claude-3-5-haiku`);
-        addLog("INFO", "agent", `Protocol version: anthropic-version: 2023-06-01 confirmed`);
-      }
-      addLog("INFO", "system", `Anthropic Claude API provider operational.`);
+      addLog("INFO", "system", `${existing.name} provider profile successfully configured.`);
       rawLogs = logs.join("\n");
     } else {
       addLog("INFO", "system", `Initializing connection for ${existing.name}...`);
@@ -2956,6 +3089,32 @@ export const testIntegrationConnection = createServerFn({ method: "POST" })
       };
     }
 
+    const adapter = getProviderAdapter(data.id);
+    if (adapter) {
+      const realResult = await adapter.testConnection(integration.config?.apiKey, integration.config);
+      const updated: IntegrationItem = {
+        ...integration,
+        config: {
+          ...integration.config,
+          lastTestedAt: realResult.testedAt,
+          logs: realResult.logs,
+        },
+      };
+      await mongoSaveMarketplaceIntegration(updated);
+
+      return {
+        success: realResult.success,
+        id: data.id,
+        name: integration.name,
+        status: realResult.status,
+        latencyMs: realResult.latencyMs,
+        message: realResult.message,
+        testedAt: realResult.testedAt,
+        details: realResult.details,
+        logs: realResult.logs,
+      };
+    }
+
     const getTimestamp = () => {
       const now = new Date();
       const pad = (n: number, s = 2) => n.toString().padStart(s, "0");
@@ -2970,23 +3129,6 @@ export const testIntegrationConnection = createServerFn({ method: "POST" })
 
     addLog("INFO", "system", `Starting connection diagnostics audit for ${integration.name} (${integration.version})...`);
     addLog("DEBUG", "network", `Target Endpoint: ${integration.endpointUrl || "Cloud Native REST API"}`);
-
-    if (integration.type === "api_provider") {
-      addLog("DEBUG", "network", `Initiating TLSv1.3 TCP handshake (cipher: TLS_AES_256_GCM_SHA384)`);
-      addLog("INFO", "auth", `Validating API key format & cryptographic entropy...`);
-      if (integration.config?.apiKey) {
-        addLog("AUTH", "auth", `API Key present in vault: Header authorization pattern verified`);
-      } else {
-        addLog("WARN", "auth", `No custom API key set. Testing against baseline endpoint reachability`);
-      }
-      addLog("EXEC", "agent", `Probing model availability: ${integration.supportedModels.join(", ")}`);
-      addLog("INFO", "agent", `HTTP status 200 OK received from cloud model controller`);
-    } else {
-      addLog("DEBUG", "system", `Checking local execution path and environment variables...`);
-      addLog("INFO", "sandbox", `Auditing process sandbox compatibility and execution boundary`);
-      addLog("EXEC", "agent", `Testing IPC connector handshake with ${integration.name}`);
-      addLog("INFO", "agent", `Local CLI harness response verified (exit code 0)`);
-    }
 
     const latencyMs = Math.floor(Math.random() * 35) + 22;
     await new Promise((r) => setTimeout(r, latencyMs));
@@ -3163,75 +3305,23 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
       snippet: r.matchedSnippet || r.excerpt,
     }));
 
-    // 2. Build Grounded Prompt with Local Intelligence Context
-    let promptToSend = userMsg;
-    if (topReports.length > 0) {
-      let contextDocs = "";
-      topReports.forEach((r, idx) => {
-        const fmtId = formatReportId(r.id);
-        const actors = (r.analysis?.threatActors || []).join(", ") || "Unspecified";
-        const malware = (r.analysis?.malware || []).join(", ") || "Unspecified";
-        const cves = (r.extractedEntities?.cves || []).join(", ") || "None";
-        const techniques = (r.extractedEntities?.techniques || [])
-          .map((t) => (typeof t === "string" ? t : `${t.id} ${t.name}`))
-          .join(", ") || "None";
-        const stages = r.analysis?.attackChain?.length
-          ? r.analysis.attackChain
-              .map((s, sIdx) => `    Stage ${sIdx + 1} [${s.tactic}]: ${(s.techniques || []).join(", ")} - ${s.summary || ""}`)
-              .join("\n")
-          : `    ${r.excerpt.slice(0, 300)}`;
-
-        contextDocs += `
-[LOCAL INTEL REPORT #${idx + 1}]
-ID: ${fmtId} (${r.id})
-Title: "${r.title}"
-Publisher: ${r.publisher || r.sourceName} | Kind: ${r.resourceKind || "CAMPAIGN_INTEL"}
-Threat Actors: ${actors} | Malware/Tooling: ${malware} | CVEs: ${cves}
-MITRE ATT&CK Techniques: ${techniques}
-Attack Progression & Evidence:
-${stages}
-Procedural Snippet: "${(r.matchedSnippet || r.excerpt).slice(0, 450)}"
-URL: ${r.canonicalUrl || r.url}
-`;
-      });
-
-      promptToSend = `You are the Lead Adversary Emulation & Cyber Threat Intelligence AI Specialist for the AIE Platform.
-A security engineer or operator has submitted the inquiry below.
-
-VERIFIED GROUNDED LOCAL INTELLIGENCE (from platform MongoDB):
-${contextDocs}
-
-OPERATIONAL INSTRUCTIONS:
-1. Ground your response in the local verified reports above whenever directly or tangentially relevant.
-2. Explicitly cite the local Report IDs using bracket format, e.g. "[${formatReportId(topReports[0].id)}]", including publisher and title.
-3. Provide concrete procedural details: execution command lines, registry persistence keys, DLL injection vectors, and MITRE technique IDs (e.g. T1059.001).
-4. Provide structured guidance useful for red teams, detection engineers, and purple team emulation.
-5. If the query asks for concepts not covered in these reports, provide authoritative industry intelligence while stating what was found in the local library versus broader industry knowledge.
-
-USER INQUIRY:
-${userMsg}`;
-    } else {
-      promptToSend = `You are the Lead Adversary Emulation & Cyber Threat Intelligence AI Specialist for the AIE Platform.
-Answer the following cyber threat intelligence, intrusion analysis, or adversary emulation inquiry with technical rigor, MITRE ATT&CK technique IDs, and concrete command-line procedures.
-
-USER INQUIRY:
-${userMsg}`;
-    }
-
-    const res = await executeInAgentSandbox(
-      ["--dangerously-skip-permissions", "--print", promptToSend, "--model", model],
-      { timeoutMs: 38000, category: "agent" }
-    );
+    const chatRes = await chatWithUnifiedAgent({
+      userMessage: userMsg,
+      groundedReports: topReports,
+      model,
+      timeoutSeconds: 40,
+    });
 
     return {
-      success: res.success,
-      reply: res.output || res.error || "Agent did not produce output.",
-      latencyMs: res.latencyMs,
-      model,
+      success: chatRes.success,
+      reply: chatRes.reply,
+      latencyMs: chatRes.latencyMs,
+      model: chatRes.model,
+      providerId: chatRes.providerId,
       timestamp: new Date().toISOString(),
-      error: res.error,
-      trace: res.trace,
-      logs: res.logs,
+      error: chatRes.error,
+      trace: chatRes.trace,
+      tokens: chatRes.tokens,
       sources,
       groundedReportCount: topReports.length,
     };

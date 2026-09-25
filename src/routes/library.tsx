@@ -23,6 +23,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Tag,
+  Workflow,
   X,
   XCircle,
 } from "lucide-react";
@@ -1309,6 +1310,16 @@ function LibraryPage() {
                 </button>
 
                 <div className="flex shrink-0 items-center gap-2 pt-1">
+                  <Link
+                    to="/library/$reportId"
+                    params={{ reportId: r.id }}
+                    className="h-8 gap-1.5 text-xs inline-flex items-center justify-center rounded-lg border border-border bg-bg-elevated hover:bg-bg px-2.5 font-medium text-fg hover:text-accent transition-colors shadow-xs"
+                    title="Open Full Threat Intel Dossier (Attack Chains, Emulation, Detections)"
+                  >
+                    <Workflow className="size-3.5 text-accent" />
+                    <span className="hidden sm:inline">Dossier</span>
+                  </Link>
+
                   <Button
                     size="sm"
                     variant="secondary"
@@ -1422,6 +1433,13 @@ function LibraryPage() {
                   >
                     <FileText className="size-3" /> Preview Document & Evidence
                   </button>
+                  <Link
+                    to="/library/$reportId"
+                    params={{ reportId: r.id }}
+                    className="text-accent hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <Workflow className="size-3" /> Full Intel Dossier
+                  </Link>
                   <span>Ingested: {formatDateTime(r.ingestedAt)}</span>
                 </div>
               </div>
@@ -1813,6 +1831,15 @@ function LibraryPage() {
                 </Button>
 
                 <div className="flex items-center gap-2">
+                  <Link
+                    to="/library/$reportId"
+                    params={{ reportId: auditModalReport.id }}
+                    onClick={() => setAuditModalReport(null)}
+                    className="h-8 gap-1.5 text-xs inline-flex items-center justify-center rounded-lg border border-accent/40 bg-accent/10 hover:bg-accent/20 px-3 font-medium text-accent transition-colors"
+                  >
+                    <Workflow className="size-3.5" /> Full Dossier
+                  </Link>
+
                   <Button
                     size="sm"
                     variant="secondary"
