@@ -1,0 +1,203 @@
+/**
+ * Agent Framework - Core Types & State Definitions
+ *
+ * Defines the generic, extensible agent integration contract.
+ * Decouples the UI and application logic from any specific CLI binary or backend.
+ */
+
+export type AgentOnboardingStepId =
+  | "starting_environment"
+  | "installing_agent"
+  | "installation_completed"
+  | "starting_agent"
+  | "selecting_auth_method"
+  | "generating_auth_link"
+  | "waiting_for_auth"
+  | "authentication_successful"
+  | "testing_agent_connection"
+  | "agent_onboarding_completed"
+  | "error";
+
+export interface OnboardingStepDefinition {
+  id: AgentOnboardingStepId;
+  stepNumber: number;
+  title: string;
+  description: string;
+  isInteractive?: boolean;
+}
+
+export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
+  {
+    id: "starting_environment",
+    stepNumber: 1,
+    title: "Starting agent environment",
+    description: "Initializing dedicated container sandbox runtime and isolating resource namespaces.",
+  },
+  {
+    id: "installing_agent",
+    stepNumber: 2,
+    title: "Installing agent",
+    description: "Verifying containerized agent binary, execution environment, and permissions.",
+  },
+  {
+    id: "installation_completed",
+    stepNumber: 3,
+    title: "Agent installation completed",
+    description: "Agent environment and execution runtime successfully validated.",
+  },
+  {
+    id: "starting_agent",
+    stepNumber: 4,
+    title: "Starting agent",
+    description: "Booting autonomous agent process within isolated execution sandbox.",
+  },
+  {
+    id: "selecting_auth_method",
+    stepNumber: 5,
+    title: "Selecting authentication method",
+    description: "Configuring authentication provider (Google OAuth 2.0 or Vertex API).",
+  },
+  {
+    id: "generating_auth_link",
+    stepNumber: 6,
+    title: "Generating authentication link",
+    description: "Generating secure dynamic OAuth authorization session with cryptographic challenge.",
+  },
+  {
+    id: "waiting_for_auth",
+    stepNumber: 7,
+    title: "Waiting for authentication",
+    description: "Please sign in via the authorization portal and paste the resulting authorization code.",
+    isInteractive: true,
+  },
+  {
+    id: "authentication_successful",
+    stepNumber: 8,
+    title: "Authentication successful",
+    description: "Authorization code verified and credentials securely stored in agent vault.",
+  },
+  {
+    id: "testing_agent_connection",
+    stepNumber: 9,
+    title: "Testing agent connection",
+    description: "Sending diagnostic probe to verify bidirectional agent communication and inference readiness.",
+  },
+  {
+    id: "agent_onboarding_completed",
+    stepNumber: 10,
+    title: "Agent onboarding completed",
+    description: "Agent engine is fully operational and ready for threat intelligence tasks.",
+  },
+];
+
+export interface AgentAuthOption {
+  id: string;
+  name: string;
+  description: string;
+  type: "oauth" | "api_key";
+  isRecommended?: boolean;
+}
+
+export interface AgentOnboardingStatus {
+  agentId: string;
+  agentName: string;
+  providerLabel: string;
+  currentStep: AgentOnboardingStepId;
+  stepNumber: number;
+  totalSteps: number;
+  state: "idle" | "in_progress" | "waiting_input" | "success" | "error";
+  message: string;
+  authUrl?: string;
+  authState?: string;
+  selectedAuthMethod: string;
+  supportedAuthMethods: AgentAuthOption[];
+  supportedModels: string[];
+  activeModel: string;
+  latencyMs?: number;
+  version?: string;
+  error?: string;
+  updatedAt: string;
+  history: Array<{
+    step: AgentOnboardingStepId;
+    stepNumber: number;
+    title: string;
+    timestamp: string;
+    status: "completed" | "in_progress" | "error";
+  }>;
+}
+
+export interface AgentDriver {
+  id: string;
+  name: string;
+  providerLabel: string;
+  description: string;
+  supportedAuthMethods: AgentAuthOption[];
+  defaultAuthMethod: string;
+  supportedModels: string[];
+  defaultModel: string;
+
+  /**
+   * Step 1: Ensure execution sandbox/container is running
+   */
+  startEnvironment(): Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Step 2 & 3: Validate or complete installation of the agent inside the runtime
+   */
+  ensureInstalled(): Promise<{ success: boolean; version?: string; error?: string }>;
+
+  /**
+   * Step 4: Boot agent process / driver session
+   */
+  startAgentProcess(): Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Step 5 & 6: Generate authentication session / link
+   */
+  generateAuthSession(methodId: string): Promise<{
+    authUrl: string;
+    state?: string;
+    codeVerifier?: string;
+    error?: string;
+  }>;
+
+  /**
+   * Step 8: Submit code or API key to finalize authentication
+   */
+  submitAuthCode(
+    codeOrKey: string,
+    options?: { codeVerifier?: string; methodId?: string }
+  ): Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Step 9: Validate connection with a lightweight probe
+   */
+  testConnection(): Promise<{
+    success: boolean;
+    latencyMs?: number;
+    version?: string;
+    error?: string;
+  }>;
+
+  /**
+   * Check if credentials currently exist and are valid
+   */
+  checkCredentials(): Promise<{
+    hasCredentials: boolean;
+    tokenPreview?: string;
+    expiry?: string;
+  }>;
+
+  /**
+   * Execute threat intelligence prompt or inference
+   */
+  executeInference(
+    prompt: string,
+    model?: string
+  ): Promise<{ text: string; latencyMs: number; error?: string }>;
+
+  /**
+   * Clean up credentials and reset runtime
+   */
+  reset(): Promise<{ success: boolean; error?: string }>;
+}

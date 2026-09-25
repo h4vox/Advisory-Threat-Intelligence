@@ -1496,7 +1496,7 @@ function SettingsPage() {
                   <span className="font-semibold text-fg">
                     {marketplaceQuery.data?.integrations.find(
                       (x) => x.id === (appForm.activeAgentProvider || "agy_agent")
-                    )?.name || "Antigravity AGY Agent"}
+                    )?.name || "Autonomous AI Agent Engine"}
                   </span>
                 </div>
                 <Badge className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
@@ -1508,7 +1508,7 @@ function SettingsPage() {
                 <div>
                   <label className="block text-xs font-medium text-muted mb-1.5">Agent Model</label>
                   <select
-                    value={crawlForm.agentModel || "AGY: gemini-3.8-flash-low"}
+                    value={crawlForm.agentModel || "gemini-2.5-flash"}
                     onChange={(e) => {
                       const selectedVal = e.target.value;
                       setCrawlForm((prev) => ({ ...prev, agentModel: selectedVal }));
@@ -1537,13 +1537,11 @@ function SettingsPage() {
                       ))
                     ) : (
                       <>
-                        <option value="AGY: gemini-3.8-flash-low">AGY: gemini-3.8-flash-low</option>
-                        <option value="AGY: gemini-3.8-flash-medium">AGY: gemini-3.8-flash-medium</option>
-                        <option value="AGY: gemini-3.8-flash-high">AGY: gemini-3.8-flash-high</option>
-                        <option value="AGY: gemini-3.8-pro">AGY: gemini-3.8-pro</option>
-                        <option value="Claude Code: claude-3-7-sonnet">Claude Code: claude-3-7-sonnet</option>
-                        <option value="Gemini API: gemini-2.5-flash">Gemini API: gemini-2.5-flash</option>
-                        <option value="Claude API: claude-3-7-sonnet">Claude API: claude-3-7-sonnet</option>
+                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                        <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
                       </>
                     )}
                   </select>

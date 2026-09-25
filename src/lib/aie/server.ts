@@ -33,6 +33,7 @@ import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
 import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL, exchangeOAuthCodeForToken } from "./marketplace-registry";
+import { agentOnboardingOrchestrator } from "./agent-framework";
 import type {
   AppSettings,
   BatchIngestResult,
@@ -3553,6 +3554,69 @@ export const executeDiagnosticsCommand = createServerFn({ method: "POST" })
         logs: [`[${new Date().toISOString()}] [ERROR] ${err?.message}`],
       };
     }
+  });
+
+// ---------------------------------------------------------------------------
+// Generic & Extensible Agent Onboarding Pipeline (10-Step Lifecycle)
+// ---------------------------------------------------------------------------
+
+export const getAgentOnboardingStatus = createServerFn({ method: "GET" })
+  .validator(
+    z
+      .object({
+        agentId: z.string().optional(),
+      })
+      .optional()
+  )
+  .handler(async ({ data }) => {
+    return agentOnboardingOrchestrator.getStatus(data?.agentId || "agy_agent");
+  });
+
+export const advanceAgentOnboarding = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      agentId: z.string(),
+      authMethod: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    return agentOnboardingOrchestrator.startOrAdvance(data.agentId, data.authMethod);
+  });
+
+export const submitAgentOnboardingCode = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      agentId: z.string(),
+      code: z.string(),
+      codeVerifier: z.string().optional(),
+      methodId: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }) => {
+    return agentOnboardingOrchestrator.submitAuthCode(data.agentId, data.code, {
+      codeVerifier: data.codeVerifier,
+      methodId: data.methodId,
+    });
+  });
+
+export const testAgentOnboardingConnection = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      agentId: z.string(),
+    })
+  )
+  .handler(async ({ data }) => {
+    return agentOnboardingOrchestrator.testConnection(data.agentId);
+  });
+
+export const resetAgentOnboarding = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      agentId: z.string(),
+    })
+  )
+  .handler(async ({ data }) => {
+    return agentOnboardingOrchestrator.reset(data.agentId);
   });
 
 

@@ -238,7 +238,6 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
       "Autonomous CTI research, deep procedurizing, and adversary emulation engine isolated inside a dedicated container sandbox.",
     overview:
       "The Autonomous AI Agent Engine provides deep cognitive threat research. It autonomously navigates cyber disclosures, extracts procedural telemetry, maps adversary tradecraft directly to MITRE ATT&CK techniques, and generates actionable detection engineering rules in an isolated container sandbox.",
-    installCommand: "docker compose -f docker-compose.agent-sandbox.yml up -d",
     authUrl: generateAgyOAuthUrl(),
     actions: [
       {

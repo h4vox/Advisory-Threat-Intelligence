@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
+import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
 import {
   OFFICIAL_AGY_OAUTH_URL,
   generateAgyOAuthSession,
@@ -1167,151 +1168,41 @@ function MarketplacePage() {
                   ) : null}
                 </div>
 
-                {/* Sandbox Execution Architecture (For CLI & Automated Agents) */}
+                {/* Agent Engine Status Overview */}
                 {selectedIntegration.type === "cli_agent" && (
-                  <div className="p-3 rounded-lg bg-bg-elevated border border-border space-y-2">
+                  <div className="p-3.5 rounded-xl bg-bg-elevated border border-border/80 space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
                         <Terminal className="size-3.5 text-accent" />
-                        <span>Execution Sandbox</span>
+                        <span>Agent Engine Status</span>
                       </div>
-                      <Badge className="text-[9px] font-mono bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-                        {sandboxStatus?.runtime === "docker"
-                          ? "ISOLATED DOCKER"
-                          : sandboxStatus?.runtime === "wsl"
-                            ? "WSL BRIDGE"
-                            : "HOST NATIVE"}
+                      <Badge className={cn("text-[9px] font-mono", selectedIntegration.status === "installed" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30" : "bg-amber-500/10 text-amber-400 border border-amber-500/30")}>
+                        {selectedIntegration.status === "installed" ? "ONLINE & READY" : "ONBOARDING REQUIRED"}
                       </Badge>
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Runtime Target:</span>
-                        <span className="font-mono text-fg">
-                          {sandboxStatus?.containerName || "aie-agent-sandbox"}
-                        </span>
+                        <span>Architecture:</span>
+                        <span className="font-medium text-fg">Isolated Container Sandbox</span>
                       </div>
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Binary Path:</span>
-                        <span className="font-mono text-fg text-[10px]">
-                          {sandboxStatus?.binaryPath || "/usr/local/bin/agy"}
-                        </span>
+                        <span>Authentication:</span>
+                        <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
                       </div>
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Container Status:</span>
-                        <span className="font-medium text-emerald-400 flex items-center gap-1">
-                          <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          {sandboxStatus?.containerRunning ? "Running (Healthy)" : "Standby / Ready"}
+                        <span>Active Model:</span>
+                        <span className="font-mono text-accent">
+                          {selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between text-subtle">
-                        <span>Persistence Vault:</span>
-                        <span className="font-mono text-fg text-[10px]">
-                          aie-agent-vault (Isolated)
-                        </span>
-                      </div>
+                      {selectedIntegration.config?.lastLatencyMs && (
+                        <div className="flex items-center justify-between text-subtle">
+                          <span>Verified Latency:</span>
+                          <span className="font-mono text-emerald-400">{selectedIntegration.config.lastLatencyMs}ms</span>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
-
-                {/* Collapsible: Live Diagnostics & Sandbox Logs */}
-                {selectedIntegration.type === "cli_agent" && (
-                  <div className="border border-border/80 rounded-lg bg-bg-subtle/40 overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => setDrawerDiagnosticsExpanded(!drawerDiagnosticsExpanded)}
-                      className="w-full flex items-center justify-between p-2.5 text-xs font-semibold text-fg hover:bg-bg-subtle transition-colors cursor-pointer select-none"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <Terminal className="size-3.5 text-cyan-400" />
-                        <span>Live Sandbox Diagnostics ({sandboxLogsData?.count || 0})</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-subtle font-mono">
-                          {sandboxStatus?.runtime === "docker" ? "Docker Daemon" : "Host Runtime"}
-                        </span>
-                        {drawerDiagnosticsExpanded ? (
-                          <ChevronDown className="size-3.5 text-subtle" />
-                        ) : (
-                          <ChevronRight className="size-3.5 text-subtle" />
-                        )}
-                      </div>
-                    </button>
-
-                    {drawerDiagnosticsExpanded && (
-                      <div className="p-3 pt-0 border-t border-border/50 space-y-2 bg-[#0c1017]">
-                        <div className="flex items-center justify-between text-[10px] pt-2 text-subtle font-mono border-b border-white/5 pb-1.5">
-                          <span className="flex items-center gap-1.5">
-                            <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                            Live Telemetry Stream
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (sandboxLogsData?.logs) {
-                                  const text = sandboxLogsData.logs
-                                    .map(
-                                      (l) =>
-                                        `${l.formattedTime} [${l.level.padEnd(5)}] [${l.category.toUpperCase()}] ${l.message}`
-                                    )
-                                    .join("\n");
-                                  handleCopyLogs([text]);
-                                }
-                              }}
-                              className="text-cyan-400 hover:underline cursor-pointer flex items-center gap-1"
-                              title="Copy live telemetry to clipboard"
-                            >
-                              <Copy className="size-2.5" />
-                              Copy
-                            </button>
-                            <span>·</span>
-                            <button
-                              type="button"
-                              onClick={() => refetchLogs()}
-                              className="text-accent hover:underline cursor-pointer flex items-center gap-1"
-                            >
-                              <RefreshCw className="size-2.5" />
-                              Refresh
-                            </button>
-                            <span>·</span>
-                            <button
-                              type="button"
-                              onClick={() => clearLogsMutation.mutate()}
-                              className="text-rose-400 hover:underline cursor-pointer"
-                            >
-                              Clear
-                            </button>
-                          </div>
-                        </div>
-                        <div className="font-mono text-[10px] space-y-1 max-h-48 overflow-y-auto pr-1">
-                          {sandboxLogsData?.logs && sandboxLogsData.logs.length > 0 ? (
-                            sandboxLogsData.logs.slice(-40).map((log) => (
-                              <div key={log.id} className="leading-snug break-all flex items-start gap-1.5 text-muted hover:text-fg">
-                                <span className="text-subtle/70 shrink-0 select-none">{log.formattedTime.slice(12, 23)}</span>
-                                <span
-                                  className={cn(
-                                    "px-1 py-0.2 rounded text-[8.5px] shrink-0 font-bold uppercase",
-                                    log.level === "EXEC" && "bg-purple-500/20 text-purple-300 border border-purple-500/30",
-                                    log.level === "AUTH" && "bg-amber-500/20 text-amber-300 border border-amber-500/30",
-                                    log.level === "INFO" && "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30",
-                                    log.level === "STDOUT" && "bg-green-500/20 text-green-300 border border-green-500/30",
-                                    (log.level === "ERROR" || log.level === "STDERR") && "bg-rose-500/20 text-rose-300 border border-rose-500/30",
-                                    log.level === "DEBUG" && "bg-blue-500/20 text-blue-300 border border-blue-500/30",
-                                    log.level === "WARN" && "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"
-                                  )}
-                                >
-                                  {log.level}
-                                </span>
-                                <span className="text-fg/90">{log.message}</span>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="text-subtle py-3 text-center text-xs">No live telemetry captured yet.</div>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -1647,448 +1538,15 @@ function MarketplacePage() {
                 </div>
               )}
 
-              {/* CLI Agent Installation & Re-Config Engine */}
+              {/* Autonomous Agent Onboarding Pipeline (10-Step Extensible Flow) */}
               {configModalItem.type === "cli_agent" && (
-                <div className="space-y-4 text-xs">
-                  {/* Step 1: Containerized Sandbox Environment */}
-                  <div className="p-3.5 rounded-xl border border-border bg-bg-subtle/50 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold text-fg flex items-center gap-1.5">
-                        <Terminal className="size-3.5 text-accent" />
-                        <span>Containerized Sandbox Runtime</span>
-                      </div>
-                      <Badge className="text-[10px] border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 font-mono">
-                        DOCKER ISOLATED
-                      </Badge>
-                    </div>
-
-                    <p className="text-xs text-muted leading-relaxed">
-                      The agent runs inside an isolated Docker sandbox container (<code className="text-accent font-mono">aie-agent-sandbox</code>) with its own internal CLI binary and secure vault volume (<code className="text-accent font-mono">aie-agent-vault</code>).
-                    </p>
-
-                    {sandboxStatus && (
-                      <div className="flex items-center justify-between p-2 rounded-lg bg-bg-elevated border border-border/70 text-[11px] font-mono">
-                        <span className="text-subtle">Container Runtime:</span>
-                        <span className="text-accent font-semibold flex items-center gap-1.5">
-                          <span className={cn("size-2 rounded-full", sandboxStatus.containerRunning ? "bg-emerald-400 animate-pulse" : "bg-amber-400")} />
-                          {sandboxStatus.containerName} ({sandboxStatus.containerRunning ? "Running" : "Offline"}) · /usr/local/bin/agy
-                        </span>
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        disabled={realInstallMutation.isPending}
-                        onClick={() =>
-                          realInstallMutation.mutate({
-                            id: configModalItem.id,
-                            reconfig: isReconfigMode,
-                            authToken: authTokenInput || undefined,
-                            selectedModel: selectedModelInput || configModalItem.supportedModels[0],
-                            codeVerifier: agyOAuthSession?.codeVerifier || (typeof window !== "undefined" ? window.sessionStorage?.getItem("aie_oauth_verifier") || undefined : undefined),
-                          })
-                        }
-                        className="text-xs h-8 gap-1.5 bg-accent text-white font-medium"
-                      >
-                        {realInstallMutation.isPending ? (
-                          <>
-                            <Loader2 className="size-3.5 animate-spin" />
-                            <span>Verifying & Initializing...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Download className="size-3.5" />
-                            <span>{authTokenInput ? "Authenticate & Initialize Agent" : "Verify Container Sandbox"}</span>
-                          </>
-                        )}
-                      </Button>
-
-                      {/* Modal Test Connection Button */}
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={modalTestConnectionMutation.isPending}
-                        onClick={() => modalTestConnectionMutation.mutate(configModalItem.id)}
-                        className="text-xs h-8 gap-1.5"
-                      >
-                        <RefreshCw
-                          className={cn("size-3 text-accent", modalTestConnectionMutation.isPending && "animate-spin")}
-                        />
-                        <span>{modalTestConnectionMutation.isPending ? "Testing..." : "Test Connection"}</span>
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Step 2: Advanced Real-Time Terminal & Execution Logs */}
-                  <div className="border border-border/80 rounded-xl bg-[#0d1117] overflow-hidden shadow-inner">
-                    {/* Header */}
-                    <div className="p-2.5 bg-black/60 border-b border-white/10 flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setIsLogsExpanded(!isLogsExpanded)}
-                        className="flex items-center gap-2 font-mono text-[11px] text-muted hover:text-fg transition-colors cursor-pointer select-none"
-                      >
-                        <Terminal className="size-3.5 text-emerald-400" />
-                        <span className="font-semibold text-fg">Sandbox Execution & Installation Logs</span>
-                        <Badge className="text-[9px] font-mono px-1.5 py-0.2 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                          {displayedInstallLogs.length} events
-                        </Badge>
-                        {isLogsExpanded ? <ChevronDown className="size-3.5 text-subtle" /> : <ChevronRight className="size-3.5 text-subtle" />}
-                      </button>
-
-                      {/* Right Log Controls: Copy, Download, Clear */}
-                      {isLogsExpanded && (
-                        <div className="flex items-center gap-1.5">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleCopyLogs(realInstallLogs)}
-                            className="text-[10px] h-6 px-2 gap-1 border-white/10 hover:bg-white/10 cursor-pointer"
-                            title="Copy entire log output to clipboard"
-                          >
-                            {isCopiedLogs ? (
-                              <>
-                                <Check className="size-3 text-emerald-400" />
-                                <span className="text-emerald-400 font-mono">Copied!</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="size-3 text-subtle" />
-                                <span className="font-mono text-subtle">Copy</span>
-                              </>
-                            )}
-                          </Button>
-
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleDownloadLogs(realInstallLogs, `aie-${configModalItem.id}-install.log`)}
-                            className="text-[10px] h-6 px-2 gap-1 border-white/10 hover:bg-white/10 cursor-pointer"
-                            title="Download raw log file"
-                          >
-                            <Download className="size-3 text-subtle" />
-                            <span className="font-mono text-subtle">Export .log</span>
-                          </Button>
-
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={handleExportDiagnosticBundle}
-                            className="text-[10px] h-6 px-2 gap-1 border-accent/30 text-accent hover:bg-accent/10 cursor-pointer"
-                            title="Download complete diagnostic telemetry bundle (.json)"
-                          >
-                            <FileText className="size-3 text-accent" />
-                            <span className="font-mono text-accent">Bundle .json</span>
-                          </Button>
-
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => setRealInstallLogs([])}
-                            className="text-[10px] h-6 px-2 text-subtle hover:text-rose-400 hover:bg-white/10 cursor-pointer"
-                            title="Clear console output"
-                          >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-
-                    {isLogsExpanded && (
-                      <div className="p-2.5 space-y-2.5 border-b border-white/5 bg-black/40">
-                        {/* Live Container Telemetry Strip */}
-                        {containerMetrics && (
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-2 rounded-lg bg-black/70 border border-white/10 text-[10px] font-mono">
-                            <div className="flex flex-col">
-                              <span className="text-subtle text-[9px] uppercase">Container State</span>
-                              <span className={cn("font-bold flex items-center gap-1", containerMetrics.containerRunning ? "text-emerald-400" : "text-amber-400")}>
-                                <span className={cn("size-1.5 rounded-full", containerMetrics.containerRunning ? "bg-emerald-400 animate-pulse" : "bg-amber-400")} />
-                                {containerMetrics.status.toUpperCase()}
-                              </span>
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="text-subtle text-[9px] uppercase">CPU Load</span>
-                              <span className="text-cyan-300 font-semibold">{containerMetrics.cpuPercent}</span>
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="text-subtle text-[9px] uppercase">Memory / Vault</span>
-                              <span className="text-purple-300 font-semibold truncate" title={containerMetrics.memoryUsage || "Active"}>
-                                {containerMetrics.memoryUsage ? containerMetrics.memoryUsage.split("/")[0]?.trim() : "1.0 MiB"}
-                              </span>
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="text-subtle text-[9px] uppercase">PIDs / Network</span>
-                              <span className="text-emerald-300 font-semibold">
-                                {containerMetrics.pids ?? 1} tasks · {containerMetrics.netIO ? containerMetrics.netIO.split("/")[0]?.trim() : "OK"}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Interactive Diagnostics Probes Toolbar */}
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-[10px] font-mono">
-                          <span className="text-subtle text-[9px] uppercase tracking-wider shrink-0 flex items-center gap-1">
-                            <Sparkles className="size-2.5 text-accent" />
-                            Diagnostic Probes:
-                          </span>
-                          <button
-                            type="button"
-                            disabled={diagnosticsCommandMutation.isPending}
-                            onClick={() => diagnosticsCommandMutation.mutate("version")}
-                            className="px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-accent/20 hover:border-accent/40 text-muted hover:text-fg transition-colors whitespace-nowrap cursor-pointer"
-                            title="Probe CLI version in container"
-                          >
-                            agy --version
-                          </button>
-                          <button
-                            type="button"
-                            disabled={diagnosticsCommandMutation.isPending}
-                            onClick={() => diagnosticsCommandMutation.mutate("models")}
-                            className="px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-accent/20 hover:border-accent/40 text-muted hover:text-fg transition-colors whitespace-nowrap cursor-pointer"
-                            title="List engine models"
-                          >
-                            agy models
-                          </button>
-                          <button
-                            type="button"
-                            disabled={diagnosticsCommandMutation.isPending}
-                            onClick={() => diagnosticsCommandMutation.mutate("stats")}
-                            className="px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-accent/20 hover:border-accent/40 text-muted hover:text-fg transition-colors whitespace-nowrap cursor-pointer"
-                            title="Inspect live container stats"
-                          >
-                            docker stats
-                          </button>
-                          <button
-                            type="button"
-                            disabled={diagnosticsCommandMutation.isPending}
-                            onClick={() => diagnosticsCommandMutation.mutate("token")}
-                            className="px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-accent/20 hover:border-accent/40 text-muted hover:text-fg transition-colors whitespace-nowrap cursor-pointer"
-                            title="Audit OAuth token in vault"
-                          >
-                            Audit Vault Token
-                          </button>
-                          <button
-                            type="button"
-                            disabled={diagnosticsCommandMutation.isPending}
-                            onClick={() => diagnosticsCommandMutation.mutate("ping")}
-                            className="px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-accent/20 hover:border-accent/40 text-muted hover:text-fg transition-colors whitespace-nowrap cursor-pointer"
-                            title="Run loopback ping benchmark"
-                          >
-                            Benchmark Ping
-                          </button>
-                        </div>
-                        {/* Filter Bar */}
-                        <div className="flex items-center justify-between gap-2 flex-wrap text-[10px]">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {(["ALL", "INFO", "EXEC", "AUTH", "STDOUT", "ERRORS"] as const).map((lvl) => (
-                              <button
-                                key={lvl}
-                                type="button"
-                                onClick={() => setLogFilter(lvl)}
-                                className={cn(
-                                  "px-2 py-0.5 rounded font-mono text-[9px] uppercase font-semibold transition-all cursor-pointer",
-                                  logFilter === lvl
-                                    ? "bg-accent text-white"
-                                    : "bg-white/5 text-subtle hover:text-fg hover:bg-white/10"
-                                )}
-                              >
-                                {lvl}
-                              </button>
-                            ))}
-                          </div>
-
-                          <div className="relative w-44">
-                            <Search className="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-subtle" />
-                            <Input
-                              value={logSearchQuery}
-                              onChange={(e) => setLogSearchQuery(e.target.value)}
-                              placeholder="Filter logs..."
-                              className="text-[10px] h-6 pl-6 py-0 font-mono bg-black/60 border-white/15 text-fg"
-                            />
-                          </div>
-                        </div>
-
-                        {/* Terminal Body */}
-                        <div className="font-mono text-[10.5px] max-h-56 overflow-y-auto space-y-1 select-all p-2 rounded bg-black/90 border border-white/5">
-                          {displayedInstallLogs.length > 0 ? (
-                            displayedInstallLogs.map((logLine, idx) => {
-                              const isExec = logLine.includes("[EXEC]");
-                              const isAuth = logLine.includes("[AUTH]");
-                              const isInfo = logLine.includes("[INFO]");
-                              const isDebug = logLine.includes("[DEBUG]");
-                              const isWarn = logLine.includes("[WARN]");
-                              const isError =
-                                logLine.includes("[ERROR]") ||
-                                logLine.includes("[STDERR]") ||
-                                logLine.includes("fail") ||
-                                logLine.includes("Error");
-                              const isStdout = logLine.includes("[STDOUT]");
-
-                              return (
-                                <div
-                                  key={idx}
-                                  className="leading-snug break-all flex items-start gap-2 hover:bg-white/5 p-0.5 rounded"
-                                >
-                                  <span className="text-subtle/50 select-none w-5 text-right shrink-0 text-[9px]">
-                                    {idx + 1}
-                                  </span>
-                                  <span
-                                    className={cn(
-                                      "grow font-mono",
-                                      isError && "text-rose-400 font-semibold",
-                                      isExec && "text-purple-300 font-medium",
-                                      isAuth && "text-amber-300 font-medium",
-                                      isStdout && "text-green-300",
-                                      isWarn && "text-yellow-300",
-                                      isDebug && "text-subtle/90",
-                                      isInfo && "text-emerald-300",
-                                      !isError &&
-                                        !isExec &&
-                                        !isAuth &&
-                                        !isStdout &&
-                                        !isWarn &&
-                                        !isDebug &&
-                                        !isInfo &&
-                                        "text-fg/90"
-                                    )}
-                                  >
-                                    {logLine}
-                                  </span>
-                                </div>
-                              );
-                            })
-                          ) : (
-                            <div className="text-subtle text-[11px] py-3 text-center">
-                              {realInstallLogs.length === 0
-                                ? 'Click "Run Sandbox Installation" or "Execute Fresh Re-Install" to start the diagnostic stream...'
-                                : "No logs match the selected filter."}
-                            </div>
-                          )}
-                          <div ref={terminalBottomRef} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Container Vault Credential Status */}
-                  {configModalItem.id === "agy_agent" && detectedLocalSession?.available && (
-                    <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-emerald-400 text-xs flex items-center gap-1.5">
-                          <CheckCircle2 className="size-3.5" />
-                          Container Vault Credential Active
-                        </div>
-                        <div className="text-[11px] text-subtle mt-0.5 font-mono">
-                          Vault Token: {detectedLocalSession.tokenPreview} (Volume: aie-agent-vault)
-                        </div>
-                      </div>
-                      <Badge className="text-[10px] text-emerald-400 border border-emerald-500/40 bg-emerald-500/15">
-                        Active in Container
-                      </Badge>
-                    </div>
-                  )}
-
-                  {/* Step 3: Google OAuth Dynamic PKCE Authentication Portal */}
-                  <div className="p-3.5 rounded-xl border border-accent/20 bg-accent/5 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
-                        <Shield className="size-3.5 text-accent" />
-                        Google OAuth Authorization Portal (PKCE Flow)
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Badge className="text-[10px] border border-emerald-500/30 text-emerald-400 font-mono">
-                          Dynamic S256 PKCE
-                        </Badge>
-                        <button
-                          type="button"
-                          onClick={() => setAgyOAuthSession(generateAgyOAuthSession())}
-                          className="p-1 rounded hover:bg-accent/10 text-accent text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
-                          title="Generate fresh PKCE code challenge and session state"
-                        >
-                          <RefreshCw className="size-3" />
-                          <span>Refresh Session</span>
-                        </button>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted leading-relaxed">
-                      Authenticate with your Google account via the official authorization portal to onboard your containerized agent:
-                    </p>
-
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 pt-0.5">
-                      <a
-                        href={
-                          configModalItem.id === "agy_agent"
-                            ? (agyOAuthSession?.authUrl || generateAgyOAuthUrl())
-                            : configModalItem.authUrl || generateAgyOAuthUrl()
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white font-medium text-xs hover:bg-accent/90 transition-colors shadow-xs cursor-pointer"
-                      >
-                        <ExternalLink className="size-3" />
-                        Open Google OAuth Authorization Portal
-                      </a>
-                      {agyOAuthSession?.state && (
-                        <span className="text-[10px] font-mono text-subtle truncate max-w-[200px]" title={`Dynamic Session State: ${agyOAuthSession.state}`}>
-                          state: {agyOAuthSession.state.slice(0, 10)}...
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Step 4: Authorization Code or API Key */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-subtle font-medium flex items-center gap-1">
-                        <span>Google OAuth Authorization Code (or Token)</span>
-                        <span className="text-red-400 font-bold">*</span>
-                      </label>
-                      <span className="text-[10px] text-accent font-mono">
-                        {isReconfigMode || configModalItem.status !== "installed" ? "Mandatory for Installation" : "Configured in Container"}
-                      </span>
-                    </div>
-                    <Input
-                      placeholder="Paste authorization code (starts with 4/0...) or callback URL / token..."
-                      value={authTokenInput}
-                      onChange={(e) => setAuthTokenInput(e.target.value)}
-                      className={cn(
-                        "font-mono text-xs bg-bg-subtle",
-                        isMandatoryAuthMissing && "border-amber-500/60 focus:border-amber-500"
-                      )}
-                    />
-                    <p className="text-[11px] text-subtle mt-1">
-                      Copy the code displayed by Google after sign-in (e.g. <code className="font-mono text-accent">4/0...</code>) and paste it here. The container exchanges it directly with Google's token endpoint and securely injects credentials into the container vault volume.
-                    </p>
-                    {isMandatoryAuthMissing && (
-                      <p className="text-[11px] text-amber-400 mt-1 flex items-center gap-1">
-                        <AlertCircle className="size-3 shrink-0" />
-                        Authorization code is required to finalize installation or re-config.
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Target Model Selection */}
-                  <div>
-                    <label className="block text-subtle font-medium mb-1">Default Model</label>
-                    <select
-                      value={selectedModelInput || configModalItem.supportedModels[0]}
-                      onChange={(e) => setSelectedModelInput(e.target.value)}
-                      className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs text-fg focus:border-accent focus:outline-none"
-                    >
-                      {configModalItem.supportedModels.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                <AgentOnboardingStepper
+                  agentId={configModalItem.id}
+                  onCompleted={() => {
+                    queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
+                    queryClient.invalidateQueries({ queryKey: ["app_settings"] });
+                  }}
+                />
               )}
 
               {/* Direct API Provider Configuration */}
@@ -2153,42 +1611,28 @@ function MarketplacePage() {
               {/* Modal Footer */}
               <div className="mt-6 pt-4 border-t border-border flex items-center justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setConfigModalItem(null)} className="text-xs">
-                  Cancel
+                  {configModalItem.type === "cli_agent" ? "Close" : "Cancel"}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  disabled={
-                    configureMutation.isPending ||
-                    realInstallMutation.isPending ||
-                    (configModalItem.type === "cli_agent" && isMandatoryAuthMissing)
-                  }
-                  onClick={() => {
-                    const configPayload = {
-                      apiKey: apiKeyInput || undefined,
-                      authToken: authTokenInput || undefined,
-                      selectedModel: selectedModelInput || configModalItem.supportedModels[0],
-                      codeVerifier: agyOAuthSession?.codeVerifier || (typeof window !== "undefined" ? window.sessionStorage?.getItem("aie_oauth_verifier") || undefined : undefined),
-                      lastReconfiguredAt: isReconfigMode ? new Date().toISOString() : undefined,
-                    };
-
-                    // Save configuration or complete installation
-                    configureMutation.mutate({
-                      id: configModalItem.id,
-                      config: configPayload,
-                    });
-                  }}
-                  className={cn(
-                    "text-xs bg-accent text-white font-medium",
-                    isMandatoryAuthMissing && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  {isReconfigMode
-                    ? "Complete Re-Configuration"
-                    : configModalItem.status === "installed"
-                    ? "Save Configuration"
-                    : "Complete & Install"}
-                </Button>
+                {configModalItem.type === "api_provider" && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={configureMutation.isPending || !apiKeyInput.trim()}
+                    onClick={() => {
+                      const configPayload = {
+                        apiKey: apiKeyInput || undefined,
+                        selectedModel: selectedModelInput || configModalItem.supportedModels[0],
+                      };
+                      configureMutation.mutate({
+                        id: configModalItem.id,
+                        config: configPayload,
+                      });
+                    }}
+                    className="text-xs bg-accent text-white font-medium"
+                  >
+                    {configModalItem.status === "installed" ? "Save Configuration" : "Save & Activate"}
+                  </Button>
+                )}
               </div>
             </div>
           </div>

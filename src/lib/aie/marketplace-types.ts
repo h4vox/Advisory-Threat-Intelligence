@@ -59,6 +59,18 @@ export type IntegrationItem = {
     lastReconfiguredAt?: string;
     logs?: string[];
     isConfigured?: boolean;
+    onboardingStep?: any;
+    onboardingState?: any;
+    authMethod?: string;
+    authUrl?: string;
+    authState?: string;
+    codeVerifier?: string;
+    agentVersion?: string;
+    lastLatencyMs?: number;
+    lastError?: string;
+    lastUpdated?: string;
+    onboardingHistory?: any[];
+    [key: string]: any;
   };
 };
 
