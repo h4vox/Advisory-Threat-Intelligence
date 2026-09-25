@@ -42,6 +42,7 @@ import {
   mongoInsertCrawlJobItem,
   mongoInsertDiscoveredSource,
   mongoInsertGraphEdge,
+  mongoInsertGraphEdgesBatch,
   mongoInsertIngestEvent,
   mongoInsertReport,
   mongoListReports,
@@ -660,8 +661,8 @@ export async function executeCrawlJob(
                   await mongoInsertDiscoveredSource(src);
                   newSourcesCount++;
                 }
-                for (const edge of graphEdges) {
-                  await mongoInsertGraphEdge({ ...edge, jobId });
+                if (graphEdges.length > 0) {
+                  await mongoInsertGraphEdgesBatch(graphEdges.map((edge) => ({ ...edge, jobId })));
                 }
               }
 
@@ -1098,8 +1099,8 @@ export async function executeCrawlJob(
                     await mongoInsertDiscoveredSource(newSrc);
                     newSourcesCount++;
                   }
-                  for (const edge of graphEdges) {
-                    await mongoInsertGraphEdge({ ...edge, jobId });
+                  if (graphEdges.length > 0) {
+                    await mongoInsertGraphEdgesBatch(graphEdges.map((edge) => ({ ...edge, jobId })));
                   }
                 }
 
@@ -1330,8 +1331,8 @@ export async function executeCrawlJob(
               await mongoInsertDiscoveredSource(newSrc);
               newSourcesCount++;
             }
-            for (const edge of graphEdges) {
-              await mongoInsertGraphEdge({ ...edge, jobId });
+            if (graphEdges.length > 0) {
+              await mongoInsertGraphEdgesBatch(graphEdges.map((edge) => ({ ...edge, jobId })));
             }
           }
 

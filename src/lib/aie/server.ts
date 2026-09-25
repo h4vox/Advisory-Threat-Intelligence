@@ -335,6 +335,13 @@ async function ensureSeeded() {
           }
         }
         await mongoGetCrawlConfig();
+        // Warm the report and crawler state caches in the background so initial page loads are instant (<10ms)
+        Promise.all([
+          mongoListReports().catch(() => []),
+          mongoGetCrawlerState().catch(() => null),
+        ]).then(() => {
+          console.log(`[db] Cache pre-warmed on server boot (${Date.now() - t0}ms)`);
+        }).catch(() => {});
         hasSeeded = true;
         console.log(`[db] MongoDB Atlas storage initialized in ${Date.now() - t0}ms`);
         return;

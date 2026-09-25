@@ -48,6 +48,8 @@ const STRICT_REJECTED_HOSTS = new Set([
   "edit.dhs.gov",
   "webbook.nist.gov",
   "arxiv.org",
+  "justice.gov",
+  "myaccount.uscis.gov",
 ]);
 
 // Index / Non-resource URL patterns to reject
@@ -112,6 +114,12 @@ const GENERIC_PATH_PATTERNS = [
   /\/culture-at-speed/i,
   /\/skanowanie/i,
   /\/publications\/(?:conference-paper|project-description)/i,
+  /\/documentation(?:\/.*)?$/i,
+  /\/company(?:\/.*)?$/i,
+  /\/accessibility/i,
+  /\/raport-roczny/i,
+  /\/annual-report/i,
+  /\/press-releases?\/?$/i,
 ];
 
 // Single resource URL indicators

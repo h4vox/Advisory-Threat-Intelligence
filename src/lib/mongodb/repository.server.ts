@@ -37,6 +37,7 @@ import {
   DEFAULT_PLAYBOOKS,
 } from "../aie/marketplace-registry";
 import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
+import { isCandidateResourceUrl } from "../aie/qualification";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -209,6 +210,9 @@ export async function ensureMongoIndexes() {
         { key: { docType: 1, priority: 1 }, background: true },
         { key: { docType: 1, createdAt: -1 }, background: true },
         { key: { docType: 1, domain: 1 }, background: true },
+        { key: { docType: 1, publisher: 1, decision: 1 }, background: true },
+        { key: { docType: 1, from: 1, to: 1, relationship: 1 }, background: true },
+        { key: { docType: 1, status: 1, createdAt: -1 }, background: true },
       ]);
 
       // Ensure Full-Text Search index across content, titles, attack chains, and TTPs
@@ -1367,6 +1371,21 @@ export async function mongoListRecentCrawlJobItems(limit = 25): Promise<CrawlJob
 
 export async function mongoUpsertDiscoveredResource(resource: Partial<DiscoveredResource> & { canonicalUrl: string }): Promise<void> {
   if (!isMongoConfigured()) return;
+  const targetUrl = resource.canonicalUrl || resource.url || "";
+  if (!isCandidateResourceUrl(targetUrl).isResource) {
+    return; // Drop non-CTI URLs, marketing, commercial trials, and search filters before saving
+  }
+  const title = (resource.title || "").toLowerCase();
+  if (
+    title.includes("free trial") ||
+    title.includes("free 30-day") ||
+    title.includes("raport roczny") ||
+    title.includes("accessibility statement") ||
+    title.includes("site map") ||
+    title.includes("truRisk platform")
+  ) {
+    return; // Drop marketing trials, accessibility statements, and non-CTI documentation
+  }
   try {
     const col = await getThreatIntelCollection();
     const assignedId = resource.id || `dsc_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -1386,7 +1405,6 @@ export async function mongoUpsertDiscoveredResource(resource: Partial<Discovered
       },
       { upsert: true },
     );
-    invalidateCrawlerStateCache();
   } catch (err) {
     console.warn("[mongodb] mongoUpsertDiscoveredResource error:", err);
   }
@@ -1491,8 +1509,23 @@ export async function mongoListRecentIngestEvents(limit = 8): Promise<IngestEven
 // Discovered Sources & Graph Edges
 // ---------------------------------------------------------------------------
 
+const NON_CTI_DOMAINS = new Set([
+  "uscis.gov",
+  "ice.gov",
+  "e-verify.gov",
+  "edit.dhs.gov",
+  "webbook.nist.gov",
+  "arxiv.org",
+  "justice.gov",
+  "myaccount.uscis.gov",
+]);
+
 export async function mongoInsertDiscoveredSource(source: DiscoveredSourceRecord) {
   if (!isMongoConfigured()) return;
+  const dom = (source.domain || "").toLowerCase().replace(/^www\./, "");
+  if (NON_CTI_DOMAINS.has(dom) || (dom.endsWith(".gov") && !dom.includes("cisa") && !dom.includes("ncsc") && !dom.includes("cyber"))) {
+    return;
+  }
   try {
     const col = await getThreatIntelCollection();
     const assignedId = source.id || `src_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -1514,7 +1547,6 @@ export async function mongoInsertDiscoveredSource(source: DiscoveredSourceRecord
       },
       { upsert: true },
     );
-    invalidateCrawlerStateCache();
   } catch (err) {
     console.warn("[mongodb] mongoInsertDiscoveredSource error:", err);
   }
@@ -1949,21 +1981,48 @@ export async function mongoValidateDiscoveredSource(
 
 export async function mongoInsertGraphEdge(edge: Omit<DiscoveryGraphEdge, "id" | "createdAt">) {
   if (!isMongoConfigured()) return;
-  const col = await getThreatIntelCollection();
-  const id = `edge_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  await col.updateOne(
-    { docType: "graph_edge", from: edge.from, to: edge.to, relationship: edge.relationship },
-    {
-      $set: {
-        docType: "graph_edge",
-        id,
-        ...edge,
-        createdAt: new Date().toISOString(),
+  try {
+    const col = await getThreatIntelCollection();
+    const id = `edge_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    await col.updateOne(
+      { docType: "graph_edge", from: edge.from, to: edge.to, relationship: edge.relationship },
+      {
+        $set: {
+          docType: "graph_edge",
+          id,
+          ...edge,
+          createdAt: new Date().toISOString(),
+        },
       },
-    },
-    { upsert: true },
-  );
-  invalidateCrawlerStateCache();
+      { upsert: true },
+    );
+  } catch (err) {
+    console.warn("[mongodb] mongoInsertGraphEdge error:", err);
+  }
+}
+
+export async function mongoInsertGraphEdgesBatch(edges: Omit<DiscoveryGraphEdge, "id" | "createdAt">[]) {
+  if (!isMongoConfigured() || edges.length === 0) return;
+  try {
+    const col = await getThreatIntelCollection();
+    const ops = edges.map((edge) => ({
+      updateOne: {
+        filter: { docType: "graph_edge", from: edge.from, to: edge.to, relationship: edge.relationship },
+        update: {
+          $set: {
+            docType: "graph_edge",
+            id: `edge_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`,
+            ...edge,
+            createdAt: new Date().toISOString(),
+          },
+        },
+        upsert: true,
+      },
+    }));
+    await col.bulkWrite(ops, { ordered: false });
+  } catch (err) {
+    console.warn("[mongodb] mongoInsertGraphEdgesBatch error:", err);
+  }
 }
 
 export async function mongoListGraphEdges(limit = 60): Promise<DiscoveryGraphEdge[]> {

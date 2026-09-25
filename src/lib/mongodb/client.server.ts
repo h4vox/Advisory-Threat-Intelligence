@@ -91,13 +91,13 @@ export async function getMongoClient(): Promise<MongoClient> {
 
   const tryConnect = async (targetUri: string): Promise<MongoClient> => {
     const client = new MongoClient(targetUri, {
-      maxPoolSize: 25,
-      minPoolSize: 2,
+      maxPoolSize: 50,
+      minPoolSize: 5,
       serverSelectionTimeoutMS: 15000,
       connectTimeoutMS: 15000,
       socketTimeoutMS: 45000,
       maxIdleTimeMS: 120000,
-      waitQueueTimeoutMS: 15000,
+      waitQueueTimeoutMS: 30000,
       retryWrites: true,
       retryReads: true,
       tls: true,
