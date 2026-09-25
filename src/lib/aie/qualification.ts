@@ -46,6 +46,8 @@ const STRICT_REJECTED_HOSTS = new Set([
   "ice.gov",
   "e-verify.gov",
   "edit.dhs.gov",
+  "webbook.nist.gov",
+  "arxiv.org",
 ]);
 
 // Index / Non-resource URL patterns to reject
@@ -70,7 +72,7 @@ const GENERIC_PATH_PATTERNS = [
   /\/latest-publications\/?$/i,
   /\/white-papers\/?$/i,
   /\/tips-advice\/?$/i,
-  /\/business-security\/?$/i,
+  /\/business-security(?:\/.*)?$/i,
   /\/eset-research\/?$/i,
   /\/resources\/?$/i,
   /\/projects\/?$/i,
@@ -100,6 +102,16 @@ const GENERIC_PATH_PATTERNS = [
   /\/news\/?$/i,
   /\/en-us\/security\/?$/i,
   /\/en-us\/security\/blog\/?$/i,
+  /\/free-trial/i,
+  /\/apps(?:\/.*)?$/i,
+  /\/forms(?:\/.*)?$/i,
+  /\/demo(?:\/.*)?$/i,
+  /\/products(?:\/.*)?$/i,
+  /\/solutions(?:\/.*)?$/i,
+  /\/we-live-progress/i,
+  /\/culture-at-speed/i,
+  /\/skanowanie/i,
+  /\/publications\/(?:conference-paper|project-description)/i,
 ];
 
 // Single resource URL indicators
@@ -123,6 +135,11 @@ export function isCandidateResourceUrl(
     // 1. Hard-reject known non-CTI hosts
     if (STRICT_REJECTED_HOSTS.has(host) || (host.endsWith(".dhs.gov") && !host.includes("cisa"))) {
       return { isResource: false, reason: `Non-CTI administrative host (${host})` };
+    }
+
+    // 1b. Reject print-view duplicates and search filter parameter URLs
+    if (/\?pdf=print/i.test(url.search) || /\?f%5B/i.test(url.search) || /\?category=/i.test(url.search) || /\?filter=/i.test(url.search)) {
+      return { isResource: false, reason: "Print view parameter duplicate or search filter listing" };
     }
 
     // 2. Reject negative / generic / index patterns (even if from RSS feed)

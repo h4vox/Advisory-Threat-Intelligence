@@ -89,6 +89,11 @@ const JUNK_URL_SUBSTRINGS = [
   "/we-live-progress",
   "/publications/conference-paper",
   "/publications/project-description",
+  "/business-security",
+  "/business",
+  "/products",
+  "/solutions",
+  "/skanowanie",
 ];
 
 // Title indicators of pure non-report / aggregator / marketing pages
@@ -133,6 +138,21 @@ const JUNK_TITLE_PATTERNS = [
   /^intelligence center$/i,
   /sent (?:another )?letter|certified letter/i,
   /cybersecurity ir workshop/i,
+  /microsoft defender—cybersecurity solutions/i,
+  /threat intelligence: driving the future/i,
+  /all intel - the dfir report/i,
+  /the dfir report \| active defense/i,
+  /dfir threat intelligence \| detect, track/i,
+  /the impact of ransomware in the healthcare/i,
+  /should you care about an “?ai slowdown/i,
+  /is cyber missing the marque/i,
+  /inside the inbox: why cybercriminals/i,
+  /cyber readiness for smbs/i,
+  /the smb cybersecurity squeeze/i,
+  /are cybercriminals hacking your systems – or just logging in/i,
+  /state-aligned actors are increasingly deploying ransomware/i,
+  /^sprawdzamybezpieczeństwo polskiego internetu/i,
+  /^\?pdf=print/i,
 ];
 
 export function evaluateReportQuality(report) {
@@ -196,6 +216,13 @@ export function evaluateReportQuality(report) {
     /#videointerview/i.test(title)
   ) {
     urlReason = "Multimedia / Podcast / Keynote video replay";
+  }
+  // 3b. Query parameters indicating print-view duplicates or search filter listing pages
+  else if (/\?pdf=print/i.test(url) || /^\?pdf=print/i.test(title)) {
+    urlReason = "Print view parameter duplicate URL";
+  }
+  else if (/\?f%5B|\?category=|\?filter=/i.test(url)) {
+    urlReason = "Search filter / listing page query URL";
   }
 
   if (urlReason) {
@@ -531,6 +558,27 @@ async function runAudit() {
       );
       if (titleFix.modifiedCount > 0) {
         console.log(`Updated title for report rpt_7549af5342c144df to: "Autonomiczny proces fuzzingu pod nadzorem LLM"`);
+      }
+
+      // Dynamically resolve any other misnamed CERT Polska titles from their URL slug
+      const certSocialReports = await col
+        .find({
+          docType: "report",
+          title: /^cert polska w social mediach$/i,
+        })
+        .toArray();
+
+      for (const csr of certSocialReports) {
+        const slugMatch = (csr.url || "").match(/\/posts\/\d+\/\d+\/([^/]+)/);
+        if (slugMatch) {
+          const rawSlug = slugMatch[1].replace(/-/g, " ");
+          const cleanTitle = rawSlug
+            .split(" ")
+            .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(" ");
+          await col.updateOne({ id: csr.id }, { $set: { title: cleanTitle } });
+          console.log(`Updated title for report ${csr.id} to: "${cleanTitle}"`);
+        }
       }
     } else {
       console.log("No documents matched prune criteria.");

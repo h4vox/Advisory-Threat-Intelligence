@@ -352,8 +352,8 @@ export function extractOutlinksAndCitations(
         priorityScore += 0.25;
       }
 
-      // Hard skip for marketing, commercial trials, product app pages, and index-heavy paths
-      if (/tag\/|category\/|author\/|webinar|event|news-release|press-release|free-trial|trial|request-demo|demo|\/apps\/|\/forms\/whitepapers|we-live-progress|culture-at-speed|skanowanie/i.test(cleanUrl)) {
+      // Hard skip for marketing, commercial trials, product app pages, store paths, print duplicates, and index-heavy paths
+      if (/tag\/|category\/|author\/|webinar|event|news-release|press-release|free-trial|trial|request-demo|demo|\/apps\/|\/forms\/whitepapers|we-live-progress|culture-at-speed|skanowanie|\?pdf=print|\?f%5B|\/products\/|\/solutions\/|\/pricing\/|\/business-security\/|\/business\//i.test(cleanUrl)) {
         continue;
       }
 
