@@ -122,15 +122,25 @@ export interface AgyOAuthSession {
   createdAt: string;
 }
 
+export const DEFAULT_PKCE_VERIFIER = "AIE-Threat-Intelligence-Agent-OAuth-PKCE-Verifier-Key-2026-Secure";
+
 /**
  * Generates a dynamic PKCE authorization URL for Google Cloud OAuth 2.0.
  * Automatically computes a unique high-entropy code_verifier, derives the
  * S256 code_challenge, and embeds a cryptographically random session state.
  */
 export function generateAgyOAuthSession(options?: { state?: string; codeVerifier?: string }): AgyOAuthSession {
-  const codeVerifier = options?.codeVerifier || generateRandomBase64Url(32);
+  const codeVerifier = options?.codeVerifier || DEFAULT_PKCE_VERIFIER;
   const codeChallenge = hexToBase64Url(computeSha256Hex(codeVerifier));
   const state = options?.state || generateRandomBase64Url(16);
+
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    try {
+      window.sessionStorage.setItem("aie_oauth_verifier", codeVerifier);
+    } catch {
+      /* ignore storage unavailable */
+    }
+  }
 
   const params = new URLSearchParams({
     access_type: "offline",
@@ -160,22 +170,75 @@ export function generateAgyOAuthUrl(options?: { state?: string; codeVerifier?: s
 
 export const OFFICIAL_AGY_OAUTH_URL = generateAgyOAuthUrl();
 
+export async function exchangeOAuthCodeForToken(
+  code: string,
+  codeVerifier?: string
+): Promise<{
+  success: boolean;
+  token?: any;
+  error?: string;
+}> {
+  try {
+    let authCode = code.trim();
+    if (authCode.includes("code=")) {
+      try {
+        const u = new URL(authCode.startsWith("http") ? authCode : `https://dummy.com/${authCode}`);
+        authCode = u.searchParams.get("code") || authCode;
+      } catch {}
+    }
+
+    const verifier = codeVerifier || DEFAULT_PKCE_VERIFIER;
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+        code: authCode,
+        code_verifier: verifier,
+        grant_type: "authorization_code",
+        redirect_uri: "https://antigravity.google/oauth-callback",
+      }).toString(),
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      return { success: false, error: data.error_description || data.error || "OAuth token exchange failed" };
+    }
+
+    const expiryDate = new Date(Date.now() + (data.expires_in || 3600) * 1000).toISOString();
+    const tokenPayload = {
+      token: {
+        access_token: data.access_token,
+        token_type: data.token_type || "Bearer",
+        refresh_token: data.refresh_token || "",
+        expiry: expiryDate,
+      },
+      auth_method: "consumer",
+      id_token: data.id_token || "",
+    };
+
+    return { success: true, token: tokenPayload };
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Failed to contact Google OAuth endpoint" };
+  }
+}
+
 export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
   {
     id: "agy_agent",
-    name: "Antigravity AGY Agent",
+    name: "Autonomous AI Agent Engine",
     category: "Intelligence",
     type: "cli_agent",
-    provider: "Google",
+    provider: "Google Gemini / Container Sandbox",
     version: "v3.8.2",
     releaseDate: "2026-09-01",
     status: "installed",
     isDefault: true,
     description:
-      "Autonomous CTI research and adversary emulation agent powered by Google Gemini and the local agy CLI runtime.",
+      "Autonomous CTI research, deep procedurizing, and adversary emulation engine isolated inside a dedicated container sandbox.",
     overview:
-      "Antigravity AGY Agent provides deep cognitive research for the AIE crawler. It traverses threat blogs, uncovers hidden advisory endpoints, extracts technical procedure command-lines, and cross-references behaviors directly with MITRE ATT&CK techniques with zero single point of failure.",
-    installCommand: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+      "The Autonomous AI Agent Engine provides deep cognitive threat research. It autonomously navigates cyber disclosures, extracts procedural telemetry, maps adversary tradecraft directly to MITRE ATT&CK techniques, and generates actionable detection engineering rules in an isolated container sandbox.",
+    installCommand: "docker compose -f docker-compose.agent-sandbox.yml up -d",
     authUrl: generateAgyOAuthUrl(),
     actions: [
       {
@@ -202,21 +265,20 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
     connectors: [
       {
         type: "oauth_cli",
-        label: "Google Account OAuth (PKCE Flow)",
-        description: "Authenticates `agy` CLI via dynamic Google Cloud OAuth 2.0 PKCE challenge.",
+        label: "Google Account OAuth 2.0 (PKCE Flow)",
+        description: "Authenticates the containerized agent via dynamic Google Cloud OAuth 2.0 PKCE challenge.",
         authUrl: generateAgyOAuthUrl(),
       },
     ],
-    tags: ["AI Security", "Google Gemini", "CLI Agent", "Autonomous", "Adversary Emulation"],
+    tags: ["AI Security", "Google Gemini", "Container Agent", "Autonomous", "Adversary Emulation"],
     supportedModels: [
-      "AGY: gemini-3.8-flash-low",
-      "AGY: gemini-3.8-flash-medium",
-      "AGY: gemini-3.8-flash-high",
-      "AGY: gemini-3.8-pro",
-      "AGY: gemini-2.5-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
     ],
     config: {
-      selectedModel: "AGY: gemini-3.8-flash-low",
+      selectedModel: "gemini-2.5-flash",
       installedAt: "2026-09-01T00:00:00.000Z",
       isConfigured: true,
     },

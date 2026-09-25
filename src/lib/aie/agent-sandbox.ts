@@ -334,10 +334,6 @@ export async function ensureAgentSandboxRunning(): Promise<{
           `--name ${CONTAINER_NAME}`,
           "--restart unless-stopped",
           "-v aie-agent-vault:/root/.gemini",
-          existsSync(LINUX_AGY_PATH) ? `-v ${LINUX_AGY_PATH}:/usr/local/bin/agy:ro` : "",
-          existsSync(OAUTH_TOKEN_PATH)
-            ? `-v ${OAUTH_TOKEN_PATH}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro`
-            : "",
           "-e AGENT_ENV=isolated_sandbox",
           "-e PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin",
           image,
@@ -381,6 +377,60 @@ export async function ensureAgentSandboxRunning(): Promise<{
 // ---------------------------------------------------------------------------
 // High-Fidelity Process Execution Engine with Step-by-Step Logging
 // ---------------------------------------------------------------------------
+export function injectContainerOAuthToken(tokenData: any): { success: boolean; message: string } {
+  try {
+    const raw = typeof tokenData === "string" ? tokenData : JSON.stringify(tokenData, null, 2);
+    execSync(
+      `docker exec -i ${CONTAINER_NAME} sh -c "mkdir -p /root/.gemini/antigravity-cli && cat > /root/.gemini/antigravity-cli/antigravity-oauth-token && chmod 600 /root/.gemini/antigravity-cli/antigravity-oauth-token"`,
+      {
+        input: raw,
+        encoding: "utf-8",
+        timeout: 10000,
+      }
+    );
+    appendSandboxLog("AUTH", "auth", `OAuth credentials successfully written to container vault.`);
+    return { success: true, message: "Token stored in container vault." };
+  } catch (err: any) {
+    appendSandboxLog("ERROR", "auth", `Failed to write token into container: ${err?.message}`);
+    return { success: false, message: err?.message || "Failed to write token into container." };
+  }
+}
+
+export function checkContainerOAuthToken(): {
+  exists: boolean;
+  tokenPreview?: string;
+  expiry?: string;
+  hasRefreshToken?: boolean;
+} {
+  try {
+    const out = execSync(
+      `docker exec ${CONTAINER_NAME} cat /root/.gemini/antigravity-cli/antigravity-oauth-token`,
+      {
+        encoding: "utf-8",
+        timeout: 4000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    ).trim();
+    if (out) {
+      try {
+        const parsed = JSON.parse(out);
+        const token = parsed.token?.access_token || (typeof parsed === "string" ? parsed : "");
+        return {
+          exists: true,
+          tokenPreview: token ? `${token.slice(0, 10)}...${token.slice(-6)}` : "Verified",
+          expiry: parsed.token?.expiry,
+          hasRefreshToken: Boolean(parsed.token?.refresh_token),
+        };
+      } catch {
+        return { exists: true, tokenPreview: `${out.slice(0, 10)}...` };
+      }
+    }
+  } catch {
+    /* container not running or token file missing */
+  }
+  return { exists: false };
+}
+
 export function executeInAgentSandbox(
   args: string[],
   options?: { timeoutMs?: number; input?: string; category?: LogCategory }

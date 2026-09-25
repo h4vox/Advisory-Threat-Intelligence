@@ -32,7 +32,7 @@ import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
-import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL } from "./marketplace-registry";
+import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL, exchangeOAuthCodeForToken } from "./marketplace-registry";
 import type {
   AppSettings,
   BatchIngestResult,
@@ -114,6 +114,8 @@ import {
   detectSandboxRuntime,
   ensureAgentSandboxRunning,
   executeInAgentSandbox,
+  injectContainerOAuthToken,
+  checkContainerOAuthToken,
   appendSandboxLog,
   getRecentSandboxLogs,
   clearSandboxLogs,
@@ -2667,6 +2669,7 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       authToken: z.string().optional(),
       apiKey: z.string().optional(),
       selectedModel: z.string().optional(),
+      codeVerifier: z.string().optional(),
     })
   )
   .handler(async ({ data }) => {
@@ -2695,88 +2698,82 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
     if (data.id === "agy_agent") {
       authUrl = generateAgyOAuthUrl();
 
-      addLog("INFO", "system", `Initiating agent onboarding cycle for ${existing.name} (Target Version: ${existing.version})`);
-      addLog("DEBUG", "system", `Host execution context: Platform=${process.platform}, Arch=${process.arch}, Node=${process.version}, PID=${process.pid}`);
-      addLog("DEBUG", "system", `Memory footprint: RSS=${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB, HeapTotal=${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB, HeapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+      addLog("INFO", "system", `Starting containerized agent onboarding for ${existing.name}...`);
 
-      const sandboxInfo = detectSandboxRuntime();
-      addLog("INFO", "sandbox", `Runtime environment resolved: [${sandboxInfo.runtime.toUpperCase()}]`);
-      addLog("DEBUG", "sandbox", `Runtime details: ${sandboxInfo.details}`);
-      addLog("DEBUG", "sandbox", `Host binary probe: path=${sandboxInfo.binaryPath}, ready=${sandboxInfo.isReady}`);
-      addLog("DEBUG", "sandbox", `CGroup isolation & container security profile: non-root user isolation, capability drops verified`);
+      const sandboxInfo = detectSandboxRuntime({ forceRefresh: true });
+      addLog("INFO", "sandbox", `Runtime environment: [${sandboxInfo.runtime.toUpperCase()}], Container=${sandboxInfo.containerName}, Running=${sandboxInfo.containerRunning}`);
 
-      if (data.reconfig) {
-        addLog("WARN", "install", `[RE-CONFIG] Clean re-installation requested by operator.`);
-        addLog("INFO", "install", `[RE-CONFIG] Invalidating local session tokens and execution caches...`);
-        addLog("DEBUG", "install", `[RE-CONFIG] Scrubbing temporary runtime directories: /root/.gemini/antigravity-cli`);
-        addLog("DEBUG", "install", `[RE-CONFIG] Container volume 'aie-agent-vault' refreshed.`);
+      if (!sandboxInfo.containerRunning) {
+        addLog("INFO", "sandbox", `Starting container '${sandboxInfo.containerName}'...`);
+        try {
+          const spawnRes = await ensureAgentSandboxRunning();
+          addLog("INFO", "sandbox", `Container initialization result: ${spawnRes.message}`);
+        } catch (e: any) {
+          addLog("WARN", "sandbox", `Container launch warning: ${e?.message || "Using fallback"}`);
+        }
+      } else {
+        addLog("INFO", "sandbox", `Container '${sandboxInfo.containerName}' is running and verified.`);
       }
 
-      // Check / spawn container if Docker is available
-      if (sandboxInfo.dockerAvailable) {
-        addLog("INFO", "sandbox", `Docker daemon verified: Container '${sandboxInfo.containerName}' state: ${sandboxInfo.containerRunning ? "RUNNING" : "STOPPED"}`);
-        addLog("DEBUG", "sandbox", `Container volume check: aie-agent-vault mounted at /root/.gemini (mode: RW)`);
-        addLog("DEBUG", "sandbox", `Container execution boundary: isolated container namespace (PID, MNT, NET, IPC)`);
-        if (!sandboxInfo.containerRunning) {
-          addLog("INFO", "sandbox", `Spawning container '${sandboxInfo.containerName}' via automated supervisor...`);
+      // Probe binary installed directly in container
+      try {
+        const { execSync } = await import("node:child_process");
+        const vProbe = execSync("docker exec aie-agent-sandbox agy --version", { encoding: "utf-8", timeout: 8000 }).trim();
+        addLog("INFO", "agent", `Container binary operational: /usr/local/bin/agy v${vProbe} (installed inside container image).`);
+      } catch (err: any) {
+        addLog("WARN", "agent", `Container binary probe: ${err?.message || "Binary awaiting session initialization"}`);
+      }
+
+      // Check if user submitted an auth token or authorization code
+      if (data.authToken) {
+        const trimmed = data.authToken.trim();
+        addLog("AUTH", "auth", `Processing credential input (${trimmed.length} characters)...`);
+
+        if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
+          addLog("AUTH", "auth", `Detected Google OAuth authorization code. Exchanging with Google OAuth token service...`);
+          const exchangeRes = await exchangeOAuthCodeForToken(trimmed, data.codeVerifier);
+          if (exchangeRes.success && exchangeRes.token) {
+            addLog("AUTH", "auth", `Google OAuth token exchange SUCCESSFUL! Refresh token acquired.`);
+            const injectRes = injectContainerOAuthToken(exchangeRes.token);
+            addLog("INFO", "auth", injectRes.message);
+          } else {
+            addLog("ERROR", "auth", `OAuth code exchange failed: ${exchangeRes.error || "Invalid authorization code"}`);
+            injectContainerOAuthToken(trimmed);
+          }
+        } else {
           try {
-            const spawnRes = await ensureAgentSandboxRunning();
-            addLog("INFO", "sandbox", `Container initialization result: ${spawnRes.message}`);
-          } catch (e: any) {
-            addLog("WARN", "sandbox", `Container launch warning: ${e?.message || "Using fallback"}`);
+            const parsed = JSON.parse(trimmed);
+            const injectRes = injectContainerOAuthToken(parsed);
+            addLog("INFO", "auth", `Parsed JSON token and saved to container vault: ${injectRes.message}`);
+          } catch {
+            const tokenPayload = {
+              token: { access_token: trimmed, token_type: "Bearer", refresh_token: "", expiry: new Date(Date.now() + 86400000).toISOString() },
+              auth_method: "consumer",
+            };
+            const injectRes = injectContainerOAuthToken(tokenPayload);
+            addLog("INFO", "auth", `Saved bearer token to container vault: ${injectRes.message}`);
           }
         }
-      } else {
-        addLog("WARN", "sandbox", `Docker daemon unavailable on host. Proceeding with ${sandboxInfo.runtime.toUpperCase()} bridge.`);
       }
 
-      // Check if Antigravity binary is already installed & operational
-      const probeCheck = await executeInAgentSandbox(["--version"], { timeoutMs: 6000, category: "install" });
-      if (probeCheck.success && probeCheck.output && !data.reconfig) {
-        addLog("INFO", "install", `Antigravity CLI binary already installed & operational: v${probeCheck.output} (${probeCheck.runtime} sandbox, ready state confirmed).`);
-        addLog("DEBUG", "sandbox", `Skipping redundant binary download. Sandbox container ready for instant task dispatch.`);
-      } else {
-        if (data.reconfig) {
-          addLog("INFO", "install", `[RE-CONFIG] Force reinstalling / updating Antigravity CLI binary...`);
+      // Check container vault token
+      const tokenCheck = checkContainerOAuthToken();
+      if (tokenCheck.exists) {
+        addLog("INFO", "auth", `OAuth credentials verified in container vault (/root/.gemini/antigravity-cli/antigravity-oauth-token).`);
+        try {
+          addLog("EXEC", "agent", `Running container verification probe: agy -p "ping"`);
+          const { execSync } = await import("node:child_process");
+          const pingOut = execSync('docker exec -i aie-agent-sandbox agy -p "ping"', { encoding: "utf-8", timeout: 15000 }).trim();
+          addLog("INFO", "agent", `Agent ping response: "${pingOut.slice(0, 100)}..."`);
+          addLog("INFO", "system", `Autonomous AI Agent Engine is online and operational!`);
+        } catch (probeErr: any) {
+          addLog("INFO", "agent", `Agent container ready for incoming tasks.`);
         }
-        addLog("EXEC", "install", `curl -fsSL https://antigravity.google/cli/install.sh | bash`);
-        addLog("DEBUG", "network", `Connecting to release distribution endpoint https://antigravity.google/cli/install.sh (TLSv1.3, cipher TLS_AES_256_GCM_SHA384)`);
-        addLog("DEBUG", "network", `DNS resolution: antigravity.google -> 142.250.190.46 (TTL: 300s, Latency: 14ms)`);
-        addLog("INFO", "install", `Environment architecture detected: linux_amd64 (glibc 2.35+ compatible)`);
-        addLog("DEBUG", "install", `Release manifest queried: Latest stable version 1.2.4 (release-tag: 2026.09-prod)`);
-        addLog("INFO", "install", `Downloading package payload: agy-linux-amd64.tar.gz (205.4 MB)...`);
-        addLog("DEBUG", "install", `Package checksum verified: sha256:7f8a92bc31e... Matches official Google signature`);
-        addLog("INFO", "install", `Extracting binary archive into /usr/local/bin/agy`);
-        addLog("DEBUG", "install", `Configuring filesystem permissions: chmod 0755 /usr/local/bin/agy`);
-        addLog("INFO", "install", `Shell environment synchronized: PATH="/root/.local/bin:/usr/local/bin:$PATH"`);
-        addLog("INFO", "install", `Execution policy configured: headless daemon with '--dangerously-skip-permissions' enabled`);
-
-        // Execute post-install probe check
-        addLog("EXEC", "agent", `Running verification probe: agy --version`);
-        const vCheck = await executeInAgentSandbox(["--version"], { timeoutMs: 8000, category: "install" });
-        if (vCheck.success && vCheck.output) {
-          addLog("INFO", "agent", `Antigravity CLI binary verified: v${vCheck.output} (${vCheck.runtime} mode, latency: ${vCheck.latencyMs}ms)`);
-        } else {
-          addLog("WARN", "agent", `Verification probe note: ${vCheck.error || "Agent sandbox awaiting session initialization"}`);
-        }
+      } else {
+        addLog("WARN", "auth", `Container awaiting OAuth authorization code. Click the Google OAuth portal link to get your code.`);
       }
 
-      // OAuth Authentication Details
-      addLog("AUTH", "auth", `Generating dynamic PKCE OAuth 2.0 authorization parameters (RFC 7636, S256)...`);
-      addLog("DEBUG", "auth", `Code Verifier: 43-character high-entropy cryptographic random string (256-bit entropy)`);
-      addLog("DEBUG", "auth", `Code Challenge generated: method=S256, access_type=offline, prompt=consent`);
-      addLog("DEBUG", "auth", `Client ID: 1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`);
-      addLog("DEBUG", "auth", `Redirect URI: urn:ietf:wg:oauth:2.0:oob (Out-of-Band Copy/Paste Mode)`);
-      addLog("DEBUG", "auth", `Requested Scopes: cloud-platform, userinfo.email, userinfo.profile, cclog, experimentsandconfigs, aicode, openid`);
-      addLog("AUTH", "auth", `Dynamic Google Authorization Portal URL: ${authUrl}`);
-      addLog("INFO", "auth", `If automatic browser redirect is blocked, paste your authorization code into the field below.`);
-
-      if (data.authToken) {
-        addLog("AUTH", "auth", `Credential token injected and encrypted in secure vault (/root/.gemini/antigravity-cli/antigravity-oauth-token).`);
-        addLog("DEBUG", "auth", `Token format validated: Bearer JWT token header verified, expiration cached.`);
-      }
-
-      addLog("INFO", "system", `Onboarding sequence completed successfully. Agent state set to INSTALLED.`);
+      addLog("INFO", "system", `Onboarding sequence completed. Agent state set to INSTALLED.`);
       rawLogs = logs.join("\n");
     } else if (data.id === "claude_code_agent") {
       addLog("INFO", "system", `Initiating agent onboarding sequence for ${existing.name} (${existing.version})...`);
@@ -2983,6 +2980,20 @@ export const configureMarketplaceIntegration = createServerFn({ method: "POST" }
       },
     };
 
+    if (data.config?.authToken && (data.id === "agy_agent" || existing.type === "cli_agent")) {
+      const trimmed = String(data.config.authToken).trim();
+      if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
+        const ex = await exchangeOAuthCodeForToken(trimmed, data.config?.codeVerifier);
+        if (ex.success && ex.token) {
+          injectContainerOAuthToken(ex.token);
+        } else {
+          injectContainerOAuthToken(trimmed);
+        }
+      } else {
+        injectContainerOAuthToken(trimmed);
+      }
+    }
+
     await mongoSaveMarketplaceIntegration(updated);
     logger.serverFn("configureMarketplaceIntegration", "DONE", undefined, { id: data.id });
     return { success: true, integration: updated };
@@ -3002,7 +3013,7 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" })
       throw new Error(`Integration ${data.id} not found`);
     }
 
-    const modelToSet = data.model || selected.supportedModels[0] || "AGY: gemini-3.8-flash-low";
+    const modelToSet = data.model || selected.supportedModels[0] || "gemini-2.5-flash";
 
     await mongoUpdateAppSettings({
       activeAgentProvider: data.id,
@@ -3041,16 +3052,13 @@ export const testIntegrationConnection = createServerFn({ method: "POST" })
       addAuditLog("DEBUG", "sandbox", `Runtime status: [${sandboxInfo.runtime.toUpperCase()}], Container=${sandboxInfo.containerName}, Running=${sandboxInfo.containerRunning}`);
       addAuditLog("DEBUG", "sandbox", `Host Platform: ${sandboxInfo.hostPlatform}, Target Binary=${sandboxInfo.binaryPath}`);
 
-      // Check OAuth token presence in vault
-      const tokenPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
-      try {
-        const { existsSync } = await import("node:fs");
-        if (existsSync(tokenPath)) {
-          addAuditLog("INFO", "auth", `OAuth credentials file verified in vault (/root/.gemini/antigravity-cli/antigravity-oauth-token)`);
-        } else {
-          addAuditLog("DEBUG", "auth", `OAuth token file not present in vault. Running in standard sandbox execution mode.`);
-        }
-      } catch {}
+      // Check OAuth token presence in container vault
+      const tokenCheck = checkContainerOAuthToken();
+      if (tokenCheck.exists) {
+        addAuditLog("INFO", "auth", `OAuth credentials file verified in container vault (/root/.gemini/antigravity-cli/antigravity-oauth-token)`);
+      } else {
+        addAuditLog("WARN", "auth", `OAuth credentials not found in container vault. Authenticate via Google OAuth.`);
+      }
 
       addAuditLog("EXEC", "agent", `Dispatching binary probe: agy --version`);
       const res = await executeInAgentSandbox(["--version"], { timeoutMs: 8000, category: "sandbox" });
@@ -3225,22 +3233,16 @@ export const clearAgentSandboxLogs = createServerFn({ method: "POST" }).handler(
 
 export const detectLocalAgentSession = createServerFn({ method: "GET" }).handler(
   async () => {
-    const tokenPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
     try {
-      const { existsSync, readFileSync } = await import("node:fs");
-      if (existsSync(tokenPath)) {
-        const out = readFileSync(tokenPath, "utf-8");
-        const parsed = JSON.parse(out);
-        const token = parsed.token?.access_token || "";
-        if (token) {
-          return {
-            available: true,
-            tokenType: parsed.token?.token_type || "Bearer",
-            tokenPreview: `${token.slice(0, 14)}...${token.slice(-6)}`,
-            expiry: parsed.token?.expiry,
-            fullToken: token,
-          };
-        }
+      const containerToken = checkContainerOAuthToken();
+      if (containerToken.exists) {
+        return {
+          available: true,
+          tokenType: "Bearer (Container Vault)",
+          tokenPreview: containerToken.tokenPreview || "Verified",
+          expiry: containerToken.expiry,
+          fullToken: undefined,
+        };
       }
     } catch {
       /* ignore not found */

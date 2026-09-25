@@ -201,6 +201,7 @@ function MarketplacePage() {
       authToken?: string;
       apiKey?: string;
       selectedModel?: string;
+      codeVerifier?: string;
     }) => executeRealIntegrationInstall({ data }),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
@@ -1649,29 +1650,28 @@ function MarketplacePage() {
               {/* CLI Agent Installation & Re-Config Engine */}
               {configModalItem.type === "cli_agent" && (
                 <div className="space-y-4 text-xs">
-                  {/* Step 1: Real Host & Sandbox Installation Execution */}
+                  {/* Step 1: Containerized Sandbox Environment */}
                   <div className="p-3.5 rounded-xl border border-border bg-bg-subtle/50 space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5">
                         <Terminal className="size-3.5 text-accent" />
-                        <span>Host & Sandbox Installation</span>
+                        <span>Containerized Sandbox Runtime</span>
                       </div>
                       <Badge className="text-[10px] border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 font-mono">
-                        {sandboxStatus?.runtime === "docker" ? "DOCKER CONTAINER" : isReconfigMode ? "Clean Re-Install" : "Automated Script"}
+                        DOCKER ISOLATED
                       </Badge>
                     </div>
 
                     <p className="text-xs text-muted leading-relaxed">
-                      {isReconfigMode
-                        ? "Re-configuration cycles the execution environment, verifies container credentials, and synchronizes isolated tokens in aie-agent-sandbox."
-                        : "Installs and verifies the official Antigravity CLI binary inside the isolated aie-agent-sandbox container with full host process protection."}
+                      The agent runs inside an isolated Docker sandbox container (<code className="text-accent font-mono">aie-agent-sandbox</code>) with its own internal CLI binary and secure vault volume (<code className="text-accent font-mono">aie-agent-vault</code>).
                     </p>
 
                     {sandboxStatus && (
                       <div className="flex items-center justify-between p-2 rounded-lg bg-bg-elevated border border-border/70 text-[11px] font-mono">
-                        <span className="text-subtle">Target Environment:</span>
-                        <span className="text-accent font-semibold">
-                          {sandboxStatus.runtime === "docker" ? "aie-agent-sandbox (Running)" : `${sandboxStatus.runtime.toUpperCase()} Runtime`}
+                        <span className="text-subtle">Container Runtime:</span>
+                        <span className="text-accent font-semibold flex items-center gap-1.5">
+                          <span className={cn("size-2 rounded-full", sandboxStatus.containerRunning ? "bg-emerald-400 animate-pulse" : "bg-amber-400")} />
+                          {sandboxStatus.containerName} ({sandboxStatus.containerRunning ? "Running" : "Offline"}) · /usr/local/bin/agy
                         </span>
                       </div>
                     )}
@@ -1687,6 +1687,7 @@ function MarketplacePage() {
                             reconfig: isReconfigMode,
                             authToken: authTokenInput || undefined,
                             selectedModel: selectedModelInput || configModalItem.supportedModels[0],
+                            codeVerifier: agyOAuthSession?.codeVerifier || (typeof window !== "undefined" ? window.sessionStorage?.getItem("aie_oauth_verifier") || undefined : undefined),
                           })
                         }
                         className="text-xs h-8 gap-1.5 bg-accent text-white font-medium"
@@ -1694,12 +1695,12 @@ function MarketplacePage() {
                         {realInstallMutation.isPending ? (
                           <>
                             <Loader2 className="size-3.5 animate-spin" />
-                            <span>Running Installation...</span>
+                            <span>Verifying & Initializing...</span>
                           </>
                         ) : (
                           <>
                             <Download className="size-3.5" />
-                            <span>{isReconfigMode ? "Execute Fresh Re-Install" : "Run Sandbox Installation"}</span>
+                            <span>{authTokenInput ? "Authenticate & Initialize Agent" : "Verify Container Sandbox"}</span>
                           </>
                         )}
                       </Button>
@@ -1975,31 +1976,21 @@ function MarketplacePage() {
                     )}
                   </div>
 
-                  {/* Local Active Session Detection */}
+                  {/* Container Vault Credential Status */}
                   {configModalItem.id === "agy_agent" && detectedLocalSession?.available && (
                     <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 flex items-center justify-between">
                       <div>
                         <div className="font-semibold text-emerald-400 text-xs flex items-center gap-1.5">
                           <CheckCircle2 className="size-3.5" />
-                          Active Shell OAuth Session Detected
+                          Container Vault Credential Active
                         </div>
                         <div className="text-[11px] text-subtle mt-0.5 font-mono">
-                          Token: {detectedLocalSession.tokenPreview} (Host Verified)
+                          Vault Token: {detectedLocalSession.tokenPreview} (Volume: aie-agent-vault)
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        type="button"
-                        variant="secondary"
-                        onClick={() => {
-                          if (detectedLocalSession.fullToken) {
-                            setAuthTokenInput(detectedLocalSession.fullToken);
-                          }
-                        }}
-                        className="text-xs h-7 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/20 font-medium cursor-pointer"
-                      >
-                        Auto-Fill Token
-                      </Button>
+                      <Badge className="text-[10px] text-emerald-400 border border-emerald-500/40 bg-emerald-500/15">
+                        Active in Container
+                      </Badge>
                     </div>
                   )}
 
@@ -2021,12 +2012,12 @@ function MarketplacePage() {
                           title="Generate fresh PKCE code challenge and session state"
                         >
                           <RefreshCw className="size-3" />
-                          <span>Refresh</span>
+                          <span>Refresh Session</span>
                         </button>
                       </div>
                     </div>
                     <p className="text-xs text-muted leading-relaxed">
-                      Authenticate with your Google account via the official dynamic authorization portal to generate your access token:
+                      Authenticate with your Google account via the official authorization portal to onboard your containerized agent:
                     </p>
 
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 pt-0.5">
@@ -2051,19 +2042,19 @@ function MarketplacePage() {
                     </div>
                   </div>
 
-                  {/* Step 4: Mandatory Authorization Code / Token */}
+                  {/* Step 4: Authorization Code or API Key */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-subtle font-medium flex items-center gap-1">
-                        <span>Authorization Code / Token</span>
+                        <span>Google OAuth Authorization Code (or Token)</span>
                         <span className="text-red-400 font-bold">*</span>
                       </label>
                       <span className="text-[10px] text-accent font-mono">
-                        {isReconfigMode || configModalItem.status !== "installed" ? "Mandatory for Installation" : "Configured"}
+                        {isReconfigMode || configModalItem.status !== "installed" ? "Mandatory for Installation" : "Configured in Container"}
                       </span>
                     </div>
                     <Input
-                      placeholder="Paste authorization token or code from OAuth portal..."
+                      placeholder="Paste authorization code (starts with 4/0...) or callback URL / token..."
                       value={authTokenInput}
                       onChange={(e) => setAuthTokenInput(e.target.value)}
                       className={cn(
@@ -2071,6 +2062,9 @@ function MarketplacePage() {
                         isMandatoryAuthMissing && "border-amber-500/60 focus:border-amber-500"
                       )}
                     />
+                    <p className="text-[11px] text-subtle mt-1">
+                      Copy the code displayed by Google after sign-in (e.g. <code className="font-mono text-accent">4/0...</code>) and paste it here. The container exchanges it directly with Google's token endpoint and securely injects credentials into the container vault volume.
+                    </p>
                     {isMandatoryAuthMissing && (
                       <p className="text-[11px] text-amber-400 mt-1 flex items-center gap-1">
                         <AlertCircle className="size-3 shrink-0" />
@@ -2174,6 +2168,7 @@ function MarketplacePage() {
                       apiKey: apiKeyInput || undefined,
                       authToken: authTokenInput || undefined,
                       selectedModel: selectedModelInput || configModalItem.supportedModels[0],
+                      codeVerifier: agyOAuthSession?.codeVerifier || (typeof window !== "undefined" ? window.sessionStorage?.getItem("aie_oauth_verifier") || undefined : undefined),
                       lastReconfiguredAt: isReconfigMode ? new Date().toISOString() : undefined,
                     };
 

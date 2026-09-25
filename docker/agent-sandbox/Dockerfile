@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create directories
 RUN mkdir -p /root/.local/bin /root/.gemini/antigravity-cli /workspace
+COPY agy /usr/local/bin/agy
+RUN chmod 755 /usr/local/bin/agy
+
 ENV PATH="/root/.local/bin:/usr/local/bin:$PATH"
 ENV HOME="/root"
 
