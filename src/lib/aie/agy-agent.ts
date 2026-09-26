@@ -375,7 +375,7 @@ export async function discoverAgentSources(options: {
 }> {
   const limit = Math.min(Math.max(options.limit ?? 6, 1), 20);
   const timeoutSec = options.timeoutSeconds ?? 90;
-  const model = options.model || "gemini-3.8-flash-low";
+  const model = options.model || "gemini-2.5-flash";
   const knownDomains = options.existingDomains || [];
 
   const knownListSnippet =
@@ -545,7 +545,7 @@ export async function discoverDomainResourcesWithAgent(options: {
   timeoutSeconds?: number;
 }): Promise<DomainResourceHarvestResult> {
   const timeoutSec = options.timeoutSeconds ?? 60;
-  const model = options.model || "gemini-3.8-flash-low";
+  const model = options.model || "gemini-2.5-flash";
   const domain = options.domain.toLowerCase().replace(/^www\./, "");
   const baseUrl = options.baseUrl.startsWith("http") ? options.baseUrl : `https://${domain}`;
 
@@ -714,7 +714,7 @@ export async function evaluateResourceWithAgent(options: {
   model?: string;
 }): Promise<AgentEvaluationResult> {
   const timeoutSec = options.timeoutSeconds ?? 45;
-  const model = options.model || "gemini-3.8-flash-low";
+  const model = options.model || "gemini-2.5-flash";
   const textSnippet = options.text.slice(0, 4500);
 
   const prompt = `You are the Senior Threat Intelligence Analysis & Adversary Emulation Evaluation Agent operating under the domain-resource-discovery-intel skill.

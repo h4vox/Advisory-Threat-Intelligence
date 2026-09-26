@@ -192,7 +192,7 @@ function MarketplacePage() {
 
   const integrations = marketplaceState?.integrations || [];
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
-  const activeModel = marketplaceState?.activeModel || "AGY: gemini-3.8-flash-low";
+  const activeModel = (marketplaceState?.activeModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
 
   // Real installation mutation (executes real script, rm for reconfig, captures stdout/stderr)
   const realInstallMutation = useMutation({

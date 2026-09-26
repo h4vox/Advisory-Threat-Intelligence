@@ -1002,7 +1002,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   agentCrawlSourcesEnabled: true,
   agentLibraryAuditEnabled: true,
   agentAutoPruneJunkEnabled: false,
-  agentModel: "gemini-3.8-flash-low",
+  agentModel: "gemini-2.5-flash",
   agentTimeoutSeconds: 45,
 };
 
@@ -1067,7 +1067,7 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       agentCrawlSourcesEnabled: Boolean(doc.agentCrawlSourcesEnabled ?? true),
       agentLibraryAuditEnabled: Boolean(doc.agentLibraryAuditEnabled ?? true),
       agentAutoPruneJunkEnabled: Boolean(doc.agentAutoPruneJunkEnabled ?? false),
-      agentModel: doc.agentModel || "gemini-3.8-flash-low",
+      agentModel: (doc.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
       agentTimeoutSeconds: Number(doc.agentTimeoutSeconds ?? 45),
     };
   } else {
@@ -3266,7 +3266,7 @@ export async function mongoUninstallMarketplaceIntegration(id: string): Promise<
     if (settings.activeAgentProvider === id) {
       await mongoUpdateAppSettings({
         activeAgentProvider: "agy_agent",
-        agentModel: "AGY: gemini-3.8-flash-low",
+        agentModel: "gemini-2.5-flash",
       });
     }
   } catch (err) {
@@ -3282,7 +3282,7 @@ export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
 
   return {
     activeProviderId: settings.activeAgentProvider || "agy_agent",
-    activeModel: settings.agentModel || "AGY: gemini-3.8-flash-low",
+    activeModel: (settings.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
     integrations,
     curatedResources: DEFAULT_CURATED_RESOURCES,
     powerups: DEFAULT_POWERUPS,

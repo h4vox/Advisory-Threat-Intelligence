@@ -83,7 +83,10 @@ export class AgentOnboardingOrchestrator {
       selectedAuthMethod: savedConfig.authMethod || driver.defaultAuthMethod,
       supportedAuthMethods: driver.supportedAuthMethods,
       supportedModels: driver.supportedModels,
-      activeModel: appSettings?.agentModel || driver.defaultModel,
+      activeModel: (() => {
+        const raw = (appSettings?.agentModel || "").replace(/^AGY:\s*/i, "").trim();
+        return driver.supportedModels.includes(raw) ? raw : driver.defaultModel;
+      })(),
       latencyMs: savedConfig.lastLatencyMs,
       version: savedConfig.agentVersion,
       error: savedConfig.lastError,

@@ -76,14 +76,14 @@ interface AieAgentChatDrawerProps {
 export function AieAgentChatDrawer({
   isOpen,
   onClose,
-  activeModel = "gemini-3.8-flash-low",
+  activeModel = "gemini-2.5-flash",
   embedded = false,
 }: AieAgentChatDrawerProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "init",
       sender: "agent",
-      text: "Antigravity AGY Agent online. IPC protocol operational via `agy --dangerously-skip-permissions`. Ready for autonomous adversary TTP extraction, kill-chain reconstruction, or threat research queries.",
+      text: "Autonomous AI Agent Engine online. Ready for autonomous adversary TTP extraction, kill-chain reconstruction, and threat intelligence analysis.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);

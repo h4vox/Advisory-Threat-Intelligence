@@ -127,7 +127,7 @@ const VALID_RESOURCE_KINDS: Set<ResourceKind> = new Set([
  * "Claude API: claude-3-7-sonnet" -> "claude-3-7-sonnet"
  */
 export function stripModelPrefix(modelName?: string): string {
-  if (!modelName) return "gemini-3.8-flash-low";
+  if (!modelName) return "gemini-2.5-flash";
   const colonIdx = modelName.indexOf(":");
   if (colonIdx >= 0) {
     return modelName.slice(colonIdx + 1).trim();
@@ -209,8 +209,8 @@ export async function getActiveAIProvider(): Promise<{
     const providerId = settings.activeAgentProvider || "agy_agent";
     const integration = integrations.find((x) => x.id === providerId) || integrations[0];
 
-    const providerName = integration ? integration.name : "Antigravity AGY Agent";
-    const model = settings.agentModel || "AGY: gemini-3.8-flash-low";
+    const providerName = integration ? integration.name : "Autonomous AI Agent Engine";
+    const model = (settings.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
     const rawModel = stripModelPrefix(model);
     const timeoutSeconds = settings.agentTimeoutSeconds || 45;
 
@@ -241,9 +241,9 @@ export async function getActiveAIProvider(): Promise<{
   } catch (err) {
     return {
       providerId: "agy_agent",
-      providerName: "Antigravity AGY Agent",
-      model: "AGY: gemini-3.8-flash-low",
-      rawModel: "gemini-3.8-flash-low",
+      providerName: "Autonomous AI Agent Engine",
+      model: "gemini-2.5-flash",
+      rawModel: "gemini-2.5-flash",
       timeoutSeconds: 45,
       isRest: false,
     };

@@ -313,7 +313,7 @@ export async function executeCrawlJob(
         logger.agent(
           "DISCOVERY",
           "Launching autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...",
-          { model: config.agentModel || "gemini-3.8-flash-low", timeout: `${config.agentTimeoutSeconds || 45}s` }
+          { model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(), timeout: `${config.agentTimeoutSeconds || 45}s` }
         );
         console.log(`[crawler] [AI AGENT] Running autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...`);
 
@@ -335,7 +335,7 @@ export async function executeCrawlJob(
         const agentResult = await runUnifiedSourceDiscovery({
           limit: 4,
           existingDomains: Array.from(new Set(knownDomains)),
-          model: config.agentModel || "AGY: gemini-3.8-flash-low",
+          model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
           timeoutSeconds: config.agentTimeoutSeconds || 45,
         });
 
@@ -1373,7 +1373,7 @@ export async function executeCrawlJob(
               url: current.canonicalUrl,
               domain: current.domain,
               timeoutSeconds: config.agentTimeoutSeconds || 45,
-              model: config.agentModel || "AGY: gemini-3.8-flash-low",
+              model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
             });
 
             if (agentResult.success && !agentResult.fallback) {

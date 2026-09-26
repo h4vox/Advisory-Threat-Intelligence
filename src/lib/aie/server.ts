@@ -743,7 +743,7 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
       limit,
       existingDomains,
       timeoutSeconds: config.agentTimeoutSeconds ?? 90,
-      model: config.agentModel || "gemini-3.8-flash-low",
+      model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
     });
 
     const inserted: DiscoveredSourceRecord[] = [];
@@ -3277,7 +3277,7 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
     })
   )
   .handler(async ({ data }) => {
-    const model = data.model || "gemini-3.8-flash-low";
+    const model = (data.model || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
     const userMsg = data.message.trim();
 
     // 1. Knowledge Retrieval Phase: Query MongoDB for matching threat intelligence

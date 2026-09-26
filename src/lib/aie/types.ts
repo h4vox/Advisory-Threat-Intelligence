@@ -576,7 +576,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   agentApprovalEnabled: true,
   agentAutoIngestEnabled: false,
   agentCrawlSourcesEnabled: true,
-  agentModel: "AGY: gemini-3.8-flash-low",
+  agentModel: "gemini-2.5-flash",
   agentTimeoutSeconds: 45,
   activeAgentProvider: "agy_agent",
   updatedAt: new Date().toISOString(),

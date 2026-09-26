@@ -77,7 +77,6 @@ export function AgentOnboardingStepper({
         data: {
           agentId,
           code,
-          codeVerifier: status?.authState,
           methodId: selectedMethodId,
         },
       }),
