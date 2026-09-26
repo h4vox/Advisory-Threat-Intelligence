@@ -58,8 +58,6 @@ export interface SandboxStatus {
 }
 
 const CONTAINER_NAME = "aie-agent-sandbox";
-const LINUX_AGY_PATH = "/home/havox/.local/bin/agy";
-const OAUTH_TOKEN_PATH = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
 
 // ---------------------------------------------------------------------------
 // In-Memory Ring Buffer for High-Detail Diagnostics & Telemetry
@@ -204,67 +202,19 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
     return result;
   }
 
-  // 3. Fallback to Host (WSL on Windows, native on Linux)
-  if (isWin) {
-    let wslAvailable = false;
-    let agentVersion = "";
-    try {
-      const vOut = execSync(
-        `wsl.exe -e ${LINUX_AGY_PATH} --version`,
-        { encoding: "utf-8", timeout: 6000, stdio: ["ignore", "pipe", "ignore"] }
-      ).trim();
-      if (vOut) {
-        wslAvailable = true;
-        agentVersion = vOut;
-        appendSandboxLog("INFO", "sandbox", `WSL runtime fallback active: agy v${vOut}`);
-      }
-    } catch {
-      wslAvailable = false;
-    }
-
-    const result: SandboxStatus = {
-      runtime: wslAvailable ? "wsl" : "unavailable",
-      dockerAvailable,
-      containerRunning: false,
-      containerName: CONTAINER_NAME,
-      hostPlatform: "win32",
-      binaryPath: LINUX_AGY_PATH,
-      isReady: wslAvailable,
-      agentVersion: agentVersion || undefined,
-      details: wslAvailable
-        ? `Windows Host: Bridged to WSL Linux runtime at ${LINUX_AGY_PATH}. Docker sandbox standby.`
-        : `Windows Host: Docker container offline and WSL binary not reached. Ready for container launch.`,
-      logCount: logBuffer.length,
-    };
-    cachedRuntimeStatus = { status: result, expiresAt: now + CACHE_TTL_MS };
-    return result;
-  }
-
-  // Native Linux host
-  const nativeBinaryExists = existsSync(LINUX_AGY_PATH);
-  let agentVersion = "";
-  if (nativeBinaryExists) {
-    try {
-      agentVersion = execSync(
-        `${LINUX_AGY_PATH} --version`,
-        { encoding: "utf-8", timeout: 4000, stdio: ["ignore", "pipe", "ignore"] }
-      ).trim();
-      appendSandboxLog("INFO", "sandbox", `Native Linux host runtime active: agy v${agentVersion}`);
-    } catch {}
-  }
-
+  // Strictly container-only isolation: never fall back to host binary
   const result: SandboxStatus = {
-    runtime: nativeBinaryExists ? "native" : "unavailable",
+    runtime: "unavailable",
     dockerAvailable,
     containerRunning: false,
     containerName: CONTAINER_NAME,
     hostPlatform: process.platform,
-    binaryPath: LINUX_AGY_PATH,
-    isReady: nativeBinaryExists,
-    agentVersion: agentVersion || undefined,
-    details: nativeBinaryExists
-      ? `Native Linux host runtime (${LINUX_AGY_PATH}). Docker sandbox standby.`
-      : `Linux host: Binary not found at ${LINUX_AGY_PATH}. Ready for containerized sandbox onboarding.`,
+    binaryPath: "/usr/local/bin/agy",
+    isReady: false,
+    agentVersion: undefined,
+    details: dockerAvailable
+      ? `Dedicated agent container (${CONTAINER_NAME}) is not running. Launch container environment to proceed.`
+      : "Docker daemon is not accessible on host. Container sandbox runtime requires Docker.",
     logCount: logBuffer.length,
   };
   cachedRuntimeStatus = { status: result, expiresAt: now + CACHE_TTL_MS };
@@ -463,14 +413,8 @@ export function executeInAgentSandbox(
     if (status.runtime === "docker") {
       cmd = "docker";
       finalArgs = ["exec", "-i", CONTAINER_NAME, "agy", ...args];
-    } else if (status.runtime === "wsl") {
-      cmd = "wsl.exe";
-      finalArgs = ["-e", LINUX_AGY_PATH, ...args];
-    } else if (status.runtime === "native") {
-      cmd = status.binaryPath || LINUX_AGY_PATH;
-      finalArgs = args;
     } else {
-      const errNotice = `Agent runtime unavailable (${status.details}). Please click 'Run Sandbox Installation' or start the Docker sandbox container.`;
+      const errNotice = `Agent container runtime unavailable (${status.details}). Sandbox execution requires dedicated container (${CONTAINER_NAME}).`;
       addStepLog("ERROR", errNotice);
       const trace: ExecutionTrace = {
         id: traceId,
