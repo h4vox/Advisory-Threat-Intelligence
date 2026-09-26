@@ -124,6 +124,15 @@ export interface AgyOAuthSession {
 
 export const DEFAULT_PKCE_VERIFIER = "AIE-Threat-Intelligence-Agent-OAuth-PKCE-Verifier-Key-2026-Secure";
 
+export const AGY_OAUTH_CLIENT_ID =
+  (typeof process !== "undefined" && (process.env?.AGY_CLIENT_ID || process.env?.VITE_AGY_CLIENT_ID)) ||
+  (typeof import.meta !== "undefined" && (import.meta as any)?.env?.VITE_AGY_CLIENT_ID) ||
+  "";
+
+export const AGY_OAUTH_CLIENT_SECRET =
+  (typeof process !== "undefined" && (process.env?.AGY_CLIENT_SECRET || process.env?.GOOGLE_CLIENT_SECRET)) ||
+  "";
+
 /**
  * Generates a dynamic PKCE authorization URL for Google Cloud OAuth 2.0.
  * Automatically computes a unique high-entropy code_verifier, derives the
@@ -144,7 +153,7 @@ export function generateAgyOAuthSession(options?: { state?: string; codeVerifier
 
   const params = new URLSearchParams({
     access_type: "offline",
-    client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+    client_id: AGY_OAUTH_CLIENT_ID,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     prompt: "consent",
@@ -187,17 +196,29 @@ export async function exchangeOAuthCodeForToken(
       } catch {}
     }
 
+    if (authCode.includes("%2F") || authCode.includes("%2f")) {
+      try {
+        authCode = decodeURIComponent(authCode);
+      } catch {}
+    }
+
     const verifier = codeVerifier || DEFAULT_PKCE_VERIFIER;
+    const bodyParams: Record<string, string> = {
+      client_id: AGY_OAUTH_CLIENT_ID,
+      client_secret: AGY_OAUTH_CLIENT_SECRET,
+      code: authCode,
+      grant_type: "authorization_code",
+      redirect_uri: "https://antigravity.google/oauth-callback",
+    };
+
+    if (verifier) {
+      bodyParams.code_verifier = verifier;
+    }
+
     const res = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
-        code: authCode,
-        code_verifier: verifier,
-        grant_type: "authorization_code",
-        redirect_uri: "https://antigravity.google/oauth-callback",
-      }).toString(),
+      body: new URLSearchParams(bodyParams).toString(),
     });
 
     const data = await res.json();
