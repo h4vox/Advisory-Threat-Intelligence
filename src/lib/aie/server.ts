@@ -33,7 +33,7 @@ import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
 import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL, exchangeOAuthCodeForToken } from "./marketplace-registry";
-import { agentOnboardingOrchestrator } from "./agent-framework";
+import { agentOnboardingOrchestrator } from "./agent-framework/server";
 import type {
   AppSettings,
   BatchIngestResult,

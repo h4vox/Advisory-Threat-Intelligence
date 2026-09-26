@@ -7,7 +7,7 @@
  * Zero host system binary or credential dependencies.
  */
 
-import { exec, execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { AgentAuthOption, AgentDriver } from "./types";
 import {
