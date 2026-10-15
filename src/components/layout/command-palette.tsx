@@ -106,7 +106,10 @@ export function CommandPalette({
                     <Command.Item
                       key={r.id}
                       value={`report-${r.id}`}
-                      onSelect={() => go("/library", { selected: r.id })}
+                      onSelect={() => {
+                        onOpenChange(false);
+                        void navigate({ to: "/library/$reportId", params: { reportId: r.id } });
+                      }}
                       className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 text-sm text-fg data-[selected=true]:bg-bg-subtle"
                     >
                       <FileText className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={1.75} />

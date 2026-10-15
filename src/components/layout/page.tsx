@@ -58,7 +58,7 @@ export function PageHeader({
             {description && <p className="mt-1 max-w-3xl text-sm text-muted">{description}</p>}
           </div>
         </div>
-        {actions && <div className="flex flex-wrap items-center gap-2 md:justify-end md:pt-0.5">{actions}</div>}
+        {actions && <div className="flex flex-wrap items-center gap-2 md:shrink-0 md:justify-end md:pt-0.5">{actions}</div>}
       </div>
       {tabs && <div className="mt-5">{tabs}</div>}
     </header>
@@ -85,7 +85,7 @@ export function ActionButton({
   type?: "button" | "submit";
 }) {
   const cls = cn(
-    "inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+    "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
     variant === "primary" && "bg-accent text-accent-fg hover:opacity-90",
     variant === "outline" && "border border-border bg-bg-elevated text-fg hover:bg-bg-subtle",
     variant === "ghost" && "text-muted hover:bg-bg-subtle hover:text-fg",

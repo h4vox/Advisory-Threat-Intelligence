@@ -18,7 +18,7 @@ import { Route as MatrixRouteImport } from './routes/matrix'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as UiKitRouteImport } from './routes/ui-kit'
-import { Route as LibraryReportIdRouteImport } from './routes/library.$reportId'
+import { Route as LibraryReportIdRouteImport } from './routes/library_.$reportId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -67,9 +67,9 @@ const UiKitRoute = UiKitRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const LibraryReportIdRoute = LibraryReportIdRouteImport.update({
-  id: '/$reportId',
-  path: '/$reportId',
-  getParentRoute: () => LibraryRoute,
+  id: '/library_/$reportId',
+  path: '/library/$reportId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
@@ -80,7 +80,7 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
-  '/library': typeof LibraryRouteWithChildren
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
@@ -93,7 +93,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
-  '/library': typeof LibraryRouteWithChildren
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
@@ -107,14 +107,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
-  '/library': typeof LibraryRouteWithChildren
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/ui-kit': typeof UiKitRoute
-  '/library/$reportId': typeof LibraryReportIdRoute
+  '/library_/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -155,20 +155,21 @@ export interface FileRouteTypes {
     | '/settings'
     | '/sources'
     | '/ui-kit'
-    | '/library/$reportId'
+    | '/library_/$reportId'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IngestRoute: typeof IngestRoute
-  LibraryRoute: typeof LibraryRouteWithChildren
+  LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   MarketplaceRoute: typeof MarketplaceRoute
   MatrixRoute: typeof MatrixRoute
   SettingsRoute: typeof SettingsRoute
   SourcesRoute: typeof SourcesRoute
   UiKitRoute: typeof UiKitRoute
+  LibraryReportIdRoute: typeof LibraryReportIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -237,12 +238,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UiKitRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/library/$reportId': {
-      id: '/library/$reportId'
-      path: '/$reportId'
+    '/library_/$reportId': {
+      id: '/library_/$reportId'
+      path: '/library/$reportId'
       fullPath: '/library/$reportId'
       preLoaderRoute: typeof LibraryReportIdRouteImport
-      parentRoute: typeof LibraryRoute
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -254,27 +255,17 @@ declare module '@tanstack/react-router' {
   }
 }
 
-interface LibraryRouteChildren {
-  LibraryReportIdRoute: typeof LibraryReportIdRoute
-}
-
-const LibraryRouteChildren: LibraryRouteChildren = {
-  LibraryReportIdRoute: LibraryReportIdRoute,
-}
-
-const LibraryRouteWithChildren =
-  LibraryRoute._addFileChildren(LibraryRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IngestRoute: IngestRoute,
-  LibraryRoute: LibraryRouteWithChildren,
+  LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   MarketplaceRoute: MarketplaceRoute,
   MatrixRoute: MatrixRoute,
   SettingsRoute: SettingsRoute,
   SourcesRoute: SourcesRoute,
   UiKitRoute: UiKitRoute,
+  LibraryReportIdRoute: LibraryReportIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ArrowUpRight, X } from "lucide-react";
 import { getReport } from "@/lib/aie/server";
 import { EvidencePanel } from "./evidence-panel";
 
@@ -33,12 +34,24 @@ export function ReportEvidenceDialog({
               <Dialog.Title className="text-sm font-semibold text-fg">Evidence</Dialog.Title>
               <Dialog.Description className="truncate text-xs text-muted">{title}</Dialog.Description>
             </div>
+            <div className="flex shrink-0 items-center gap-2">
+            <Link
+              to="/library/$reportId"
+              params={{ reportId }}
+              search={{ tab: "evidence" }}
+              onClick={() => onOpenChange(false)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-bg-elevated px-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
+            >
+              <ArrowUpRight className="size-4" strokeWidth={1.75} />
+              Open report
+            </Link>
             <Dialog.Close
               aria-label="Close evidence"
               className="rounded-md border border-border p-1.5 text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
             >
               <X className="size-4" />
             </Dialog.Close>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-4">
             {reportQuery.isPending && <p className="text-sm text-muted">Loading report…</p>}
