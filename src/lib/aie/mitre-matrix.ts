@@ -8028,7 +8028,7 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
             if (
               Array.isArray(step.techniques) &&
               step.techniques.some((t: any) => {
-                const id = typeof t === "string" ? t.split(":")[0]?.trim() : t?.id;
+                const id = typeof t === "string" ? t.match(/T\d{4}(?:\.\d{3})?/i)?.[0]?.toUpperCase() : t?.id;
                 return (
                   typeof id === "string" &&
                   (id === tech.id || id.startsWith(`${tech.id}.`))
