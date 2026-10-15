@@ -25,11 +25,114 @@ export type SourceRecord = {
   origin?: "seed" | "agent_discovery" | "crawler_outlink" | "manual";
 };
 
-export type IocKind = "cve" | "technique" | "sha256" | "md5" | "ipv4" | "domain";
+export type IocKind = "cve" | "technique" | "sha256" | "sha1" | "md5" | "ipv4" | "domain" | "url" | "email";
 
 export type IocHit = {
   kind: IocKind;
+  /** Normalized (re-fanged, lower-cased where appropriate) value. */
   value: string;
+  /** Exact text as it appeared in the source, e.g. "hxxps://evil[.]com". */
+  original?: string;
+  /** True when the source showed the indicator defanged. */
+  defanged?: boolean;
+  /** Role stated near the indicator (e.g. "C2", "payload delivery"), when the source says. */
+  role?: string;
+  /** Where the indicator appears in the canonical extracted text. */
+  evidence?: Evidence;
+};
+
+// ---------------------------------------------------------------------------
+// Evidence & provenance (fact-level). Offsets index the report's stored
+// extractedText, so every quote can be located and re-checked.
+// ---------------------------------------------------------------------------
+
+export type Evidence = {
+  /** Exact sentence/passage from extractedText that supports the fact. */
+  quote: string;
+  /** Character offsets of `quote` in extractedText (start inclusive, end exclusive). */
+  start: number;
+  end: number;
+  /** Nearest preceding heading, when the text has one. */
+  section?: string;
+};
+
+/**
+ * How a statement relates to adversary activity:
+ * - observed: the source reports the adversary doing it.
+ * - inferred: mapped by AIE (e.g. technique inferred from a procedure keyword).
+ * - defensive: mitigation / detection / hardening advice, not adversary activity.
+ * - negated: the source says it did NOT happen / no evidence of it.
+ * - hypothetical: could/may/if statements, examples, generic capability.
+ * - reference: generic ATT&CK or background description, not this incident.
+ */
+export type EvidenceLabel = "observed" | "inferred" | "defensive" | "negated" | "hypothetical" | "reference";
+
+export type EvidencedValue = {
+  value: string;
+  label: EvidenceLabel;
+  evidence: Evidence[];
+  /** 0..1, heuristic confidence in the label/extraction. */
+  confidence: number;
+};
+
+export type TechniqueFact = {
+  id: string;
+  name: string;
+  tactic: string;
+  label: EvidenceLabel;
+  /** Explicit ID in text ("explicit_id") vs mapped from a behaviour keyword ("keyword"). */
+  mappedBy: "explicit_id" | "keyword" | "model";
+  evidence: Evidence[];
+  confidence: number;
+};
+
+export type TargetingFact = {
+  kind: "sector" | "geography" | "platform" | "victim_type" | "objective";
+  value: string;
+  /** What the source says about it: actually targeted/compromised, or only at risk / mentioned. */
+  status: "targeted" | "compromised" | "at_risk" | "mentioned";
+  evidence: Evidence[];
+  confidence: number;
+};
+
+export type EntityRef = { type: "actor" | "malware" | "technique" | "ioc" | "sector" | "geography" | "platform"; value: string };
+
+export type RelationshipFact = {
+  subject: EntityRef;
+  predicate: "uses" | "performed" | "targeted" | "attributed_to" | "communicates_with";
+  object: EntityRef;
+  label: EvidenceLabel;
+  /** Relationships are only created when both entities occur in the same sentence. */
+  evidence: Evidence[];
+  confidence: number;
+};
+
+export type ChainStepEvidence = {
+  order: number;
+  tactic: string;
+  techniques: string[];
+  /** Offset of the earliest supporting sentence, used for ordering. */
+  position: number;
+  evidence: Evidence[];
+};
+
+export type IntelEvidence = {
+  version: 1;
+  /** textHash of the extractedText these offsets refer to. */
+  textHash?: string;
+  sections: Array<{ heading: string; start: number }>;
+  techniques: TechniqueFact[];
+  actors: EvidencedValue[];
+  malware: EvidencedValue[];
+  targeting: TargetingFact[];
+  relationships: RelationshipFact[];
+  chain: {
+    steps: ChainStepEvidence[];
+    /** "reported" = source order of observed steps; "unknown" when fewer than 2 observed steps. */
+    orderBasis: "reported" | "unknown";
+  };
+  /** Statements excluded from adversary activity, with reason, for analyst review. */
+  excluded: Array<{ techniqueId: string; label: EvidenceLabel; evidence: Evidence }>;
 };
 
 export type QualityReason = {
@@ -61,6 +164,8 @@ export type IntelAnalysis = {
   detections: string[];
   hunting: string[];
   emulation: string[];
+  /** Fact-level evidence; absent on records analysed before evidence tracking existed. */
+  evidence?: IntelEvidence;
 };
 
 export type ResourceKind =
