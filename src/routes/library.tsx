@@ -39,6 +39,7 @@ import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
+import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
 
 const librarySearchSchema = z.object({
   q: z.string().optional(),
@@ -251,6 +252,7 @@ function LibraryPage() {
   };
 
   const queryClient = useQueryClient();
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [isAuditing, setIsAuditing] = useState(false);
 
   // Debounce search query to trigger server-side full content search
@@ -1246,6 +1248,19 @@ function LibraryPage() {
             >
               Open Document Preview
             </button>
+            <button
+              type="button"
+              onClick={() => setEvidenceOpen(true)}
+              className="px-2.5 py-1 text-xs rounded-lg border border-accent/40 bg-bg-elevated text-accent font-medium hover:bg-bg-subtle transition-all cursor-pointer"
+            >
+              View Evidence
+            </button>
+            <ReportEvidenceDialog
+              reportId={targetReport.id}
+              title={targetReport.title}
+              open={evidenceOpen}
+              onOpenChange={setEvidenceOpen}
+            />
             <button
               type="button"
               onClick={() => {

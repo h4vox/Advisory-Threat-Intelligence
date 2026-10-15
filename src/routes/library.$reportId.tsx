@@ -4,30 +4,24 @@ import { useState } from "react";
 import {
   ArrowLeft,
   CheckCircle2,
-  Code2,
-  Compass,
   Copy,
   Download,
   ExternalLink,
-  Eye,
   FileText,
   Flame,
-  Globe,
-  Layers,
   Maximize2,
   Printer,
   Search,
   Shield,
   ShieldAlert,
   Terminal,
-  Workflow,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IdBadge } from "@/components/id-badge";
+import { EvidencePanel } from "@/components/evidence/evidence-panel";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReport } from "@/lib/aie/server";
@@ -48,6 +42,7 @@ export const Route = createFileRoute("/library/$reportId")({
 const TABS = [
   "Document & PDF Reader",
   "Attack Chain & TTPs",
+  "Evidence",
   "Emulation & Detections",
   "Extracted Text",
   "IOCs",
@@ -307,7 +302,7 @@ function ReportPage() {
 
                 <div className="rounded-xl border border-border bg-bg-elevated p-4">
                   <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-subtle">
-                    <Flame className="size-3.5 text-warn" /> Malware Families & Tools Observed
+                    <Flame className="size-3.5 text-warn" /> Malware Families & Tools Named
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {analysis?.malware && analysis.malware.length > 0 ? (
@@ -325,9 +320,11 @@ function ReportPage() {
 
               {/* Reconstructed Attack Chain Sequence */}
               <div>
-                <h2 className="text-base font-medium">Reconstructed Attack Chain Sequence</h2>
+                <h2 className="text-base font-medium">Attack Chain Summary</h2>
                 <p className="text-xs text-muted">
-                  Chronological progression of adversary tactics and mapped MITRE ATT&CK techniques.
+                  Tactics and mapped MITRE ATT&CK techniques as summarised by the analysis. Step order is not a
+                  verified timeline — see the Evidence tab for the order reported in the source and supporting
+                  passages.
                 </p>
 
                 {(!analysis?.attackChain || analysis.attackChain.length === 0) ? (
@@ -380,6 +377,11 @@ function ReportPage() {
             </div>
           )}
 
+          {/* EVIDENCE: fact-level supporting passages */}
+          {tab === "Evidence" && (
+            <EvidencePanel analysis={analysis} iocs={data.iocs} extractedText={data.extractedText} />
+          )}
+
           {/* TAB 3: EMULATION & DETECTIONS */}
           {tab === "Emulation & Detections" && (
             <div className="mt-6 space-y-6">
@@ -387,10 +389,11 @@ function ReportPage() {
               <div className="rounded-xl border border-border bg-bg-elevated p-5">
                 <div className="flex items-center gap-2">
                   <Terminal className="size-4 text-accent" />
-                  <h2 className="text-base font-medium">Adversary Emulation Commands (Atomic Red Team)</h2>
+                  <h2 className="text-base font-medium">Emulation Ideas (Atomic Red Team–style drafts)</h2>
                 </div>
                 <p className="mt-1 text-xs text-muted">
-                  Executable tests to validate purple-team detection coverage against observed techniques.
+                  Generated drafts for purple-team planning — not vetted Atomic tests. Review and adapt before running
+                  anything in a lab.
                 </p>
 
                 <div className="mt-4 space-y-3">
@@ -398,7 +401,7 @@ function ReportPage() {
                     analysis.emulation.map((cmd, idx) => (
                       <div key={idx} className="rounded-lg border border-border bg-bg-subtle p-3">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-[11px] text-accent">Atomic Test Scenario {idx + 1}</span>
+                          <span className="font-mono text-[11px] text-accent">Draft emulation idea {idx + 1}</span>
                           <button
                             type="button"
                             onClick={() => copyToClipboard(cmd, "Emulation command")}
@@ -420,10 +423,11 @@ function ReportPage() {
               <div className="rounded-xl border border-border bg-bg-elevated p-5">
                 <div className="flex items-center gap-2">
                   <Shield className="size-4 text-sage" />
-                  <h2 className="text-base font-medium">Detection Opportunities & Sigma Rules</h2>
+                  <h2 className="text-base font-medium">Detection Ideas (Sigma-style drafts)</h2>
                 </div>
                 <p className="mt-1 text-xs text-muted">
-                  Defensive detection opportunities tailored to the adversary procedure in this report.
+                  Generated detection ideas for the procedure in this report — drafts, not tested Sigma rules. Validate
+                  against your telemetry before deploying.
                 </p>
 
                 <div className="mt-4 space-y-2">
@@ -439,7 +443,7 @@ function ReportPage() {
               <div className="rounded-xl border border-border bg-bg-elevated p-5">
                 <div className="flex items-center gap-2">
                   <Search className="size-4 text-warn" />
-                  <h2 className="text-base font-medium">Threat Hunting Queries & Hypotheses</h2>
+                  <h2 className="text-base font-medium">Threat Hunting Ideas & Hypotheses (drafts)</h2>
                 </div>
                 <p className="mt-1 text-xs text-muted">
                   Proactive hunting search patterns across EDR / SIEM logs.
