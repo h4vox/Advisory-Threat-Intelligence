@@ -1,7 +1,8 @@
 import type { AttackStep, IntelAnalysis } from "./types";
-import { getActiveAIProvider, stripModelPrefix, extractJsonFromLlmText } from "./ai-manager";
+import { getActiveAIProvider, extractJsonFromLlmText, resolveProviderModels } from "./ai-manager";
 import { getProviderAdapter } from "./providers";
-import { executeInAgentSandbox } from "./agent-sandbox";
+import { runAgentPromptInSandbox } from "./agent-sandbox";
+import { UNTRUSTED_CONTENT_NOTICE, wrapUntrustedContent } from "./agent-framework/types";
 import { warmAgentService } from "./warm-agent-service";
 import { logger } from "./logger";
 
@@ -355,16 +356,16 @@ export async function synthesizeThreatIntelligenceWithAI(
   const heuristicFallback = analyzeThreatIntelligence(text, title, classification);
   const active = await getActiveAIProvider();
   const providerId = options?.providerId || active.providerId;
-  const rawModel = options?.model ? stripModelPrefix(options?.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, options?.model);
   const timeoutSeconds = options?.timeoutSeconds || active.timeoutSeconds;
   const snippet = text.slice(0, 4800);
 
   const prompt = `You are the Lead Adversary Emulation & CTI Reconstruction Specialist operating under the AIE platform.
 Analyze this threat intelligence report and synthesize a high-fidelity, chronological multi-stage attack chain with concrete procedures, MITRE ATT&CK techniques, detection rules, and purple team emulation commands.
 
-TITLE: ${title}
-CONTENT SNIPPET:
-${snippet}
+${UNTRUSTED_CONTENT_NOTICE}
+REPORT (title and content snippet):
+${wrapUntrustedContent(`TITLE: ${title}\nCONTENT SNIPPET:\n${snippet}`)}
 
 INSTRUCTIONS:
 1. Reconstruct the CHRONOLOGICAL ATTACK CHAIN in sequential order (Stage 1 to N, e.g. Initial Access -> Execution -> Persistence -> Lateral Movement -> Impact).
@@ -427,7 +428,7 @@ Return pure JSON only.`;
         const warmRes = await warmAgentService.executeSkill({
           skill: "ATTACK_CHAIN",
           payload: `TITLE: ${title}\nCONTENT SNIPPET:\n${snippet}`,
-          model: rawModel,
+          model: agyModel,
           timeoutMs: timeoutSeconds * 1000,
         });
         if (warmRes.success && warmRes.text) {
@@ -436,12 +437,13 @@ Return pure JSON only.`;
       } catch {}
 
       if (!outputText) {
-        const res = await executeInAgentSandbox(
-          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-          { timeoutMs: timeoutSeconds * 1000, category: "agent" }
-        );
-        if (res.success && res.output) {
-          outputText = res.output;
+        const res = await runAgentPromptInSandbox(prompt, {
+          model: agyModel,
+          timeoutMs: timeoutSeconds * 1000,
+          category: "agent",
+        });
+        if (res.success && res.text) {
+          outputText = res.text;
         }
       }
     }
@@ -458,7 +460,7 @@ Return pure JSON only.`;
 
         logger.agent(
           "SYNTHESIS",
-          `AI synthesized attack chain for "${title.slice(0, 40)}" (${orderSteps.length} stages via ${rawModel})`
+          `AI synthesized attack chain for "${title.slice(0, 40)}" (${orderSteps.length} stages via ${active.isRest ? rawModel : agyModel})`
         );
 
         return {
@@ -494,14 +496,14 @@ export async function generateSigmaRuleWithAI(params: {
   model?: string;
 }): Promise<{ success: boolean; sigmaYaml: string; title: string; level: string; error?: string }> {
   const active = await getActiveAIProvider();
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const prompt = `You are a Lead Detection Engineer.
 Generate a valid, production-ready Sigma detection rule in standard Sigma YAML format based on the following threat intelligence report and adversary techniques.
 
-TITLE: ${params.title}
-TECHNIQUES: ${params.techniques.join(", ")}
-OBSERVED PROCEDURES: ${(params.procedures || []).join("\n")}
-CONTEXT: ${(params.textSnippet || "").slice(0, 2000)}
+${UNTRUSTED_CONTENT_NOTICE}
+${wrapUntrustedContent(
+  `TITLE: ${params.title}\nTECHNIQUES: ${params.techniques.join(", ")}\nOBSERVED PROCEDURES: ${(params.procedures || []).join("\n")}\nCONTEXT: ${(params.textSnippet || "").slice(0, 2000)}`
+)}
 
 INSTRUCTIONS:
 1. Output MUST be valid Sigma YAML (logsource: category: process_creation, detection, condition, tags, level: high/critical).
@@ -528,7 +530,7 @@ Return pure JSON only.`;
     } else {
       try {
         const warmRes = await warmAgentService.executePrompt(prompt, {
-          model: rawModel,
+          model: agyModel,
           timeoutMs: 35000,
         });
         if (warmRes.success && warmRes.text) {
@@ -537,11 +539,12 @@ Return pure JSON only.`;
       } catch {}
 
       if (!output) {
-        const res = await executeInAgentSandbox(
-          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-          { timeoutMs: 35000, category: "agent" }
-        );
-        if (res.success) output = res.output;
+        const res = await runAgentPromptInSandbox(prompt, {
+          model: agyModel,
+          timeoutMs: 35000,
+          category: "agent",
+        });
+        if (res.success) output = res.text;
       }
     }
 
@@ -584,16 +587,17 @@ export async function generateEmulationPlanWithAI(params: {
   model?: string;
 }): Promise<{ success: boolean; testName: string; executor: string; command: string; cleanupCommand?: string; description: string }> {
   const active = await getActiveAIProvider();
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const platform = params.platform || "windows";
 
   const prompt = `You are a Red Team / Adversary Emulation Specialist.
 Generate a safe, executable Atomic Red Team style emulation test procedure targeting the adversary TTPs described below.
 
-TITLE: ${params.title}
-TECHNIQUES: ${params.techniques.join(", ")}
-PROCEDURES: ${(params.procedures || []).join("\n")}
 PLATFORM: ${platform}
+${UNTRUSTED_CONTENT_NOTICE}
+${wrapUntrustedContent(
+  `TITLE: ${params.title}\nTECHNIQUES: ${params.techniques.join(", ")}\nPROCEDURES: ${(params.procedures || []).join("\n")}`
+)}
 
 INSTRUCTIONS:
 1. Provide a non-destructive emulation command line that exercises the telemetry detection opportunity without harming systems.
@@ -623,7 +627,7 @@ Return pure JSON only.`;
     } else {
       try {
         const warmRes = await warmAgentService.executePrompt(prompt, {
-          model: rawModel,
+          model: agyModel,
           timeoutMs: 35000,
         });
         if (warmRes.success && warmRes.text) {
@@ -632,11 +636,12 @@ Return pure JSON only.`;
       } catch {}
 
       if (!output) {
-        const res = await executeInAgentSandbox(
-          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-          { timeoutMs: 35000, category: "agent" }
-        );
-        if (res.success) output = res.output;
+        const res = await runAgentPromptInSandbox(prompt, {
+          model: agyModel,
+          timeoutMs: 35000,
+          category: "agent",
+        });
+        if (res.success) output = res.text;
       }
     }
 

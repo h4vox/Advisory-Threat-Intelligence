@@ -38,6 +38,7 @@ import { getReportPdf, listReports, auditLibraryWithAi, evaluateReportWithAi } f
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
+import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 
 const librarySearchSchema = z.object({
   q: z.string().optional(),
@@ -1685,9 +1686,9 @@ function LibraryPage() {
               ) : previewData?.rawHtml ? (
                 <iframe
                   title="Document PDF Preview"
-                  srcDoc={previewData.rawHtml}
+                  srcDoc={toSafeSrcDoc(previewData.rawHtml)}
                   className="size-full border-0 bg-white"
-                  sandbox="allow-scripts allow-popups"
+                  sandbox=""
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">

@@ -1,6 +1,6 @@
 FROM debian:bookworm-slim
 
-# Install system dependencies
+# Minimal runtime dependencies for the agent CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
@@ -13,15 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Create directories
-RUN mkdir -p /root/.local/bin /root/.gemini/antigravity-cli /workspace
+# Dedicated unprivileged user. The agent never runs as root.
+RUN groupadd --gid 10001 agent \
+    && useradd --uid 10001 --gid 10001 --home-dir /home/agent --create-home --shell /usr/sbin/nologin agent \
+    && mkdir -p /home/agent/.gemini/antigravity-cli /home/agent/.local/bin /workspace \
+    && chown -R agent:agent /home/agent /workspace \
+    && chmod 700 /home/agent /home/agent/.gemini
+
 COPY agy /usr/local/bin/agy
 RUN chmod 755 /usr/local/bin/agy
 
-ENV PATH="/root/.local/bin:/usr/local/bin:$PATH"
-ENV HOME="/root"
+ENV PATH="/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ENV HOME="/home/agent"
 
+USER 10001:10001
 WORKDIR /workspace
 
-# Keep container running as an isolated daemon
+# Keep container running as an isolated daemon; work happens via `docker exec`.
 CMD ["tail", "-f", "/dev/null"]

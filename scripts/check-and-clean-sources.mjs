@@ -1,7 +1,10 @@
 import { MongoClient } from "mongodb";
 
-const MONGO_URI =
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) {
+  console.error("MONGODB_URI is not set. Export it in your environment (see .env.example); no built-in credentials are provided.");
+  process.exit(1);
+}
 
 async function main() {
   console.log("Connecting to MongoDB Atlas...");

@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { analystMiddleware } from "./access";
+import { isAllowedProviderEndpoint, redactIntegration, redactMarketplaceState } from "./redact";
 import { z } from "zod";
 import {
   analyzeThreatIntelligence,
@@ -26,13 +28,20 @@ import {
   toIsoString,
 } from "./extract";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
-import { safeFetchResource, validateSafePublicUrl, sanitizeDocumentHtml } from "./security";
+import {
+  isSafeCrawlPatternString,
+  isSafePublicUrlString,
+  probeUrlSafely,
+  safeFetchResource,
+  sanitizeDocumentHtml,
+  validateSafePublicUrl,
+} from "./security";
 import { isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
-import { generateAgyOAuthUrl, OFFICIAL_AGY_OAUTH_URL, exchangeOAuthCodeForToken } from "./marketplace-registry";
+import { generateAgyOAuthSession, exchangeOAuthCodeForToken } from "./marketplace-registry";
 import { agentOnboardingOrchestrator } from "./agent-framework/server";
 import type {
   AppSettings,
@@ -455,7 +464,7 @@ const REPORT_SELECT = `
   r.analysis_json, coalesce(r.raw_html, '') as raw_html, coalesce(r.pdf_url, '') as pdf_url
 `;
 
-export const getDashboard = createServerFn({ method: "GET" }).handler(async (): Promise<DashboardStats> => {
+export const getDashboard = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<DashboardStats> => {
   const startTime = Date.now();
   logger.serverFn("getDashboard", "START");
 
@@ -537,7 +546,7 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async (): 
   };
 });
 
-export const listSources = createServerFn({ method: "GET" }).handler(async (): Promise<SourceRecord[]> => {
+export const listSources = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<SourceRecord[]> => {
   if (isMongoConfigured()) {
     try {
       const docs = await mongoListSources();
@@ -567,7 +576,7 @@ export const listSources = createServerFn({ method: "GET" }).handler(async (): P
   }));
 });
 
-export const toggleSource = createServerFn({ method: "POST" })
+export const toggleSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string(), enabled: z.boolean() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -583,7 +592,7 @@ export const toggleSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const listDiscoveredSources = createServerFn({ method: "GET" }).handler(
+export const listDiscoveredSources = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async (): Promise<DiscoveredSourceRecord[]> => {
     if (isMongoConfigured()) {
       try {
@@ -597,13 +606,17 @@ export const listDiscoveredSources = createServerFn({ method: "GET" }).handler(
   },
 );
 
-export const updateDiscoveredSource = createServerFn({ method: "POST" })
+export const updateDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      id: z.string(),
-      name: z.string().optional(),
-      crawlPattern: z.string().optional(),
-      notes: z.string().optional(),
+      id: z.string().max(100),
+      name: z.string().max(200).optional(),
+      crawlPattern: z
+        .string()
+        .max(4000)
+        .refine(isSafeCrawlPatternString, "Every crawl pattern entry must be a public URL.")
+        .optional(),
+      notes: z.string().max(4000).optional(),
       status: z.enum(["discovered", "evaluated", "approved", "ignored", "verified", "rejected"]).optional(),
       enabled: z.boolean().optional(),
     }),
@@ -621,7 +634,7 @@ export const updateDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const revokeDiscoveredSource = createServerFn({ method: "POST" })
+export const revokeDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -636,7 +649,7 @@ export const revokeDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const deleteDiscoveredSource = createServerFn({ method: "POST" })
+export const deleteDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -651,7 +664,7 @@ export const deleteDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const toggleDiscoveredSource = createServerFn({ method: "POST" })
+export const toggleDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string(), enabled: z.boolean() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -666,7 +679,7 @@ export const toggleDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const validateDiscoveredSource = createServerFn({ method: "POST" })
+export const validateDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       id: z.string(),
@@ -686,23 +699,29 @@ export const validateDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const addDiscoveredSource = createServerFn({ method: "POST" })
+export const addDiscoveredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      domain: z.string().min(3),
-      name: z.string().optional(),
-      homepageUrl: z.string().optional(),
-      crawlPattern: z.string().optional(),
-      notes: z.string().optional(),
-      whyCrawl: z.string().optional(),
+      domain: z.string().min(3).max(253),
+      name: z.string().max(200).optional(),
+      homepageUrl: z.string().max(2048).optional(),
+      crawlPattern: z.string().max(4000).optional(),
+      notes: z.string().max(4000).optional(),
+      whyCrawl: z.string().max(4000).optional(),
     }),
   )
   .handler(async ({ data }) => {
+    if (!isSafePublicUrlString(data.domain)) {
+      return { ok: false as const, error: "Invalid source domain: must be a public host." };
+    }
     if (data.homepageUrl) {
       const check = validateSafePublicUrl(data.homepageUrl);
       if (!check.safe) {
         return { ok: false as const, error: `Invalid source URL: ${check.error}` };
       }
+    }
+    if (data.crawlPattern && !isSafeCrawlPatternString(data.crawlPattern)) {
+      return { ok: false as const, error: "Invalid crawl pattern: every entry must be a public URL." };
     }
     if (isMongoConfigured()) {
       try {
@@ -721,11 +740,11 @@ export const addDiscoveredSource = createServerFn({ method: "POST" })
     return { ok: false as const, error: "Database not configured" };
   });
 
-export const getAgentStatus = createServerFn({ method: "GET" }).handler(async () => {
+export const getAgentStatus = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async () => {
   return await isAgentAvailable();
 });
 
-export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
+export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ limit: z.number().optional() }).optional())
   .handler(async ({ data }) => {
     const limit = data?.limit ?? 6;
@@ -777,12 +796,12 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
     };
   });
 
-export const runAiLibraryAudit = createServerFn({ method: "POST" })
+export const runAiLibraryAudit = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z
       .object({
         autoPruneJunk: z.boolean().optional(),
-        limit: z.number().optional(),
+        limit: z.number().int().min(1).max(50).optional(),
         unverifiedOnly: z.boolean().optional(),
         forceAll: z.boolean().optional(),
       })
@@ -799,7 +818,7 @@ export const runAiLibraryAudit = createServerFn({ method: "POST" })
 
 export const auditLibraryWithAi = runAiLibraryAudit;
 
-export const evaluateReportWithAi = createServerFn({ method: "POST" })
+export const evaluateReportWithAi = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       id: z.string(),
@@ -908,7 +927,7 @@ export const evaluateReportWithAi = createServerFn({ method: "POST" })
     };
   });
 
-export const listReports = createServerFn({ method: "GET" })
+export const listReports = createServerFn({ method: "GET" }).middleware([analystMiddleware])
   .validator(
     z
       .object({
@@ -982,7 +1001,7 @@ export const listReports = createServerFn({ method: "GET" })
     );
   });
 
-export const getReport = createServerFn({ method: "GET" })
+export const getReport = createServerFn({ method: "GET" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }): Promise<ReportRecord | null> => {
     const startTime = Date.now();
@@ -1113,7 +1132,7 @@ export const getReport = createServerFn({ method: "GET" })
     };
   });
 
-export const synthesizeReportAttackChain = createServerFn({ method: "POST" })
+export const synthesizeReportAttackChain = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       reportId: z.string(),
@@ -1170,7 +1189,7 @@ export const synthesizeReportAttackChain = createServerFn({ method: "POST" })
     };
   });
 
-export const generateReportSigmaRule = createServerFn({ method: "POST" })
+export const generateReportSigmaRule = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       reportId: z.string(),
@@ -1202,7 +1221,7 @@ export const generateReportSigmaRule = createServerFn({ method: "POST" })
     return result;
   });
 
-export const generateReportEmulationPlan = createServerFn({ method: "POST" })
+export const generateReportEmulationPlan = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       reportId: z.string(),
@@ -1235,7 +1254,7 @@ export const generateReportEmulationPlan = createServerFn({ method: "POST" })
     return result;
   });
 
-export const listCatalog = createServerFn({ method: "GET" }).handler(async (): Promise<
+export const listCatalog = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<
   (CatalogItem & { alreadyIngested: boolean; sourceName: string })[]
 > => {
   await ensureSeeded();
@@ -1620,11 +1639,11 @@ async function persistReport(input: {
   return { ok: true, reportId: id, duplicate: false, qualityScore: score, title: input.title };
 }
 
-export const ingestUrl = createServerFn({ method: "POST" })
+export const ingestUrl = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      url: z.string().min(8),
-      pasted: z.string().optional(),
+      url: z.string().min(8).max(2048),
+      pasted: z.string().max(2_000_000).optional(),
     }),
   )
   .handler(async ({ data }): Promise<IngestResult> => {
@@ -1723,7 +1742,7 @@ export const ingestUrl = createServerFn({ method: "POST" })
   });
 
 // Crawler Server Functions
-export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlerState> => {
+export const getCrawlerState = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<CrawlerState> => {
   if (isMongoConfigured()) {
     try {
       const state = await mongoGetCrawlerState();
@@ -1922,15 +1941,15 @@ export const getCrawlerState = createServerFn({ method: "GET" }).handler(async (
   }
 });
 
-export const updateCrawlerConfig = createServerFn({ method: "POST" })
+export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       enabled: z.boolean().optional(),
       paused: z.boolean().optional(),
-      frequencyMinutes: z.number().optional(),
+      frequencyMinutes: z.number().int().min(15).max(10080).optional(),
       startHour: z.string().optional(),
-      maxResourcesPerRun: z.number().optional(),
-      maxDepth: z.number().optional(),
+      maxResourcesPerRun: z.number().int().min(1).max(500).optional(),
+      maxDepth: z.number().int().min(0).max(5).optional(),
       autoIngest: z.boolean().optional(),
       autoAnalyze: z.boolean().optional(),
       generatePdf: z.boolean().optional(),
@@ -1938,10 +1957,10 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
       htmlDiscovery: z.boolean().optional(),
       searchDiscovery: z.boolean().optional(),
       recursiveDiscovery: z.boolean().optional(),
-      keywords: z.string().optional(),
-      noiseKeywords: z.string().optional(),
-      minQualityScore: z.number().optional(),
-      minWordCount: z.number().optional(),
+      keywords: z.string().max(2000).optional(),
+      noiseKeywords: z.string().max(2000).optional(),
+      minQualityScore: z.number().min(0).max(1).optional(),
+      minWordCount: z.number().int().min(0).max(20000).optional(),
       strictnessMode: z.enum(["permissive", "balanced", "strict"]).optional(),
       requireIocs: z.boolean().optional(),
       requireAttck: z.boolean().optional(),
@@ -1949,9 +1968,9 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
       dedupMethod: z.enum(["canonical_url", "content_hash", "both", "smart_hybrid"]).optional(),
       activeSources: z.array(z.string()).optional(),
       targetResourceTypes: z.array(z.string()).optional(),
-      maxResourcesPerJob: z.number().optional(),
-      maxRunTimeMinutes: z.number().optional(),
-      maxResourcesPerDomain: z.number().optional(),
+      maxResourcesPerJob: z.number().int().min(1).max(1000).optional(),
+      maxRunTimeMinutes: z.number().int().min(1).max(120).optional(),
+      maxResourcesPerDomain: z.number().int().min(1).max(200).optional(),
       discoveryBreadth: z.enum(["focused", "balanced", "wide"]).optional(),
       allowExternalDomains: z.boolean().optional(),
       domainAllowlist: z.array(z.string()).optional(),
@@ -2000,7 +2019,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" })
     return { ok: true as const, config: updated };
   });
 
-export const getCrawlConfig = createServerFn({ method: "GET" }).handler(async (): Promise<CrawlConfig> => {
+export const getCrawlConfig = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<CrawlConfig> => {
   const startTime = Date.now();
   logger.serverFn("getCrawlConfig", "START");
   if (isMongoConfigured()) {
@@ -2015,7 +2034,7 @@ export const getCrawlConfig = createServerFn({ method: "GET" }).handler(async ()
   return await getOrCreateCrawlConfig();
 });
 
-export const getAppSettings = createServerFn({ method: "GET" }).handler(async (): Promise<AppSettings> => {
+export const getAppSettings = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<AppSettings> => {
   const startTime = Date.now();
   logger.serverFn("getAppSettings", "START");
   if (isMongoConfigured()) {
@@ -2030,24 +2049,32 @@ export const getAppSettings = createServerFn({ method: "GET" }).handler(async ()
   return DEFAULT_APP_SETTINGS;
 });
 
-export const updateAppSettings = createServerFn({ method: "POST" })
+export const updateAppSettings = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      organizationName: z.string().optional(),
-      nodeId: z.string().optional(),
-      defaultClassification: z.string().optional(),
-      iocConfidenceThreshold: z.number().optional(),
-      evidenceRetentionDays: z.number().optional(),
+      organizationName: z.string().max(200).optional(),
+      nodeId: z.string().max(200).optional(),
+      defaultClassification: z.string().max(200).optional(),
+      iocConfidenceThreshold: z.number().min(0).max(100).optional(),
+      evidenceRetentionDays: z.number().int().min(1).max(3650).optional(),
       defaultExportFormat: z.enum(["json", "stix21", "csv", "pdf"]).optional(),
-      cacheTtlSeconds: z.number().optional(),
-      dashboardCacheTtlSeconds: z.number().optional(),
-      autoPurgeStaleEventsDays: z.number().optional(),
+      cacheTtlSeconds: z.number().int().min(0).max(86400).optional(),
+      dashboardCacheTtlSeconds: z.number().int().min(0).max(86400).optional(),
+      autoPurgeStaleEventsDays: z.number().int().min(0).max(3650).optional(),
       defaultMatrixLayout: z.enum(["standard", "compact", "mini"]).optional(),
       matrixSubtechniqueAutoExpand: z.boolean().optional(),
-      pollingIntervalSeconds: z.number().optional(),
+      pollingIntervalSeconds: z.number().int().min(2).max(3600).optional(),
       enableSoundAlerts: z.boolean().optional(),
       enableLiveTelemetryStream: z.boolean().optional(),
-    }).passthrough(),
+      agentDiscoveryEnabled: z.boolean().optional(),
+      agentTaggingEnabled: z.boolean().optional(),
+      agentApprovalEnabled: z.boolean().optional(),
+      agentAutoIngestEnabled: z.boolean().optional(),
+      agentCrawlSourcesEnabled: z.boolean().optional(),
+      agentModel: z.string().max(200).optional(),
+      agentTimeoutSeconds: z.number().int().min(5).max(600).optional(),
+      activeAgentProvider: z.string().max(100).optional(),
+    }),
   )
   .handler(async ({ data }) => {
     const startTime = Date.now();
@@ -2064,7 +2091,7 @@ export const updateAppSettings = createServerFn({ method: "POST" })
     return { ok: true as const, settings: DEFAULT_APP_SETTINGS };
   });
 
-export const purgeServerCaches = createServerFn({ method: "POST" }).handler(async () => {
+export const purgeServerCaches = createServerFn({ method: "POST" }).middleware([analystMiddleware]).handler(async () => {
   const startTime = Date.now();
   logger.serverFn("purgeServerCaches", "START");
   const result = purgeAllServerCaches();
@@ -2072,7 +2099,7 @@ export const purgeServerCaches = createServerFn({ method: "POST" }).handler(asyn
   return { ok: true as const, result };
 });
 
-export const getStorageStats = createServerFn({ method: "GET" }).handler(async (): Promise<StorageStats> => {
+export const getStorageStats = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<StorageStats> => {
   const startTime = Date.now();
   logger.serverFn("getStorageStats", "START");
   if (isMongoConfigured()) {
@@ -2103,7 +2130,7 @@ export const getStorageStats = createServerFn({ method: "GET" }).handler(async (
   };
 });
 
-export const deleteReport = createServerFn({ method: "POST" })
+export const deleteReport = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -2118,7 +2145,7 @@ export const deleteReport = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-export const getReportPdf = createServerFn({ method: "GET" })
+export const getReportPdf = createServerFn({ method: "GET" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     if (isMongoConfigured()) {
@@ -2233,12 +2260,12 @@ export const getReportPdf = createServerFn({ method: "GET" })
     };
   });
 
-export const triggerCrawlJob = createServerFn({ method: "POST" })
+export const triggerCrawlJob = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z
       .object({
         triggerType: z.enum(["MANUAL", "SCHEDULED", "SEARCH", "API", "AGENT"]).optional(),
-        customQuery: z.string().optional(),
+        customQuery: z.string().max(300).optional(),
       })
       .optional(),
   )
@@ -2249,13 +2276,13 @@ export const triggerCrawlJob = createServerFn({ method: "POST" })
     return { ok: true as const, job };
   });
 
-export const checkCrawlerSchedule = createServerFn({ method: "POST" })
+export const checkCrawlerSchedule = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .handler(async () => {
     const res = await checkAndTriggerScheduledCrawl();
     return res;
   });
 
-export const cancelCrawlJob = createServerFn({ method: "POST" })
+export const cancelCrawlJob = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ jobId: z.string() }))
   .handler(async ({ data }) => {
     const success = await cancelJob(data.jobId);
@@ -2263,7 +2290,7 @@ export const cancelCrawlJob = createServerFn({ method: "POST" })
     return { ok: success };
   });
 
-export const ingestDiscoveredUrl = createServerFn({ method: "POST" })
+export const ingestDiscoveredUrl = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ discoveredId: z.string() }))
   .handler(async ({ data }): Promise<IngestResult> => {
     await ensureSeeded();
@@ -2344,10 +2371,10 @@ export const ingestDiscoveredUrl = createServerFn({ method: "POST" })
     return result;
   });
 
-export const batchIngestDiscoveredUrls = createServerFn({ method: "POST" })
+export const batchIngestDiscoveredUrls = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      discoveredIds: z.array(z.string()).min(1),
+      discoveredIds: z.array(z.string().max(100)).min(1).max(200),
       concurrency: z.number().min(1).max(8).optional().default(4),
     }),
   )
@@ -2409,10 +2436,10 @@ export const batchIngestDiscoveredUrls = createServerFn({ method: "POST" })
     };
   });
 
-export const batchRejectDiscoveredUrls = createServerFn({ method: "POST" })
+export const batchRejectDiscoveredUrls = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      discoveredIds: z.array(z.string()).min(1),
+      discoveredIds: z.array(z.string().max(100)).min(1).max(200),
       reason: z.string().optional().default("Analyst rejected candidate resource"),
     }),
   )
@@ -2463,7 +2490,7 @@ export const batchRejectDiscoveredUrls = createServerFn({ method: "POST" })
     return { ok: true, count: updatedCount || data.discoveredIds.length };
   });
 
-export const probeSourceFeeds = createServerFn({ method: "POST" })
+export const probeSourceFeeds = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       sourceIds: z.array(z.string()).optional(),
@@ -2510,57 +2537,23 @@ export const probeSourceFeeds = createServerFn({ method: "POST" })
         const src = queue.shift();
         if (!src) break;
 
-        const startTime = Date.now();
         const targetUrl = src.url;
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-          const res = await fetch(targetUrl, {
-            method: "HEAD",
-            signal: controller.signal,
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Advisory-Threat-Intelligence/2.0",
-              "Accept": "text/html,application/xhtml+xml,application/xml,application/rss+xml,*/*",
-            },
-          }).catch(async () => {
-            return await fetch(targetUrl, {
-              method: "GET",
-              signal: controller.signal,
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Advisory-Threat-Intelligence/2.0",
-                "Range": "bytes=0-1024",
-              },
-            });
-          });
-
-          clearTimeout(timeoutId);
-          const latencyMs = Date.now() - startTime;
-          const reachable = res.status >= 200 && res.status < 400;
-
-          probes.push({
-            sourceId: src.id,
-            url: targetUrl,
-            domain: src.domain,
-            statusCode: res.status,
-            latencyMs,
-            reachable,
-            contentType: res.headers.get("content-type") || "unknown",
-            timestamp: new Date().toISOString(),
-          });
-        } catch (err: any) {
-          probes.push({
-            sourceId: src.id,
-            url: targetUrl,
-            domain: src.domain,
-            statusCode: 0,
-            latencyMs: Date.now() - startTime,
-            reachable: false,
-            contentType: "none",
-            error: err?.name === "AbortError" ? "Request timed out (>4000ms)" : err?.message || "Connection refused",
-            timestamp: new Date().toISOString(),
-          });
+        // Validated path: DNS-checked on every hop, manual redirects, body cancelled.
+        let probe = await probeUrlSafely(targetUrl, { method: "HEAD", timeoutMs: 4000 });
+        if (!probe.ok && probe.statusCode === 405) {
+          probe = await probeUrlSafely(targetUrl, { method: "GET", timeoutMs: 4000 });
         }
+        probes.push({
+          sourceId: src.id,
+          url: targetUrl,
+          domain: src.domain,
+          statusCode: probe.statusCode ?? 0,
+          latencyMs: probe.latencyMs,
+          reachable: probe.ok,
+          contentType: probe.contentType || "unknown",
+          ...(probe.error ? { error: probe.error } : {}),
+          timestamp: new Date().toISOString(),
+        });
       }
     };
 
@@ -2577,7 +2570,7 @@ export const probeSourceFeeds = createServerFn({ method: "POST" })
     };
   });
 
-export const exportSTIXBundle = createServerFn({ method: "GET" }).handler(async () => {
+export const exportSTIXBundle = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async () => {
   await ensureSeeded();
 
   if (isMongoConfigured()) {
@@ -2662,13 +2655,28 @@ export const exportSTIXBundle = createServerFn({ method: "GET" }).handler(async 
 // Marketplace & Response Integration Server Functions
 // ---------------------------------------------------------------------------
 
-export const getMarketplaceData = createServerFn({ method: "GET" }).handler(
+/** Fields a client may set on an integration; anything else is rejected. */
+const integrationConfigInput = z
+  .object({
+    apiKey: z.string().trim().min(1).max(400).optional(),
+    authToken: z.string().trim().min(1).max(4000).optional(),
+    selectedModel: z.string().max(200).optional(),
+    authMethod: z.string().max(50).optional(),
+    endpointUrl: z
+      .string()
+      .max(500)
+      .refine(isAllowedProviderEndpoint, "Endpoint must be https on an approved provider host (AIE_ALLOWED_LLM_HOSTS).")
+      .optional(),
+  })
+  .strict();
+
+export const getMarketplaceData = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async (): Promise<MarketplaceState> => {
-    return mongoGetMarketplaceState();
+    return redactMarketplaceState(await mongoGetMarketplaceState());
   }
 );
 
-export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
+export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       id: z.string(),
@@ -2676,7 +2684,6 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       authToken: z.string().optional(),
       apiKey: z.string().optional(),
       selectedModel: z.string().optional(),
-      codeVerifier: z.string().optional(),
     })
   )
   .handler(async ({ data }) => {
@@ -2700,10 +2707,19 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
     };
 
     let rawLogs = "";
-    let authUrl = data.id === "agy_agent" ? generateAgyOAuthUrl() : (existing.authUrl || OFFICIAL_AGY_OAUTH_URL);
+    // PKCE verifier lives server-side only (config.oauthCodeVerifier is redacted
+    // before integrations reach the browser). Starting a new sign-in mints a new
+    // verifier; submitting a code reuses the one minted for that attempt.
+    const storedVerifier: string | undefined = existing.config?.oauthCodeVerifier;
+    let pendingVerifier = storedVerifier;
+    let authUrl = existing.config?.authUrl || existing.authUrl || "";
+    if (data.id === "agy_agent" && (!data.authToken || !storedVerifier)) {
+      const session = generateAgyOAuthSession();
+      authUrl = session.authUrl;
+      pendingVerifier = session.codeVerifier;
+    }
 
     if (data.id === "agy_agent") {
-      authUrl = generateAgyOAuthUrl();
 
       addLog("INFO", "system", `Starting containerized agent onboarding for ${existing.name}...`);
 
@@ -2738,14 +2754,14 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
 
         if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
           addLog("AUTH", "auth", `Detected Google OAuth authorization code. Exchanging with Google OAuth token service...`);
-          const exchangeRes = await exchangeOAuthCodeForToken(trimmed, data.codeVerifier);
+          const exchangeRes = await exchangeOAuthCodeForToken(trimmed, storedVerifier);
           if (exchangeRes.success && exchangeRes.token) {
-            addLog("AUTH", "auth", `Google OAuth token exchange SUCCESSFUL! Refresh token acquired.`);
+            addLog("AUTH", "auth", `Google OAuth token exchange succeeded.`);
             const injectRes = injectContainerOAuthToken(exchangeRes.token);
             addLog("INFO", "auth", injectRes.message);
+            pendingVerifier = undefined;
           } else {
-            addLog("ERROR", "auth", `OAuth code exchange failed: ${exchangeRes.error || "Invalid authorization code"}`);
-            injectContainerOAuthToken(trimmed);
+            addLog("ERROR", "auth", `OAuth code exchange failed: ${exchangeRes.error || "Invalid authorization code"}. Start sign-in again.`);
           }
         } else {
           try {
@@ -2766,7 +2782,7 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       // Check container vault token
       const tokenCheck = checkContainerOAuthToken();
       if (tokenCheck.exists) {
-        addLog("INFO", "auth", `OAuth credentials verified in container vault (/root/.gemini/antigravity-cli/antigravity-oauth-token).`);
+        addLog("INFO", "auth", `OAuth credentials verified in container vault (/home/agent/.gemini/antigravity-cli/antigravity-oauth-token).`);
         try {
           addLog("EXEC", "agent", `Running container verification probe: agy -p "ping"`);
           const { execSync } = await import("node:child_process");
@@ -2808,15 +2824,13 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
           addLog("WARN", "install", `Container package installation notice: ${installErr?.message || "Using simulated package profile"}`);
         }
       } else {
-        addLog("EXEC", "install", `npm install -g @anthropic-ai/claude-code`);
-        addLog("INFO", "install", `Resolved package: @anthropic-ai/claude-code@${existing.version} (integrity: sha512-4f8a92...)`);
-        addLog("DEBUG", "install", `Configuring global binary symlink: /usr/local/bin/claude -> @anthropic-ai/claude-code`);
+        addLog("WARN", "install", `Agent sandbox container is not running; Claude Code CLI was NOT installed. Start the sandbox and retry.`);
       }
 
       addLog("INFO", "auth", `Authorization mode: API Key & Anthropic Console device code`);
       addLog("AUTH", "auth", `Portal: https://console.anthropic.com/settings/keys`);
       if (data.apiKey) {
-        addLog("AUTH", "auth", `Anthropic API Key verified (prefix: ${data.apiKey.slice(0, 10)}...): saved to credential store`);
+        addLog("AUTH", "auth", `Anthropic API key saved (not yet verified — run Test Connection).`);
       }
       addLog("INFO", "system", `Claude Code Agent profile configured and ready.`);
       rawLogs = logs.join("\n");
@@ -2846,15 +2860,13 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
           addLog("WARN", "install", `Container package installation notice: ${installErr?.message || "Using simulated package profile"}`);
         }
       } else {
-        addLog("EXEC", "install", `npm install -g @openai/codex-cli`);
-        addLog("INFO", "install", `Package @openai/codex-cli@${existing.version} unpacked`);
-        addLog("DEBUG", "install", `Binary link registered: /usr/local/bin/codex`);
+        addLog("WARN", "install", `Agent sandbox container is not running; Codex CLI was NOT installed. Start the sandbox and retry.`);
       }
 
       addLog("INFO", "auth", `Authorization mode: OpenAI Platform API key`);
       addLog("AUTH", "auth", `Portal: https://platform.openai.com/api-keys`);
       if (data.apiKey) {
-        addLog("AUTH", "auth", `OpenAI API Key verified (prefix: ${data.apiKey.slice(0, 7)}...): saved to credential store`);
+        addLog("AUTH", "auth", `OpenAI API key saved (not yet verified — run Test Connection).`);
       }
       addLog("INFO", "system", `Codex Agent profile configured and ready.`);
       rawLogs = logs.join("\n");
@@ -2873,7 +2885,7 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
           addLog("WARN", "auth", `Credential verification warning: ${probeRes.message}`);
         }
       } else {
-        addLog("INFO", "auth", `API Key saved to secure vault. Run 'Test Connection' in Marketplace to verify live reachability.`);
+        addLog("INFO", "auth", `No API key supplied. Add one and run Test Connection.`);
       }
       addLog("INFO", "system", `${existing.name} provider profile successfully configured.`);
       rawLogs = logs.join("\n");
@@ -2890,11 +2902,13 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       config: {
         ...existing.config,
         apiKey: data.apiKey || existing.config?.apiKey,
-        authToken: data.authToken || existing.config?.authToken,
+        authToken: data.id === "agy_agent" ? undefined : data.authToken || existing.config?.authToken,
         selectedModel: data.selectedModel || existing.config?.selectedModel || existing.supportedModels[0],
         installedAt: existing.config?.installedAt || new Date().toISOString(),
         lastReconfiguredAt: data.reconfig ? new Date().toISOString() : existing.config?.lastReconfiguredAt,
         isConfigured: true,
+        authUrl: data.id === "agy_agent" ? authUrl : existing.config?.authUrl,
+        oauthCodeVerifier: pendingVerifier,
         logs,
       },
     };
@@ -2912,15 +2926,15 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" })
       logs,
       rawLogs,
       authUrl,
-      integration: updated,
+      integration: redactIntegration(updated),
     };
   });
 
-export const installMarketplaceIntegration = createServerFn({ method: "POST" })
+export const installMarketplaceIntegration = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      id: z.string(),
-      config: z.record(z.string(), z.any()).optional(),
+      id: z.string().max(100),
+      config: integrationConfigInput.optional(),
     })
   )
   .handler(async ({ data }) => {
@@ -2952,10 +2966,10 @@ export const installMarketplaceIntegration = createServerFn({ method: "POST" })
 
     await mongoSaveMarketplaceIntegration(updated);
     logger.serverFn("installMarketplaceIntegration", "DONE", undefined, { id: data.id });
-    return { success: true, integration: updated };
+    return { success: true, integration: redactIntegration(updated) };
   });
 
-export const uninstallMarketplaceIntegration = createServerFn({ method: "POST" })
+export const uninstallMarketplaceIntegration = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     const res = await mongoUninstallMarketplaceIntegration(data.id);
@@ -2963,11 +2977,11 @@ export const uninstallMarketplaceIntegration = createServerFn({ method: "POST" }
     return res;
   });
 
-export const configureMarketplaceIntegration = createServerFn({ method: "POST" })
+export const configureMarketplaceIntegration = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      id: z.string(),
-      config: z.record(z.string(), z.any()),
+      id: z.string().max(100),
+      config: integrationConfigInput,
     })
   )
   .handler(async ({ data }) => {
@@ -2990,12 +3004,12 @@ export const configureMarketplaceIntegration = createServerFn({ method: "POST" }
     if (data.config?.authToken && (data.id === "agy_agent" || existing.type === "cli_agent")) {
       const trimmed = String(data.config.authToken).trim();
       if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
-        const ex = await exchangeOAuthCodeForToken(trimmed, data.config?.codeVerifier);
-        if (ex.success && ex.token) {
-          injectContainerOAuthToken(ex.token);
-        } else {
-          injectContainerOAuthToken(trimmed);
+        const ex = await exchangeOAuthCodeForToken(trimmed, existing.config?.oauthCodeVerifier);
+        if (!ex.success || !ex.token) {
+          throw new Error(`OAuth code exchange failed: ${ex.error || "invalid code"}. Start sign-in again.`);
         }
+        injectContainerOAuthToken(ex.token);
+        if (updated.config) updated.config.oauthCodeVerifier = undefined;
       } else {
         injectContainerOAuthToken(trimmed);
       }
@@ -3003,10 +3017,10 @@ export const configureMarketplaceIntegration = createServerFn({ method: "POST" }
 
     await mongoSaveMarketplaceIntegration(updated);
     logger.serverFn("configureMarketplaceIntegration", "DONE", undefined, { id: data.id });
-    return { success: true, integration: updated };
+    return { success: true, integration: redactIntegration(updated) };
   });
 
-export const setActiveAgentProvider = createServerFn({ method: "POST" })
+export const setActiveAgentProvider = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       id: z.string(),
@@ -3031,7 +3045,7 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" })
     return { success: true, activeProviderId: data.id, activeModel: modelToSet };
   });
 
-export const testIntegrationConnection = createServerFn({ method: "POST" })
+export const testIntegrationConnection = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     const startTime = Date.now();
@@ -3062,7 +3076,7 @@ export const testIntegrationConnection = createServerFn({ method: "POST" })
       // Check OAuth token presence in container vault
       const tokenCheck = checkContainerOAuthToken();
       if (tokenCheck.exists) {
-        addAuditLog("INFO", "auth", `OAuth credentials file verified in container vault (/root/.gemini/antigravity-cli/antigravity-oauth-token)`);
+        addAuditLog("INFO", "auth", `OAuth credentials file verified in container vault (/home/agent/.gemini/antigravity-cli/antigravity-oauth-token)`);
       } else {
         addAuditLog("WARN", "auth", `OAuth credentials not found in container vault. Authenticate via Google OAuth.`);
       }
@@ -3181,13 +3195,13 @@ export const testIntegrationConnection = createServerFn({ method: "POST" })
     };
   });
 
-export const getAvailableModelsList = createServerFn({ method: "GET" }).handler(
+export const getAvailableModelsList = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async () => {
     return getAvailableAgentModels();
   }
 );
 
-export const getAgentSandboxStatus = createServerFn({ method: "GET" }).handler(
+export const getAgentSandboxStatus = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async (): Promise<SandboxStatus> => {
     const status = detectSandboxRuntime();
     if (status.dockerAvailable && !status.containerRunning) {
@@ -3200,13 +3214,13 @@ export const getAgentSandboxStatus = createServerFn({ method: "GET" }).handler(
   }
 );
 
-export const restartAgentSandbox = createServerFn({ method: "POST" }).handler(
+export const restartAgentSandbox = createServerFn({ method: "POST" }).middleware([analystMiddleware]).handler(
   async () => {
     return ensureAgentSandboxRunning();
   }
 );
 
-export const getAgentSandboxLogs = createServerFn({ method: "POST" })
+export const getAgentSandboxLogs = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z
       .object({
@@ -3231,14 +3245,14 @@ export const getAgentSandboxLogs = createServerFn({ method: "POST" })
     };
   });
 
-export const clearAgentSandboxLogs = createServerFn({ method: "POST" }).handler(
+export const clearAgentSandboxLogs = createServerFn({ method: "POST" }).middleware([analystMiddleware]).handler(
   async () => {
     clearSandboxLogs();
     return { success: true, timestamp: new Date().toISOString() };
   }
 );
 
-export const detectLocalAgentSession = createServerFn({ method: "GET" }).handler(
+export const detectLocalAgentSession = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async () => {
     try {
       const containerToken = checkContainerOAuthToken();
@@ -3246,7 +3260,7 @@ export const detectLocalAgentSession = createServerFn({ method: "GET" }).handler
         return {
           available: true,
           tokenType: "Bearer (Container Vault)",
-          tokenPreview: containerToken.tokenPreview || "Verified",
+          tokenPreview: "present",
           expiry: containerToken.expiry,
           fullToken: undefined,
         };
@@ -3275,12 +3289,12 @@ export interface GroundedChatSource {
   snippet?: string;
 }
 
-export const chatWithAgyAgent = createServerFn({ method: "POST" })
+export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
-      message: z.string().min(1),
-      model: z.string().optional(),
-      sessionId: z.string().optional(),
+      message: z.string().trim().min(1).max(4000),
+      model: z.string().max(200).optional(),
+      sessionId: z.string().max(100).optional(),
     })
   )
   .handler(async ({ data }) => {
@@ -3446,21 +3460,21 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
     };
   });
 
-export const getAgentChatSessionMessages = createServerFn({ method: "POST" })
+export const getAgentChatSessionMessages = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ sessionId: z.string().min(1) }))
   .handler(async ({ data }) => {
     const messages = await mongoGetChatSessionMessages(data.sessionId);
     return { success: true, messages };
   });
 
-export const clearAgentChatSession = createServerFn({ method: "POST" })
+export const clearAgentChatSession = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ sessionId: z.string().min(1) }))
   .handler(async ({ data }) => {
     await mongoClearChatSession(data.sessionId);
     return { success: true };
   });
 
-export const listAgentChatSessions = createServerFn({ method: "POST" })
+export const listAgentChatSessions = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .handler(async () => {
     const sessions = await mongoListChatSessions();
     return { success: true, sessions };
@@ -3489,7 +3503,7 @@ export interface ContainerDetailedMetrics {
   timestamp: string;
 }
 
-export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).handler(
+export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async (): Promise<ContainerDetailedMetrics> => {
     let dockerAvailable = false;
     let containerRunning = false;
@@ -3541,8 +3555,7 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).han
 
     let tokenDetected = false;
     try {
-      const { existsSync } = await import("node:fs");
-      tokenDetected = existsSync("/home/havox/.gemini/antigravity-cli/antigravity-oauth-token");
+      tokenDetected = checkContainerOAuthToken().exists;
     } catch {}
 
     const mem = process.memoryUsage();
@@ -3572,7 +3585,7 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).han
   }
 );
 
-export const executeDiagnosticsCommand = createServerFn({ method: "POST" })
+export const executeDiagnosticsCommand = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       command: z.enum(["version", "models", "help", "stats", "token", "ping"]),
@@ -3633,32 +3646,19 @@ export const executeDiagnosticsCommand = createServerFn({ method: "POST" })
       }
 
       if (data.command === "token") {
-        const { existsSync, readFileSync } = await import("node:fs");
-        const tokenPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
-        if (existsSync(tokenPath)) {
-          const raw = readFileSync(tokenPath, "utf-8");
-          const parsed = JSON.parse(raw);
-          const preview = parsed.token?.access_token ? `${parsed.token.access_token.slice(0, 14)}...${parsed.token.access_token.slice(-6)}` : "empty";
-          const out = `OAuth Token Verified in Vault:\n• Path: /root/.gemini/antigravity-cli/antigravity-oauth-token\n• Token Type: ${parsed.token?.token_type || "Bearer"}\n• Token Preview: ${preview}\n• Expiry: ${parsed.token?.expiry || "persistent"}`;
-          appendSandboxLog("INFO", "auth", out);
-          return {
-            command: "vault token audit",
-            output: out,
-            latencyMs: Date.now() - startTime,
-            success: true,
-            logs: [`[${new Date().toISOString()}] [AUTH] ${out}`],
-          };
-        } else {
-          const out = "No token found in vault at /root/.gemini/antigravity-cli/antigravity-oauth-token. Session running in unauthenticated sandbox mode.";
-          appendSandboxLog("WARN", "auth", out);
-          return {
-            command: "vault token audit",
-            output: out,
-            latencyMs: Date.now() - startTime,
-            success: false,
-            logs: [`[${new Date().toISOString()}] [WARN] ${out}`],
-          };
-        }
+        // Never reveal token material; report presence and expiry only.
+        const check = checkContainerOAuthToken();
+        const out = check.exists
+          ? `OAuth credential present in the agent container vault.\n• Expiry: ${check.expiry || "not reported"}`
+          : "No OAuth credential in the agent container vault.";
+        appendSandboxLog("INFO", "auth", out);
+        return {
+          command: "vault token audit",
+          output: out,
+          latencyMs: Date.now() - startTime,
+          success: check.exists,
+          logs: [`[${new Date().toISOString()}] [AUTH] ${out}`],
+        };
       }
 
       // Default: ping
@@ -3688,7 +3688,7 @@ export const executeDiagnosticsCommand = createServerFn({ method: "POST" })
 // Generic & Extensible Agent Onboarding Pipeline (10-Step Lifecycle)
 // ---------------------------------------------------------------------------
 
-export const getAgentOnboardingStatus = createServerFn({ method: "GET" })
+export const getAgentOnboardingStatus = createServerFn({ method: "GET" }).middleware([analystMiddleware])
   .validator(
     z
       .object({
@@ -3700,7 +3700,7 @@ export const getAgentOnboardingStatus = createServerFn({ method: "GET" })
     return agentOnboardingOrchestrator.getStatus(data?.agentId || "agy_agent");
   });
 
-export const advanceAgentOnboarding = createServerFn({ method: "POST" })
+export const advanceAgentOnboarding = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       agentId: z.string(),
@@ -3711,23 +3711,21 @@ export const advanceAgentOnboarding = createServerFn({ method: "POST" })
     return agentOnboardingOrchestrator.startOrAdvance(data.agentId, data.authMethod);
   });
 
-export const submitAgentOnboardingCode = createServerFn({ method: "POST" })
+export const submitAgentOnboardingCode = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       agentId: z.string(),
-      code: z.string(),
-      codeVerifier: z.string().optional(),
-      methodId: z.string().optional(),
+      code: z.string().max(4000),
+      methodId: z.string().max(100).optional(),
     })
   )
   .handler(async ({ data }) => {
     return agentOnboardingOrchestrator.submitAuthCode(data.agentId, data.code, {
-      codeVerifier: data.codeVerifier,
       methodId: data.methodId,
     });
   });
 
-export const testAgentOnboardingConnection = createServerFn({ method: "POST" })
+export const testAgentOnboardingConnection = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       agentId: z.string(),
@@ -3737,7 +3735,7 @@ export const testAgentOnboardingConnection = createServerFn({ method: "POST" })
     return agentOnboardingOrchestrator.testConnection(data.agentId);
   });
 
-export const resetAgentOnboarding = createServerFn({ method: "POST" })
+export const resetAgentOnboarding = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
     z.object({
       agentId: z.string(),

@@ -51,6 +51,8 @@ create table if not exists crawl_jobs (
   created_at timestamptz not null default now()
 );
 
+-- 0003_crawler.sql may have created this table first without created_at.
+alter table crawl_jobs add column if not exists created_at timestamptz not null default now();
 create index if not exists crawl_jobs_created_at_idx on crawl_jobs (created_at desc);
 create index if not exists crawl_jobs_status_idx on crawl_jobs (status);
 
@@ -73,6 +75,8 @@ create table if not exists crawl_job_items (
   created_at timestamptz not null default now()
 );
 
+-- 0003_crawler.sql may have created this table first without created_at.
+alter table crawl_job_items add column if not exists created_at timestamptz not null default now();
 create index if not exists crawl_job_items_job_id_idx on crawl_job_items (job_id);
 create index if not exists crawl_job_items_created_at_idx on crawl_job_items (created_at desc);
 
@@ -100,6 +104,8 @@ create table if not exists discovered_resources (
   updated_at timestamptz not null default now()
 );
 
+-- 0003_crawler.sql may have created this table first without created_at.
+alter table discovered_resources add column if not exists created_at timestamptz not null default now();
 create index if not exists discovered_resources_status_idx on discovered_resources (status);
 create index if not exists discovered_resources_source_id_idx on discovered_resources (source_id);
 create index if not exists discovered_resources_created_at_idx on discovered_resources (created_at desc);

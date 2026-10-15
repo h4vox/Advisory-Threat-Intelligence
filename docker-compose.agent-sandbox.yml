@@ -1,3 +1,13 @@
+# Isolated sandbox for the agent CLI (agy).
+# - Runs as an unprivileged user with every Linux capability dropped.
+# - Root filesystem is read-only; scratch space is tmpfs.
+# - Only the dedicated credential volume is mounted; no host directories.
+# - Network access is intentionally kept: the agent must reach the model API.
+#   It is not otherwise restricted, so the agent runs print-only with tools
+#   disabled (no --dangerously-skip-permissions) from the application side.
+# Upgrading from the old root-based image: the existing `aie-agent-vault`
+# volume is owned by root. Remove it (`docker volume rm aie-agent-vault`) and
+# re-authenticate, or chown it to 10001:10001.
 services:
   aie-agent-sandbox:
     container_name: aie-agent-sandbox
@@ -6,14 +16,27 @@ services:
       dockerfile: Dockerfile
     image: aie-agent-sandbox:latest
     restart: unless-stopped
+    init: true
     stdin_open: true
-    tty: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.5
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /home/agent:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
+      - /workspace:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001
     volumes:
-      - aie-agent-vault:/root/.gemini
+      - aie-agent-vault:/home/agent/.gemini
     environment:
       - AGENT_ENV=isolated_sandbox
-      - PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
-      - HOME=/root
+      - PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+      - HOME=/home/agent
     network_mode: bridge
 
 volumes:

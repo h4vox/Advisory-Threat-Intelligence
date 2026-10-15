@@ -9,15 +9,20 @@
  * 2. Fail-Safe Fallback: If AGY CLI is unavailable, disabled, times out, or produces invalid output,
  *    the crawler engine seamlessly falls back to existing heuristic evaluation without disruption.
  * 3. Exact Taxonomy: Agent enforces the exact same tag categories, classifications, and ResourceKinds as the crawler engine.
- * 4. Single-Command Operation: Operates via Node child processes spawned automatically during `npm run dev`.
+ * 4. Sandbox-only: the agent runs exclusively inside the `aie-agent-sandbox` container in
+ *    print mode with no tool permissions; prompts go over stdin. There is no host fallback.
  */
 
-import { spawn, execSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import type { ResourceClassification } from "./qualification";
 import type { ResourceKind, AgentScoreBreakdown } from "./types";
-import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "./agent-framework/types";
+import {
+  sanitizeAgyModel,
+  DEFAULT_AGY_MODEL,
+  UNTRUSTED_CONTENT_NOTICE,
+  wrapUntrustedContent,
+} from "./agent-framework/types";
 import { warmAgentService } from "./warm-agent-service";
+import { executeInAgentSandbox, runAgentPromptInSandbox } from "./agent-sandbox";
 
 export type DiscoveredAgentSource = {
   source_name: string;
@@ -189,117 +194,31 @@ export const PREMIER_RESEARCH_LABS: Array<{
   },
 ];
 
-let cachedSandboxRunning: { running: boolean; expiresAt: number } | null = null;
-
-function isSandboxContainerActive(): boolean {
-  const now = Date.now();
-  if (cachedSandboxRunning && cachedSandboxRunning.expiresAt > now) {
-    return cachedSandboxRunning.running;
-  }
-  try {
-    const inspect = execSync("docker inspect -f '{{.State.Running}}' aie-agent-sandbox", {
-      encoding: "utf-8",
-      timeout: 2000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const running = inspect === "true";
-    cachedSandboxRunning = { running, expiresAt: now + 15000 };
-    return running;
-  } catch {
-    cachedSandboxRunning = { running: false, expiresAt: now + 15000 };
-    return false;
-  }
-}
-
 /**
- * Resolve the CLI command & arguments based on sandbox container and OS platform
+ * Run one model prompt inside the sandbox container (stdin, print mode, no
+ * tools, no host fallback). Retries once with the default model on quota
+ * errors. Never throws.
  */
-function getAgyCommandArgs(args: string[]): { command: string; finalArgs: string[] } {
-  const sanitizedArgs = [...args];
-  for (let i = 0; i < sanitizedArgs.length; i++) {
-    if (sanitizedArgs[i] === "--model" && sanitizedArgs[i + 1]) {
-      sanitizedArgs[i + 1] = sanitizeAgyModel(sanitizedArgs[i + 1]);
-    }
+async function runAgentPromptWithQuotaRetry(
+  prompt: string,
+  model: string,
+  timeoutSec: number,
+): Promise<{ text: string; error?: string }> {
+  const timeoutMs = (timeoutSec + 15) * 1000;
+  let res = await runAgentPromptInSandbox(prompt, { model, timeoutMs });
+  if (res.success) return { text: res.text };
+
+  const err = (res.error || "").toLowerCase();
+  if (
+    res.runtime === "docker" &&
+    model !== DEFAULT_AGY_MODEL &&
+    (err.includes("quota") || err.includes("subscription") || res.exitCode === 3)
+  ) {
+    console.warn(`[crawler] Model ${model} exceeded quota, retrying with ${DEFAULT_AGY_MODEL}...`);
+    res = await runAgentPromptInSandbox(prompt, { model: DEFAULT_AGY_MODEL, timeoutMs });
+    if (res.success) return { text: res.text };
   }
-
-  if (isSandboxContainerActive()) {
-    return {
-      command: "docker",
-      finalArgs: ["exec", "-i", "aie-agent-sandbox", "agy", ...sanitizedArgs],
-    };
-  }
-
-  if (existsSync("/home/havox/.local/bin/agy")) {
-    return {
-      command: "/home/havox/.local/bin/agy",
-      finalArgs: sanitizedArgs,
-    };
-  }
-
-  if (process.platform === "win32") {
-    return {
-      command: "wsl.exe",
-      finalArgs: ["-e", "/home/havox/.local/bin/agy", ...sanitizedArgs],
-    };
-  }
-
-  return {
-    command: "agy",
-    finalArgs: sanitizedArgs,
-  };
-}
-
-/**
- * Execute agy CLI command with strict timeout and output capturing
- */
-function runAgyCli(args: string[], timeoutMs = 60000): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const effectiveArgs = [...args];
-  const convId = warmAgentService.getConversationId();
-  if (convId && !effectiveArgs.includes("--conversation") && !effectiveArgs.includes("--continue")) {
-    effectiveArgs.push("--conversation", convId);
-  }
-
-  return new Promise((resolve, reject) => {
-    const { command, finalArgs } = getAgyCommandArgs(effectiveArgs);
-    let proc: any = null;
-    let stdout = "";
-    let stderr = "";
-
-    try {
-      proc = spawn(command, finalArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (spawnErr) {
-      return reject(spawnErr);
-    }
-
-    const timer = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        /* ignore kill error */
-      }
-      reject(new Error(`AGY CLI process timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-
-    proc.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
-    });
-
-    proc.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
-
-    proc.on("error", (err: Error) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-
-    proc.on("close", (code: number | null) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code });
-    });
-  });
+  return { text: "", error: (res.error || "Agent returned no output").slice(0, 300) };
 }
 
 /**
@@ -395,12 +314,12 @@ export async function isAgentAvailable(): Promise<{
   error?: string;
 }> {
   try {
-    const res = await runAgyCli(["--version"], 8000);
-    const ver = (res.stdout || "").trim();
-    if (res.code === 0 && ver) {
+    const res = await executeInAgentSandbox(["--version"], { timeoutMs: 8000, category: "sandbox" });
+    const ver = (res.output || "").trim();
+    if (res.success && ver) {
       return { available: true, version: ver, platform: process.platform };
     }
-    return { available: false, platform: process.platform, error: res.stderr || `Exit code ${res.code}` };
+    return { available: false, platform: process.platform, error: res.error || `Exit code ${res.exitCode}` };
   } catch (err) {
     return { available: false, platform: process.platform, error: (err as Error).message };
   }
@@ -430,10 +349,12 @@ export async function discoverAgentSources(options: {
 
   const knownListSnippet =
     knownDomains.length > 0
-      ? `\nALREADY KNOWN DOMAINS & SOURCES (DO NOT RETURN THESE OR REDISCOVER THEM):\n${knownDomains
-          .slice(0, 60)
-          .map((d) => `- ${d}`)
-          .join("\n")}\n`
+      ? `\nALREADY KNOWN DOMAINS & SOURCES (DO NOT RETURN THESE OR REDISCOVER THEM).\n${UNTRUSTED_CONTENT_NOTICE}\n${wrapUntrustedContent(
+          knownDomains
+            .slice(0, 60)
+            .map((d) => `- ${d}`)
+            .join("\n"),
+        )}\n`
       : "";
 
   const prompt = `You are an Adversary Emulation Intelligence Source Hunter operating under the Resource Collection Skill (Adversary Simulation & Emulation Intelligence).
@@ -489,60 +410,14 @@ Return pure JSON only. No markdown fences.`;
     } catch {}
 
     if (!outputText) {
-      const res = await runAgyCli(
-        [
-          "--print",
-          prompt,
-          "--output-format",
-          "json",
-          "--model",
-          model,
-          "--dangerously-skip-permissions",
-          "--print-timeout",
-          `${timeoutSec}s`,
-        ],
-        (timeoutSec + 15) * 1000,
-      );
-
-      if (res.code !== 0 && !res.stdout) {
-        if (
-          model !== DEFAULT_AGY_MODEL &&
-          (res.stderr.toLowerCase().includes("quota") ||
-            res.stderr.toLowerCase().includes("subscription") ||
-            res.code === 3)
-        ) {
-          console.warn(`[crawler] Model ${model} exceeded quota, retrying discovery with ${DEFAULT_AGY_MODEL}...`);
-          const retryRes = await runAgyCli(
-            [
-              "--print",
-              prompt,
-              "--output-format",
-              "json",
-              "--model",
-              DEFAULT_AGY_MODEL,
-              "--dangerously-skip-permissions",
-              "--print-timeout",
-              `${timeoutSec}s`,
-            ],
-            (timeoutSec + 15) * 1000,
-          );
-          if (retryRes.code === 0 && retryRes.stdout) {
-            outputText = retryRes.stdout;
-          } else {
-            return {
-              sources: [],
-              error: `Agent exited with code ${res.code}: ${res.stderr.slice(0, 200)}`,
-            };
-          }
-        } else {
-          return {
-            sources: [],
-            error: `Agent exited with code ${res.code}: ${res.stderr.slice(0, 200)}`,
-          };
-        }
-      } else {
-        outputText = res.stdout;
+      const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
+      if (!res.text) {
+        return {
+          sources: [],
+          error: `Agent unavailable or failed: ${res.error}`,
+        };
       }
+      outputText = res.text;
     }
 
     const payload = extractJsonPayload(outputText);
@@ -651,8 +526,9 @@ export async function discoverDomainResourcesWithAgent(options: {
   const prompt = `You are the Adversary Emulation Domain Harvester operating under the domain-resource-discovery-intel skill.
 TARGET DOMAIN: ${domain}
 BASE URL: ${baseUrl}
+${UNTRUSTED_CONTENT_NOTICE}
 CONTEXT / HTML EXCERPT:
-${(options.htmlSnippet || "").slice(0, 4000)}
+${wrapUntrustedContent(options.htmlSnippet || "", 4000)}
 
 MISSION:
 Extract or identify all authoritative technical threat intelligence articles, research papers, malware reverse-engineering posts, and attack chain timelines hosted on this domain.
@@ -691,23 +567,9 @@ Return pure JSON only.`;
     } catch {}
 
     if (!outputText) {
-      const res = await runAgyCli(
-        [
-          "--print",
-          prompt,
-          "--output-format",
-          "json",
-          "--model",
-          model,
-          "--dangerously-skip-permissions",
-          "--print-timeout",
-          `${timeoutSec}s`,
-        ],
-        (timeoutSec + 15) * 1000,
-      );
-
-      if (res.code === 0 && res.stdout) {
-        outputText = res.stdout;
+      const res = await runAgentPromptInSandbox(prompt, { model, timeoutMs: (timeoutSec + 15) * 1000 });
+      if (res.success && res.text) {
+        outputText = res.text;
       }
     }
 
@@ -839,10 +701,9 @@ export async function evaluateResourceWithAgent(options: {
   const prompt = `You are the Senior Threat Intelligence Analysis & Adversary Emulation Evaluation Agent operating under the domain-resource-discovery-intel skill.
 Analyze the following threat intelligence report snippet and determine whether it contains actionable adversary tradecraft, multi-stage attack chains, or emulation utility using a strict 5-dimensional scoring rubric.
 
-TITLE: ${options.title}
-URL: ${options.url}
-CONTENT SNIPPET:
-${textSnippet}
+${UNTRUSTED_CONTENT_NOTICE}
+REPORT UNDER EVALUATION (title, URL and content snippet):
+${wrapUntrustedContent(`TITLE: ${options.title}\nURL: ${options.url}\nCONTENT SNIPPET:\n${textSnippet}`)}
 
 INSTRUCTIONS:
 1. Evaluate the content against this 5-DIMENSIONAL RUBRIC (Total 100 points):
@@ -914,82 +775,25 @@ Return pure JSON only.`;
     } catch {}
 
     if (!outputText) {
-      const res = await runAgyCli(
-        [
-          "--print",
-          prompt,
-          "--output-format",
-          "json",
-          "--model",
-          model,
-          "--dangerously-skip-permissions",
-          "--print-timeout",
-          `${timeoutSec}s`,
-        ],
-        (timeoutSec + 15) * 1000,
-      );
-
-      if (res.code !== 0 && !res.stdout) {
-        if (
-          model !== DEFAULT_AGY_MODEL &&
-          (res.stderr.toLowerCase().includes("quota") ||
-            res.stderr.toLowerCase().includes("subscription") ||
-            res.code === 3)
-        ) {
-          console.warn(`[crawler] Model ${model} exceeded quota, retrying evaluation with ${DEFAULT_AGY_MODEL}...`);
-          const retryRes = await runAgyCli(
-            [
-              "--print",
-              prompt,
-              "--output-format",
-              "json",
-              "--model",
-              DEFAULT_AGY_MODEL,
-              "--dangerously-skip-permissions",
-              "--print-timeout",
-              `${timeoutSec}s`,
-            ],
-            (timeoutSec + 15) * 1000,
-          );
-          if (retryRes.code === 0 && retryRes.stdout) {
-            outputText = retryRes.stdout;
-          } else {
-            return {
-              success: false,
-              fallback: true,
-              isRelevant: false,
-              passScore: 0,
-              recommendApproval: false,
-              classification: "OTHER",
-              resourceKind: "CAMPAIGN_INTEL",
-              threatActors: [],
-              malwareFamilies: [],
-              cves: [],
-              mitreTechniques: [],
-              rationale: "Agent process failed or returned empty output",
-              error: res.stderr.slice(0, 200),
-            };
-          }
-        } else {
-          return {
-            success: false,
-            fallback: true,
-            isRelevant: false,
-            passScore: 0,
-            recommendApproval: false,
-            classification: "OTHER",
-            resourceKind: "CAMPAIGN_INTEL",
-            threatActors: [],
-            malwareFamilies: [],
-            cves: [],
-            mitreTechniques: [],
-            rationale: "Agent process failed or returned empty output",
-            error: res.stderr.slice(0, 200),
-          };
-        }
-      } else {
-        outputText = res.stdout;
+      const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
+      if (!res.text) {
+        return {
+          success: false,
+          fallback: true,
+          isRelevant: false,
+          passScore: 0,
+          recommendApproval: false,
+          classification: "OTHER",
+          resourceKind: "CAMPAIGN_INTEL",
+          threatActors: [],
+          malwareFamilies: [],
+          cves: [],
+          mitreTechniques: [],
+          rationale: "Agent process failed or returned empty output",
+          error: res.error,
+        };
       }
+      outputText = res.text;
     }
 
     const parsed = extractJsonPayload(outputText);

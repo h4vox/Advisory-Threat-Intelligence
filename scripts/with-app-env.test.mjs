@@ -59,9 +59,13 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("the template ships auth off", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
+test("this app ships sign-in on (no VITE_AUTH_ENABLED override)", () => {
+  assert.deepEqual(readAppEnv(projectRoot()), {});
 });
+
+// What the wrapper should print for this workspace: the file value when set,
+// otherwise whatever the calling environment already carries.
+const EXPECTED_FLAG = String(readAppEnv(projectRoot()).VITE_AUTH_ENABLED ?? process.env.VITE_AUTH_ENABLED);
 
 test("vite loadEnv resolves the wrapped value", () => {
   // What `import.meta.env.VITE_AUTH_ENABLED` becomes: loadEnv prefix-matches
@@ -80,7 +84,7 @@ test("the wrapped command runs with the app env applied", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, EXPECTED_FLAG);
 });
 
 test("the wrapped command sees an explicit override, not the file value", async () => {
@@ -124,5 +128,5 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, EXPECTED_FLAG);
 });

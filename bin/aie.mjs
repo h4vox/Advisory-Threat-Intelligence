@@ -16,7 +16,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -31,7 +31,7 @@ function generateAgyOAuthUrl() {
 
   const params = new URLSearchParams({
     access_type: "offline",
-    client_id: process.env.AGY_CLIENT_ID || "",
+    client_id: process.env.AGY_OAUTH_CLIENT_ID || process.env.AGY_CLIENT_ID || "",
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     prompt: "consent",
@@ -171,7 +171,7 @@ async function cmdStatus() {
     serverStatus = `ONLINE (HTTP ${res.status})`;
   } catch {
     try {
-      execSync('cmd.exe /c "curl -sf -o NUL --max-time 2 http://localhost:8080/"', { stdio: "ignore" });
+      execFileSync("cmd.exe", ["/c", "curl -sf -o NUL --max-time 2 http://localhost:8080/"], { stdio: "ignore" });
       serverOnline = true;
       serverStatus = "ONLINE (HTTP 200 via host bridge)";
     } catch {
@@ -182,9 +182,13 @@ async function cmdStatus() {
   console.log(`\n${c.bold}HTTP Dev Server (0.0.0.0:8080):${c.reset} ${serverOnline ? `${c.green}${serverStatus}${c.reset}` : `${c.yellow}OFFLINE or not listening${c.reset}`}`);
 
   // Database status
-  const hasMongo = Boolean(process.env.DATABASE_URL || process.env.MONGODB_URI || true);
+  const hasMongo = Boolean(process.env.MONGODB_URI);
   console.log(`\n${c.bold}Database Backend:${c.reset}`);
-  console.log(`  • Engine:   ${c.green}MongoDB Production Cluster (threat-intel-DB)${c.reset}`);
+  console.log(
+    hasMongo
+      ? `  • Engine:   ${c.green}MongoDB (MONGODB_URI configured)${c.reset}`
+      : `  • Engine:   ${c.yellow}MONGODB_URI is not set${c.reset}`,
+  );
 
   console.log("");
 }
@@ -325,13 +329,13 @@ function cmdDbStatus() {
 function cmdUpdate() {
   console.log(`\n${c.cyan}Checking Git repository status and updates...${c.reset}`);
   try {
-    const status = execSync("git status -s", { cwd: ROOT_DIR, encoding: "utf8" });
+    const status = execFileSync("git", ["status", "-s"], { cwd: ROOT_DIR, encoding: "utf8" });
     console.log(`${c.dim}Current local changes:${c.reset}`);
     console.log(status || "  (Clean working tree)");
 
     console.log(`\n${c.dim}Fetching from remote...${c.reset}`);
     try {
-      execSync("git fetch --dry-run", { cwd: ROOT_DIR, encoding: "utf8", timeout: 8000 });
+      execFileSync("git", ["fetch", "--dry-run"], { cwd: ROOT_DIR, encoding: "utf8", timeout: 8000 });
       console.log(`${c.green}✓ Remote fetch checked.${c.reset}`);
     } catch {
       console.log(`${c.dim}Remote fetch skipped (offline / no remote tracking branch).${c.reset}`);
@@ -348,7 +352,7 @@ function cmdSandbox(sub) {
   let containerRunning = false;
 
   try {
-    execSync("docker --version", { stdio: "ignore" });
+    execFileSync("docker", ["--version"], { stdio: "ignore" });
     dockerOk = true;
   } catch {
     dockerOk = false;
@@ -356,7 +360,7 @@ function cmdSandbox(sub) {
 
   if (dockerOk) {
     try {
-      const inspect = execSync('docker inspect -f "{{.State.Running}}" aie-agent-sandbox', {
+      const inspect = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", "aie-agent-sandbox"], {
         encoding: "utf8",
       }).trim();
       containerRunning = inspect === "true";
@@ -372,7 +376,7 @@ function cmdSandbox(sub) {
     }
     console.log(`${c.dim}Starting aie-agent-sandbox container...${c.reset}`);
     try {
-      execSync("docker compose -f docker-compose.agent-sandbox.yml up -d", { stdio: "inherit", cwd: ROOT_DIR });
+      execFileSync("docker", ["compose", "-f", "docker-compose.agent-sandbox.yml", "up", "-d"], { stdio: "inherit", cwd: ROOT_DIR });
       console.log(`${c.green}✓ Container aie-agent-sandbox operational.${c.reset}\n`);
     } catch (e) {
       console.log(`${c.red}Failed to start container: ${e.message}${c.reset}\n`);
@@ -388,9 +392,10 @@ function cmdSandbox(sub) {
 }
 
 function cmdLogs(lines = 50) {
+  const tail = String(Math.max(1, Math.min(10000, Number.parseInt(String(lines), 10) || 50)));
   console.log(`\n${c.bold}${c.cyan}=== AIE Execution & Sandbox Logs ===${c.reset}`);
   try {
-    const out = execSync(`docker logs aie-agent-sandbox --tail ${lines}`, { encoding: "utf8" });
+    const out = execFileSync("docker", ["logs", "aie-agent-sandbox", "--tail", tail], { encoding: "utf8" });
     if (out.trim()) {
       console.log(out);
     } else {
@@ -407,7 +412,7 @@ function cmdAgentTest(prompt = "Hello! Verify agent sandbox connection.", verbos
   const startTime = Date.now();
   let dockerRunning = false;
   try {
-    const inspect = execSync('docker inspect -f "{{.State.Running}}" aie-agent-sandbox', { encoding: "utf8" }).trim();
+    const inspect = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", "aie-agent-sandbox"], { encoding: "utf8" }).trim();
     dockerRunning = inspect === "true";
   } catch {}
 
@@ -415,18 +420,17 @@ function cmdAgentTest(prompt = "Hello! Verify agent sandbox connection.", verbos
     console.log(`${c.dim}[DEBUG] Docker daemon status: reachable${c.reset}`);
     console.log(`${c.dim}[DEBUG] aie-agent-sandbox state: ${dockerRunning ? "running" : "offline"}${c.reset}`);
     console.log(`${c.dim}[DEBUG] Model target: gemini-3.8-flash-low${c.reset}`);
-    console.log(`${c.dim}[DEBUG] Permission bypass: --dangerously-skip-permissions${c.reset}`);
   }
 
   try {
     if (dockerRunning) {
-      const cleanPrompt = prompt.replace(/"/g, '\\"');
-      const cmdStr = `docker exec -i aie-agent-sandbox agy --dangerously-skip-permissions --print "${cleanPrompt}" --model gemini-3.8-flash-low`;
+      // Argument array, no shell: the prompt is passed verbatim as a single argv entry.
+      const execArgs = ["exec", "-i", "aie-agent-sandbox", "agy", "--print", String(prompt), "--model", "gemini-3.8-flash-low"];
       if (verbose) {
-        console.log(`${c.dim}[EXEC] ${cmdStr}${c.reset}`);
+        console.log(`${c.dim}[EXEC] docker ${execArgs.map((a) => JSON.stringify(a)).join(" ")}${c.reset}`);
       }
       console.log(`${c.dim}Executing in container aie-agent-sandbox...${c.reset}`);
-      const out = execSync(cmdStr, { encoding: "utf8", timeout: 35000 });
+      const out = execFileSync("docker", execArgs, { encoding: "utf8", timeout: 35000 });
       const latencyMs = Date.now() - startTime;
       console.log(`${c.green}Response (${latencyMs}ms):${c.reset}\n${out}\n`);
       if (verbose) {
@@ -449,7 +453,7 @@ function cmdDiagnostics() {
   let dockerOk = false;
   let dockerVer = "";
   try {
-    dockerVer = execSync("docker --version", { encoding: "utf8", timeout: 3000 }).trim();
+    dockerVer = execFileSync("docker", ["--version"], { encoding: "utf8", timeout: 3000 }).trim();
     dockerOk = true;
     console.log(`[1/6] Docker Daemon:       ${c.green}✓ OPERATIONAL${c.reset} (${dockerVer})`);
   } catch (e) {
@@ -460,7 +464,7 @@ function cmdDiagnostics() {
   let containerRunning = false;
   if (dockerOk) {
     try {
-      const inspect = execSync('docker inspect -f "{{.State.Running}}" aie-agent-sandbox', { encoding: "utf8" }).trim();
+      const inspect = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", "aie-agent-sandbox"], { encoding: "utf8" }).trim();
       containerRunning = inspect === "true";
       console.log(`[2/6] Sandbox Container:   ${containerRunning ? `${c.green}✓ RUNNING${c.reset} (aie-agent-sandbox)` : `${c.yellow}⚠ STOPPED${c.reset}`}`);
     } catch {
@@ -471,7 +475,7 @@ function cmdDiagnostics() {
   // 3. Container Live Stats
   if (containerRunning) {
     try {
-      const statsRaw = execSync('docker stats aie-agent-sandbox --no-stream --format "{{json .}}"', { encoding: "utf8", timeout: 3500 }).trim();
+      const statsRaw = execFileSync("docker", ["stats", "aie-agent-sandbox", "--no-stream", "--format", "{{json .}}"], { encoding: "utf8", timeout: 3500 }).trim();
       const stats = JSON.parse(statsRaw);
       console.log(`[3/6] Container Metrics:   ${c.cyan}CPU: ${stats.CPUPerc} | RAM: ${stats.MemUsage} | PIDs: ${stats.PIDs} | NetIO: ${stats.NetIO}${c.reset}`);
     } catch {
@@ -482,14 +486,20 @@ function cmdDiagnostics() {
   }
 
   // 4. Vault & Token
-  const tokenPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
-  const tokenExists = existsSync(tokenPath);
-  console.log(`[4/6] OAuth Vault Token:   ${tokenExists ? `${c.green}✓ DETECTED${c.reset} (/root/.gemini/antigravity-cli/antigravity-oauth-token)` : `${c.yellow}⚠ UNCONFIGURED (Public mode)${c.reset}`}`);
+  const tokenPath = "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token";
+  let tokenExists = false;
+  if (containerRunning) {
+    try {
+      execFileSync("docker", ["exec", "aie-agent-sandbox", "test", "-s", tokenPath], { timeout: 5000 });
+      tokenExists = true;
+    } catch {}
+  }
+  console.log(`[4/6] OAuth Vault Token:   ${tokenExists ? `${c.green}✓ DETECTED${c.reset} (${tokenPath})` : `${c.yellow}⚠ UNCONFIGURED${c.reset}`}`);
 
   // 5. Binary & Models Probe
   if (containerRunning) {
     try {
-      const v = execSync("docker exec aie-agent-sandbox agy --version", { encoding: "utf8", timeout: 5000 }).trim();
+      const v = execFileSync("docker", ["exec", "aie-agent-sandbox", "agy", "--version"], { encoding: "utf8", timeout: 5000 }).trim();
       console.log(`[5/6] Antigravity Binary:  ${c.green}✓ VERIFIED${c.reset} (v${v})`);
     } catch (e) {
       console.log(`[5/6] Antigravity Binary:  ${c.red}✗ PROBE FAILED${c.reset} (${e.message})`);
@@ -505,25 +515,26 @@ function cmdDiagnostics() {
 }
 
 function cmdLibrary(sub, extraArgs = []) {
-  const extra = Array.isArray(extraArgs) ? extraArgs.join(" ") : String(extraArgs || "");
+  // Passed as an argv array to node (no shell), so user input cannot inject commands.
+  const extra = (Array.isArray(extraArgs) ? extraArgs : [extraArgs]).map((a) => String(a ?? "")).filter(Boolean);
   if (sub === "ai-audit" || sub === "audit-ai" || sub === "ai") {
     console.log(`\n${c.cyan}Starting Autonomous Cognitive AI Library Audit (AGY Container)...${c.reset}\n`);
     try {
-      execSync(`node scripts/cognitive-ai-audit.mjs ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+      execFileSync(process.execPath, ["scripts/cognitive-ai-audit.mjs", ...extra], { stdio: "inherit", cwd: ROOT_DIR });
     } catch (err) {
       console.error(`${c.red}Cognitive AI Audit failed:${c.reset}`, err.message);
     }
   } else if (sub === "audit" || !sub) {
     console.log(`\n${c.cyan}Starting Adversary Intelligence Library Quality Audit (Dry-Run)...${c.reset}\n`);
     try {
-      execSync(`node scripts/audit-and-prune-library.mjs --dry-run ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+      execFileSync(process.execPath, ["scripts/audit-and-prune-library.mjs", ...extra.filter((a) => a !== "--apply" && a !== "--prune")], { stdio: "inherit", cwd: ROOT_DIR });
     } catch (err) {
       console.error(`${c.red}Audit execution failed:${c.reset}`, err.message);
     }
   } else if (sub === "prune") {
     console.log(`\n${c.yellow}Executing Library Pruning Operation against MongoDB...${c.reset}\n`);
     try {
-      execSync(`node scripts/audit-and-prune-library.mjs --prune ${extra}`.trim(), { stdio: "inherit", cwd: ROOT_DIR });
+      execFileSync(process.execPath, ["scripts/audit-and-prune-library.mjs", "--apply", ...extra], { stdio: "inherit", cwd: ROOT_DIR });
     } catch (err) {
       console.error(`${c.red}Pruning execution failed:${c.reset}`, err.message);
     }

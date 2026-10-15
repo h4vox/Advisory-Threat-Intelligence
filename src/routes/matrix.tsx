@@ -36,6 +36,7 @@ import {
   type MappedTechnique,
 } from "@/lib/aie/mitre-matrix";
 import { cn } from "@/lib/cn";
+import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 
 export const Route = createFileRoute("/matrix")({ component: MatrixPage });
 
@@ -1126,9 +1127,9 @@ function MatrixPage() {
                 ) : previewData?.rawHtml ? (
                   <iframe
                     title="PDF Preview"
-                    srcDoc={previewData.rawHtml}
+                    srcDoc={toSafeSrcDoc(previewData.rawHtml)}
                     className="h-full w-full border-none bg-white"
-                    sandbox="allow-scripts allow-popups"
+                    sandbox=""
                   />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center text-muted">

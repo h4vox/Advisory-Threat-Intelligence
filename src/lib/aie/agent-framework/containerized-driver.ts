@@ -7,7 +7,7 @@
  * Zero host system binary or credential dependencies.
  */
 
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AgentAuthOption, AgentDriver } from "./types";
 import {
@@ -16,18 +16,22 @@ import {
   sanitizeAgyModel,
 } from "./types";
 import {
-  DEFAULT_PKCE_VERIFIER,
   generateAgyOAuthSession,
   exchangeOAuthCodeForToken,
 } from "../marketplace-registry";
 import {
+  AGENT_CONTAINER_NAME,
   injectContainerOAuthToken,
   checkContainerOAuthToken,
+  ensureAgentSandboxRunning,
+  invalidateSandboxCache,
+  removeContainerOAuthToken,
+  runAgentPromptInSandbox,
 } from "../agent-sandbox";
 import { warmAgentService } from "../warm-agent-service";
 
-const execAsync = promisify(exec);
-const CONTAINER_NAME = "aie-agent-sandbox";
+const execFileAsync = promisify(execFile);
+const CONTAINER_NAME = AGENT_CONTAINER_NAME;
 
 export class ContainerizedCliAgentDriver implements AgentDriver {
   readonly id = "agy_agent";
@@ -59,8 +63,10 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
 
   readonly defaultModel = DEFAULT_AGY_MODEL;
 
-  // Active PKCE session memory for code verification
-  private activeCodeVerifier: string = DEFAULT_PKCE_VERIFIER;
+  // PKCE verifier for the current authorization attempt. Server-side only;
+  // the orchestrator also persists it as config.oauthCodeVerifier (redacted
+  // before reaching the browser). Never taken from the client.
+  private activeCodeVerifier: string | null = null;
 
   /**
    * Step 1: Ensure execution sandbox container is running with retry backoff
@@ -70,52 +76,13 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
     let lastError: string | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const { stdout: psOut } = await execAsync(
-          `docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Status}}"`,
-          { timeout: 6000 }
-        );
-
-        if (psOut.trim()) {
-          return { success: true };
-        }
-
-        // Check if container exists in stopped state
-        const { stdout: allOut } = await execAsync(
-          `docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}"`,
-          { timeout: 6000 }
-        );
-
-        if (allOut.trim() === CONTAINER_NAME) {
-          await execAsync(`docker start ${CONTAINER_NAME}`, { timeout: 12000 });
-        } else {
-          // Re-create from compose or docker run
-          try {
-            await execAsync("docker compose -f docker-compose.agent-sandbox.yml up -d", {
-              timeout: 25000,
-            });
-          } catch {
-            await execAsync(
-              `docker run -d --name ${CONTAINER_NAME} --restart unless-stopped -v aie-agent-vault:/root/.gemini -e AGENT_ENV=isolated_sandbox aie-agent-sandbox:latest tail -f /dev/null`,
-              { timeout: 20000 }
-            );
-          }
-        }
-
-        // Verify it came up
-        const { stdout: verifyOut } = await execAsync(
-          `docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Status}}"`,
-          { timeout: 6000 }
-        );
-
-        if (verifyOut.trim()) {
-          return { success: true };
-        }
-      } catch (err: any) {
-        lastError = err?.message || "Failed to start container runtime.";
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, 1200 * attempt));
-        }
+      invalidateSandboxCache();
+      const res = await ensureAgentSandboxRunning();
+      if (res.success) return { success: true };
+      lastError = res.message;
+      if (!res.status.dockerAvailable) break;
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1200 * attempt));
       }
     }
 
@@ -130,7 +97,7 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
    */
   async ensureInstalled(): Promise<{ success: boolean; version?: string; error?: string }> {
     try {
-      const { stdout } = await execAsync(`docker exec ${CONTAINER_NAME} agy --version`, {
+      const { stdout } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "agy", "--version"], {
         timeout: 8000,
       });
       const version = stdout.trim();
@@ -151,7 +118,7 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
    */
   async startAgentProcess(): Promise<{ success: boolean; error?: string }> {
     try {
-      const { stdout } = await execAsync(`docker exec ${CONTAINER_NAME} which agy`, {
+      const { stdout } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "which", "agy"], {
         timeout: 5000,
       });
       if (stdout.trim().includes("agy")) {
@@ -210,12 +177,22 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
       return { success: false, error: "Authorization credential cannot be empty." };
     }
 
-    const verifier = options?.codeVerifier || this.activeCodeVerifier || DEFAULT_PKCE_VERIFIER;
+    const methodId = options?.methodId || this.defaultAuthMethod;
 
-    // Check if input is a Google OAuth authorization code (4/0... or callback URL)
-    if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
+    // Google OAuth authorization code (4/0... or a callback URL containing code=)
+    if (methodId === "google_oauth" || trimmed.startsWith("4/") || trimmed.includes("code=")) {
+      // options.codeVerifier is supplied by the orchestrator from server-side
+      // state (config.oauthCodeVerifier), never from the client request.
+      const verifier = options?.codeVerifier || this.activeCodeVerifier;
+      if (!verifier) {
+        return {
+          success: false,
+          error: "No pending authorization session. Generate a new sign-in link and try again.",
+        };
+      }
       const exchangeRes = await exchangeOAuthCodeForToken(trimmed, verifier);
       if (!exchangeRes.success || !exchangeRes.token) {
+        // Never store the raw authorization code as a credential.
         return {
           success: false,
           error: exchangeRes.error || "Failed to exchange authorization code with Google OAuth.",
@@ -226,29 +203,31 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
       if (!injectRes.success) {
         return { success: false, error: injectRes.message };
       }
-
+      this.activeCodeVerifier = null;
       return { success: true };
     }
 
-    // Try parsing as JSON token payload
-    try {
-      const parsed = JSON.parse(trimmed);
-      const injectRes = injectContainerOAuthToken(parsed);
-      return { success: injectRes.success, error: injectRes.success ? undefined : injectRes.message };
-    } catch {
-      // Treat as API Key or Raw Bearer Token
-      const tokenPayload = {
-        token: {
-          access_token: trimmed,
-          token_type: "Bearer",
-          refresh_token: "",
-          expiry: new Date(Date.now() + 86400000).toISOString(),
-        },
-        auth_method: options?.methodId === "vertex_api" ? "vertex" : "consumer",
-      };
-      const injectRes = injectContainerOAuthToken(tokenPayload);
+    // Vertex AI / Gemini API key (or a JSON credential payload)
+    if (methodId === "vertex_api") {
+      let payload: any;
+      try {
+        payload = JSON.parse(trimmed);
+      } catch {
+        payload = {
+          token: {
+            access_token: trimmed,
+            token_type: "Bearer",
+            refresh_token: "",
+            expiry: new Date(Date.now() + 86400000).toISOString(),
+          },
+          auth_method: "vertex",
+        };
+      }
+      const injectRes = injectContainerOAuthToken(payload);
       return { success: injectRes.success, error: injectRes.success ? undefined : injectRes.message };
     }
+
+    return { success: false, error: `Unsupported authentication method: ${methodId}` };
   }
 
   /**
@@ -263,7 +242,7 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
     const startTime = Date.now();
     try {
       // First verify binary and version
-      const { stdout: vOut } = await execAsync(`docker exec ${CONTAINER_NAME} agy --version`, {
+      const { stdout: vOut } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "agy", "--version"], {
         timeout: 6000,
       });
       const version = vOut.trim();
@@ -279,22 +258,18 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
         };
       }
 
-      // Dispatch ping probe to verify inference pipeline
-      try {
-        await execAsync(`docker exec -i ${CONTAINER_NAME} agy -p "ping"`, {
-          timeout: 12000,
-        });
-      } catch (probeErr: any) {
-        // If ping returns response or exit code, measure roundtrip
-        const msg = probeErr?.stderr || probeErr?.stdout || "";
-        if (msg.includes("authentication required")) {
-          return {
-            success: false,
-            latencyMs: Date.now() - startTime,
-            version,
-            error: "Authentication expired or invalid. Please re-authenticate.",
-          };
-        }
+      // Dispatch a tiny probe (print mode, stdin, no tools) to verify inference
+      const probe = await runAgentPromptInSandbox("Reply with the single word: pong", {
+        timeoutMs: 20000,
+        category: "auth",
+      });
+      if (!probe.success && /auth/i.test(probe.error || "")) {
+        return {
+          success: false,
+          latencyMs: Date.now() - startTime,
+          version,
+          error: "Authentication expired or invalid. Please re-authenticate.",
+        };
       }
 
       const latencyMs = Date.now() - startTime;
@@ -348,14 +323,7 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
    * Reset credentials and container vault
    */
   async reset(): Promise<{ success: boolean; error?: string }> {
-    try {
-      await execAsync(
-        `docker exec ${CONTAINER_NAME} rm -f /root/.gemini/antigravity-cli/antigravity-oauth-token`,
-        { timeout: 6000 }
-      );
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || "Failed to reset credentials." };
-    }
+    this.activeCodeVerifier = null;
+    return removeContainerOAuthToken();
   }
 }

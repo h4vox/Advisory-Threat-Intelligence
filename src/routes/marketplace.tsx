@@ -42,12 +42,6 @@ import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
-  OFFICIAL_AGY_OAUTH_URL,
-  generateAgyOAuthSession,
-  generateAgyOAuthUrl,
-  type AgyOAuthSession,
-} from "@/lib/aie/marketplace-registry";
-import {
   getMarketplaceData,
   installMarketplaceIntegration,
   uninstallMarketplaceIntegration,
@@ -102,7 +96,8 @@ function MarketplacePage() {
   const [authTokenInput, setAuthTokenInput] = useState("");
   const [selectedModelInput, setSelectedModelInput] = useState("");
   const [modalFeedback, setModalFeedback] = useState<string | null>(null);
-  const [agyOAuthSession, setAgyOAuthSession] = useState<AgyOAuthSession | null>(null);
+  // OAuth (PKCE) is generated server-side; the client only ever sees the server's authUrl.
+  const [serverAuthUrl, setServerAuthUrl] = useState<string | null>(null);
 
   // Live execution logs state
   const [realInstallLogs, setRealInstallLogs] = useState<string[]>([]);
@@ -203,9 +198,14 @@ function MarketplacePage() {
       authToken?: string;
       apiKey?: string;
       selectedModel?: string;
-      codeVerifier?: string;
     }) => executeRealIntegrationInstall({ data }),
     onSuccess: (res) => {
+      const returnedAuthUrl =
+        (res as { authUrl?: unknown }).authUrl ??
+        (res as { integration?: { config?: { authUrl?: unknown } } }).integration?.config?.authUrl;
+      if (typeof returnedAuthUrl === "string" && returnedAuthUrl) {
+        setServerAuthUrl(returnedAuthUrl);
+      }
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
       queryClient.invalidateQueries({ queryKey: ["app_settings"] });
       queryClient.invalidateQueries({ queryKey: ["detected_local_agent_session"] });
@@ -312,16 +312,15 @@ function MarketplacePage() {
   const handleOpenConfigModal = (item: IntegrationItem, reconfig: boolean = false) => {
     setConfigModalItem(item);
     setIsReconfigMode(reconfig);
-    setApiKeyInput(item.config?.apiKey || "");
-    setAuthTokenInput(item.config?.authToken || "");
+    // Never prefill stored secrets; the server only reports whether one exists.
+    setApiKeyInput("");
+    setAuthTokenInput("");
     setSelectedModelInput(item.config?.selectedModel || item.supportedModels[0] || "");
     setRealInstallLogs(item.config?.logs || []);
     setIsLogsExpanded(true);
     setModalFeedback(null);
     setModalTestResult(null);
-    if (item.id === "agy_agent") {
-      setAgyOAuthSession(generateAgyOAuthSession());
-    }
+    setServerAuthUrl(typeof item.config?.authUrl === "string" ? item.config.authUrl : null);
   };
 
   // Filter active logs for the terminal viewer
@@ -370,7 +369,12 @@ function MarketplacePage() {
 
   useEffect(() => {
     if (isPendingOperation && sandboxLogsData?.logs && configModalItem) {
+      const modalIntegrationId = configModalItem.id;
       const recentFormatted = sandboxLogsData.logs
+        .filter((l) => {
+          const owner = (l as { meta?: Record<string, unknown> }).meta?.integrationId;
+          return typeof owner !== "string" || owner === modalIntegrationId;
+        })
         .slice(-25)
         .map((l) => `${l.formattedTime} [${l.level.padEnd(5)}] [${l.category.toUpperCase()}] ${l.message}`);
       setRealInstallLogs((prev) => {
@@ -389,6 +393,22 @@ function MarketplacePage() {
   }, [isPendingOperation, sandboxLogsData, configModalItem]);
 
   const handleExportDiagnosticBundle = () => {
+    // Strip anything secret-shaped (keys, tokens, client secrets) before export.
+    const isSecretKey = (k: string) => {
+      const lower = k.toLowerCase();
+      if (lower === "hasapikey" || lower === "apikeyhint") return false;
+      return /secret|token|key|password|verifier/.test(lower);
+    };
+    const stripSecrets = (value: unknown, depth = 0): unknown => {
+      if (depth > 6 || value === null || typeof value !== "object") return value;
+      if (Array.isArray(value)) return value.map((v) => stripSecrets(v, depth + 1));
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (isSecretKey(k)) continue;
+        out[k] = stripSecrets(v, depth + 1);
+      }
+      return out;
+    };
     const bundle = {
       exportedAt: new Date().toISOString(),
       containerMetrics: containerMetrics || null,
@@ -402,9 +422,9 @@ function MarketplacePage() {
         name: i.name,
         status: i.status,
         version: i.version,
-        config: i.config,
+        config: i.config ? stripSecrets(i.config) : undefined,
       })),
-      recentLogs: sandboxLogsData?.logs || [],
+      recentLogs: stripSecrets(sandboxLogsData?.logs || []),
     };
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1356,7 +1376,7 @@ function MarketplacePage() {
                         <span>Interactive Agent Test Console</span>
                       </div>
                       <Badge className="text-[9px] border border-emerald-500/30 text-emerald-500 dark:text-emerald-400 font-mono">
-                        --dangerously-skip-permissions
+                        print-only · sandboxed
                       </Badge>
                     </div>
                     <p className="text-[11px] text-muted leading-relaxed">
@@ -1552,6 +1572,33 @@ function MarketplacePage() {
                 </div>
               )}
 
+              {/* Server-issued OAuth sign-in (PKCE verifier never leaves the server) */}
+              {configModalItem.id === "agy_agent" && (
+                <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-subtle p-3 text-xs">
+                  <span className="text-subtle">Google sign-in for {configModalItem.name}</span>
+                  {serverAuthUrl ? (
+                    <a
+                      href={serverAuthUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 font-medium text-accent hover:underline"
+                    >
+                      Open sign-in <ExternalLink className="size-3" />
+                    </a>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={realInstallMutation.isPending}
+                      onClick={() => realInstallMutation.mutate({ id: configModalItem.id })}
+                      className="h-7 text-xs"
+                    >
+                      {realInstallMutation.isPending ? "Starting…" : "Start sign-in"}
+                    </Button>
+                  )}
+                </div>
+              )}
+
               {/* Autonomous Agent Onboarding Pipeline (10-Step Extensible Flow) */}
               {configModalItem.type === "cli_agent" && (
                 <AgentOnboardingStepper
@@ -1583,7 +1630,12 @@ function MarketplacePage() {
                     </div>
                     <Input
                       type="password"
-                      placeholder="sk-... or AIzaSy..."
+                      autoComplete="off"
+                      placeholder={
+                        configModalItem.config?.hasApiKey
+                          ? `•••• saved${configModalItem.config?.apiKeyHint ? ` (…${configModalItem.config.apiKeyHint})` : ""} — enter a new key to replace`
+                          : "sk-... or AIzaSy..."
+                      }
                       value={apiKeyInput}
                       onChange={(e) => setApiKeyInput(e.target.value)}
                       className="font-mono text-xs bg-bg-subtle"
@@ -1633,12 +1685,17 @@ function MarketplacePage() {
                   <Button
                     size="sm"
                     variant="primary"
-                    disabled={configureMutation.isPending || !apiKeyInput.trim()}
+                    disabled={
+                      configureMutation.isPending ||
+                      (!apiKeyInput.trim() && !configModalItem.config?.hasApiKey)
+                    }
                     onClick={() => {
-                      const configPayload = {
-                        apiKey: apiKeyInput || undefined,
+                      const newKey = apiKeyInput.trim();
+                      // Only send apiKey when the user typed a new one; otherwise keep the stored key.
+                      const configPayload: Record<string, unknown> = {
                         selectedModel: selectedModelInput || configModalItem.supportedModels[0],
                       };
+                      if (newKey) configPayload.apiKey = newKey;
                       configureMutation.mutate({
                         id: configModalItem.id,
                         config: configPayload,

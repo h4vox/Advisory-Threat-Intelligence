@@ -10,7 +10,9 @@ node_modules/
 /.nitro/
 /.tanstack/
 /.vercel/
-/test Build/
+/test build/
+__pycache__/
+*.py[cod]
 docker/agent-sandbox/agy
 
 # Environment Variables & Secrets

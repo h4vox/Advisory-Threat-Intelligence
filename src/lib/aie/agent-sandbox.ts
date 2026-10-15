@@ -1,5 +1,6 @@
-import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync, execSync, spawn, type ChildProcess } from "node:child_process";
+import readline from "node:readline";
+import { sanitizeAgyModel } from "./agent-framework/types";
 
 export type SandboxRuntime = "docker" | "wsl" | "native" | "unavailable";
 
@@ -58,6 +59,12 @@ export interface SandboxStatus {
 }
 
 const CONTAINER_NAME = "aie-agent-sandbox";
+export const AGENT_CONTAINER_NAME = CONTAINER_NAME;
+/** Non-root user inside the sandbox image (see docker/agent-sandbox/Dockerfile). */
+export const AGENT_CONTAINER_UID = 10001;
+export const AGENT_CONTAINER_HOME = "/home/agent";
+const AGENT_TOKEN_DIR = `${AGENT_CONTAINER_HOME}/.gemini/antigravity-cli`;
+export const AGENT_TOKEN_PATH = `${AGENT_TOKEN_DIR}/antigravity-oauth-token`;
 
 // ---------------------------------------------------------------------------
 // In-Memory Ring Buffer for High-Detail Diagnostics & Telemetry
@@ -181,7 +188,7 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
     let agentVersion = "";
     try {
       agentVersion = execSync(
-        `docker exec ${CONTAINER_NAME} agy --version`,
+        `docker exec ${CONTAINER_NAME} agy --version`, // constant command, no user input
         { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();
     } catch {}
@@ -194,7 +201,7 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
       hostPlatform: process.platform,
       binaryPath: `/usr/local/bin/agy`,
       isReady: true,
-      agentVersion: agentVersion || "1.2.3",
+      agentVersion: agentVersion || undefined,
       details: `Isolated Docker sandbox (${CONTAINER_NAME}) operational. All agent executions sandboxed.`,
       logCount: logBuffer.length,
     };
@@ -222,6 +229,57 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
 }
 
 // ---------------------------------------------------------------------------
+// Container hardening (mirrors docker-compose.agent-sandbox.yml)
+// ---------------------------------------------------------------------------
+/**
+ * `docker run` arguments used when compose is unavailable. Kept in sync with
+ * docker-compose.agent-sandbox.yml: non-root user, all capabilities dropped,
+ * no-new-privileges, read-only root fs with tmpfs scratch space, resource
+ * limits, and only the dedicated credential volume (never a host home dir).
+ * Network access is kept because the agent must reach the model API.
+ */
+function hardenedDockerRunArgs(): string[] {
+  const uidGid = `${AGENT_CONTAINER_UID}:${AGENT_CONTAINER_UID}`;
+  return [
+    "run",
+    "-d",
+    "--name",
+    CONTAINER_NAME,
+    "--restart",
+    "unless-stopped",
+    "--user",
+    uidGid,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges:true",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,nodev,size=64m",
+    "--tmpfs",
+    `${AGENT_CONTAINER_HOME}:rw,nosuid,nodev,size=128m,uid=${AGENT_CONTAINER_UID},gid=${AGENT_CONTAINER_UID},mode=0700`,
+    "--tmpfs",
+    `/workspace:rw,noexec,nosuid,nodev,size=32m,uid=${AGENT_CONTAINER_UID},gid=${AGENT_CONTAINER_UID}`,
+    "--pids-limit",
+    "256",
+    "--memory",
+    "1g",
+    "--cpus",
+    "1.5",
+    "-v",
+    `aie-agent-vault:${AGENT_CONTAINER_HOME}/.gemini`,
+    "-e",
+    "AGENT_ENV=isolated_sandbox",
+    "-e",
+    `HOME=${AGENT_CONTAINER_HOME}`,
+    "aie-agent-sandbox:latest",
+    "tail",
+    "-f",
+    "/dev/null",
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Autonomous Lifecycle: Ensure Sandbox Container Is Running
 // ---------------------------------------------------------------------------
 export async function ensureAgentSandboxRunning(): Promise<{
@@ -241,33 +299,27 @@ export async function ensureAgentSandboxRunning(): Promise<{
   }
 
   if (!current.dockerAvailable) {
-    appendSandboxLog(
-      "WARN",
-      "sandbox",
-      `Docker daemon not accessible on host. Using ${current.runtime.toUpperCase()} fallback.`
-    );
-    return {
-      success: false,
-      message: `Docker daemon not accessible on host. Using ${current.runtime.toUpperCase()} fallback.`,
-      status: current,
-    };
+    const msg = "Docker is not accessible. The agent only runs inside its sandbox container, so agent features are unavailable.";
+    appendSandboxLog("WARN", "sandbox", msg);
+    return { success: false, message: msg, status: current };
   }
 
   try {
     // Check if container exists in stopped state
-    const psAll = execSync(`docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}"`, {
-      encoding: "utf-8",
-      timeout: 5000,
-    }).trim();
+    const psAll = execFileSync(
+      "docker",
+      ["ps", "-a", "--filter", `name=^${CONTAINER_NAME}$`, "--format", "{{.Names}}"],
+      { encoding: "utf-8", timeout: 5000 }
+    ).trim();
 
     if (psAll === CONTAINER_NAME) {
       appendSandboxLog("INFO", "sandbox", `Container ${CONTAINER_NAME} exists in stopped state. Starting...`);
-      execSync(`docker start ${CONTAINER_NAME}`, { encoding: "utf-8", timeout: 10000 });
-      appendSandboxLog("INFO", "sandbox", `docker start ${CONTAINER_NAME} completed successfully.`);
+      execFileSync("docker", ["start", CONTAINER_NAME], { encoding: "utf-8", timeout: 10000 });
+      appendSandboxLog("INFO", "sandbox", `Container ${CONTAINER_NAME} started.`);
     } else {
       appendSandboxLog("INFO", "sandbox", `Deploying fresh instance of ${CONTAINER_NAME} via compose...`);
       try {
-        execSync("docker compose -f docker-compose.agent-sandbox.yml up -d", {
+        execFileSync("docker", ["compose", "-f", "docker-compose.agent-sandbox.yml", "up", "-d"], {
           encoding: "utf-8",
           timeout: 20000,
         });
@@ -276,34 +328,23 @@ export async function ensureAgentSandboxRunning(): Promise<{
         appendSandboxLog(
           "WARN",
           "sandbox",
-          `docker compose failed (${composeErr?.message}). Falling back to manual docker run...`
+          `docker compose failed. Falling back to hardened docker run of the prebuilt image...`
         );
-        const image = "aie-agent-sandbox:latest";
-        const runCmd = [
-          "docker run -d",
-          `--name ${CONTAINER_NAME}`,
-          "--restart unless-stopped",
-          "-v aie-agent-vault:/root/.gemini",
-          "-e AGENT_ENV=isolated_sandbox",
-          "-e PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin",
-          image,
-          "tail -f /dev/null",
-        ]
-          .filter(Boolean)
-          .join(" ");
-
-        execSync(runCmd, { encoding: "utf-8", timeout: 15000 });
-        appendSandboxLog("INFO", "sandbox", `Manual container run command initialized.`);
+        execFileSync("docker", hardenedDockerRunArgs(), { encoding: "utf-8", timeout: 15000 });
+        appendSandboxLog("INFO", "sandbox", `Hardened container run command initialized.`);
       }
     }
 
     invalidateSandboxCache();
     const updated = detectSandboxRuntime({ forceRefresh: true });
-    appendSandboxLog(
-      "INFO",
-      "sandbox",
-      `Sandbox container (${CONTAINER_NAME}) successfully verified online (v${updated.agentVersion || "1.2.3"}).`
-    );
+    if (!updated.isReady) {
+      return {
+        success: false,
+        message: `Agent sandbox container (${CONTAINER_NAME}) did not become ready.`,
+        status: updated,
+      };
+    }
+    appendSandboxLog("INFO", "sandbox", `Sandbox container (${CONTAINER_NAME}) verified online.`);
     return {
       success: true,
       message: `Agent Sandbox container (${CONTAINER_NAME}) successfully initialized.`,
@@ -325,13 +366,22 @@ export async function ensureAgentSandboxRunning(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// High-Fidelity Process Execution Engine with Step-by-Step Logging
+// Credential vault (inside the container volume only — never the host)
 // ---------------------------------------------------------------------------
 export function injectContainerOAuthToken(tokenData: any): { success: boolean; message: string } {
   try {
     const raw = typeof tokenData === "string" ? tokenData : JSON.stringify(tokenData, null, 2);
-    execSync(
-      `docker exec -i ${CONTAINER_NAME} sh -c "mkdir -p /root/.gemini/antigravity-cli && cat > /root/.gemini/antigravity-cli/antigravity-oauth-token && chmod 600 /root/.gemini/antigravity-cli/antigravity-oauth-token"`,
+    // Token is passed via stdin; the shell script inside the container is a constant.
+    execFileSync(
+      "docker",
+      [
+        "exec",
+        "-i",
+        CONTAINER_NAME,
+        "sh",
+        "-c",
+        `umask 077 && mkdir -p "${AGENT_TOKEN_DIR}" && cat > "${AGENT_TOKEN_PATH}" && chmod 600 "${AGENT_TOKEN_PATH}"`,
+      ],
       {
         input: raw,
         encoding: "utf-8",
@@ -342,31 +392,20 @@ export function injectContainerOAuthToken(tokenData: any): { success: boolean; m
     return { success: true, message: "Token stored in container vault." };
   } catch (err: any) {
     appendSandboxLog("ERROR", "auth", `Failed to write token into container: ${err?.message}`);
-    return { success: false, message: err?.message || "Failed to write token into container." };
+    return { success: false, message: "Failed to write token into container vault." };
   }
 }
 
-export function autoSyncTokenFromHostIfAvailable(): boolean {
+export function removeContainerOAuthToken(): { success: boolean; error?: string } {
   try {
-    const hostPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
-    if (!existsSync(hostPath)) return false;
-    const content = readFileSync(hostPath, "utf-8");
-    if (!content || content.length < 50) return false;
-
-    try {
-      const containerContent = execSync(
-        `docker exec ${CONTAINER_NAME} cat /root/.gemini/antigravity-cli/antigravity-oauth-token 2>/dev/null`,
-        { encoding: "utf-8", timeout: 3000 }
-      ).trim();
-      if (containerContent === content.trim()) {
-        return true;
-      }
-    } catch {}
-
-    injectContainerOAuthToken(content);
-    return true;
-  } catch {
-    return false;
+    execFileSync("docker", ["exec", CONTAINER_NAME, "rm", "-f", AGENT_TOKEN_PATH], {
+      encoding: "utf-8",
+      timeout: 6000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Failed to reset credentials." };
   }
 }
 
@@ -377,27 +416,23 @@ export function checkContainerOAuthToken(): {
   hasRefreshToken?: boolean;
 } {
   try {
-    autoSyncTokenFromHostIfAvailable();
-    const out = execSync(
-      `docker exec ${CONTAINER_NAME} cat /root/.gemini/antigravity-cli/antigravity-oauth-token`,
-      {
-        encoding: "utf-8",
-        timeout: 4000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }
-    ).trim();
+    const out = execFileSync("docker", ["exec", CONTAINER_NAME, "cat", AGENT_TOKEN_PATH], {
+      encoding: "utf-8",
+      timeout: 4000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
     if (out) {
+      // Never expose any part of the credential itself.
       try {
         const parsed = JSON.parse(out);
-        const token = parsed.token?.access_token || (typeof parsed === "string" ? parsed : "");
         return {
           exists: true,
-          tokenPreview: token ? `${token.slice(0, 10)}...${token.slice(-6)}` : "Verified",
-          expiry: parsed.token?.expiry,
-          hasRefreshToken: Boolean(parsed.token?.refresh_token),
+          tokenPreview: "present",
+          expiry: parsed?.token?.expiry,
+          hasRefreshToken: Boolean(parsed?.token?.refresh_token),
         };
       } catch {
-        return { exists: true, tokenPreview: `${out.slice(0, 10)}...` };
+        return { exists: true, tokenPreview: "present" };
       }
     }
   } catch {
@@ -406,6 +441,47 @@ export function checkContainerOAuthToken(): {
   return { exists: false };
 }
 
+// ---------------------------------------------------------------------------
+// Process execution helpers
+// ---------------------------------------------------------------------------
+/** Flags that must never be passed to the agent CLI. */
+const FORBIDDEN_AGENT_FLAGS = new Set(["--dangerously-skip-permissions", "--yolo"]);
+
+/**
+ * Diagnostic sub-commands that may be run through executeInAgentSandbox.
+ * Model prompts must go through runAgentPromptInSandbox (stdin, print mode).
+ */
+const DIAGNOSTIC_COMMANDS = new Set(["--version", "--help", "models"]);
+
+function makeTrace(
+  traceId: string,
+  label: string,
+  runtime: SandboxRuntime,
+  startTime: number,
+  fields: Partial<ExecutionTrace> & Pick<ExecutionTrace, "status" | "exitCode" | "stepLogs">
+): ExecutionTrace {
+  return {
+    id: traceId,
+    // Command lines / argv / prompts are deliberately not included in traces.
+    command: "agy",
+    args: [],
+    fullCommandStr: `agy ${label} (sandboxed)`,
+    runtime,
+    containerName: CONTAINER_NAME,
+    startTime: new Date(startTime).toISOString(),
+    endTime: new Date().toISOString(),
+    latencyMs: Date.now() - startTime,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    ...fields,
+  };
+}
+
+/**
+ * Run a diagnostic agent CLI command (`--version`, `--help`, `models`) inside
+ * the sandbox container. Never runs on the host; returns an error result when
+ * the container is unavailable. Not for model prompts.
+ */
 export function executeInAgentSandbox(
   args: string[],
   options?: { timeoutMs?: number; input?: string; category?: LogCategory }
@@ -422,7 +498,195 @@ export function executeInAgentSandbox(
   const startTime = Date.now();
   const timeoutMs = options?.timeoutMs || 45000;
   const category = options?.category || "agent";
+  const traceId = `trace-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const stepLogs: string[] = [];
+  const label = args.length === 1 && DIAGNOSTIC_COMMANDS.has(args[0]) ? args[0] : "command";
+
+  const addStepLog = (level: LogLevel, msg: string) => {
+    const entry = appendSandboxLog(level, category, msg, { traceId });
+    stepLogs.push(`${entry.formattedTime} [${level}] ${msg}`);
+  };
+
+  const fail = (error: string, runtime: SandboxRuntime) => {
+    addStepLog("ERROR", error);
+    return {
+      success: false,
+      output: "",
+      error,
+      latencyMs: Date.now() - startTime,
+      runtime,
+      exitCode: -1,
+      logs: stepLogs,
+      trace: makeTrace(traceId, label, runtime, startTime, { status: "error", exitCode: -1, stepLogs }),
+    };
+  };
+
+  if (args.length !== 1 || !DIAGNOSTIC_COMMANDS.has(args[0]) || args.some((a) => FORBIDDEN_AGENT_FLAGS.has(a))) {
+    return Promise.resolve(
+      fail("Refused: only diagnostic agent commands (--version, --help, models) may run here.", "unavailable")
+    );
+  }
+
   const status = detectSandboxRuntime();
+  if (status.runtime !== "docker") {
+    return Promise.resolve(
+      fail(
+        `Agent container runtime unavailable (${status.details}). Execution requires the dedicated container (${CONTAINER_NAME}).`,
+        "unavailable"
+      )
+    );
+  }
+
+  return new Promise((resolve) => {
+    const finalArgs = ["exec", "-i", CONTAINER_NAME, "agy", ...args];
+    addStepLog("EXEC", `Dispatched agy ${label} inside ${CONTAINER_NAME}`);
+
+    let settled = false;
+    const settle = (value: Awaited<ReturnType<typeof executeInAgentSandbox>>) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    let proc: ChildProcess;
+    let stdout = "";
+    let stderr = "";
+
+    try {
+      proc = spawn("docker", finalArgs, { stdio: ["pipe", "pipe", "pipe"] });
+    } catch (spawnErr: any) {
+      return settle(fail(`Failed to start sandboxed process: ${spawnErr?.message}`, status.runtime));
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+      addStepLog("ERROR", `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`);
+      settle({
+        success: false,
+        output: stdout.trim(),
+        error: `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`,
+        latencyMs: Date.now() - startTime,
+        runtime: status.runtime,
+        exitCode: -1,
+        logs: stepLogs,
+        trace: makeTrace(traceId, label, status.runtime, startTime, {
+          status: "timeout",
+          exitCode: -1,
+          stepLogs,
+          pid: proc.pid,
+          stdoutBytes: Buffer.byteLength(stdout),
+          stderrBytes: Buffer.byteLength(stderr),
+        }),
+      });
+    }, timeoutMs);
+
+    // Mandatory error listener prevents Node from crashing on ENOENT / spawn failure.
+    proc.on("error", (err: any) => {
+      clearTimeout(timer);
+      settle(fail(`Sandbox process error: ${err?.message || "Execution failed"}`, status.runtime));
+    });
+
+    if (proc.stdin) {
+      try {
+        if (options?.input) proc.stdin.write(options.input);
+        proc.stdin.end();
+      } catch {}
+    }
+
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk.toString("utf-8");
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk.toString("utf-8");
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      const latencyMs = Date.now() - startTime;
+      const cleanOut = stdout.trim();
+      const cleanErr = stderr.trim();
+      addStepLog(
+        code === 0 ? "INFO" : "WARN",
+        `Process exited with code ${code} (latency ${latencyMs}ms, stdout ${Buffer.byteLength(stdout)} bytes, stderr ${Buffer.byteLength(stderr)} bytes)`
+      );
+      const ok = code === 0 && cleanOut.length > 0;
+      settle({
+        success: ok,
+        output: cleanOut || cleanErr,
+        error: code !== 0 ? `Process exited with code ${code}${cleanErr ? `: ${cleanErr.slice(0, 300)}` : ""}` : undefined,
+        latencyMs,
+        runtime: status.runtime,
+        exitCode: code,
+        logs: stepLogs,
+        trace: makeTrace(traceId, label, status.runtime, startTime, {
+          status: ok ? "success" : "error",
+          exitCode: code,
+          stepLogs,
+          pid: proc.pid,
+          stdoutBytes: Buffer.byteLength(stdout),
+          stderrBytes: Buffer.byteLength(stderr),
+        }),
+      });
+    });
+  });
+}
+
+const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Agent CLI flags for every model invocation:
+ * - `--print`: non-interactive print mode.
+ * - no `--dangerously-skip-permissions`: tool calls need interactive approval,
+ *   which cannot be given in print mode, so the agent cannot run tools.
+ * - `--disable-slash-commands`: no slash-command side effects.
+ * - stream-json input: the prompt travels over stdin, never argv.
+ */
+export function buildAgentCliArgs(model: string): string[] {
+  return [
+    "--print",
+    "--disable-slash-commands",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--model",
+    sanitizeAgyModel(model),
+  ];
+}
+
+/** NDJSON user turn written to the agent's stdin. */
+export function encodeAgentUserTurn(prompt: string): string {
+  return JSON.stringify({ event: "user", message: { content: prompt } }) + "\n";
+}
+
+export interface AgentPromptResult {
+  success: boolean;
+  text: string;
+  error?: string;
+  latencyMs: number;
+  runtime: SandboxRuntime;
+  exitCode: number | null;
+  model: string;
+  tokens?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  trace: ExecutionTrace;
+}
+
+/**
+ * One-shot model prompt inside the sandbox container.
+ * The prompt is delivered over stdin (stream-json), the CLI runs in print mode
+ * without permission bypass, and nothing ever runs on the host. Always
+ * resolves (never throws); an unavailable container yields an error result.
+ */
+export function runAgentPromptInSandbox(
+  prompt: string,
+  options: { model?: string; timeoutMs?: number; category?: LogCategory }
+): Promise<AgentPromptResult> {
+  const startTime = Date.now();
+  const timeoutMs = options.timeoutMs || 60000;
+  const category = options.category || "agent";
+  const model = sanitizeAgyModel(options.model);
   const traceId = `trace-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
   const stepLogs: string[] = [];
 
@@ -431,233 +695,173 @@ export function executeInAgentSandbox(
     stepLogs.push(`${entry.formattedTime} [${level}] ${msg}`);
   };
 
+  const status = detectSandboxRuntime();
+  if (status.runtime !== "docker") {
+    const error = `Agent sandbox container (${CONTAINER_NAME}) is unavailable: ${status.details}`;
+    addStepLog("ERROR", error);
+    return Promise.resolve({
+      success: false,
+      text: "",
+      error,
+      latencyMs: Date.now() - startTime,
+      runtime: "unavailable",
+      exitCode: -1,
+      model,
+      trace: makeTrace(traceId, "prompt", "unavailable", startTime, { status: "error", exitCode: -1, stepLogs }),
+    });
+  }
+
   return new Promise((resolve) => {
-    let cmd = "";
-    let finalArgs: string[] = [];
-
-    if (status.runtime === "docker") {
-      cmd = "docker";
-      finalArgs = ["exec", "-i", CONTAINER_NAME, "agy", ...args];
-    } else {
-      const errNotice = `Agent container runtime unavailable (${status.details}). Sandbox execution requires dedicated container (${CONTAINER_NAME}).`;
-      addStepLog("ERROR", errNotice);
-      const trace: ExecutionTrace = {
-        id: traceId,
-        command: cmd || "unavailable",
-        args: finalArgs,
-        fullCommandStr: `${cmd} ${finalArgs.join(" ")}`.trim(),
-        runtime: "unavailable",
-        containerName: CONTAINER_NAME,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date().toISOString(),
-        latencyMs: Date.now() - startTime,
-        exitCode: -1,
-        stdoutBytes: 0,
-        stderrBytes: 0,
-        status: "error",
-        stepLogs,
-      };
-
-      return resolve({
-        success: false,
-        output: "",
-        error: errNotice,
-        latencyMs: Date.now() - startTime,
-        runtime: "unavailable",
-        exitCode: -1,
-        logs: stepLogs,
-        trace,
-      });
-    }
-
-    const fullCmdStr = `${cmd} ${finalArgs.join(" ")}`;
-    addStepLog("EXEC", `Dispatched process: ${fullCmdStr}`);
-    addStepLog("DEBUG", `Target runtime: [${status.runtime.toUpperCase()}], timeout: ${timeoutMs}ms`);
-
-    let proc: ChildProcess;
-    let stdout = "";
+    let settled = false;
+    let stdoutBytes = 0;
     let stderr = "";
+    let streamedText = "";
+    let rawText = "";
+    let proc: ChildProcess | null = null;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (
+      res: Omit<AgentPromptResult, "latencyMs" | "runtime" | "model" | "trace">,
+      traceStatus: ExecutionTrace["status"]
+    ) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      const latencyMs = Date.now() - startTime;
+      addStepLog(
+        res.success ? "INFO" : "WARN",
+        `Agent prompt ${traceStatus} (latency ${latencyMs}ms, stdout ${stdoutBytes} bytes)`
+      );
+      // Stop the process once we have what we need.
+      if (proc) {
+        try {
+          proc.stdin?.end();
+        } catch {}
+        const p = proc;
+        setTimeout(() => {
+          try {
+            if (p.exitCode === null) p.kill("SIGKILL");
+          } catch {}
+        }, 2000).unref?.();
+      }
+      resolve({
+        ...res,
+        latencyMs,
+        runtime: status.runtime,
+        model,
+        trace: makeTrace(traceId, "prompt", status.runtime, startTime, {
+          status: traceStatus,
+          exitCode: res.exitCode,
+          stepLogs,
+          pid: proc?.pid,
+          stdoutBytes,
+          stderrBytes: Buffer.byteLength(stderr),
+        }),
+      });
+    };
 
     try {
-      proc = spawn(cmd, finalArgs, {
+      proc = spawn("docker", ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model)], {
         stdio: ["pipe", "pipe", "pipe"],
       });
-      if (proc.pid) {
-        addStepLog("DEBUG", `Spawned process child PID: ${proc.pid}`);
-      }
     } catch (spawnErr: any) {
-      addStepLog("ERROR", `Process spawn failed: ${spawnErr?.message}`);
-      const trace: ExecutionTrace = {
-        id: traceId,
-        command: cmd,
-        args: finalArgs,
-        fullCommandStr: fullCmdStr,
-        runtime: status.runtime,
-        containerName: CONTAINER_NAME,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date().toISOString(),
-        latencyMs: Date.now() - startTime,
-        exitCode: -1,
-        stdoutBytes: 0,
-        stderrBytes: 0,
-        status: "error",
-        stepLogs,
-      };
-
-      return resolve({
-        success: false,
-        output: "",
-        error: `Failed to initiate process ${cmd}: ${spawnErr?.message}`,
-        latencyMs: Date.now() - startTime,
-        runtime: status.runtime,
-        exitCode: -1,
-        logs: stepLogs,
-        trace,
-      });
+      return finish(
+        { success: false, text: "", error: `Failed to start sandboxed agent: ${spawnErr?.message}`, exitCode: -1 },
+        "error"
+      );
     }
+    addStepLog("EXEC", `Dispatched agent prompt (${Buffer.byteLength(prompt)} bytes via stdin) inside ${CONTAINER_NAME}`);
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       try {
-        proc.kill("SIGKILL");
-        addStepLog("WARN", `Process killed via SIGKILL after timeout (${timeoutMs}ms)`);
+        proc?.kill("SIGKILL");
       } catch {}
-
-      addStepLog("ERROR", `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`);
-      const trace: ExecutionTrace = {
-        id: traceId,
-        command: cmd,
-        args: finalArgs,
-        fullCommandStr: fullCmdStr,
-        runtime: status.runtime,
-        containerName: CONTAINER_NAME,
-        pid: proc.pid,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date().toISOString(),
-        latencyMs: Date.now() - startTime,
-        exitCode: -1,
-        stdoutBytes: Buffer.byteLength(stdout),
-        stderrBytes: Buffer.byteLength(stderr),
-        status: "timeout",
-        stepLogs,
-      };
-
-      resolve({
-        success: false,
-        output: stdout.trim(),
-        error: `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`,
-        latencyMs: Date.now() - startTime,
-        runtime: status.runtime,
-        exitCode: -1,
-        logs: stepLogs,
-        trace,
-      });
+      finish(
+        {
+          success: false,
+          text: "",
+          error: `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`,
+          exitCode: -1,
+        },
+        "timeout"
+      );
     }, timeoutMs);
 
-    // CRITICAL: Mandatory error listener prevents Node from crashing on ENOENT or spawn failure!
     proc.on("error", (err: any) => {
-      clearTimeout(timer);
-      addStepLog("ERROR", `Sandbox process error event: ${err?.message || "Execution error"}`);
-      const trace: ExecutionTrace = {
-        id: traceId,
-        command: cmd,
-        args: finalArgs,
-        fullCommandStr: fullCmdStr,
-        runtime: status.runtime,
-        containerName: CONTAINER_NAME,
-        pid: proc.pid,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date().toISOString(),
-        latencyMs: Date.now() - startTime,
-        exitCode: -1,
-        stdoutBytes: Buffer.byteLength(stdout),
-        stderrBytes: Buffer.byteLength(stderr),
-        status: "error",
-        stepLogs,
-      };
-
-      resolve({
-        success: false,
-        output: stdout.trim(),
-        error: `Sandbox execution notice (${cmd}): ${err?.message || "Execution failed"}`,
-        latencyMs: Date.now() - startTime,
-        runtime: status.runtime,
-        exitCode: -1,
-        logs: stepLogs,
-        trace,
-      });
+      finish({ success: false, text: "", error: `Sandbox process error: ${err?.message || "unknown"}`, exitCode: -1 }, "error");
     });
 
-    if (options?.input && proc.stdin) {
+    const rl = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+    rl.on("line", (line) => {
+      stdoutBytes += Buffer.byteLength(line) + 1;
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let data: any;
       try {
-        proc.stdin.write(options.input);
-        proc.stdin.end();
-        addStepLog("DEBUG", `Injected ${Buffer.byteLength(options.input)} bytes into process stdin`);
-      } catch (inErr: any) {
-        addStepLog("WARN", `Failed to write stdin: ${inErr?.message}`);
+        data = JSON.parse(trimmed);
+      } catch {
+        if (rawText.length < MAX_CAPTURE_BYTES) rawText += `${line}\n`;
+        return;
       }
-    }
-
-    let stdoutChunks = 0;
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      stdoutChunks++;
-      const text = chunk.toString("utf-8");
-      stdout += text;
-      const preview = text.length > 80 ? `${text.slice(0, 80)}...` : text.trim();
-      if (preview) {
-        addStepLog("STDOUT", `[Chunk ${stdoutChunks}] (${chunk.length} bytes): ${preview}`);
+      if (data?.event === "step_update") {
+        const stepUpdate = data.step_update || {};
+        const step = data.step || {};
+        if (stepUpdate.text_delta) {
+          if (streamedText.length < MAX_CAPTURE_BYTES) streamedText += stepUpdate.text_delta;
+        } else if (step.type === "PLANNER_RESPONSE" && typeof step.content === "string") {
+          streamedText = step.content;
+        }
+      } else if (data?.event === "result") {
+        const result = data.result || {};
+        const text = String(result.response || streamedText || "").trim();
+        const ok = result.status === "SUCCESS" && text.length > 0;
+        finish(
+          {
+            success: ok,
+            text,
+            error: ok ? undefined : String(result.error || "Agent returned no output."),
+            exitCode: ok ? 0 : 1,
+            tokens: result.usage
+              ? {
+                  inputTokens: result.usage.input_tokens || 0,
+                  outputTokens: result.usage.output_tokens || 0,
+                  totalTokens: result.usage.total_tokens || 0,
+                }
+              : undefined,
+          },
+          ok ? "success" : "error"
+        );
+      } else if (rawText.length < MAX_CAPTURE_BYTES && !data?.event) {
+        // Plain JSON envelope (e.g. non-streaming output) — keep for parsing.
+        rawText += `${trimmed}\n`;
       }
     });
 
-    let stderrChunks = 0;
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderrChunks++;
-      const text = chunk.toString("utf-8");
-      stderr += text;
-      const preview = text.length > 80 ? `${text.slice(0, 80)}...` : text.trim();
-      if (preview) {
-        addStepLog("STDERR", `[Chunk ${stderrChunks}] (${chunk.length} bytes): ${preview}`);
-      }
+      if (stderr.length < 64 * 1024) stderr += chunk.toString("utf-8");
     });
 
     proc.on("close", (code) => {
-      clearTimeout(timer);
-      const latencyMs = Date.now() - startTime;
-      const cleanOut = stdout.trim();
+      const text = (streamedText || rawText).trim();
+      const ok = code === 0 && text.length > 0;
       const cleanErr = stderr.trim();
-
-      addStepLog(
-        code === 0 ? "INFO" : "WARN",
-        `Process exited with code ${code} (Latency: ${latencyMs}ms, stdout: ${Buffer.byteLength(stdout)} bytes, stderr: ${Buffer.byteLength(stderr)} bytes)`
+      finish(
+        {
+          success: ok,
+          text,
+          error: ok
+            ? undefined
+            : `Agent process exited with code ${code}${cleanErr ? `: ${cleanErr.slice(0, 300)}` : ""}`,
+          exitCode: code,
+        },
+        ok ? "success" : "error"
       );
-
-      const trace: ExecutionTrace = {
-        id: traceId,
-        command: cmd,
-        args: finalArgs,
-        fullCommandStr: fullCmdStr,
-        runtime: status.runtime,
-        containerName: CONTAINER_NAME,
-        pid: proc.pid,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date().toISOString(),
-        latencyMs,
-        exitCode: code,
-        stdoutBytes: Buffer.byteLength(stdout),
-        stderrBytes: Buffer.byteLength(stderr),
-        status: code === 0 && cleanOut.length > 0 ? "success" : "error",
-        stepLogs,
-      };
-
-      resolve({
-        success: code === 0 && cleanOut.length > 0,
-        output: cleanOut || cleanErr,
-        error: code !== 0 ? `Process exited with code ${code}${cleanErr ? `: ${cleanErr}` : ""}` : undefined,
-        latencyMs,
-        runtime: status.runtime,
-        exitCode: code,
-        logs: stepLogs,
-        trace,
-      });
     });
+
+    try {
+      proc.stdin?.write(encodeAgentUserTurn(prompt));
+    } catch (err: any) {
+      finish({ success: false, text: "", error: `Failed to send prompt to agent: ${err?.message}`, exitCode: -1 }, "error");
+    }
   });
 }

@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { useState } from "react";
+import { createRootRoute, HeadContent, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
+import { useState, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AuthProvider } from "@/lib/auth/provider";
+import { RedirectToSignIn } from "@/lib/auth/gates";
+import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "AIE";
@@ -39,6 +41,24 @@ export const Route = createRootRoute({
   }),
   component: RootDocument,
 });
+
+const PUBLIC_PATHS = ["/login"];
+
+/** Every page except sign-in requires a session; server functions enforce the allowlist. */
+function AuthGate({ children }: { children: ReactNode }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { user, isPending } = useCurrentUserState();
+  if (PUBLIC_PATHS.includes(pathname)) return <>{children}</>;
+  if (isPending) {
+    return (
+      <div className="grid h-dvh place-items-center bg-bg text-subtle">
+        <span className="font-mono text-[11px] uppercase tracking-widest">Checking session…</span>
+      </div>
+    );
+  }
+  if (!user) return <RedirectToSignIn />;
+  return <>{children}</>;
+}
 
 function RootDocument() {
   const [queryClient] = useState(
@@ -102,7 +122,9 @@ function RootDocument() {
         <PreviewHostBridge />
         <AuthProvider>
           <QueryClientProvider client={queryClient}>
-            <Outlet />
+            <AuthGate>
+              <Outlet />
+            </AuthGate>
             <Toaster
               position="bottom-right"
               richColors

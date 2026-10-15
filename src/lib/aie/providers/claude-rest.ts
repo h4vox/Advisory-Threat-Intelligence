@@ -76,7 +76,7 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
       };
     }
 
-    addLog("AUTH", `API key detected (prefix: ${effectiveKey.slice(0, 10)}...${effectiveKey.slice(-4)})`);
+    addLog("AUTH", `API key present`);
     addLog("EXEC", `Dispatching live lightweight probe to verify authentication & model '${modelToTest}'...`);
 
     try {

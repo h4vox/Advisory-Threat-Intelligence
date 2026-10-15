@@ -14,13 +14,14 @@
  *   5. IOC & Telemetry Verifiability (0-10 pts)
  *
  * Usage:
- *   node scripts/cognitive-ai-audit.mjs [--dry-run | --prune] [--limit <n>] [--all] [--model <model>]
+ *   node scripts/cognitive-ai-audit.mjs [--apply [--prune]] [--limit <n>] [--all] [--model <model>]
+ *   Dry-run by default (no DB writes). --apply writes verdicts; --apply --prune also deletes rejected reports.
  */
 
 import { MongoClient } from "mongodb";
 import { spawn, execSync } from "node:child_process";
 import dns from "node:dns";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,12 +32,13 @@ try {
   if (typeof dns.setDefaultResultOrder === "function") {
     dns.setDefaultResultOrder("ipv4first");
   }
-  dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
 } catch {}
 
-const DEFAULT_MONGO_URI =
-  process.env.MONGODB_URI ||
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) {
+  console.error("MONGODB_URI is not set. Export it in your environment (see .env.example); no built-in credentials are provided.");
+  process.exit(1);
+}
 
 const DB_NAME = process.env.MONGODB_DATABASE || "threat-intel-DB";
 const COLLECTION_NAME = process.env.MONGODB_COLLECTION || "threat-intel";
@@ -71,13 +73,9 @@ function runAgyCli(args, timeoutMs = 60000) {
     let command = "docker";
     let finalArgs = ["exec", "-i", "aie-agent-sandbox", "agy", ...args];
 
+    // Container only: never run the agent on the host.
     if (!checkSandboxHealth()) {
-      if (existsSync("/home/havox/.local/bin/agy")) {
-        command = "/home/havox/.local/bin/agy";
-        finalArgs = args;
-      } else {
-        return reject(new Error("No AGY CLI agent available (aie-agent-sandbox container offline)"));
-      }
+      return reject(new Error("No AGY CLI agent available (aie-agent-sandbox container offline)"));
     }
 
     let proc = null;
@@ -166,7 +164,9 @@ function extractJsonPayload(text) {
 
 async function runCognitiveAiAudit() {
   const args = process.argv.slice(2);
-  const doPrune = args.includes("--prune");
+  // Dry-run unless --apply is passed explicitly; deletion additionally requires --prune.
+  const doApply = args.includes("--apply");
+  const doPrune = doApply && args.includes("--prune");
   const auditAll = args.includes("--all");
   let limit = 10;
 
@@ -181,7 +181,7 @@ async function runCognitiveAiAudit() {
   console.log(`\n${c.bold}${c.cyan}================================================================================${c.reset}`);
   console.log(`${c.bold}${c.cyan}     ADVERSARY INTELLIGENCE ENGINE (AIE) - COGNITIVE AI LIBRARY AUDIT           ${c.reset}`);
   console.log(`${c.bold}${c.cyan}================================================================================${c.reset}`);
-  console.log(`  • Execution Mode:    ${doPrune ? `${c.red}${c.bold}PRUNE (Delete rejected junk)${c.reset}` : `${c.yellow}DRY-RUN (Flag only)${c.reset}`}`);
+  console.log(`  • Execution Mode:    ${doPrune ? `${c.red}${c.bold}PRUNE (Delete rejected junk)${c.reset}` : doApply ? `${c.yellow}APPLY (Flag only)${c.reset}` : `${c.yellow}DRY-RUN (no database writes; pass --apply)${c.reset}`}`);
   console.log(`  • AI Evaluation:     ${c.green}Containerized AGY Agent (${model})${c.reset}`);
   console.log(`  • Audit Target:      ${auditAll ? "All reports" : "Unverified / Pending reports"}`);
   console.log(`  • AI Batch Limit:    ${limit} documents`);
@@ -195,7 +195,7 @@ async function runCognitiveAiAudit() {
   console.log(`  • Sandbox Status:    ${c.green}Online (aie-agent-sandbox healthy)${c.reset}\n`);
 
   console.log(`Connecting to MongoDB Atlas (${DB_NAME})...`);
-  const client = new MongoClient(DEFAULT_MONGO_URI, { serverSelectionTimeoutMS: 15000 });
+  const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 });
   await client.connect();
   const db = client.db(DB_NAME);
   const col = db.collection(COLLECTION_NAME);
@@ -294,7 +294,6 @@ Return pure JSON only:
           "json",
           "--model",
           model,
-          "--dangerously-skip-permissions",
           "--print-timeout",
           "45s",
         ],
@@ -355,7 +354,7 @@ Return pure JSON only:
           updatedAnalysis.techniques = Array.from(s);
         }
 
-        await col.updateOne(
+        if (doApply) await col.updateOne(
           { id: doc.id, docType: "report" },
           {
             $set: {
@@ -370,12 +369,14 @@ Return pure JSON only:
             },
           }
         );
-        console.log(`    ${c.green}✓ Updated in MongoDB: status=acquired, aiVerified=true${c.reset}\n`);
+        console.log(doApply ? `    ${c.green}✓ Updated in MongoDB: status=acquired, aiVerified=true${c.reset}\n` : `    ${c.dim}[dry-run] would set status=acquired, aiVerified=true${c.reset}\n`);
       } else {
         rejectedCount++;
         if (doPrune) {
           await col.deleteOne({ id: doc.id, docType: "report" });
           console.log(`    ${c.red}✗ Permanently PRUNED from MongoDB${c.reset}\n`);
+        } else if (!doApply) {
+          console.log(`    ${c.dim}[dry-run] would mark as rejected (pass --apply to write)${c.reset}\n`);
         } else {
           await col.updateOne(
             { id: doc.id, docType: "report" },

@@ -1,8 +1,14 @@
 import { MongoClient } from "mongodb";
 import { SOURCE_SEED } from "../src/lib/aie/catalog.ts";
 
-const MONGO_URI =
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) {
+  console.error("MONGODB_URI is not set. Export it in your environment (see .env.example); no built-in credentials are provided.");
+  process.exit(1);
+}
+
+// Destructive: dry-run by default; pass --apply to modify the database.
+const APPLY = process.argv.slice(2).includes("--apply");
 
 // Curated domains to purge from discovered_source
 const CURATED_DOMAINS = new Set();
@@ -159,11 +165,17 @@ async function main() {
 
   // 1. Delete curated and noisy domains from discovered_source
   const domainsToDelete = [...CURATED_DOMAINS, ...NOISY_DOMAINS];
-  const deleteRes = await col.deleteMany({
+  const deleteFilter = {
     docType: "discovered_source",
     domain: { $in: domainsToDelete }
-  });
-  console.log(`Deleted ${deleteRes.deletedCount} discovered_source docs matching curated/noisy domains.`);
+  };
+  if (APPLY) {
+    const deleteRes = await col.deleteMany(deleteFilter);
+    console.log(`Deleted ${deleteRes.deletedCount} discovered_source docs matching curated/noisy domains.`);
+  } else {
+    const wouldDelete = await col.countDocuments(deleteFilter);
+    console.log(`[dry-run] Would delete ${wouldDelete} discovered_source docs matching curated/noisy domains.`);
+  }
 
   // 2. Count actual reports in Library per domain
   const reportCounts = await col.aggregate([
@@ -180,6 +192,10 @@ async function main() {
   for (const src of VERIFIED_LIBRARY_SOURCES) {
     const count = domainCountMap.get(src.domain) || 1;
     const docId = `src_disc_${src.domain.replace(/[^a-z0-9]/gi, "_")}`;
+    if (!APPLY) {
+      console.log(`[dry-run] Would upsert verified source: ${src.domain} (${count} reports in Library)`);
+      continue;
+    }
     await col.updateOne(
       { docType: "discovered_source", domain: src.domain },
       {
@@ -215,6 +231,7 @@ async function main() {
     console.log(`- ${r.domain}: ${r.name} | count: ${r.resourceCount} | status: ${r.status} | pattern: ${r.crawlPattern}`);
   }
 
+  if (!APPLY) console.log("\n[dry-run] No changes written. Re-run with --apply to modify the database.");
   await client.close();
 }
 

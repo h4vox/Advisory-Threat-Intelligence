@@ -1,4 +1,5 @@
 import type { Filter, Document } from "mongodb";
+import { decryptConfigSecrets, encryptConfigSecrets } from "../aie/secret-box.server";
 import { getThreatIntelCollection, isMongoConfigured } from "./client.server";
 import type {
   AppSettings,
@@ -3160,7 +3161,7 @@ export async function mongoGetMarketplaceIntegrations(): Promise<IntegrationItem
         version: saved.version ?? def.version,
         config: {
           ...def.config,
-          ...saved.config,
+          ...(decryptConfigSecrets(saved.config) as IntegrationItem["config"]),
         },
       };
     });
@@ -3203,7 +3204,7 @@ export async function mongoSaveMarketplaceIntegration(item: IntegrationItem): Pr
           provider: item.provider,
           version: item.version,
           status: item.status,
-          config: item.config,
+          config: encryptConfigSecrets(item.config),
           updatedAt: new Date().toISOString(),
         },
       },
@@ -3211,6 +3212,7 @@ export async function mongoSaveMarketplaceIntegration(item: IntegrationItem): Pr
     );
   } catch (err) {
     logger.error("MARKETPLACE", `Failed to persist integration ${item.id} to DB`, err);
+    throw new Error(`Failed to save integration ${item.id}.`);
   }
 
   return item;

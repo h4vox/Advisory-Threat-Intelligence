@@ -9,7 +9,8 @@
  * zero-procedure news blurbs, and legal policies).
  *
  * Usage:
- *   node scripts/audit-and-prune-library.mjs [--dry-run | --prune] [--verbose]
+ *   node scripts/audit-and-prune-library.mjs [--apply] [--verbose]
+ *   Dry-run by default; deletes only with an explicit --apply (--prune is accepted as an alias).
  */
 
 import { MongoClient } from "mongodb";
@@ -25,12 +26,13 @@ try {
   if (typeof dns.setDefaultResultOrder === "function") {
     dns.setDefaultResultOrder("ipv4first");
   }
-  dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
 } catch {}
 
-const DEFAULT_MONGO_URI =
-  process.env.MONGODB_URI ||
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) {
+  console.error("MONGODB_URI is not set. Export it in your environment (see .env.example); no built-in credentials are provided.");
+  process.exit(1);
+}
 
 const DB_NAME = process.env.MONGODB_DATABASE || "threat-intel-DB";
 const COLLECTION_NAME = process.env.MONGODB_COLLECTION || "threat-intel";
@@ -396,10 +398,11 @@ export function evaluateReportQuality(report) {
 
 async function runAudit() {
   const args = process.argv.slice(2);
-  const doPrune = args.includes("--prune");
+  // Destructive: dry-run unless --apply (or the legacy --prune alias) is passed explicitly.
+  const doPrune = args.includes("--apply") || args.includes("--prune");
 
   console.log(`Connecting to MongoDB (${DB_NAME})...`);
-  const client = new MongoClient(DEFAULT_MONGO_URI, { serverSelectionTimeoutMS: 10000 });
+  const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10000 });
   await client.connect();
   const db = client.db(DB_NAME);
   const col = db.collection(COLLECTION_NAME);
@@ -585,7 +588,7 @@ async function runAudit() {
     }
   } else {
     console.log(`\n[DRY RUN COMPLETE] To delete these ${toPrune.length} records, run:`);
-    console.log("  node scripts/audit-and-prune-library.mjs --prune");
+    console.log("  node scripts/audit-and-prune-library.mjs --apply");
   }
 
   await client.close();

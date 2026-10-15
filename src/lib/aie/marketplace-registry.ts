@@ -122,15 +122,16 @@ export interface AgyOAuthSession {
   createdAt: string;
 }
 
-export const DEFAULT_PKCE_VERIFIER = "AIE-Threat-Intelligence-Agent-OAuth-PKCE-Verifier-Key-2026-Secure";
-
+// Server-side only: the OAuth URL is built on the server, so the browser never
+// needs the client id or secret.
 export const AGY_OAUTH_CLIENT_ID =
-  (typeof process !== "undefined" && (process.env?.AGY_CLIENT_ID || process.env?.VITE_AGY_CLIENT_ID)) ||
-  (typeof import.meta !== "undefined" && (import.meta as any)?.env?.VITE_AGY_CLIENT_ID) ||
+  (typeof process !== "undefined" &&
+    (process.env?.AGY_OAUTH_CLIENT_ID || process.env?.AGY_CLIENT_ID || process.env?.VITE_AGY_CLIENT_ID)) ||
   "";
 
 export const AGY_OAUTH_CLIENT_SECRET =
-  (typeof process !== "undefined" && (process.env?.AGY_CLIENT_SECRET || process.env?.GOOGLE_CLIENT_SECRET)) ||
+  (typeof process !== "undefined" &&
+    (process.env?.AGY_OAUTH_CLIENT_SECRET || process.env?.AGY_CLIENT_SECRET || process.env?.GOOGLE_CLIENT_SECRET)) ||
   "";
 
 /**
@@ -139,17 +140,11 @@ export const AGY_OAUTH_CLIENT_SECRET =
  * S256 code_challenge, and embeds a cryptographically random session state.
  */
 export function generateAgyOAuthSession(options?: { state?: string; codeVerifier?: string }): AgyOAuthSession {
-  const codeVerifier = options?.codeVerifier || DEFAULT_PKCE_VERIFIER;
+  // RFC 7636: a fresh high-entropy verifier per authorization attempt. The
+  // server keeps it (never the browser) and presents it at code exchange.
+  const codeVerifier = options?.codeVerifier || generateRandomBase64Url(48);
   const codeChallenge = hexToBase64Url(computeSha256Hex(codeVerifier));
   const state = options?.state || generateRandomBase64Url(16);
-
-  if (typeof window !== "undefined" && window.sessionStorage) {
-    try {
-      window.sessionStorage.setItem("aie_oauth_verifier", codeVerifier);
-    } catch {
-      /* ignore storage unavailable */
-    }
-  }
 
   const params = new URLSearchParams({
     access_type: "offline",
@@ -202,7 +197,7 @@ export async function exchangeOAuthCodeForToken(
       } catch {}
     }
 
-    const verifier = codeVerifier || DEFAULT_PKCE_VERIFIER;
+    const verifier = codeVerifier;
     const bodyParams: Record<string, string> = {
       client_id: AGY_OAUTH_CLIENT_ID,
       client_secret: AGY_OAUTH_CLIENT_SECRET,
