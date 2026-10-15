@@ -1,0 +1,35 @@
+{
+  "description": "Public threat-intel reports used by scripts/eval/run-eval.mjs. HTML is fetched at run time into scripts/eval/.cache/ (git-ignored); sha256 is of the HTML as captured for the baseline. A mismatch is reported as a warning (pages change), not a failure.",
+  "reports": [
+    {
+      "id": "msft_volt_typhoon",
+      "file": "msft_volt_typhoon.html",
+      "url": "https://www.microsoft.com/en-us/security/blog/2023/05/24/volt-typhoon-targets-us-critical-infrastructure-with-living-off-the-land-techniques/",
+      "sha256": "a921ca4e1bd99afdbcbc3e5b247c2dff12419cfaed326404de985dc769fb6d6b"
+    },
+    {
+      "id": "msft_octo_tempest",
+      "file": "msft_octo_tempest.html",
+      "url": "https://www.microsoft.com/en-us/security/blog/2023/10/25/octo-tempest-crosses-boundaries-to-facilitate-extortion-encryption-and-destruction/",
+      "sha256": "1aa7dc29a69c59861432268f783fef3eda500babecb78293fa1d3aa99d661d6f"
+    },
+    {
+      "id": "gti_brickstorm",
+      "file": "gti_brickstorm.html",
+      "url": "https://cloud.google.com/blog/topics/threat-intelligence/brickstorm-espionage-campaign",
+      "sha256": "5c136db59464b253b84a5e50e69ef40f1b940bfbf80ef78ce1f83d62b7d2b11a"
+    },
+    {
+      "id": "gti_breeze_comet",
+      "file": "gti_breeze_comet.html",
+      "url": "https://cloud.google.com/blog/topics/threat-intelligence/financially-motivated-threat-actor-breeze-comet-targets-brazil",
+      "sha256": "0336e54d86158e96a99de7fe3a81ddfc19bbbbb96bfc4c32275bfe7afddec00d"
+    },
+    {
+      "id": "gti_unc3944_hardening",
+      "file": "gti_unc3944_hardening.html",
+      "url": "https://cloud.google.com/blog/topics/threat-intelligence/unc3944-proactive-hardening-recommendations",
+      "sha256": "452d91991f316aed19804000fd0e299b27ea35cd45e3469659f2324a3966fe23"
+    }
+  ]
+}

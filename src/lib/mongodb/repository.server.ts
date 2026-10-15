@@ -281,18 +281,25 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
   let doc = await col.findOne({ docType: "report", id: id.trim() });
 
   if (!doc) {
+    // Normalised exact match first (case / "report-" prefix variants), then a
+    // strictly anchored prefix match. Never an unanchored regex: that let a
+    // short or crafted id resolve to an arbitrary report via a collection scan.
     const cleanId = id.trim().toLowerCase();
-    const hexPart = cleanId.replace(/^(rpt[-_]|report[-_])/i, "").replace(/[^a-z0-9]/g, "");
-    if (hexPart.length >= 4) {
+    const hexPart = cleanId.replace(/^(rpt[-_]|report[-_])/i, "").replace(/[^a-f0-9]/g, "");
+    if (hexPart.length > 0) {
       doc = await col.findOne({
         docType: "report",
-        $or: [
-          { id: cleanId },
-          { id: `rpt_${hexPart}` },
-          { id: { $regex: `^rpt_${hexPart}`, $options: "i" } },
-          { id: { $regex: hexPart, $options: "i" } },
-        ],
+        id: { $in: [cleanId, `rpt_${hexPart}`] },
       });
+    }
+    if (!doc && hexPart.length >= 8) {
+      // hexPart only contains [a-f0-9], so it is regex-safe; escape anyway.
+      const escaped = hexPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const candidates = await col
+        .find({ docType: "report", id: { $regex: `^rpt_${escaped}` } })
+        .limit(2)
+        .toArray();
+      doc = candidates.length === 1 ? candidates[0] : null;
     }
   }
 
@@ -1116,7 +1123,9 @@ export async function mongoListSources(): Promise<SourceRecord[]> {
       let domain = "";
       try {
         domain = new URL(doc.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
-      } catch {}
+      } catch {
+        // Invalid homepage URL: source shown without a domain.
+      }
       const count =
         reportCountBySourceId.get(doc.id) ||
         (doc.slug ? reportCountBySourceId.get(doc.slug) : 0) ||
@@ -1826,7 +1835,9 @@ function getCuratedDomainsSet(): Set<string> {
     try {
       const u = new URL(s.homepageUrl);
       set.add(u.hostname.toLowerCase().replace(/^www\./, ""));
-    } catch {}
+    } catch {
+      // Seed with an invalid homepage URL contributes no domain.
+    }
   }
   for (const d of PRIMARY_SEED_DOMAINS) {
     set.add(d.toLowerCase().replace(/^www\./, ""));
@@ -3063,7 +3074,9 @@ export async function mongoAuditLibraryWithAi(options?: {
         if (!evalDomain && url) {
           try {
             evalDomain = new URL(url).hostname.replace(/^www\./, "");
-          } catch {}
+          } catch {
+            // Invalid URL: evaluate without a domain.
+          }
         }
         const evalRes = await runUnifiedResourceEvaluation({
           title,

@@ -28,6 +28,7 @@ export function extractMainContentHtml(rawHtml: string, baseUrl?: string): strin
   if (
     rawHtml.startsWith("%PDF-") ||
     rawHtml.slice(0, 100).includes("%PDF-") ||
+    // eslint-disable-next-line no-control-regex -- intentional: NUL/control bytes mark binary content
     /\x00[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(rawHtml.slice(0, 200))
   ) {
     return "";
@@ -180,6 +181,7 @@ export function buildPristineDocumentHtml(
   const isBinaryPdf =
     rawContentOrHtml.startsWith("%PDF-") ||
     rawContentOrHtml.slice(0, 100).includes("%PDF-") ||
+    // eslint-disable-next-line no-control-regex -- intentional: NUL/control bytes mark binary content
     /\x00[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(rawContentOrHtml.slice(0, 200));
 
   const safeContent = isBinaryPdf ? "" : rawContentOrHtml;

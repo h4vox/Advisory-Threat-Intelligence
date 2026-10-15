@@ -57,13 +57,13 @@ const GENERIC_PATH_PATTERNS = [
   /^\/?$/,
   /^(\/(?:en|en-us|en_us|es|fr|de|ja|zh))?\/?$/i,
   /^\/(reports|news|blog|articles|posts|feed|archive|category|tag|topics|authors?|pages?)(\/page\/\d+|\/?)$/i,
-  /\/category\/[^\/]+\/?$/i,
-  /\/categories\/[^\/]+\/?$/i,
-  /\/tag\/[^\/]+\/?$/i,
-  /\/tags\/[^\/]+\/?$/i,
-  /\/author\/[^\/]+\/?$/i,
-  /\/authors\/[^\/]+\/?$/i,
-  /\/topics?\/[^\/]+\/?$/i,
+  /\/category\/[^/]+\/?$/i,
+  /\/categories\/[^/]+\/?$/i,
+  /\/tag\/[^/]+\/?$/i,
+  /\/tags\/[^/]+\/?$/i,
+  /\/author\/[^/]+\/?$/i,
+  /\/authors\/[^/]+\/?$/i,
+  /\/topics?\/[^/]+\/?$/i,
   /\/topics?\/?$/i,
   /\/archives?\/?$/i,
   /\/feed\/?$/i,
@@ -341,7 +341,7 @@ const REGISTRY_REGEX =
   /\b(?:HKLM|HKCU|HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER)\\[a-zA-Z0-9_\\]{4,100}\b/gi;
 
 const FILEPATH_REGEX =
-  /(?:[a-zA-Z]:\\(?:Windows|Users|ProgramData|AppData|Temp)\\[a-zA-Z0-9_.\\]{4,100}|\/(?:etc|tmp|dev\/shm|var\/tmp|opt)\/[a-zA-Z0-9_.\/]{3,100})/gi;
+  /(?:[a-zA-Z]:\\(?:Windows|Users|ProgramData|AppData|Temp)\\[a-zA-Z0-9_.\\]{4,100}|\/(?:etc|tmp|dev\/shm|var\/tmp|opt)\/[a-zA-Z0-9_./]{3,100})/gi;
 
 const EVENT_ID_REGEX =
   /\b(?:Event\s*ID\s*(?:4688|4624|4672|7045|1102|4720|4726|4738|8007)|Sysmon\s*(?:Event\s*)?(?:1|3|7|8|10|11|12|13|22))\b/gi;

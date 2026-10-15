@@ -229,7 +229,9 @@ export function extractJsonFromLlmText(text: string): any {
         return extractJsonFromLlmText(envelope.response);
       }
     }
-  } catch {}
+  } catch {
+    // Not a JSON envelope: fall through to direct extraction below.
+  }
 
   // Strip markdown code fences if present
   let clean = raw;
@@ -616,7 +618,9 @@ Return pure JSON only.`;
                 });
               }
             }
-          } catch {}
+          } catch {
+            // Agent returned a malformed URL: skip this item.
+          }
         }
 
         if (resources.length > 0) {

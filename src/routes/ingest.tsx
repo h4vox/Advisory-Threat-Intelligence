@@ -386,7 +386,11 @@ function IngestPage() {
   const targetedCrawl = useMutation({
     mutationFn: (topic: string) =>
       triggerCrawlJob({ data: { triggerType: "SEARCH", customQuery: topic } }),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
       toast.success("Targeted Threat Hunt Dispatched", {
         description: `Autonomous crawler is hunting intelligence for '${targetedTopic}' and expanding citation graphs.`,
       });
@@ -426,9 +430,13 @@ function IngestPage() {
   const runCrawl = useMutation({
     mutationFn: (triggerType?: "MANUAL" | "SCHEDULED" | "SEARCH") =>
       triggerCrawlJob({ data: { triggerType: triggerType ?? "MANUAL" } }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ["crawlerState"] });
       void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
       toast.success("Autonomous Discovery Engine Dispatched", {
         description: "Frontier queue initiated: exploring seeds, citations, repositories, and new CTI domains...",
       });
@@ -439,8 +447,12 @@ function IngestPage() {
   // Cancel Crawl Mutation
   const cancelCrawl = useMutation({
     mutationFn: (jobId: string) => cancelCrawlJob({ data: { jobId } }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       void qc.invalidateQueries();
+      if (!res.ok) {
+        toast.message("Crawl job is no longer running");
+        return;
+      }
       toast.info("Crawl job cancelled");
     },
   });

@@ -407,7 +407,9 @@ Return pure JSON only. No markdown fences.`;
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
       }
-    } catch {}
+    } catch (err) {
+      console.debug("[agy-agent] warm agent SOURCE_HARVESTER failed; falling back to one-shot prompt:", err);
+    }
 
     if (!outputText) {
       const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
@@ -564,7 +566,9 @@ Return pure JSON only.`;
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
       }
-    } catch {}
+    } catch (err) {
+      console.debug("[agy-agent] warm agent call failed; falling back to one-shot prompt:", err);
+    }
 
     if (!outputText) {
       const res = await runAgentPromptInSandbox(prompt, { model, timeoutMs: (timeoutSec + 15) * 1000 });
@@ -663,7 +667,9 @@ Return pure JSON only.`;
             });
           }
         }
-      } catch {}
+      } catch {
+        // Malformed href: skip this candidate link.
+      }
     }
   }
 
@@ -772,7 +778,9 @@ Return pure JSON only.`;
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
       }
-    } catch {}
+    } catch (err) {
+      console.debug("[agy-agent] warm agent call failed; falling back to one-shot prompt:", err);
+    }
 
     if (!outputText) {
       const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);

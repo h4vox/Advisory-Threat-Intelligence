@@ -81,6 +81,113 @@ export function isJobActiveInMemory(jobId: string): boolean {
   return activeJobs.has(jobId);
 }
 
+// ---------------------------------------------------------------------------
+// Cross-instance crawl lock (Mongo only). One lock document with a fixed _id so
+// acquisition is a single atomic findOneAndUpdate; a duplicate-key error on the
+// upsert means another holder owns it. The lock expires so a crashed instance
+// cannot block crawling forever. Without Mongo, the in-memory activeJobs map is
+// the only guard (single instance).
+// ---------------------------------------------------------------------------
+
+const CRAWL_LOCK_ID = "crawl_lock";
+const CRAWL_LOCK_OWNER = `${process.pid}:${crypto.randomUUID().slice(0, 8)}`;
+export const CRAWL_ALREADY_RUNNING_MESSAGE = "A crawl is already running";
+
+export class CrawlAlreadyRunningError extends Error {
+  constructor(detail?: string) {
+    super(detail ? `${CRAWL_ALREADY_RUNNING_MESSAGE} (${detail})` : CRAWL_ALREADY_RUNNING_MESSAGE);
+    this.name = "CrawlAlreadyRunningError";
+  }
+}
+
+type CrawlLockDoc = {
+  _id: string;
+  docType: "crawl_lock";
+  owner: string | null;
+  jobId: string | null;
+  acquiredAt?: Date;
+  expiresAt: Date;
+};
+
+async function acquireCrawlLock(jobId: string, expiryMs: number): Promise<{ ok: true } | { ok: false; heldBy?: string }> {
+  const col = await getThreatIntelCollection<CrawlLockDoc>();
+  const now = new Date();
+  try {
+    const res = await col.findOneAndUpdate(
+      {
+        _id: CRAWL_LOCK_ID,
+        $or: [{ jobId: null }, { expiresAt: { $lte: now } }, { expiresAt: { $exists: false } }],
+      },
+      {
+        $set: {
+          docType: "crawl_lock",
+          owner: CRAWL_LOCK_OWNER,
+          jobId,
+          acquiredAt: now,
+          expiresAt: new Date(now.getTime() + expiryMs),
+        },
+      },
+      { upsert: true, returnDocument: "after" },
+    );
+    if (!res || res.jobId !== jobId) return { ok: false };
+  } catch (err) {
+    // E11000 on upsert: the lock document exists and is held (filter did not match).
+    if ((err as { code?: number })?.code === 11000) {
+      const held = await col.findOne({ _id: CRAWL_LOCK_ID });
+      return { ok: false, heldBy: held?.jobId ?? undefined };
+    }
+    throw err;
+  }
+
+  // We own the lock, so any other job still marked "running" past the expiry
+  // window belongs to a crashed/killed instance.
+  try {
+    const cutoffIso = new Date(now.getTime() - expiryMs).toISOString();
+    const jobsCol = await getThreatIntelCollection();
+    const stale = await jobsCol.updateMany(
+      { docType: "crawl_job", status: "running", id: { $ne: jobId }, startedAt: { $lt: cutoffIso } },
+      {
+        $set: {
+          status: "interrupted",
+          completedAt: now.toISOString(),
+          errorSummary: "Crawl job interrupted (instance stopped before completion)",
+          updatedAt: now.toISOString(),
+        },
+      },
+    );
+    if (stale.modifiedCount > 0) {
+      console.warn(`[crawler] marked ${stale.modifiedCount} stale running job(s) as interrupted`);
+      invalidateCrawlerStateCache();
+    }
+  } catch (err) {
+    console.warn("[crawler] failed to mark stale running jobs as interrupted:", err);
+  }
+  return { ok: true };
+}
+
+async function releaseCrawlLock(jobId: string): Promise<void> {
+  try {
+    const col = await getThreatIntelCollection<CrawlLockDoc>();
+    await col.updateOne(
+      { _id: CRAWL_LOCK_ID, owner: CRAWL_LOCK_OWNER, jobId },
+      { $set: { owner: null, jobId: null, expiresAt: new Date(0) } },
+    );
+  } catch (err) {
+    console.warn(`[crawler] failed to release crawl lock for ${jobId} (it will expire):`, err);
+  }
+}
+
+/** Conditionally updates a job only while it is still "running"; returns whether it matched. */
+async function updateJobIfRunning(jobId: string, updates: Partial<CrawlJob>): Promise<boolean> {
+  const col = await getThreatIntelCollection();
+  const res = await col.updateOne(
+    { docType: "crawl_job", id: jobId, status: "running" },
+    { $set: { ...updates, updatedAt: new Date().toISOString() } },
+  );
+  invalidateCrawlerStateCache();
+  return res.matchedCount > 0;
+}
+
 interface FrontierItem {
   url: string;
   canonicalUrl: string;
@@ -187,7 +294,8 @@ export async function executeCrawlJob(
   const isMongo = isMongoConfigured();
   const config = isMongo ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();
 
-  const jobControl = { cancel: false, pause: false };
+  // Reuse the entry reserved by createAndRunCrawlJob so an early cancel is not lost.
+  const jobControl = activeJobs.get(jobId) ?? { cancel: false, pause: false };
   activeJobs.set(jobId, jobControl);
 
   const breadth = config.discoveryBreadth || "balanced";
@@ -330,14 +438,18 @@ export async function executeCrawlJob(
           try {
             const h = new URL(s.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
             if (h) knownDomains.push(h);
-          } catch {}
+          } catch {
+            // Source with an invalid homepage URL contributes no domain.
+          }
         }
         try {
           const existingDiscovered = await mongoListDiscoveredSources();
           for (const ds of existingDiscovered) {
             if (ds.domain) knownDomains.push(ds.domain.toLowerCase());
           }
-        } catch {}
+        } catch (err) {
+          console.warn("[crawler] could not load discovered sources for dedup; continuing with seed domains only:", err);
+        }
 
         const agentResult = await Promise.race([
           runUnifiedSourceDiscovery({
@@ -591,7 +703,9 @@ export async function executeCrawlJob(
         try {
           const host = new URL(s.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
           sourcePatternMap.set(host, s.crawlPattern);
-        } catch {}
+        } catch {
+          // Invalid homepage URL: the pattern stays keyed by source id only.
+        }
       }
     }
 
@@ -1001,7 +1115,7 @@ export async function executeCrawlJob(
 
       if (isMongoConfigured()) {
         try {
-          await mongoUpdateCrawlJob(jobId, {
+          const stillRunning = await updateJobIfRunning(jobId, {
             discoveredCount,
             evaluatedCount,
             qualifiedCount,
@@ -1018,6 +1132,8 @@ export async function executeCrawlJob(
             activeDomains: Array.from(activeDomains),
             throughputDocsPerSec,
           });
+          // Status changed elsewhere (e.g. cancelled from another instance): stop taking work.
+          if (!stillRunning) jobControl.cancel = true;
         } catch {
           /* non-critical telemetry update error */
         }
@@ -1050,6 +1166,7 @@ export async function executeCrawlJob(
     }
 
     async function processFrontierItem(current: FrontierItem): Promise<void> {
+      if (jobControl.cancel) return;
       currentlyProcessingUrls.add(current.url);
       activeDomains.add(current.domain);
 
@@ -2060,12 +2177,16 @@ export async function executeCrawlJob(
 
     // Adaptive multi-worker concurrent dispatcher loop
     while ((frontierQueue.length > 0 || activeWorkerTasks.size > 0) && evaluatedCount < configuredMax) {
+      if (jobControl.cancel) {
+        console.warn(`[crawler] job ${jobId} cancelled; draining ${activeWorkerTasks.size} in-flight worker(s).`);
+        break;
+      }
       if (Date.now() - jobStartTime > MAX_JOB_EXECUTION_TIME_MS) {
         console.warn(`[crawler] max execution time (${maxRunTimeMinutes} min) reached; terminating.`);
         break;
       }
 
-      while (activeWorkerTasks.size < maxConcurrency && frontierQueue.length > 0 && evaluatedCount + activeWorkerTasks.size < configuredMax) {
+      while (!jobControl.cancel && activeWorkerTasks.size < maxConcurrency && frontierQueue.length > 0 && evaluatedCount + activeWorkerTasks.size < configuredMax) {
         const nextItem = pickNextItem();
         if (!nextItem) break;
 
@@ -2126,7 +2247,8 @@ export async function executeCrawlJob(
     );
 
     if (isMongoConfigured()) {
-      await mongoUpdateCrawlJob(jobId, completedJobUpdates);
+      // Conditional: a cancelled job must stay "cancelled".
+      await updateJobIfRunning(jobId, completedJobUpdates);
       await mongoUpdateCrawlConfig({
         lastRunAt: new Date().toISOString(),
         nextRunAt: nextRun,
@@ -2141,7 +2263,7 @@ export async function executeCrawlJob(
               ingested_count = ${ingestedCount}, duplicate_count = ${duplicateCount},
               failed_count = ${failedCount}, rejected_count = ${rejectedCount},
               skipped_count = ${skippedCount}
-          where id = ${jobId}
+          where id = ${jobId} and status = 'running'
         `;
 
         await sql`
@@ -2159,18 +2281,22 @@ export async function executeCrawlJob(
     jobFailed = true;
     jobErrorSummary = errMsg;
     if (isMongoConfigured()) {
-      await mongoUpdateCrawlJob(jobId, {
-        status: "failed",
-        completedAt: new Date().toISOString(),
-        errorSummary: errMsg,
-      });
+      try {
+        await updateJobIfRunning(jobId, {
+          status: "failed",
+          completedAt: new Date().toISOString(),
+          errorSummary: errMsg,
+        });
+      } catch (updErr) {
+        console.warn(`[crawler] failed to record failure for job ${jobId}:`, updErr);
+      }
     }
     if (sql) {
       try {
         await sql`
           update crawl_jobs
           set status = 'failed', completed_at = now(), error_summary = ${errMsg}
-          where id = ${jobId}
+          where id = ${jobId} and status = 'running'
         `;
       } catch {
         /* ignore */
@@ -2178,11 +2304,12 @@ export async function executeCrawlJob(
     }
   } finally {
     activeJobs.delete(jobId);
+    if (isMongo) await releaseCrawlLock(jobId);
   }
 
   return {
     id: jobId,
-    status: jobFailed ? "failed" : "completed",
+    status: jobControl.cancel ? "cancelled" : jobFailed ? "failed" : "completed",
     triggerType,
     startedAt: initialJob.startedAt,
     completedAt: new Date().toISOString(),
@@ -2206,8 +2333,28 @@ export async function createAndRunCrawlJob(
   trigger: CrawlTrigger = "MANUAL",
   targetedQuery?: string,
 ): Promise<CrawlJob> {
+  // In-memory guard (the only guard without Mongo). A cancelled job keeps its
+  // entry until its loop has drained, so this also blocks overlap with it.
+  if (activeJobs.size > 0) {
+    throw new CrawlAlreadyRunningError(Array.from(activeJobs.keys())[0]);
+  }
+
   const id = newId("job");
   const startedAt = new Date().toISOString();
+  // Reserve synchronously (before any await) so concurrent calls in this process can't both start.
+  activeJobs.set(id, { cancel: false, pause: false });
+
+  if (isMongoConfigured()) {
+    try {
+      const cfg = await mongoGetCrawlConfig();
+      const maxRunTimeMinutes = cfg.maxRunTimeMinutes && cfg.maxRunTimeMinutes > 0 ? cfg.maxRunTimeMinutes : 5;
+      const lock = await acquireCrawlLock(id, (maxRunTimeMinutes + 5) * 60 * 1000);
+      if (!lock.ok) throw new CrawlAlreadyRunningError(lock.heldBy);
+    } catch (err) {
+      activeJobs.delete(id);
+      throw err;
+    }
+  }
 
   const initialJob: CrawlJob = {
     id,
@@ -2250,8 +2397,11 @@ export async function createAndRunCrawlJob(
   }
 
   // Start asynchronous crawl in background so the UI immediately shows "Running" status
-  void executeCrawlJob(id, trigger, targetedQuery).catch((err) => {
+  void executeCrawlJob(id, trigger, targetedQuery).catch(async (err) => {
     console.error(`[crawler] job ${id} error:`, err);
+    // executeCrawlJob normally cleans up in its finally; this covers a throw before its try block.
+    activeJobs.delete(id);
+    if (isMongoConfigured()) await releaseCrawlLock(id);
   });
 
   return initialJob;
@@ -2259,26 +2409,36 @@ export async function createAndRunCrawlJob(
 
 export async function cancelJob(jobId: string): Promise<boolean> {
   const job = activeJobs.get(jobId);
-  if (job) {
-    job.cancel = true;
-  }
-  activeJobs.delete(jobId);
+  // Signal the dispatcher/workers; the activeJobs entry stays until the loop
+  // exits (executeCrawlJob's finally) so no second job can start meanwhile.
+  if (job) job.cancel = true;
+
+  let cancelled = Boolean(job);
+  const cancelUpdates: Partial<CrawlJob> = {
+    status: "cancelled",
+    completedAt: new Date().toISOString(),
+    errorSummary: "Crawl job cancelled by operator",
+    currentStage: "indexed",
+  };
   if (isMongoConfigured()) {
-    await mongoUpdateCrawlJob(jobId, {
-      status: "cancelled",
-      completedAt: new Date().toISOString(),
-      errorSummary: "Crawl job cancelled by operator",
-      currentStage: "indexed",
-    });
+    try {
+      // Conditional on "running": finished/unknown jobs are not rewritten. A job
+      // running on another instance sees the status change in its next
+      // telemetry update and stops taking new items.
+      if (await updateJobIfRunning(jobId, cancelUpdates)) cancelled = true;
+    } catch (err) {
+      console.warn(`[crawler] failed to persist cancellation for ${jobId}:`, err);
+    }
   }
-  invalidateCrawlerStateCache();
   try {
     const sql = await getSql();
-    await sql`update crawl_jobs set status = 'cancelled', completed_at = now() where id = ${jobId} and status = 'running'`;
-  } catch {
-    /* ignore sql fallback */
+    const res = await sql`update crawl_jobs set status = 'cancelled', completed_at = now() where id = ${jobId} and status = 'running' returning id`;
+    if (res.length > 0) cancelled = true;
+  } catch (err) {
+    console.debug(`[crawler] SQL cancellation update skipped for ${jobId}:`, err);
   }
-  return true;
+  invalidateCrawlerStateCache();
+  return cancelled;
 }
 
 // ---------------------------------------------------------------------------
@@ -2428,7 +2588,15 @@ export async function checkAndTriggerScheduledCrawl(): Promise<ScheduleCheckResu
     );
 
     // 5. Dispatch the scheduled crawl job with triggerType: "SCHEDULED"
-    const newJob = await createAndRunCrawlJob("SCHEDULED");
+    let newJob: CrawlJob;
+    try {
+      newJob = await createAndRunCrawlJob("SCHEDULED");
+    } catch (err) {
+      if (err instanceof CrawlAlreadyRunningError) {
+        return { triggered: false, reason: err.message, nextRunAt: nextScheduledTime, lastRunAt: config.lastRunAt };
+      }
+      throw err;
+    }
     return {
       triggered: true,
       jobId: newJob.id,

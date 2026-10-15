@@ -14,6 +14,7 @@ import {
   cancelJob,
   checkAndTriggerScheduledCrawl,
   createAndRunCrawlJob,
+  CrawlAlreadyRunningError,
   getOrCreateCrawlConfig,
 } from "./crawler";
 import {
@@ -860,7 +861,9 @@ export const evaluateReportWithAi = createServerFn({ method: "POST" }).middlewar
     if (!evalDomain && url) {
       try {
         evalDomain = new URL(url).hostname.replace(/^www\./, "");
-      } catch {}
+      } catch {
+        // Invalid URL: evaluate without a domain.
+      }
     }
 
     const evalRes = await runUnifiedResourceEvaluation({
@@ -2325,8 +2328,15 @@ export const triggerCrawlJob = createServerFn({ method: "POST" }).middleware([an
   .handler(async ({ data }) => {
     await ensureSeeded();
     invalidateCrawlerStateCache();
-    const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
-    return { ok: true as const, job };
+    try {
+      const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
+      return { ok: true as const, job };
+    } catch (err) {
+      if (err instanceof CrawlAlreadyRunningError) {
+        return { ok: false as const, error: err.message };
+      }
+      throw err;
+    }
   });
 
 export const checkCrawlerSchedule = createServerFn({ method: "POST" }).middleware([analystMiddleware])
@@ -2864,7 +2874,9 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
           try {
             const probe = execSync(`docker exec ${sandboxInfo.containerName} which claude`, { encoding: "utf-8", timeout: 3000 }).trim();
             if (probe) alreadyInstalled = true;
-          } catch {}
+          } catch {
+            // `which` exits non-zero when the CLI is not installed.
+          }
 
           if (alreadyInstalled && !data.reconfig) {
             addLog("INFO", "install", `Claude Code CLI is already installed inside container sandbox at /usr/local/bin/claude. Ready state verified!`);
@@ -2900,7 +2912,9 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
           try {
             const probe = execSync(`docker exec ${sandboxInfo.containerName} which codex`, { encoding: "utf-8", timeout: 3000 }).trim();
             if (probe) alreadyInstalled = true;
-          } catch {}
+          } catch {
+            // `which` exits non-zero when the CLI is not installed.
+          }
 
           if (alreadyInstalled && !data.reconfig) {
             addLog("INFO", "install", `Codex CLI is already installed inside container sandbox at /usr/local/bin/codex. Ready state verified!`);
@@ -3629,7 +3643,9 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).mid
           status = state.Status || (containerRunning ? "running" : "stopped");
           startedAt = state.StartedAt;
         }
-      } catch {}
+      } catch {
+        // docker unavailable or container absent: report defaults (not running).
+      }
 
       // 2. Fetch live stats if running
       if (containerRunning) {
@@ -3647,14 +3663,20 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).mid
             blockIO = parsedStats.BlockIO || "0 B / 0 B";
             pids = parseInt(parsedStats.PIDs, 10) || 1;
           }
-        } catch {}
+        } catch {
+          // Stats are best-effort telemetry; keep zeroed defaults.
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.debug("[sandbox-status] child_process unavailable:", err);
+    }
 
     let tokenDetected = false;
     try {
       tokenDetected = checkContainerOAuthToken().exists;
-    } catch {}
+    } catch {
+      // Token probe failure means no token detected.
+    }
 
     const mem = process.memoryUsage();
     const logs = getRecentSandboxLogs({ limit: 1 });
