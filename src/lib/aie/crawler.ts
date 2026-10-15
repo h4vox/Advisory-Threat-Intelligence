@@ -1,4 +1,5 @@
 import { analyzeThreatIntelligence, extractStructuredEntities } from "./attack-chain";
+import { lookupAttackTechnique } from "./mitre-matrix";
 import {
   DISCOVERY_KNOWLEDGE_POOL,
   evaluateDomainTrust,
@@ -93,6 +94,8 @@ interface FrontierItem {
   domain: string;
   preloadedText?: string;
   title?: string;
+  /** Publication date reported by the source (feed or page metadata); null when unknown. */
+  publishedAt?: string | null;
 }
 
 export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
@@ -650,6 +653,7 @@ export async function executeCrawlJob(
                     domain,
                     title: item.title,
                     preloadedText: item.rawContent || item.summary,
+                    publishedAt: item.publishedAt ? item.publishedAt.slice(0, 10) : null,
                   });
                 } catch {
                   /* skip invalid */
@@ -1223,6 +1227,9 @@ export async function executeCrawlJob(
               }
 
               const htmlMeta = extractHtmlMetadata(body);
+              if (!current.publishedAt && htmlMeta.publishedAt) {
+                current.publishedAt = htmlMeta.publishedAt.slice(0, 10);
+              }
               if (htmlMeta.author && (!current.author || current.author === current.domain)) {
                 current.author = htmlMeta.author;
               }
@@ -1315,7 +1322,10 @@ export async function executeCrawlJob(
 
         // Check dateRangeDays filter if configured
         if (config.dateRangeDays && config.dateRangeDays > 0) {
-          const pubDateMatch = textContent.slice(0, 1500).match(/\b(202[0-6])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
+          // Prefer the source-reported date; fall back to the first ISO-style date near the top.
+          const pubDateMatch = current.publishedAt
+            ? [current.publishedAt]
+            : textContent.slice(0, 1500).match(/\b((?:19|20)\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
           if (pubDateMatch) {
             const parsedPubDate = new Date(pubDateMatch[0]).getTime();
             const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
@@ -1610,7 +1620,7 @@ export async function executeCrawlJob(
             canonicalUrl: current.canonicalUrl,
             publisher: current.publisher || current.domain,
             author: current.publisher || current.domain,
-            publishedAt: new Date().toISOString().slice(0, 10),
+            publishedAt: current.publishedAt ?? null,
             ingestedAt: new Date().toISOString(),
             classification: qual.classification,
             rawHash,
@@ -1690,12 +1700,11 @@ export async function executeCrawlJob(
                   const existingIds = new Set((extractedEntities.techniques || []).map((t) => t.id));
                   for (const techId of agentResult.mitreTechniques) {
                     if (!existingIds.has(techId)) {
-                      extractedEntities.techniques.push({
-                        id: techId,
-                        name: techId,
-                        tactic: "Execution",
-                      });
-                      existingIds.add(techId);
+                      // Resolve name/tactic from ATT&CK reference data; skip ids we can't verify.
+                      const ref = lookupAttackTechnique(techId);
+                      if (!ref) continue;
+                      extractedEntities.techniques.push({ id: ref.id, name: ref.name, tactic: ref.tactic });
+                      existingIds.add(ref.id);
                     }
                   }
                 }
@@ -1708,7 +1717,7 @@ export async function executeCrawlJob(
                 title: docTitle,
                 url: current.url,
                 canonicalUrl: current.canonicalUrl,
-                publishedAt: new Date().toISOString().slice(0, 10),
+                publishedAt: current.publishedAt ?? null,
                 contentType,
                 status: "acquired",
                 rawHash,

@@ -8178,3 +8178,29 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
     };
   });
 }
+
+let techniqueIndex: Map<string, { id: string; name: string; tactic: string }> | null = null;
+
+/**
+ * Resolve an ATT&CK technique or sub-technique id to its name and tactic from
+ * the bundled reference data. Returns null for ids not in the dataset, so a
+ * caller never invents a tactic.
+ */
+export function lookupAttackTechnique(id: string): { id: string; name: string; tactic: string } | null {
+  if (!techniqueIndex) {
+    techniqueIndex = new Map();
+    for (const tactic of MITRE_TACTICS_DATA) {
+      for (const tech of tactic.techniques) {
+        if (!techniqueIndex.has(tech.id)) {
+          techniqueIndex.set(tech.id, { id: tech.id, name: tech.name, tactic: tech.tacticName || tactic.name });
+        }
+        for (const sub of tech.subTechniques) {
+          if (!techniqueIndex.has(sub.id)) {
+            techniqueIndex.set(sub.id, { id: sub.id, name: `${tech.name}: ${sub.name}`, tactic: tech.tacticName || tactic.name });
+          }
+        }
+      }
+    }
+  }
+  return techniqueIndex.get(id.trim().toUpperCase()) ?? null;
+}

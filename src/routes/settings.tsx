@@ -11,28 +11,22 @@ import {
   Clock,
   Compass,
   Database,
-  Download,
   Eye,
   FileCode,
-  FileText,
   Filter,
   HardDrive,
   Layers,
   Moon,
-  Network,
   Play,
   RefreshCw,
   RotateCcw,
   Save,
-  Server,
-  Settings,
   Shield,
   ShieldAlert,
   Sliders,
   Sparkles,
   Sun,
   Trash2,
-  Upload,
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
@@ -54,7 +48,7 @@ import {
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
-import { AGY_AVAILABLE_MODELS, DEFAULT_AGY_MODEL, sanitizeAgyModel } from "@/lib/aie/agent-framework/types";
+import { AGY_AVAILABLE_MODELS, sanitizeAgyModel } from "@/lib/aie/agent-framework/types";
 
 const settingsSearchSchema = z.object({
   tab: z.enum(["crawler", "policy", "storage", "display", "agent"]).optional(),
@@ -1184,48 +1178,58 @@ function SettingsPage() {
 
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-xs">
-                    <label className="font-medium">Min IOC Confidence</label>
-                    <span className="font-mono text-accent">{currentApp.iocConfidenceThreshold ?? 75}%</span>
+                    <label className="font-medium text-muted">Min IOC Confidence</label>
+                    <span className="font-mono text-subtle">{currentApp.iocConfidenceThreshold ?? 75}%</span>
                   </div>
                   <input
                     type="range"
                     min="50"
                     max="95"
                     step="5"
+                    disabled
+                    aria-disabled="true"
+                    title="Not active yet: IOC harvesting does not filter by confidence"
                     value={currentApp.iocConfidenceThreshold ?? 75}
                     onChange={(e) => updateAppField("iocConfidenceThreshold", parseInt(e.target.value, 10))}
-                    className="w-full accent-accent"
+                    className="w-full accent-accent opacity-50 cursor-not-allowed"
                   />
+                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Evidence Retention Period</label>
+                  <label className="text-xs font-medium block text-muted">Evidence Retention Period</label>
                   <select
+                    disabled
+                    title="Not active yet: evidence is never purged automatically"
                     value={String(currentApp.evidenceRetentionDays ?? 365)}
                     onChange={(e) => updateAppField("evidenceRetentionDays", parseInt(e.target.value, 10))}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="90">90 Days (Quarterly Audit)</option>
                     <option value="180">180 Days (Semi-Annual)</option>
                     <option value="365">365 Days (1 Year Standard)</option>
                     <option value="0">Indefinite (Never Auto-Purge)</option>
                   </select>
+                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
 
               <div className="pt-3 border-t border-border">
                 <div className="space-y-1.5 max-w-sm">
-                  <label className="text-xs font-medium block">Default Export Standard</label>
+                  <label className="text-xs font-medium block text-muted">Default Export Standard</label>
                   <select
+                    disabled
+                    title="Not active yet: exports do not read this default"
                     value={currentApp.defaultExportFormat || "stix21"}
                     onChange={(e) => updateAppField("defaultExportFormat", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="stix21">STIX 2.1 JSON Bundle (OASIS Standard)</option>
                     <option value="json">Raw Engine JSON (Evidence-Preserving)</option>
                     <option value="csv">CSV IOC Table (Firewall / SIEM Ingest)</option>
                     <option value="pdf">Structured PDF Dossier</option>
                   </select>
+                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
             </div>

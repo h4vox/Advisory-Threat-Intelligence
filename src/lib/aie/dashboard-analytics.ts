@@ -1,4 +1,6 @@
 import type {
+  ActorReferenceProfile,
+  CveReferenceMeta,
   ThreatRegionStats,
   TacticDistributionStats,
   MonitoredActorItem,
@@ -7,7 +9,20 @@ import type {
   AttackHeatmapCell,
 } from "./types";
 
-// Base Threat Profile Knowledge Base for Cross-Referencing Real Reports
+// ---------------------------------------------------------------------------
+// Honest dashboard analytics
+//
+// Every count, percentage and list produced here is derived ONLY from the
+// reports passed in. The two static catalogs below are curated *reference*
+// metadata (actor background, CVE CVSS/exploit status). They are used solely
+// to (a) merge known aliases and (b) attach clearly-labelled reference context
+// to entities that were actually observed in reports. They never create
+// entries or inflate counts. `computeDashboardAnalytics([])` returns zeros and
+// empty lists.
+// ---------------------------------------------------------------------------
+
+// Reference actor/tool profiles (curated, NOT observed) used for alias merging
+// and labelled background context.
 interface ActorProfileDef {
   name: string;
   aliases: string[];
@@ -17,7 +32,6 @@ interface ActorProfileDef {
   defaultBadge: string;
   defaultFocus: string;
   defaultSectors: string[];
-  defaultTools: string[];
 }
 
 const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
@@ -30,7 +44,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "Living-off-the-Land, WMI, PowerShell, Router Proxy",
     defaultSectors: ["Critical Infrastructure", "Ports & Maritime", "Energy", "Telecommunications"],
-    defaultTools: ["KV-Botnet", "Fast-Flux C2", "WMI Scripts"],
   },
   {
     name: "Scattered Spider",
@@ -41,7 +54,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "UNC",
     defaultFocus: "SIM Swapping, Okta SSO Takeover, MFA Push Fatigue",
     defaultSectors: ["Hospitality & Gaming", "Cloud Providers", "Retail", "Financial Technology"],
-    defaultTools: ["AnyDesk", "Tailscale", "Mimikatz"],
   },
   {
     name: "Midnight Blizzard",
@@ -52,7 +64,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "OAuth Consent Grants, Entra ID Token Replay, Graph API",
     defaultSectors: ["Government & Diplomacy", "Defense Industrial Base", "NGOs & Think Tanks"],
-    defaultTools: ["MagicWeb", "EnvyScout", "GoldMax"],
   },
   {
     name: "Lazarus Group",
@@ -63,7 +74,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "Trojanized npm/pip Packages, Cross-Chain Bridges, C2 Tunneling",
     defaultSectors: ["Cryptocurrency & Web3", "Defense Aerospace", "Financial Institutions"],
-    defaultTools: ["AppleJeus", "BLINDINGCAN", "Fastloader"],
   },
   {
     name: "Sandworm",
@@ -74,7 +84,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "OT/SCADA Interruption, C2 Data Wipers, Microcontroller Flashing",
     defaultSectors: ["Energy Grid & Power", "Logistics & Rail", "Government Utilities"],
-    defaultTools: ["Industroyer2", "CaddyWiper", "HermeticWiper"],
   },
   {
     name: "LockBit 3.0",
@@ -85,7 +94,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "RaaS",
     defaultFocus: "Shadow Copy Inhibit, PsExec Lateral Spreading, StealBit",
     defaultSectors: ["Healthcare Systems", "Manufacturing", "Education", "Municipalities"],
-    defaultTools: ["StealBit", "PsExec", "Mimikatz"],
   },
   {
     name: "Akira Ransomware",
@@ -96,7 +104,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "RaaS",
     defaultFocus: "AuKill Driver Termination, Cisco VPN Compromise, BYOVD",
     defaultSectors: ["Professional Services", "Manufacturing", "Finance"],
-    defaultTools: ["AuKill", "PCHunter", "Mimikatz"],
   },
   {
     name: "Black Basta",
@@ -107,7 +114,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "RaaS",
     defaultFocus: "Voice Phishing Teams Helpdesk, Quick Assist, Chisel Proxy",
     defaultSectors: ["Healthcare", "Information Technology", "Critical Manufacturing"],
-    defaultTools: ["Qakbot", "Chisel", "AnyDesk"],
   },
   {
     name: "Mustang Panda",
@@ -118,7 +124,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "PlugX DLL Side-Loading, USB Worm Propagation, SmugX Lures",
     defaultSectors: ["Foreign Ministries", "Diplomatic Channels", "ASEAN Government"],
-    defaultTools: ["PlugX", "Thor", "Cobalt Strike"],
   },
   {
     name: "MuddyWater",
@@ -129,7 +134,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "SimpleHelp RMM Abuse, Ligolo Reverse Tunnel, Macro Phishing",
     defaultSectors: ["Telecommunications", "Aviation & Maritime", "Oil & Petrochemicals"],
-    defaultTools: ["Ligolo", "SimpleHelp", "PowGoop"],
   },
   {
     name: "FIN7",
@@ -140,7 +144,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "FIN",
     defaultFocus: "Weaponized Office Documents, Carbanak In-Memory Injection",
     defaultSectors: ["Retail Hospitality", "Financial Services", "Point-of-Sale"],
-    defaultTools: ["Carbanak", "Lizar", "PowerPlant"],
   },
   {
     name: "Flax Typhoon",
@@ -151,18 +154,16 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "APT",
     defaultFocus: "SoftEther VPN, Disruption-Resistant SOHO Proxy Network",
     defaultSectors: ["Defense Contractors", "Government Agencies", "Higher Education"],
-    defaultTools: ["SoftEther", "FRP", "Juicy Potato"],
   },
   {
     name: "Cobalt Strike Beacon",
-    aliases: ["cobalt strike", "cobaltstrike", "beacon"],
+    aliases: ["cobalt strike", "cobaltstrike"],
     type: "Offensive Command & Control",
     originCountry: "Commercial / Dual-Use",
     flag: "🛠️",
     defaultBadge: "TOOL",
     defaultFocus: "Malleable C2 Profiles, Process Hollowing, Named Pipes Staging",
     defaultSectors: ["Enterprise Windows Domains", "Active Directory Forests"],
-    defaultTools: ["Mimikatz", "PsExec", "PowerView"],
   },
   {
     name: "Mimikatz",
@@ -173,7 +174,6 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "TOOL",
     defaultFocus: "LSASS Process Dumping, Pass-the-Hash, Golden Ticket Forgery",
     defaultSectors: ["Domain Controllers", "Enterprise Workstations"],
-    defaultTools: ["ProcDump", "Rubeus", "Kekeo"],
   },
   {
     name: "Chisel Tunnel",
@@ -184,17 +184,15 @@ const KNOWN_ACTOR_PROFILES: ActorProfileDef[] = [
     defaultBadge: "TOOL",
     defaultFocus: "Encrypted HTTP/WebSocket Tunneling, Firewall Evasion",
     defaultSectors: ["DMZ Gateways", "Internal Segmentation"],
-    defaultTools: ["SOCKS5", "SSH Tunnel", "Ligolo-ng"],
   },
 ];
 
-// Curated CVE Intelligence Metadata
+// Curated CVE reference metadata (NOT observed from reports; shown as "reference").
 interface KnownCveMeta {
   vendorProduct: string;
   cvss: number;
   severity: "critical" | "high" | "medium";
   status: "In the Wild" | "Weaponized" | "PoC Published";
-  defaultActors: string[];
 }
 
 const KNOWN_CVE_CATALOG: Record<string, KnownCveMeta> = {
@@ -203,74 +201,166 @@ const KNOWN_CVE_CATALOG: Record<string, KnownCveMeta> = {
     cvss: 9.1,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["Volt Typhoon", "UNC5221"],
   },
   "CVE-2023-34362": {
     vendorProduct: "Progress MOVEit Transfer SQL Injection",
     cvss: 9.8,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["CL0P Ransomware", "FIN11"],
   },
   "CVE-2024-3400": {
     vendorProduct: "Palo Alto Networks PAN-OS GlobalProtect Command Injection",
     cvss: 10.0,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["Midnight Blizzard", "UTA0218"],
   },
   "CVE-2024-1709": {
     vendorProduct: "ConnectWise ScreenConnect Authentication Bypass",
     cvss: 10.0,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["Black Basta", "LockBit Affiliates"],
   },
   "CVE-2023-46805": {
     vendorProduct: "Ivanti Policy Secure Authentication Bypass",
     cvss: 8.2,
     severity: "high",
     status: "In the Wild",
-    defaultActors: ["Volt Typhoon", "UNC5221"],
   },
   "CVE-2023-22515": {
     vendorProduct: "Atlassian Confluence Broken Access Control",
     cvss: 9.8,
     severity: "critical",
     status: "Weaponized",
-    defaultActors: ["Storm-0062", "Lazarus"],
   },
   "CVE-2024-27198": {
     vendorProduct: "JetBrains TeamCity Authentication Bypass",
     cvss: 9.8,
     severity: "critical",
     status: "Weaponized",
-    defaultActors: ["Sandworm", "Midnight Blizzard"],
   },
   "CVE-2023-20198": {
     vendorProduct: "Cisco IOS XE Web UI Privilege Escalation",
     cvss: 10.0,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["Akira", "State-Sponsored Groups"],
   },
   "CVE-2023-23397": {
     vendorProduct: "Microsoft Outlook NTLM Credential Stealing",
     cvss: 9.8,
     severity: "critical",
     status: "In the Wild",
-    defaultActors: ["APT28 (Fancy Bear)", "Sandworm"],
   },
   "CVE-2024-23897": {
     vendorProduct: "Jenkins CLI Arbitrary File Read",
     cvss: 9.8,
     severity: "critical",
     status: "PoC Published",
-    defaultActors: ["Ransomware Affiliates"],
   },
 };
 
-export function computeDashboardAnalytics(reports: any[]): {
+// Canonical MITRE ATT&CK Enterprise tactics in kill-chain order.
+const ENTERPRISE_TACTICS: Array<{ id: string; name: string; aliases: string[] }> = [
+  { id: "TA0043", name: "Reconnaissance", aliases: ["reconnaissance", "recon"] },
+  { id: "TA0042", name: "Resource Development", aliases: ["resource development"] },
+  { id: "TA0001", name: "Initial Access", aliases: ["initial access"] },
+  { id: "TA0002", name: "Execution", aliases: ["execution"] },
+  { id: "TA0003", name: "Persistence", aliases: ["persistence"] },
+  { id: "TA0004", name: "Privilege Escalation", aliases: ["privilege escalation", "priv escalation", "privesc"] },
+  { id: "TA0005", name: "Defense Evasion", aliases: ["defense evasion", "defence evasion", "stealth", "defense impairment"] },
+  { id: "TA0006", name: "Credential Access", aliases: ["credential access"] },
+  { id: "TA0007", name: "Discovery", aliases: ["discovery"] },
+  { id: "TA0008", name: "Lateral Movement", aliases: ["lateral movement"] },
+  { id: "TA0009", name: "Collection", aliases: ["collection"] },
+  { id: "TA0011", name: "Command and Control", aliases: ["command and control", "command & control", "c2", "c&c"] },
+  { id: "TA0010", name: "Exfiltration", aliases: ["exfiltration"] },
+  { id: "TA0040", name: "Impact", aliases: ["impact"] },
+];
+
+const NON_ACTOR_VALUES = new Set(["", "none", "none identified", "unknown", "n/a", "na", "unattributed", "null"]);
+
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean);
+}
+
+function isMeaningfulName(name: string): boolean {
+  return !NON_ACTOR_VALUES.has(name.trim().toLowerCase());
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** True when `alias` equals `name` or appears in it as a whole word/phrase (case-insensitive). */
+function nameMatchesAlias(name: string, alias: string): boolean {
+  const n = name.toLowerCase();
+  const a = alias.toLowerCase();
+  if (n === a) return true;
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(a)}([^a-z0-9]|$)`, "i").test(n);
+}
+
+function findProfile(name: string): ActorProfileDef | undefined {
+  return KNOWN_ACTOR_PROFILES.find(
+    (p) => nameMatchesAlias(name, p.name) || p.aliases.some((a) => nameMatchesAlias(name, a)),
+  );
+}
+
+function resolveTactic(raw: unknown): (typeof ENTERPRISE_TACTICS)[number] | undefined {
+  if (typeof raw !== "string") return undefined;
+  const t = raw.trim().toLowerCase();
+  if (!t) return undefined;
+  const idMatch = t.match(/ta\d{4}/i);
+  if (idMatch) {
+    const byId = ENTERPRISE_TACTICS.find((x) => x.id.toLowerCase() === idMatch[0].toLowerCase());
+    if (byId) return byId;
+  }
+  const normalized = t.replace(/&/g, "and").replace(/\s+/g, " ");
+  return ENTERPRISE_TACTICS.find((x) =>
+    x.aliases.some((a) => {
+      const na = a.replace(/&/g, "and");
+      return normalized === na || normalized.includes(na);
+    }),
+  );
+}
+
+/** Parses "T1059.001 - PowerShell", "T1059.001: PowerShell", "T1059" or {id, name}. */
+function parseTechnique(raw: unknown): { id: string; name: string } | undefined {
+  if (raw && typeof raw === "object") {
+    const o = raw as { id?: unknown; name?: unknown };
+    const id = typeof o.id === "string" ? o.id.trim() : "";
+    const name = typeof o.name === "string" ? o.name.trim() : "";
+    if (!id && !name) return undefined;
+    return { id: id || name, name: name || id };
+  }
+  if (typeof raw !== "string") return undefined;
+  const str = raw.trim();
+  if (!str) return undefined;
+  const m = str.match(/^(T\d{4}(?:\.\d{3})?)\s*(?:[-:–—|]\s*)?(.*)$/i);
+  if (m) {
+    const id = m[1].toUpperCase();
+    return { id, name: m[2]?.trim() || id };
+  }
+  return { id: str, name: str };
+}
+
+type ReportLike = {
+  id?: string;
+  title?: string;
+  analysis?: {
+    threatActors?: unknown;
+    malware?: unknown;
+    vulnerabilities?: unknown;
+    attackChain?: unknown;
+  };
+  extractedEntities?: {
+    threatActors?: unknown;
+    malwareFamilies?: unknown;
+    cves?: unknown;
+    techniques?: unknown;
+  };
+};
+
+export function computeDashboardAnalytics(reports: unknown[]): {
   threatRegions: ThreatRegionStats[];
   tacticDistribution: TacticDistributionStats[];
   topThreatActors: MonitoredActorItem[];
@@ -278,383 +368,256 @@ export function computeDashboardAnalytics(reports: any[]): {
   threatFlows: ThreatFlowItem[];
   attackHeatmap: AttackHeatmapCell[];
 } {
-  // 1. Calculate Real Monitored Threat Actors & Toolsets Frequency
-  const actorScoreMap = new Map<string, { count: number; sampleId?: string; sectors: Set<string>; tools: Set<string> }>();
+  const list: ReportLike[] = Array.isArray(reports)
+    ? reports.filter((r): r is ReportLike => !!r && typeof r === "object")
+    : [];
 
-  for (const r of reports) {
-    const combinedText = `${r.title || ""} ${(r.tags || []).join(" ")}`.toLowerCase();
-    const extractedActors: string[] = [
-      ...(r.analysis?.threatActors || []),
-      ...(r.extractedEntities?.threatActors || []),
-      ...(r.analysis?.malware || []),
-      ...(r.extractedEntities?.malwareFamilies || []),
-    ];
+  // -------------------------------------------------------------------------
+  // 1. Threat actors / toolsets: count reports naming them (aliases merged).
+  // -------------------------------------------------------------------------
+  type ActorAgg = {
+    displayName: string;
+    profile?: ActorProfileDef;
+    reportIds: Set<string | number>;
+    sampleReportId?: string;
+    tools: Map<string, { name: string; count: number }>;
+  };
+  const actorAgg = new Map<string, ActorAgg>();
 
-    for (const p of KNOWN_ACTOR_PROFILES) {
-      let matched = false;
-      for (const a of p.aliases) {
-        if (combinedText.includes(a) || extractedActors.some((ea) => ea.toLowerCase().includes(a))) {
-          matched = true;
-          break;
-        }
-      }
+  list.forEach((r, idx) => {
+    const reportKey = r.id ?? idx;
+    const actorNames = [
+      ...asStringArray(r.analysis?.threatActors),
+      ...asStringArray(r.extractedEntities?.threatActors),
+    ].filter(isMeaningfulName);
+    const malwareNames = [
+      ...asStringArray(r.analysis?.malware),
+      ...asStringArray(r.extractedEntities?.malwareFamilies),
+    ].filter(isMeaningfulName);
 
-      if (matched) {
-        const cur = actorScoreMap.get(p.name) || {
-          count: 0,
-          sampleId: r.id,
-          sectors: new Set(p.defaultSectors),
-          tools: new Set(p.defaultTools),
-        };
-        cur.count++;
-        if (r.id) cur.sampleId = r.id;
-        actorScoreMap.set(p.name, cur);
-      }
+    // Resolve names to aggregation keys (profile name or normalized raw name).
+    const keysInReport = new Map<string, { display: string; profile?: ActorProfileDef }>();
+    for (const n of actorNames) {
+      const profile = findProfile(n);
+      const key = profile ? `profile:${profile.name}` : `raw:${n.toLowerCase()}`;
+      if (!keysInReport.has(key)) keysInReport.set(key, { display: profile?.name ?? n, profile });
     }
-  }
-
-  // Sort and build final monitored actors list
-  const topThreatActors: MonitoredActorItem[] = KNOWN_ACTOR_PROFILES.map((p) => {
-    const entry = actorScoreMap.get(p.name);
-    const seed = p.name.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-    const fallbackCount = (seed % 6) + 7;
-    const count = entry ? Math.max(entry.count, fallbackCount) : fallbackCount;
-    return {
-      name: p.name,
-      type: p.type,
-      originCountry: p.originCountry,
-      flag: p.flag,
-      focus: p.defaultFocus,
-      reportCount: count,
-      badge: p.defaultBadge,
-      targetSectors: entry?.sectors ? Array.from(entry.sectors).slice(0, 3) : p.defaultSectors.slice(0, 3),
-      associatedTools: entry?.tools ? Array.from(entry.tools).slice(0, 3) : p.defaultTools.slice(0, 3),
-    };
-  }).sort((a, b) => b.reportCount - a.reportCount);
-
-  // 2. Calculate Real CVE Velocity & Exploitation Statistics
-  const cveCountMap = new Map<string, { count: number; sampleTitle?: string; sampleId?: string; actors: Set<string> }>();
-
-  for (const r of reports) {
-    const cvesInReport: string[] = [
-      ...(r.extractedEntities?.cves || []),
-      ...(r.analysis?.vulnerabilities || []),
-    ];
-
-    const titleText = (r.title || "").toUpperCase();
-    for (const cveKey of Object.keys(KNOWN_CVE_CATALOG)) {
-      if (titleText.includes(cveKey) && !cvesInReport.includes(cveKey)) {
-        cvesInReport.push(cveKey);
-      }
+    // Malware/tool names count only when they match a curated tool/actor profile.
+    for (const n of malwareNames) {
+      const profile = findProfile(n);
+      if (!profile) continue;
+      const key = `profile:${profile.name}`;
+      if (!keysInReport.has(key)) keysInReport.set(key, { display: profile.name, profile });
     }
 
-    for (const cve of cvesInReport) {
-      if (!cve || !cve.toUpperCase().startsWith("CVE-")) continue;
-      const normalizedCve = cve.toUpperCase().trim();
-      const entry = cveCountMap.get(normalizedCve) || {
-        count: 0,
-        sampleTitle: r.title,
-        sampleId: r.id,
-        actors: new Set<string>(),
+    for (const [key, { display, profile }] of keysInReport) {
+      const agg = actorAgg.get(key) ?? {
+        displayName: display,
+        profile,
+        reportIds: new Set<string | number>(),
+        tools: new Map<string, { name: string; count: number }>(),
       };
-      entry.count++;
-      if (r.analysis?.threatActors) {
-        for (const a of r.analysis.threatActors) {
-          if (a && a !== "None Identified") entry.actors.add(a);
-        }
+      if (agg.reportIds.has(reportKey)) continue;
+      agg.reportIds.add(reportKey);
+      if (r.id && !agg.sampleReportId) agg.sampleReportId = r.id;
+      const seenTools = new Set<string>();
+      for (const m of malwareNames) {
+        const tk = m.toLowerCase();
+        if (seenTools.has(tk)) continue;
+        if (profile && nameMatchesAlias(m, profile.name)) continue;
+        if (profile && profile.aliases.some((a) => nameMatchesAlias(m, a))) continue;
+        seenTools.add(tk);
+        const t = agg.tools.get(tk) ?? { name: m, count: 0 };
+        t.count++;
+        agg.tools.set(tk, t);
       }
-      cveCountMap.set(normalizedCve, entry);
+      actorAgg.set(key, agg);
     }
-  }
+  });
 
-  // Populate CVE items from catalog or observed reports
-  const cveVelocity: CveVelocityItem[] = Object.entries(KNOWN_CVE_CATALOG).map(([cveId, meta]) => {
-    const observed = cveCountMap.get(cveId);
-    const seed = cveId.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-    const fallbackCount = (seed % 4) + 3;
-    const count = observed ? Math.max(observed.count, fallbackCount) : fallbackCount;
-    const actorList = observed && observed.actors.size > 0 ? Array.from(observed.actors).slice(0, 3) : meta.defaultActors;
-    return {
-      cveId,
-      vendorProduct: meta.vendorProduct,
-      cvss: meta.cvss,
-      severity: meta.severity,
-      exploitStatus: meta.status,
-      reportCount: count,
-      sampleReportId: observed?.sampleId,
-      sampleReportTitle: observed?.sampleTitle,
-      actors: actorList,
-    };
-  }).sort((a, b) => b.cvss - a.cvss || b.reportCount - a.reportCount);
+  const topThreatActors: MonitoredActorItem[] = Array.from(actorAgg.values())
+    .filter((a) => a.reportIds.size > 0)
+    .map((a): MonitoredActorItem => {
+      const reference: ActorReferenceProfile | undefined = a.profile
+        ? {
+            type: a.profile.type,
+            originCountry: a.profile.originCountry,
+            flag: a.profile.flag,
+            focus: a.profile.defaultFocus,
+            badge: a.profile.defaultBadge,
+            targetSectors: a.profile.defaultSectors.slice(0, 3),
+          }
+        : undefined;
+      return {
+        name: a.displayName,
+        reportCount: a.reportIds.size,
+        sampleReportId: a.sampleReportId,
+        badge: reference?.badge ?? "ACTOR",
+        associatedTools: Array.from(a.tools.values())
+          .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name))
+          .slice(0, 3)
+          .map((t) => t.name),
+        reference,
+      };
+    })
+    .sort((a, b) => b.reportCount - a.reportCount || a.name.localeCompare(b.name))
+    .slice(0, 20);
 
-  // 3. Calculate Global Threat Origin & Targeting Activity
-  const threatRegions: ThreatRegionStats[] = [
-    {
-      name: "East Asia",
-      x: 750,
-      y: 110,
-      originCountry: "People's Republic of China / DPRK",
-      flag: "🇨🇳",
-      actors: ["Volt Typhoon", "Lazarus Group", "Flax Typhoon", "APT41"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.45) : 74, 52),
-      threatLevel: "critical",
-      sectors: ["Ports & Maritime", "Critical Infrastructure", "Cryptocurrency", "Defense"],
-      topVector: "Living-off-the-Land, Router Botnets, Fast-Flux C2",
-      targetCountries: ["United States", "Taiwan", "Japan", "South Korea"],
-    },
-    {
-      name: "Eastern Europe",
-      x: 530,
-      y: 65,
-      originCountry: "Russian Federation (SVR / GRU)",
-      flag: "🇷🇺",
-      actors: ["Midnight Blizzard", "Sandworm", "APT28", "Turla"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.40) : 88, 64),
-      threatLevel: "critical",
-      sectors: ["Energy Grid", "Foreign Affairs", "Military Logistics", "Think Tanks"],
-      topVector: "OAuth Consent Grants, Kerberoasting, Supply Chain Wipers",
-      targetCountries: ["Ukraine", "United States", "Germany", "United Kingdom"],
-    },
-    {
-      name: "North America",
-      x: 180,
-      y: 95,
-      originCountry: "Transnational / E-Crime Syndicates",
-      flag: "🌐",
-      actors: ["Scattered Spider", "ALPHV / BlackCat", "Black Basta", "Storm-0501"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.32) : 42, 38),
-      threatLevel: "high",
-      sectors: ["Defense Industrial Base", "Hospitality & Casino", "Financial Tech"],
-      topVector: "SIM Swapping, Okta SSO Token Replay, WMI Abuse",
-      targetCountries: ["United States", "Canada"],
-    },
-    {
-      name: "Western Europe",
-      x: 440,
-      y: 75,
-      originCountry: "Transnational Ransomware Operations",
-      flag: "🏴‍☠️",
-      actors: ["LockBit Affiliates", "Akira", "RansomHub", "Play"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.28) : 35, 29),
-      threatLevel: "high",
-      sectors: ["Healthcare Systems", "Automotive Manufacturing", "Local Governments"],
-      topVector: "VPN Zero-Days, AuKill Driver Termination, BYOVD",
-      targetCountries: ["United Kingdom", "France", "Germany", "Netherlands"],
-    },
-    {
-      name: "Middle East",
-      x: 555,
-      y: 135,
-      originCountry: "Islamic Republic of Iran (MOIS / IRGC)",
-      flag: "🇮🇷",
-      actors: ["MuddyWater", "Charming Kitten", "OilRig", "Mint Sandstorm"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.20) : 29, 22),
-      threatLevel: "medium",
-      sectors: ["Oil & Petrochemical", "Telecommunications", "Commercial Aviation"],
-      topVector: "SimpleHelp RMM Abuse, Spearphishing Lures, Chisel Reverse Proxy",
-      targetCountries: ["Israel", "United States", "Saudi Arabia", "UAE"],
-    },
-    {
-      name: "Southeast Asia",
-      x: 720,
-      y: 175,
-      originCountry: "Regional Cyber Espionage",
-      flag: "🌏",
-      actors: ["Mustang Panda", "BlackTech", "Earth Baku"],
-      count: Math.max(reports.length ? Math.round(reports.length * 0.15) : 21, 16),
-      threatLevel: "low",
-      sectors: ["Public Sector Governance", "Diplomatic Channels", "Education"],
-      topVector: "USB Staging, PlugX DLL Side-Loading, Web Shells",
-      targetCountries: ["Philippines", "Singapore", "Vietnam", "Taiwan"],
-    },
-  ];
+  // -------------------------------------------------------------------------
+  // 2. CVEs: count reports referencing each CVE id.
+  // -------------------------------------------------------------------------
+  const cveAgg = new Map<
+    string,
+    { reportIds: Set<string | number>; sampleTitle?: string; sampleId?: string; actors: Set<string> }
+  >();
+  const CVE_RE = /CVE-\d{4}-\d{4,7}/gi;
 
-  // 4. Calculate Tactical ATT&CK Phase Density
-  const tacticCounts: Record<string, { id: string; count: number; techniques: Map<string, { name: string; count: number }> }> = {
-    "Initial Access": { id: "TA0001", count: 0, techniques: new Map() },
-    "Execution": { id: "TA0002", count: 0, techniques: new Map() },
-    "Persistence": { id: "TA0003", count: 0, techniques: new Map() },
-    "Privilege Escalation": { id: "TA0004", count: 0, techniques: new Map() },
-    "Defense Evasion": { id: "TA0005", count: 0, techniques: new Map() },
-    "Credential Access": { id: "TA0006", count: 0, techniques: new Map() },
-    "Discovery": { id: "TA0007", count: 0, techniques: new Map() },
-    "Lateral Movement": { id: "TA0008", count: 0, techniques: new Map() },
-    "Command & Control": { id: "TA0011", count: 0, techniques: new Map() },
-    "Command and Control": { id: "TA0011", count: 0, techniques: new Map() },
-    "Exfiltration": { id: "TA0010", count: 0, techniques: new Map() },
-    "Impact": { id: "TA0040", count: 0, techniques: new Map() },
+  list.forEach((r, idx) => {
+    const reportKey = r.id ?? idx;
+    const ids = new Set<string>();
+    for (const raw of [
+      ...asStringArray(r.extractedEntities?.cves),
+      ...asStringArray(r.analysis?.vulnerabilities),
+    ]) {
+      for (const m of raw.match(CVE_RE) ?? []) ids.add(m.toUpperCase());
+    }
+    if (typeof r.title === "string") {
+      for (const m of r.title.match(CVE_RE) ?? []) ids.add(m.toUpperCase());
+    }
+    const actors = [
+      ...asStringArray(r.analysis?.threatActors),
+      ...asStringArray(r.extractedEntities?.threatActors),
+    ].filter(isMeaningfulName);
+
+    for (const cveId of ids) {
+      const entry = cveAgg.get(cveId) ?? { reportIds: new Set<string | number>(), actors: new Set<string>() };
+      if (entry.reportIds.has(reportKey)) continue;
+      entry.reportIds.add(reportKey);
+      if (!entry.sampleId && r.id) {
+        entry.sampleId = r.id;
+        entry.sampleTitle = r.title;
+      }
+      for (const a of actors) entry.actors.add(findProfile(a)?.name ?? a);
+      cveAgg.set(cveId, entry);
+    }
+  });
+
+  const cveVelocity: CveVelocityItem[] = Array.from(cveAgg.entries())
+    .map(([cveId, e]): CveVelocityItem => {
+      const meta = KNOWN_CVE_CATALOG[cveId];
+      const reference: CveReferenceMeta | undefined = meta
+        ? { vendorProduct: meta.vendorProduct, cvss: meta.cvss, severity: meta.severity, exploitStatus: meta.status }
+        : undefined;
+      return {
+        cveId,
+        reportCount: e.reportIds.size,
+        sampleReportId: e.sampleId,
+        sampleReportTitle: e.sampleTitle,
+        actors: Array.from(e.actors).slice(0, 3),
+        reference,
+      };
+    })
+    .sort((a, b) => b.reportCount - a.reportCount || b.cveId.localeCompare(a.cveId))
+    .slice(0, 24);
+
+  // -------------------------------------------------------------------------
+  // 3. Geography: reports carry no geography field, so nothing is claimed.
+  // -------------------------------------------------------------------------
+  const threatRegions: ThreatRegionStats[] = [];
+
+  // -------------------------------------------------------------------------
+  // 4/5. ATT&CK tactics + techniques from analysis.attackChain.
+  // -------------------------------------------------------------------------
+  type TacticAgg = {
+    steps: number;
+    reportIds: Set<string | number>;
+    techniques: Map<string, { name: string; count: number }>;
+  };
+  const tacticAgg = new Map<string, TacticAgg>();
+  const getTactic = (id: string): TacticAgg => {
+    let t = tacticAgg.get(id);
+    if (!t) {
+      t = { steps: 0, reportIds: new Set(), techniques: new Map() };
+      tacticAgg.set(id, t);
+    }
+    return t;
+  };
+  const addTechnique = (agg: TacticAgg, rawTech: unknown) => {
+    const tech = parseTechnique(rawTech);
+    if (!tech) return;
+    const key = tech.id.toUpperCase();
+    const cur = agg.techniques.get(key) ?? { name: tech.name, count: 0 };
+    cur.count++;
+    if (cur.name === tech.id && tech.name !== tech.id) cur.name = tech.name;
+    agg.techniques.set(key, cur);
   };
 
-  for (const r of reports) {
-    if (r.analysis?.attackChain) {
-      for (const step of r.analysis.attackChain) {
-        const t = step.tactic || "";
-        for (const [key, obj] of Object.entries(tacticCounts)) {
-          if (t.toLowerCase().includes(key.toLowerCase()) || key.toLowerCase().includes(t.toLowerCase())) {
-            obj.count++;
-            if (step.techniqueId) {
-              const techEntry = obj.techniques.get(step.techniqueId) || { name: step.techniqueName || step.techniqueId, count: 0 };
-              techEntry.count++;
-              obj.techniques.set(step.techniqueId, techEntry);
-            }
-          }
-        }
+  list.forEach((r, idx) => {
+    const reportKey = r.id ?? idx;
+    const chain = Array.isArray(r.analysis?.attackChain) ? (r.analysis?.attackChain as unknown[]) : [];
+    if (chain.length > 0) {
+      for (const rawStep of chain) {
+        if (!rawStep || typeof rawStep !== "object") continue;
+        const step = rawStep as { tactic?: unknown; techniques?: unknown };
+        const tactic = resolveTactic(step.tactic);
+        if (!tactic) continue;
+        const agg = getTactic(tactic.id);
+        agg.steps++;
+        agg.reportIds.add(reportKey);
+        if (Array.isArray(step.techniques)) for (const t of step.techniques) addTechnique(agg, t);
       }
+      return;
     }
-  }
+    // Fallback for reports without an attack chain: extracted techniques with a tactic.
+    const extracted = Array.isArray(r.extractedEntities?.techniques)
+      ? (r.extractedEntities?.techniques as unknown[])
+      : [];
+    for (const rawTech of extracted) {
+      if (!rawTech || typeof rawTech !== "object") continue;
+      const tactic = resolveTactic((rawTech as { tactic?: unknown }).tactic);
+      if (!tactic) continue;
+      const agg = getTactic(tactic.id);
+      agg.steps++;
+      agg.reportIds.add(reportKey);
+      addTechnique(agg, rawTech);
+    }
+  });
 
-  const baseMax = Math.max(...Object.values(tacticCounts).map((t) => t?.count ?? 0), 1);
-  const tacticDistribution: TacticDistributionStats[] = Object.entries(tacticCounts)
-    .filter(([name]) => name !== "Command and Control")
-    .map(([name, data]) => {
-      const adjustedCount = Math.max(data?.count ?? 0, 12);
-      return {
-        name,
-        id: data?.id ?? "TA0001",
-        count: adjustedCount,
-        pct: Math.min(100, Math.round((adjustedCount / Math.max(baseMax, 35)) * 100)),
-      };
-    });
+  const maxSteps = Math.max(0, ...Array.from(tacticAgg.values()).map((t) => t.steps));
+  const pctOf = (n: number) => (maxSteps > 0 ? Math.round((n / maxSteps) * 100) : 0);
 
-  // 5. Calculate ATT&CK Tactic Intensity Heatmap
-  const attackHeatmap: AttackHeatmapCell[] = [
-    {
-      tacticId: "TA0001",
-      tacticName: "Initial Access",
-      techniqueCount: 9,
-      hitCount: Math.max(tacticCounts["Initial Access"]?.count ?? 0, 22),
-      intensity: 78,
-      topTechniques: [
-        { id: "T1190", name: "Exploit Public-Facing App", count: 14 },
-        { id: "T1566", name: "Phishing (Spearphishing)", count: 11 },
-        { id: "T1078", name: "Valid Accounts", count: 9 },
-      ],
-    },
-    {
-      tacticId: "TA0002",
-      tacticName: "Execution",
-      techniqueCount: 14,
-      hitCount: Math.max(tacticCounts["Execution"]?.count ?? 0, 31),
-      intensity: 95,
-      topTechniques: [
-        { id: "T1059.001", name: "PowerShell", count: 21 },
-        { id: "T1059.003", name: "Windows Command Shell", count: 17 },
-        { id: "T1047", name: "WMI Execution", count: 12 },
-      ],
-    },
-    {
-      tacticId: "TA0003",
-      tacticName: "Persistence",
-      techniqueCount: 11,
-      hitCount: Math.max(tacticCounts["Persistence"]?.count ?? 0, 19),
-      intensity: 68,
-      topTechniques: [
-        { id: "T1053", name: "Scheduled Task/Job", count: 15 },
-        { id: "T1547", name: "Boot or Logon Autostart", count: 10 },
-        { id: "T1136", name: "Create Account", count: 7 },
-      ],
-    },
-    {
-      tacticId: "TA0004",
-      tacticName: "Privilege Escalation",
-      techniqueCount: 8,
-      hitCount: Math.max(tacticCounts["Privilege Escalation"]?.count ?? 0, 16),
-      intensity: 62,
-      topTechniques: [
-        { id: "T1068", name: "Exploitation for Priv Escalation", count: 12 },
-        { id: "T1548", name: "Abuse Elevation Control", count: 8 },
-        { id: "T1543", name: "Create or Modify System Process", count: 6 },
-      ],
-    },
-    {
-      tacticId: "TA0005",
-      tacticName: "Defense Evasion",
-      techniqueCount: 18,
-      hitCount: Math.max(tacticCounts["Defense Evasion"]?.count ?? 0, 28),
-      intensity: 88,
-      topTechniques: [
-        { id: "T1562.001", name: "Disable Security Tools (AuKill)", count: 18 },
-        { id: "T1070", name: "Indicator Removal on Host", count: 14 },
-        { id: "T1027", name: "Obfuscated Files or Info", count: 13 },
-      ],
-    },
-    {
-      tacticId: "TA0006",
-      tacticName: "Credential Access",
-      techniqueCount: 12,
-      hitCount: Math.max(tacticCounts["Credential Access"]?.count ?? 0, 34),
-      intensity: 98,
-      topTechniques: [
-        { id: "T1003.001", name: "LSASS Memory Dump", count: 24 },
-        { id: "T1558", name: "Steal Kerberos Tickets", count: 15 },
-        { id: "T1552", name: "Unsecured Credentials", count: 11 },
-      ],
-    },
-    {
-      tacticId: "TA0008",
-      tacticName: "Lateral Movement",
-      techniqueCount: 10,
-      hitCount: Math.max(tacticCounts["Lateral Movement"]?.count ?? 0, 20),
-      intensity: 70,
-      topTechniques: [
-        { id: "T1021.002", name: "SMB/Windows Admin Shares", count: 16 },
-        { id: "T1021.001", name: "Remote Desktop Protocol", count: 12 },
-        { id: "T1570", name: "Lateral Tool Transfer", count: 9 },
-      ],
-    },
-    {
-      tacticId: "TA0011",
-      tacticName: "Command and Control",
-      techniqueCount: 13,
-      hitCount: Math.max(tacticCounts["Command and Control"]?.count ?? tacticCounts["Command & Control"]?.count ?? 0, 26),
-      intensity: 84,
-      topTechniques: [
-        { id: "T1071.001", name: "Web Protocols (HTTPS/WebSocket)", count: 20 },
-        { id: "T1573", name: "Encrypted Channel", count: 15 },
-        { id: "T1572", name: "Protocol Tunneling (Chisel)", count: 13 },
-      ],
-    },
-  ];
+  const tacticDistribution: TacticDistributionStats[] = ENTERPRISE_TACTICS.map((t) => {
+    const agg = tacticAgg.get(t.id);
+    const count = agg?.steps ?? 0;
+    return { name: t.name, id: t.id, count, reportCount: agg?.reportIds.size ?? 0, pct: pctOf(count) };
+  })
+    .filter((t) => t.count > 0)
+    .sort((a, b) => b.count - a.count);
 
-  // 6. Calculate Threat Origin to Target Flow Graph
-  const threatFlows: ThreatFlowItem[] = [
-    {
-      id: "flow_east_asia",
-      origin: "East Asia (China / DPRK)",
-      actors: ["Volt Typhoon", "Lazarus", "Flax Typhoon"],
-      vectors: ["Living-off-the-Land", "SOHO Router Botnets", "Trojanized Packages"],
-      tools: ["KV-Botnet", "WMI Scripts", "AppleJeus"],
-      targets: ["US Critical Infrastructure", "Maritime Ports", "Crypto Platforms"],
-      intensity: 92,
-    },
-    {
-      id: "flow_eastern_europe",
-      origin: "Eastern Europe (SVR / GRU)",
-      actors: ["Midnight Blizzard", "Sandworm", "APT28"],
-      vectors: ["OAuth Abuse", "Active Directory Kerberoasting", "Supply Chain"],
-      tools: ["MagicWeb", "Industroyer2", "CaddyWiper"],
-      targets: ["Power Grids", "Foreign Ministries", "Defense Logistics"],
-      intensity: 88,
-    },
-    {
-      id: "flow_raas_syndicates",
-      origin: "Transnational Cartels (RaaS)",
-      actors: ["LockBit 3.0", "Akira", "Black Basta"],
-      vectors: ["BYOVD Driver Evasion", "VPN Exploits", "Helpdesk Social Eng"],
-      tools: ["AuKill", "PsExec", "StealBit", "Chisel"],
-      targets: ["Healthcare Systems", "Manufacturing", "Commercial Enterprises"],
-      intensity: 95,
-    },
-    {
-      id: "flow_identity_broker",
-      origin: "North America (UNC3944)",
-      actors: ["Scattered Spider"],
-      vectors: ["SIM Swapping", "Identity Provider Takeover", "MFA Push Bombing"],
-      tools: ["AnyDesk", "Tailscale VPN", "Mimikatz"],
-      targets: ["Cloud Providers", "Telecom & SaaS", "Hospitality"],
-      intensity: 76,
-    },
-  ];
+  const attackHeatmap: AttackHeatmapCell[] = ENTERPRISE_TACTICS.flatMap((t) => {
+    const agg = tacticAgg.get(t.id);
+    if (!agg || agg.steps === 0) return [];
+    const topTechniques = Array.from(agg.techniques.entries())
+      .map(([id, v]) => ({ id, name: v.name, count: v.count }))
+      .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
+      .slice(0, 3);
+    return [
+      {
+        tacticId: t.id,
+        tacticName: t.name,
+        techniqueCount: agg.techniques.size,
+        hitCount: agg.steps,
+        intensity: pctOf(agg.steps),
+        topTechniques,
+      },
+    ];
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Threat flows: no report field supports origin -> vector -> target
+  //    correlation, so nothing is fabricated.
+  // -------------------------------------------------------------------------
+  const threatFlows: ThreatFlowItem[] = [];
 
   return {
     threatRegions,

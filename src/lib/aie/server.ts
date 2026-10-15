@@ -514,7 +514,10 @@ export const getDashboard = createServerFn({ method: "GET" }).middleware([analys
   const runningJobs = await sql<{ id: string }>`select id from crawl_jobs where status = 'running' limit 1`;
   const crawlerStatus = runningJobs.length > 0 ? "running" : config.paused ? "paused" : config.enabled ? "scheduled" : "disabled";
 
-  const analytics = computeDashboardAnalytics([]);
+  const analyticsRows = await sql.query<ReportRow>(
+    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id order by r.ingested_at desc limit 2000`,
+  );
+  const analytics = computeDashboardAnalytics(analyticsRows.map(toListItem));
 
   return {
     sourceCount: Number(src[0]?.c ?? 0),
@@ -1054,16 +1057,8 @@ export const getReport = createServerFn({ method: "GET" }).middleware([analystMi
               },
             );
 
-            // Persist healed clean HTML back to MongoDB Atlas
-            try {
-              const col = await getThreatIntelCollection();
-              await col.updateOne(
-                { id: mongoReport.id },
-                { $set: { rawHtml: mongoReport.rawHtml } },
-              );
-            } catch (healErr) {
-              console.warn("[getReport] Failed to persist healed HTML to mongo:", healErr);
-            }
+            // Display-only rendering: never write back over the stored document,
+            // so the evidence copy a reader opens is never altered by reading it.
           }
 
           if (/<[a-z][\s\S]*>/i.test(mongoReport.extractedText)) {

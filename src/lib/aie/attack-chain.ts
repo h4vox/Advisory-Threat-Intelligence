@@ -453,7 +453,7 @@ Return pure JSON only.`;
       if (parsed && Array.isArray(parsed.attackChain) && parsed.attackChain.length > 0) {
         const orderSteps: AttackStep[] = parsed.attackChain.map((s: any, idx: number) => ({
           order: typeof s.order === "number" ? s.order : idx + 1,
-          tactic: String(s.tactic || "Execution"),
+          tactic: String(s.tactic || "Unknown"),
           techniques: Array.isArray(s.techniques) ? s.techniques.map(String) : [],
           summary: String(s.summary || ""),
         }));
@@ -463,18 +463,29 @@ Return pure JSON only.`;
           `AI synthesized attack chain for "${title.slice(0, 40)}" (${orderSteps.length} stages via ${active.isRest ? rawModel : agyModel})`
         );
 
+        // Take each list from the model when it returned one; otherwise fall back to the
+        // heuristic and record that, so the result is never labelled purely "llm".
+        const LIST_FIELDS = ["threatActors", "malware", "vulnerabilities", "ttps", "ioas", "detections", "hunting", "emulation"] as const;
+        const fieldOrigins: NonNullable<IntelAnalysis["fieldOrigins"]> = {};
+        const lists = {} as Record<(typeof LIST_FIELDS)[number], string[]>;
+        for (const field of LIST_FIELDS) {
+          const fromModel = parsed[field];
+          if (Array.isArray(fromModel) && fromModel.length > 0) {
+            lists[field] = fromModel.map(String);
+            fieldOrigins[field] = "llm";
+          } else {
+            lists[field] = heuristicFallback[field];
+            fieldOrigins[field] = "heuristic";
+          }
+        }
+        const usedHeuristic = Object.values(fieldOrigins).includes("heuristic");
+
         return {
-          method: "llm",
+          method: usedHeuristic ? "mixed" : "llm",
+          fieldOrigins,
           classification: parsed.classification || heuristicFallback.classification,
-          threatActors: Array.isArray(parsed.threatActors) && parsed.threatActors.length > 0 ? parsed.threatActors.map(String) : heuristicFallback.threatActors,
-          malware: Array.isArray(parsed.malware) && parsed.malware.length > 0 ? parsed.malware.map(String) : heuristicFallback.malware,
-          vulnerabilities: Array.isArray(parsed.vulnerabilities) && parsed.vulnerabilities.length > 0 ? parsed.vulnerabilities.map(String) : heuristicFallback.vulnerabilities,
-          ttps: Array.isArray(parsed.ttps) && parsed.ttps.length > 0 ? parsed.ttps.map(String) : heuristicFallback.ttps,
-          ioas: Array.isArray(parsed.ioas) && parsed.ioas.length > 0 ? parsed.ioas.map(String) : heuristicFallback.ioas,
+          ...lists,
           attackChain: orderSteps,
-          detections: Array.isArray(parsed.detections) && parsed.detections.length > 0 ? parsed.detections.map(String) : heuristicFallback.detections,
-          hunting: Array.isArray(parsed.hunting) && parsed.hunting.length > 0 ? parsed.hunting.map(String) : heuristicFallback.hunting,
-          emulation: Array.isArray(parsed.emulation) && parsed.emulation.length > 0 ? parsed.emulation.map(String) : heuristicFallback.emulation,
         };
       }
     }

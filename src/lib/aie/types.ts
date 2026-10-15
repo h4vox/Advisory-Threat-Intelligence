@@ -47,7 +47,10 @@ export type AttackStep = {
 };
 
 export type IntelAnalysis = {
-  method: "heuristic" | "llm";
+  /** "mixed" = model output with some fields filled by the heuristic (see fieldOrigins). */
+  method: "heuristic" | "llm" | "mixed";
+  /** Which engine produced each list field, when the result is mixed. */
+  fieldOrigins?: Partial<Record<"threatActors" | "malware" | "vulnerabilities" | "ttps" | "ioas" | "detections" | "hunting" | "emulation", "llm" | "heuristic">>;
   classification: string;
   threatActors: string[];
   malware: string[];
@@ -188,35 +191,63 @@ export type ThreatRegionStats = {
   flag?: string;
 };
 
+/** ATT&CK tactic frequency computed from report attack chains (no floors). */
 export type TacticDistributionStats = {
   name: string;
   id: string;
+  /** Number of attack-chain steps mapped to this tactic across reports. */
   count: number;
+  /** Number of distinct reports with at least one step in this tactic. */
+  reportCount: number;
+  /** Percentage relative to the most frequent tactic (0 when there is no data). */
   pct: number;
 };
 
-export type MonitoredActorItem = {
-  name: string;
+/**
+ * Static, curated background metadata for a known actor/tool. This is NOT
+ * observed from reports and must be labelled as a reference profile in the UI.
+ */
+export type ActorReferenceProfile = {
   type: string;
   originCountry: string;
   flag: string;
   focus: string;
-  reportCount: number;
   badge: string;
   targetSectors: string[];
-  associatedTools: string[];
 };
 
-export type CveVelocityItem = {
-  cveId: string;
+export type MonitoredActorItem = {
+  name: string;
+  /** Number of reports whose extracted actors/tools name this actor (or a known alias). */
+  reportCount: number;
+  /** Most recent matching report id, if any. */
+  sampleReportId?: string;
+  /** Badge shown on the card ("APT", "RaaS", "TOOL", "ACTOR", ...). */
+  badge: string;
+  /** Malware / tools observed in the same reports (co-occurrence, observed). */
+  associatedTools: string[];
+  /** Curated reference profile, if this actor is in the built-in catalog. */
+  reference?: ActorReferenceProfile;
+};
+
+/** Curated reference metadata for a CVE. Not observed from reports. */
+export type CveReferenceMeta = {
   vendorProduct: string;
   cvss: number;
   severity: "critical" | "high" | "medium";
   exploitStatus: "In the Wild" | "Weaponized" | "PoC Published";
+};
+
+export type CveVelocityItem = {
+  cveId: string;
+  /** Number of reports that reference this CVE. */
   reportCount: number;
   sampleReportId?: string;
   sampleReportTitle?: string;
+  /** Threat actors named in the same reports (observed). */
   actors: string[];
+  /** Curated reference metadata, if the CVE is in the built-in catalog. */
+  reference?: CveReferenceMeta;
 };
 
 export type ThreatFlowItem = {
@@ -232,8 +263,11 @@ export type ThreatFlowItem = {
 export type AttackHeatmapCell = {
   tacticId: string;
   tacticName: string;
+  /** Distinct technique ids observed under this tactic. */
   techniqueCount: number;
+  /** Attack-chain steps mapped to this tactic. */
   hitCount: number;
+  /** hitCount relative to the busiest tactic, 0-100. */
   intensity: number;
   topTechniques: Array<{ id: string; name: string; count: number }>;
 };
