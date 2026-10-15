@@ -20,7 +20,7 @@ export const Route = createRootRoute({
         name: "description",
         content: "Adversary Intelligence Engine — Phase 1 retrieval console for public threat reports.",
       },
-      { name: "theme-color", content: "#0b0c0e" },
+      { name: "theme-color", content: "#0a0a0c" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
@@ -85,7 +85,7 @@ function RootDocument() {
             __html: `(function(){
               try {
                 var t = localStorage.getItem('aie_theme');
-                if (t === 'light' || (!t && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)) {
+                if (t === 'light') {
                   document.documentElement.setAttribute('data-theme', 'light');
                   document.documentElement.classList.add('light');
                 } else {

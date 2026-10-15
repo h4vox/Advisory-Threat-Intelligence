@@ -17,6 +17,7 @@ import { Route as MarketplaceRouteImport } from './routes/marketplace'
 import { Route as MatrixRouteImport } from './routes/matrix'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SourcesRouteImport } from './routes/sources'
+import { Route as UiKitRouteImport } from './routes/ui-kit'
 import { Route as LibraryReportIdRouteImport } from './routes/library.$reportId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
@@ -60,6 +61,11 @@ const SourcesRoute = SourcesRouteImport.update({
   path: '/sources',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UiKitRoute = UiKitRouteImport.update({
+  id: '/ui-kit',
+  path: '/ui-kit',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LibraryReportIdRoute = LibraryReportIdRouteImport.update({
   id: '/$reportId',
   path: '/$reportId',
@@ -80,6 +86,7 @@ export interface FileRoutesByFullPath {
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
+  '/ui-kit': typeof UiKitRoute
   '/library/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -92,6 +99,7 @@ export interface FileRoutesByTo {
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
+  '/ui-kit': typeof UiKitRoute
   '/library/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -105,6 +113,7 @@ export interface FileRoutesById {
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
+  '/ui-kit': typeof UiKitRoute
   '/library/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
     | '/matrix'
     | '/settings'
     | '/sources'
+    | '/ui-kit'
     | '/library/$reportId'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
@@ -131,6 +141,7 @@ export interface FileRouteTypes {
     | '/matrix'
     | '/settings'
     | '/sources'
+    | '/ui-kit'
     | '/library/$reportId'
     | '/api/auth/$'
   id:
@@ -143,6 +154,7 @@ export interface FileRouteTypes {
     | '/matrix'
     | '/settings'
     | '/sources'
+    | '/ui-kit'
     | '/library/$reportId'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
@@ -156,6 +168,7 @@ export interface RootRouteChildren {
   MatrixRoute: typeof MatrixRoute
   SettingsRoute: typeof SettingsRoute
   SourcesRoute: typeof SourcesRoute
+  UiKitRoute: typeof UiKitRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -217,6 +230,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SourcesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ui-kit': {
+      id: '/ui-kit'
+      path: '/ui-kit'
+      fullPath: '/ui-kit'
+      preLoaderRoute: typeof UiKitRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/library/$reportId': {
       id: '/library/$reportId'
       path: '/$reportId'
@@ -254,6 +274,7 @@ const rootRouteChildren: RootRouteChildren = {
   MatrixRoute: MatrixRoute,
   SettingsRoute: SettingsRoute,
   SourcesRoute: SourcesRoute,
+  UiKitRoute: UiKitRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

@@ -17,6 +17,7 @@ import {
   Moon,
   Search,
   Settings,
+  Shapes,
   Sparkles,
   Sun,
   Upload,
@@ -61,9 +62,11 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-const PALETTE_ITEMS: PaletteNavItem[] = NAV_GROUPS.flatMap((g) =>
-  g.items.map((i) => ({ ...i, group: g.label ?? "Home" })),
-);
+const PALETTE_ITEMS: PaletteNavItem[] = [
+  ...NAV_GROUPS.flatMap((g) => g.items.map((i) => ({ ...i, group: g.label ?? "Home" }))),
+  // Developer reference, reachable from search only.
+  { to: "/ui-kit", label: "UI kit", icon: Shapes, group: "Developer" },
+];
 
 function isActive(pathname: string, to: string) {
   return to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
@@ -141,7 +144,8 @@ export function AppShell({
 
   useEffect(() => {
     const saved = localStorage.getItem("aie_theme") as "dark" | "light" | null;
-    const initialTheme = saved || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    // Dark-first: light only when the user chose it.
+    const initialTheme = saved === "light" ? "light" : "dark";
     setTheme(initialTheme);
     document.documentElement.setAttribute("data-theme", initialTheme);
     if (initialTheme === "light") {
