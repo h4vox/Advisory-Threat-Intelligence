@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { ActionButton, PageHeader, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
@@ -235,121 +236,98 @@ function SourcesPage() {
     }
   };
 
+  const curatedActive = (sources ?? []).filter((s) => s.enabled).length;
+  const reportsCollected = (sources ?? []).reduce((sum, s) => sum + (s.resourceCount ?? 0), 0);
+
   return (
     <AppShell>
-      <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">Registry</p>
-      <h1 className="mt-1 text-3xl font-medium tracking-tight">Sources</h1>
-      <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-        Curated sources are protected baseline intelligence publishers. Discovered sources are
-        found by the crawler engine or AI agent and can be reviewed, toggled, or revoked.
-      </p>
-
-      {/* Tab Navigation */}
-      <div className="mt-6 flex items-center gap-4 border-b border-border">
-        <button
-          type="button"
-          onClick={() => setActiveTab("curated")}
-          className={cn(
-            "pb-2.5 text-sm font-medium transition-colors border-b-2",
-            activeTab === "curated"
-              ? "border-accent text-fg"
-              : "border-transparent text-muted hover:text-fg",
-          )}
-        >
-          <Shield className="inline size-4 mr-1.5 -mt-0.5" />
-          Curated Sources ({filteredSources.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("discovered")}
-          className={cn(
-            "pb-2.5 text-sm font-medium transition-colors border-b-2",
-            activeTab === "discovered"
-              ? "border-accent text-fg"
-              : "border-transparent text-muted hover:text-fg",
-          )}
-        >
-          <Globe className="inline size-4 mr-1.5 -mt-0.5" />
-          Discovered Sources ({filteredDiscovered.length})
-        </button>
-      </div>
-
-      {/* Search Bar & Actions Toolbar */}
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[240px] max-w-md">
-          <Search className="absolute left-3 top-2.5 size-4 text-subtle" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search sources..."
-            className="w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-4 py-2 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-          />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Concurrent Health Probe Button */}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={probeMut.isPending}
-            onClick={() => {
-              const currentList = activeTab === "curated" ? filteredSources : filteredDiscovered;
-              const ids = currentList.map((s) => s.id);
-              probeMut.mutate(ids.length > 0 ? ids : undefined);
-            }}
-            className="gap-1.5 whitespace-nowrap"
-            title="Concurrently probe HTTP latency and reachability across feeds using 6 parallel workers"
-          >
-            {probeMut.isPending ? (
+      <PageHeader
+        title="Sources"
+        description="Curated sources are protected baseline publishers. Discovered sources come from the crawler or AI agent and can be reviewed, toggled, or revoked."
+        actions={
+          <>
+            <ActionButton
+              icon={probeMut.isPending ? undefined : Zap}
+              disabled={probeMut.isPending}
+              onClick={() => {
+                const currentList = activeTab === "curated" ? filteredSources : filteredDiscovered;
+                const ids = currentList.map((s) => s.id);
+                probeMut.mutate(ids.length > 0 ? ids : undefined);
+              }}
+              title="Concurrently probe HTTP latency and reachability across feeds using 6 parallel workers"
+            >
+              {probeMut.isPending ? (
+                <>
+                  <ActivitySpinner size="xs" className="text-accent" />
+                  <span>Probing Feeds...</span>
+                </>
+              ) : (
+                "Probe Feeds"
+              )}
+            </ActionButton>
+            {activeTab === "discovered" && (
               <>
-                <ActivitySpinner size="xs" className="text-accent" />
-                <span>Probing Feeds...</span>
-              </>
-            ) : (
-              <>
-                <Zap className="size-3.5 text-accent" />
-                <span>Probe Feeds</span>
+                <ActionButton icon={Plus} onClick={() => setShowAddModal(true)}>
+                  Add Source
+                </ActionButton>
+                <ActionButton
+                  variant="primary"
+                  icon={Sparkles}
+                  disabled={discoverMut.isPending || !agentStatus?.available}
+                  onClick={() => discoverMut.mutate()}
+                >
+                  {discoverMut.isPending ? "Discovering..." : "AI Discover"}
+                </ActionButton>
               </>
             )}
-          </Button>
+          </>
+        }
+        tabs={
+          <SegmentedTabs
+            ariaLabel="Source registry"
+            value={activeTab}
+            onChange={setActiveTab}
+            items={[
+              { value: "curated", label: "Curated Sources", icon: Shield, count: filteredSources.length },
+              { value: "discovered", label: "Discovered Sources", icon: Globe, count: filteredDiscovered.length },
+            ]}
+          />
+        }
+      />
 
-          {activeTab === "discovered" && (
-            <>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => setShowAddModal(true)}
-                className="gap-1.5"
-              >
-                <Plus className="size-3.5" />
-                Add Source
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                disabled={discoverMut.isPending || !agentStatus?.available}
-                onClick={() => discoverMut.mutate()}
-                className="gap-1.5"
-              >
-                <Sparkles className="size-3.5" />
-                {discoverMut.isPending ? "Discovering..." : "AI Discover"}
-              </Button>
-            </>
-          )}
-        </div>
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={Shield} label="Curated sources" value={(sources ?? []).length} />
+        <StatCard icon={Eye} label="Active curated" value={curatedActive} />
+        <StatCard icon={Globe} label="Discovered sources" value={(discoveredSources ?? []).length} />
+        <StatCard icon={CheckCircle2} label="Reports collected" value={reportsCollected.toLocaleString()} />
       </div>
 
-      {/* Agent Status Indicator */}
-      {activeTab === "discovered" && agentStatus && (
-        <div className="mt-3 flex items-center gap-2 text-xs text-muted">
-          <div className={cn("size-2 rounded-full", agentStatus.available ? "bg-emerald-500" : "bg-red-500")} />
-          <span>AGY Agent: {agentStatus.available ? `v${agentStatus.version} · Available` : "Unavailable"}</span>
-          {agentStatus.available && (
-            <span className="text-subtle">({agentStatus.platform})</span>
-          )}
-        </div>
-      )}
+      {/* Search Bar & Status Toolbar */}
+      <Toolbar
+        className="mb-0"
+        left={
+          <div className="relative w-full min-w-[240px] sm:w-80">
+            <Search className="absolute left-3 top-2.5 size-4 text-subtle" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search sources..."
+              aria-label="Search sources"
+              className="h-9 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-4 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
+            />
+          </div>
+        }
+        right={
+          activeTab === "discovered" && agentStatus ? (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <div className={cn("size-2 rounded-full", agentStatus.available ? "bg-emerald-500" : "bg-red-500")} />
+              <span>AGY Agent: {agentStatus.available ? `v${agentStatus.version} · Available` : "Unavailable"}</span>
+              {agentStatus.available && <span className="text-subtle">({agentStatus.platform})</span>}
+            </div>
+          ) : undefined
+        }
+      />
 
       {/* Curated Sources Tab */}
       {activeTab === "curated" && (

@@ -37,10 +37,15 @@ import {
 } from "@/lib/aie/mitre-matrix";
 import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
+import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 
 export const Route = createFileRoute("/matrix")({ component: MatrixPage });
 
 type LayoutMode = "side" | "flat" | "mini";
+
+function SpinnerIcon({ className }: { className?: string }) {
+  return <ActivitySpinner size="xs" className={cn("text-accent", className)} />;
+}
 
 const PLATFORMS = ["All", "Windows", "Linux", "macOS", "Cloud", "Network", "Identity", "PRE"] as const;
 
@@ -330,58 +335,35 @@ function MatrixPage() {
 
   return (
     <AppShell>
-      <div className="space-y-4">
-        {/* ========================================================================= */}
-        {/* MATRIX HEADER & BREADCRUMB                                                */}
-        {/* ========================================================================= */}
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between border-b border-border pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs uppercase tracking-widest text-subtle">
-                Enterprise Framework
-              </span>
-              <span className="text-subtle">/</span>
-              <Badge tone="accent" className="font-mono text-[10px]">
-                ATT&CK® Enterprise Matrix
-              </Badge>
-            </div>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-fg md:text-3xl">
-              Enterprise Matrix
-            </h1>
-            <p className="mt-1 text-xs text-muted max-w-3xl">
-              Official MITRE ATT&CK® Enterprise Matrix mapping across 15 tactical phases.
-              Techniques with verified intelligence reports in your library are highlighted with direct links to full evidence.
-            </p>
-          </div>
-
-          {/* Quick Metrics & Actions */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              className="h-8 gap-1.5 text-xs font-mono"
-              onClick={() => refetch()}
+      <PageHeader
+        title="ATT&CK Matrix"
+        eyebrow={
+          <span className="flex items-center gap-2">
+            <span>Enterprise Framework</span>
+            <span>/</span>
+            <Badge tone="accent" className="font-mono text-[10px] normal-case tracking-normal">
+              ATT&CK® Enterprise Matrix
+            </Badge>
+          </span>
+        }
+        description="Official MITRE ATT&CK® Enterprise Matrix mapping across 15 tactical phases. Techniques with verified intelligence reports in your library are highlighted with direct links to full evidence."
+        actions={
+          <>
+            <ActionButton
+              variant="outline"
+              icon={isFetching ? SpinnerIcon : RefreshCw}
+              onClick={() => void refetch()}
               disabled={isFetching}
             >
-              {isFetching ? (
-                <ActivitySpinner size="xs" className="text-accent" />
-              ) : (
-                <RefreshCw className="size-3.5 text-accent" />
-              )}
-              <span>Sync Intel ({stats.totalMappedReports})</span>
-            </Button>
-
-            <Button
-              size="sm"
-              className="h-8 gap-1.5 text-xs font-mono"
-              onClick={() => navigate({ to: "/ingest" })}
-            >
-              <Zap className="size-3.5" />
-              <span>Hunt New TTP</span>
-            </Button>
-          </div>
-        </div>
-
+              Sync Intel ({stats.totalMappedReports})
+            </ActionButton>
+            <ActionButton variant="primary" icon={Zap} onClick={() => void navigate({ to: "/ingest" })}>
+              Hunt New TTP
+            </ActionButton>
+          </>
+        }
+      />
+      <div className="space-y-6">
         {/* ========================================================================= */}
         {/* CONTROLS BAR: SEARCH, TACTIC, ACTOR, TOOL, PLATFORM, COVERAGE, LAYOUT     */}
         {/* ========================================================================= */}
@@ -522,54 +504,19 @@ function MatrixPage() {
             </div>
 
             {/* Layout Selector (side / flat / mini) */}
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono text-[11px] text-subtle mr-1">layout:</span>
-              <div className="flex items-center rounded-md border border-border bg-bg-subtle p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setLayoutMode("side")}
-                  className={cn(
-                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
-                    layoutMode === "side"
-                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                      : "text-muted hover:text-fg",
-                  )}
-                  title="Side layout: expandable sub-techniques with official '=' toggle"
-                >
-                  <Columns3 className="size-3" />
-                  <span>side</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setLayoutMode("flat")}
-                  className={cn(
-                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
-                    layoutMode === "flat"
-                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                      : "text-muted hover:text-fg",
-                  )}
-                  title="Flat layout: continuous list of all techniques"
-                >
-                  <LayoutGrid className="size-3" />
-                  <span>flat</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setLayoutMode("mini")}
-                  className={cn(
-                    "flex h-6 items-center gap-1 rounded px-2 text-[11px] font-mono transition-colors",
-                    layoutMode === "mini"
-                      ? "bg-bg-elevated text-fg font-semibold shadow-xs"
-                      : "text-muted hover:text-fg",
-                  )}
-                  title="Mini layout: compact heatmap view"
-                >
-                  <Grid3X3 className="size-3" />
-                  <span>mini</span>
-                </button>
-              </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-subtle">layout:</span>
+              <SegmentedTabs<LayoutMode>
+                size="sm"
+                ariaLabel="Matrix layout"
+                value={layoutMode}
+                onChange={setLayoutMode}
+                items={[
+                  { value: "side", label: "side", icon: Columns3 },
+                  { value: "flat", label: "flat", icon: LayoutGrid },
+                  { value: "mini", label: "mini", icon: Grid3X3 },
+                ]}
+              />
             </div>
           </div>
 

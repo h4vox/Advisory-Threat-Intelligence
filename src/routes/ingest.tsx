@@ -47,6 +47,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { ActionButton, PageHeader, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
@@ -715,68 +716,58 @@ function IngestPage() {
 
   const pagedJobs = paginateList(sortedJobs, jobsPage, jobsPageSize);
 
+  const kpiSkeleton = <span className="inline-block h-8 w-20 rounded bg-border/40 align-middle animate-pulse" />;
+
   return (
     <AppShell>
-      {/* Header Section */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
-              Autonomous Intelligence Engine
-            </p>
+      <PageHeader
+        title="Ingest"
+        description={
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <span>
+              Frontier crawler expanding from seeds to discover new sources, citation graphs, research papers, and pristine PDF evidence.
+            </span>
             <Badge tone="sage" className="gap-1 font-mono text-[10px]">
               <Network className="size-2.5" /> Discovery Graph Active
             </Badge>
             <Badge tone="accent" className="gap-1 font-mono text-[10px]">
               <Globe className="size-2.5" /> Source Expansion ON
             </Badge>
+          </span>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap [&>*]:whitespace-nowrap">
+            <ActionButton icon={Download} onClick={exportStix}>
+              Export STIX 2.1
+            </ActionButton>
+            {activeJob ? (
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => cancelCrawl.mutate(activeJob.id)}
+                disabled={cancelCrawl.isPending}
+                className="h-9 gap-2 px-3 text-sm"
+              >
+                <XCircle className="size-4" />
+                <span>Cancel Scan ({activeJob.id.slice(0, 8)})</span>
+              </Button>
+            ) : (
+              <ActionButton
+                variant="primary"
+                icon={Play}
+                onClick={() => runCrawl.mutate("MANUAL")}
+                disabled={runCrawl.isPending}
+              >
+                Launch Discovery Crawl
+              </ActionButton>
+            )}
           </div>
-          <h1 className="mt-1 text-3xl font-medium tracking-tight">Threat Discovery & Ingestion Engine</h1>
-          <p className="mt-1 text-xs text-muted">
-            Frontier crawler expanding from seeds to discover new sources, citation graphs, research papers, and pristine PDF evidence.
-          </p>
-        </div>
-
-        {/* Global Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={exportStix}
-            className="gap-1.5 text-xs"
-          >
-            <Download className="size-3.5" />
-            <span>Export STIX 2.1</span>
-          </Button>
-
-          {activeJob ? (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => cancelCrawl.mutate(activeJob.id)}
-              disabled={cancelCrawl.isPending}
-              className="gap-1.5 text-xs"
-            >
-              <XCircle className="size-3.5" />
-              <span>Cancel Scan ({activeJob.id.slice(0, 8)})</span>
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              onClick={() => runCrawl.mutate("MANUAL")}
-              disabled={runCrawl.isPending}
-              className="gap-1.5 text-xs"
-            >
-              <Play className="size-3.5" />
-              <span>Launch Discovery Crawl</span>
-            </Button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {/* Live Telemetry Error Alert */}
       {crawlerState.isError && (
-        <div className="mt-4 flex items-center justify-between rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-danger">
+        <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-danger">
           <div className="flex items-center gap-2">
             <XCircle className="size-4 shrink-0" />
             <span>Failed to sync live telemetry: {crawlerState.error?.message}</span>
@@ -793,126 +784,79 @@ function IngestPage() {
       )}
 
       {/* Top Metrics Telemetry Row */}
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-xl border border-border bg-bg-elevated p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Discovered Candidates</span>
-            <Compass className="size-4 text-accent" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            {isCrawlerLoading ? (
-              <div className="h-8 w-20 rounded bg-border/40 animate-pulse my-0.5" />
-            ) : (
-              <span className="font-mono text-2xl font-bold text-fg">
-                {state?.totalCounts?.discovered !== undefined
-                  ? state.totalCounts.discovered.toLocaleString()
-                  : discovered.length.toLocaleString()}
-              </span>
-            )}
-            <span className="font-mono text-[11px] text-muted">URLs in store</span>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-bg-elevated p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Monitored CTI Sources</span>
-            <Network className="size-4 text-sage" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            {isCrawlerLoading ? (
-              <div className="h-8 w-16 rounded bg-border/40 animate-pulse my-0.5" />
-            ) : (
-              <span className="font-mono text-2xl font-bold text-fg">
-                {state?.totalCounts?.sources !== undefined
-                  ? state.totalCounts.sources.toLocaleString()
-                  : discoveredSources.length.toLocaleString()}
-              </span>
-            )}
-            <span className="font-mono text-[11px] text-muted">active domains</span>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-bg-elevated p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Crawl Job Runs</span>
-            <Bot className="size-4 text-accent" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            {isCrawlerLoading ? (
-              <div className="h-8 w-16 rounded bg-border/40 animate-pulse my-0.5" />
-            ) : (
-              <span className="font-mono text-2xl font-bold text-fg">
-                {state?.totalCounts?.jobs !== undefined
-                  ? state.totalCounts.jobs.toLocaleString()
-                  : jobs.length.toLocaleString()}
-              </span>
-            )}
-            <span className="font-mono text-[11px] text-muted">executed jobs</span>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-bg-elevated p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Citation Graph Edges</span>
-            <GitBranch className="size-4 text-subtle" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            {isCrawlerLoading ? (
-              <div className="h-8 w-20 rounded bg-border/40 animate-pulse my-0.5" />
-            ) : (
-              <span className="font-mono text-2xl font-bold text-fg">
-                {state?.totalCounts?.graphEdges !== undefined
-                  ? state.totalCounts.graphEdges.toLocaleString()
-                  : graphEdges.length.toLocaleString()}
-              </span>
-            )}
-            <span className="font-mono text-[11px] text-muted">mapped links</span>
-          </div>
-        </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          icon={Compass}
+          label="Discovered Candidates"
+          value={
+            isCrawlerLoading
+              ? kpiSkeleton
+              : state?.totalCounts?.discovered !== undefined
+                ? state.totalCounts.discovered.toLocaleString()
+                : discovered.length.toLocaleString()
+          }
+          hint="URLs in store"
+        />
+        <StatCard
+          icon={Network}
+          label="Monitored CTI Sources"
+          value={
+            isCrawlerLoading
+              ? kpiSkeleton
+              : state?.totalCounts?.sources !== undefined
+                ? state.totalCounts.sources.toLocaleString()
+                : discoveredSources.length.toLocaleString()
+          }
+          hint="active domains"
+        />
+        <StatCard
+          icon={Bot}
+          label="Crawl Job Runs"
+          value={
+            isCrawlerLoading
+              ? kpiSkeleton
+              : state?.totalCounts?.jobs !== undefined
+                ? state.totalCounts.jobs.toLocaleString()
+                : jobs.length.toLocaleString()
+          }
+          hint="executed jobs"
+        />
+        <StatCard
+          icon={GitBranch}
+          label="Citation Graph Edges"
+          value={
+            isCrawlerLoading
+              ? kpiSkeleton
+              : state?.totalCounts?.graphEdges !== undefined
+                ? state.totalCounts.graphEdges.toLocaleString()
+                : graphEdges.length.toLocaleString()
+          }
+          hint="mapped links"
+        />
       </div>
 
       {/* Sub-Navigation Tabs */}
-      <div className="mt-6 flex flex-wrap gap-1 border-b border-border pb-px">
-        {VIEWS.map((v) => {
-          const Icon = v.icon;
-          const isActive = activeView === v.id;
-          return (
-            <button
-              key={v.id}
-              type="button"
-              onClick={() => setActiveView(v.id)}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors",
-                isActive
-                  ? "border-b-2 border-accent text-fg font-semibold"
-                  : "text-muted hover:text-fg",
-              )}
-            >
-              <Icon className="size-3.5" />
-              <span>{v.label}</span>
-              {v.id === "queue" && !isCrawlerLoading && discovered.length > 0 && (
-                <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
-                  {discovered.length}
-                </span>
-              )}
-              {v.id === "graph" && !isCrawlerLoading && (discoveredSources.length > 0 || graphEdges.length > 0) && (
-                <span className="rounded-full bg-accent/20 text-accent px-1.5 py-0.2 font-mono text-[10px]">
-                  +{discoveredSources.length || graphEdges.length}
-                </span>
-              )}
-              {v.id === "audit" && !isCrawlerLoading && items.length > 0 && (
-                <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
-                  {items.length}
-                </span>
-              )}
-              {v.id === "catalog" && (catalog.data?.length ?? 0) > 0 && (
-                <span className="rounded-full bg-bg-subtle px-1.5 py-0.2 font-mono text-[10px] text-muted">
-                  {catalog.data?.length}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      <div className="mt-8">
+        <SegmentedTabs
+          ariaLabel="Ingest views"
+          value={activeView}
+          onChange={setActiveView}
+          items={VIEWS.map((v) => ({
+            value: v.id,
+            label: v.label,
+            icon: v.icon,
+            count:
+              v.id === "queue" && !isCrawlerLoading && discovered.length > 0
+                ? discovered.length
+                : v.id === "graph" && !isCrawlerLoading && (discoveredSources.length > 0 || graphEdges.length > 0)
+                  ? discoveredSources.length || graphEdges.length
+                  : v.id === "audit" && !isCrawlerLoading && items.length > 0
+                    ? items.length
+                    : v.id === "catalog" && (catalog.data?.length ?? 0) > 0
+                      ? catalog.data?.length
+                      : undefined,
+          }))}
+        />
       </div>
 
       {/* VIEW 1: AUTONOMOUS CRAWLER CONSOLE */}
@@ -1449,48 +1393,45 @@ function IngestPage() {
             </div>
 
             {/* Status Pills */}
-            <div className="flex rounded-lg border border-border bg-bg-elevated p-0.5">
-              {(
-                [
-                  { id: "all", label: `All (${isCrawlerLoading ? "…" : discovered.length})` },
-                  {
-                    id: "awaiting_approval",
-                    label: `Awaiting Approval (${isCrawlerLoading ? "…" : discovered.filter((d) => isItemAwaitingApproval(d.status)).length})`,
-                  },
-                  {
-                    id: "qualified",
-                    label: `Qualified (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "qualified").length})`,
-                  },
-                  {
-                    id: "ingested",
-                    label: `Ingested (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "ingested").length})`,
-                  },
-                  {
-                    id: "rejected",
-                    label: `Rejected (${isCrawlerLoading ? "…" : discovered.filter((d) => d.status === "rejected").length})`,
-                  },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => {
-                    setQueueFilter(tab.id);
-                    setQueuePage(1);
-                  }}
-                  className={cn(
-                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                    queueFilter === tab.id ? "bg-fg text-bg" : "text-muted hover:text-fg",
-                  )}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+            <SegmentedTabs
+              size="sm"
+              ariaLabel="Queue status"
+              value={queueFilter}
+              onChange={(v) => {
+                setQueueFilter(v);
+                setQueuePage(1);
+              }}
+              items={[
+                { value: "all", label: "All", count: isCrawlerLoading ? undefined : discovered.length },
+                {
+                  value: "awaiting_approval",
+                  label: "Awaiting Approval",
+                  count: isCrawlerLoading ? undefined : discovered.filter((d) => isItemAwaitingApproval(d.status)).length,
+                },
+                {
+                  value: "qualified",
+                  label: "Qualified",
+                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "qualified").length,
+                },
+                {
+                  value: "ingested",
+                  label: "Ingested",
+                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "ingested").length,
+                },
+                {
+                  value: "rejected",
+                  label: "Rejected",
+                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "rejected").length,
+                },
+              ]}
+            />
           </div>
 
           {/* Rich Filter & Search Toolbar */}
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-bg-elevated p-3 text-xs">
+          <Toolbar
+            className="mb-0 text-xs"
+            left={
+              <>
             {/* Search Input */}
             <div className="relative flex-1 min-w-[220px] max-w-sm">
               <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
@@ -1585,6 +1526,10 @@ function IngestPage() {
               <span>Novel TTPs ({discovered.filter((d) => d.isEmergingTechnique).length})</span>
             </button>
 
+              </>
+            }
+            right={
+              <>
             {/* Sort Order Dropdown */}
             <select
               value={queueSort}
@@ -1618,7 +1563,9 @@ function IngestPage() {
                 Reset
               </Button>
             )}
-          </div>
+              </>
+            }
+          />
 
           {isCrawlerLoading ? (
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
@@ -1996,7 +1943,10 @@ function IngestPage() {
             </div>
 
             {/* Discovered Sources Filter Toolbar */}
-            <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Toolbar
+              className="mb-0 text-xs"
+              left={
+                <>
               <div className="relative flex-1 min-w-[200px] max-w-xs">
                 <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
                 <input
@@ -2035,7 +1985,9 @@ function IngestPage() {
                 <option value="high">High Trust (≥ 90%)</option>
                 <option value="medium">Medium Trust (≥ 80%)</option>
               </select>
-
+                </>
+              }
+              right={
               <select
                 value={sourcesSort}
                 onChange={(e) => setSourcesSort(e.target.value as any)}
@@ -2046,7 +1998,8 @@ function IngestPage() {
                 <option value="domain_asc">Domain (A–Z)</option>
                 <option value="newest">Recently Discovered</option>
               </select>
-            </div>
+              }
+            />
 
             {isCrawlerLoading ? (
               <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
@@ -2291,7 +2244,10 @@ function IngestPage() {
           </div>
 
           {/* Audit Filter Toolbar */}
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-bg-elevated p-3 text-xs">
+          <Toolbar
+            className="mb-0 text-xs"
+            left={
+              <>
             {/* Search Input */}
             <div className="relative flex-1 min-w-[200px] max-w-xs">
               <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
@@ -2386,6 +2342,10 @@ function IngestPage() {
               ))}
             </select>
 
+              </>
+            }
+            right={
+              <>
             {/* Sort Order */}
             <select
               value={auditSort}
@@ -2415,7 +2375,9 @@ function IngestPage() {
                 Reset
               </Button>
             )}
-          </div>
+              </>
+            }
+          />
 
           {isCrawlerLoading ? (
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
@@ -2598,7 +2560,7 @@ function IngestPage() {
 
       {/* VIEW 6: CURATED CATALOG */}
       {activeView === "catalog" && (
-        <div className="space-y-4">
+        <div className="mt-6 space-y-4">
           <div>
             <h2 className="text-lg font-medium">Curated Golden CTI Reports Catalog</h2>
             <p className="text-xs text-muted">

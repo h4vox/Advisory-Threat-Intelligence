@@ -40,6 +40,7 @@ import { cn } from "@/lib/cn";
 import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
+import { ActionButton, PageHeader, SegmentedTabs, Toolbar } from "@/components/layout/page";
 
 const librarySearchSchema = z.object({
   q: z.string().optional(),
@@ -825,91 +826,97 @@ function LibraryPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">Central Intelligence Store</p>
-          <h1 className="mt-1 text-3xl font-medium tracking-tight">Intelligence Library</h1>
-          <p className="mt-1 text-xs text-muted">
-            Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative w-full sm:w-80">
-            <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search CVE, actor, malware, procedure, or hash…"
-              className="w-full pl-8 pr-8 text-xs"
-            />
-            {q && (
-              <button
-                type="button"
-                onClick={() => setQ("")}
-                className="absolute right-2.5 top-2.5 text-muted hover:text-fg"
-              >
-                <X className="size-3.5" />
-              </button>
-            )}
-          </div>
-          <Button
-            size="sm"
-            variant={showFilters || activeFiltersCount > 0 ? "secondary" : "ghost"}
-            className={cn("h-9 gap-1.5 text-xs", activeFiltersCount > 0 && "border-accent text-accent")}
-            onClick={() => setShowFilters(!showFilters)}
-          >
-            <SlidersHorizontal className="size-3.5" />
-            <span>Filters</span>
-            {activeFiltersCount > 0 && (
-              <span className="rounded-full bg-accent px-1.5 py-0.2 font-mono text-[10px] text-white">
-                {activeFiltersCount}
-              </span>
-            )}
-          </Button>
-
-          <Button
-            size="sm"
-            variant="secondary"
+      <PageHeader
+        title="Library"
+        eyebrow="Central Intelligence Store"
+        description="Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains."
+        actions={
+          <ActionButton
+            variant="primary"
+            icon={Sparkles}
             disabled={isAuditing}
             onClick={handleRunAiAudit}
-            className="h-9 gap-1.5 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
             title="Trigger intelligent AGY evaluation & verification across acquired intelligence reports"
           >
-            <Sparkles className={cn("size-3.5", isAuditing && "animate-spin text-emerald-400")} />
-            <span>{isAuditing ? "Auditing with AI..." : "Audit with AI"}</span>
-          </Button>
-        </div>
-      </div>
+            {isAuditing ? "Auditing with AI..." : "Audit with AI"}
+          </ActionButton>
+        }
+        tabs={
+          <SegmentedTabs
+            ariaLabel="Report category"
+            items={RESOURCE_KINDS.map((c) => ({ value: c.id, label: c.label, count: categoryCounts[c.id] ?? 0 }))}
+            value={selectedKind}
+            onChange={setSelectedKind}
+          />
+        }
+      />
 
-      {/* Category Pills with Active Counts */}
-      <div className="mt-6 flex flex-wrap gap-1.5 border-b border-border pb-3">
-        {RESOURCE_KINDS.map((c) => {
-          const count = categoryCounts[c.id] ?? 0;
-          return (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setSelectedKind(c.id)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
-                selectedKind === c.id
-                  ? "bg-fg text-bg font-semibold shadow-sm"
-                  : "bg-bg-elevated text-muted hover:text-fg border border-border",
+      <Toolbar
+        className="mb-0"
+        left={
+          <>
+            <div className="relative w-full sm:w-80">
+              <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search CVE, actor, malware, procedure, or hash…"
+                className="w-full pl-8 pr-8 text-xs"
+                aria-label="Search library"
+              />
+              {q && (
+                <button
+                  type="button"
+                  onClick={() => setQ("")}
+                  aria-label="Clear search"
+                  className="absolute right-2.5 top-2.5 text-muted hover:text-fg"
+                >
+                  <X className="size-3.5" />
+                </button>
               )}
+            </div>
+            <Button
+              size="sm"
+              variant={showFilters || activeFiltersCount > 0 ? "secondary" : "ghost"}
+              className={cn(
+                "h-9 gap-1.5 border border-border text-xs",
+                activeFiltersCount > 0 && "border-accent text-accent",
+              )}
+              onClick={() => setShowFilters(!showFilters)}
+              aria-expanded={showFilters}
             >
-              <span>{c.label}</span>
-              <span
-                className={cn(
-                  "rounded-full px-1.5 py-0.2 font-mono text-[10px]",
-                  selectedKind === c.id ? "bg-bg text-fg font-bold" : "bg-bg-subtle text-subtle",
-                )}
-              >
-                {count}
+              <SlidersHorizontal className="size-3.5" />
+              <span>Filters</span>
+              {activeFiltersCount > 0 && (
+                <span className="rounded-full bg-accent px-1.5 py-0.2 font-mono text-[10px] text-white">
+                  {activeFiltersCount}
+                </span>
+              )}
+            </Button>
+          </>
+        }
+        right={
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            <span>
+              Showing{" "}
+              <strong className="text-fg tabular-nums">
+                {filteredReports.length === 0
+                  ? 0
+                  : `${(currentPage - 1) * (pageSize === "all" ? filteredReports.length : pageSize) + 1}–${pageSize === "all" ? filteredReports.length : Math.min(filteredReports.length, currentPage * pageSize)}`}
+              </strong>{" "}
+              of <strong className="text-fg tabular-nums">{filteredReports.length}</strong> filtered records
+              {filteredReports.length !== allReports.length && (
+                <span className="text-subtle"> ({allReports.length} total in store)</span>
+              )}
+            </span>
+            {pageSize !== "all" && filteredReports.length > pageSize && (
+              <span className="rounded border border-border bg-bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-accent">
+                Page {currentPage} of {Math.max(1, Math.ceil(filteredReports.length / pageSize))}
               </span>
-            </button>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        }
+      />
 
       {/* Advanced Tag Filter Drawer / Controls */}
       {showFilters && (
@@ -1193,76 +1200,41 @@ function LibraryPage() {
         </div>
       )}
 
-      {/* Result Counter */}
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
-        <div className="flex items-center gap-2">
-          <span>
-            Showing{" "}
-            <strong className="text-fg">
-              {filteredReports.length === 0
-                ? 0
-                : `${(currentPage - 1) * (pageSize === "all" ? filteredReports.length : pageSize) + 1}–${pageSize === "all" ? filteredReports.length : Math.min(filteredReports.length, currentPage * pageSize)}`}
-            </strong>{" "}
-            of <strong className="text-fg">{filteredReports.length}</strong> filtered records
-            {filteredReports.length !== allReports.length && (
-              <span className="text-subtle"> ({allReports.length} total in store)</span>
-            )}
-          </span>
-          {pageSize !== "all" && filteredReports.length > pageSize && (
-            <span className="rounded bg-bg-elevated border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
-              Page {currentPage} of {Math.max(1, Math.ceil(filteredReports.length / pageSize))}
-            </span>
-          )}
-        </div>
-        {selectedKind !== "ALL" && (
-          <span className="font-mono text-[11px] text-subtle">
-            Category: {RESOURCE_KINDS.find((k) => k.id === selectedKind)?.label}
-          </span>
-        )}
-      </div>
-
-      {/* Direct Item Selector Banner */}
+      {/* Direct Item Selector — detail strip */}
       {targetReport && (
-        <div className="mt-4 p-3.5 rounded-xl border border-accent/40 bg-accent/10 card-liquid-glass flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in-0 duration-150">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="p-1.5 rounded-lg bg-accent/20 text-accent shrink-0">
+        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-border border-l-2 border-l-accent bg-bg-card px-5 py-4 card-liquid-glass animate-in fade-in-0 duration-150 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-elevated text-accent">
               <CheckCircle2 className="size-4" />
             </span>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono uppercase text-accent font-semibold tracking-wider">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-accent">
                   Direct Resource Selector Active
                 </span>
-                <Badge className="bg-accent/20 text-accent border border-accent/30 text-[9px] font-mono">
+                <Badge className="border border-border bg-bg-subtle font-mono text-[9px] text-muted">
                   {formatReportId(targetReport.id)}
                 </Badge>
               </div>
-              <p className="text-xs text-fg font-medium truncate">{targetReport.title}</p>
+              <p className="mt-0.5 truncate text-sm font-medium text-fg">{targetReport.title}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => openPdfModal(targetReport.id)}
-              className="px-2.5 py-1 text-xs rounded-lg bg-accent text-accent-fg font-medium hover:scale-[1.02] transition-all cursor-pointer shadow-xs"
-            >
+          <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
+            <ActionButton variant="primary" icon={Eye} onClick={() => openPdfModal(targetReport.id)}>
               Open Document Preview
-            </button>
-            <button
-              type="button"
-              onClick={() => setEvidenceOpen(true)}
-              className="px-2.5 py-1 text-xs rounded-lg border border-accent/40 bg-bg-elevated text-accent font-medium hover:bg-bg-subtle transition-all cursor-pointer"
-            >
+            </ActionButton>
+            <ActionButton variant="outline" icon={Shield} onClick={() => setEvidenceOpen(true)}>
               View Evidence
-            </button>
+            </ActionButton>
             <ReportEvidenceDialog
               reportId={targetReport.id}
               title={targetReport.title}
               open={evidenceOpen}
               onOpenChange={setEvidenceOpen}
             />
-            <button
-              type="button"
+            <ActionButton
+              variant="ghost"
+              icon={X}
               onClick={() => {
                 void navigate({
                   search: (prev) => {
@@ -1274,10 +1246,9 @@ function LibraryPage() {
                   replace: true,
                 });
               }}
-              className="px-2.5 py-1 text-xs rounded-lg border border-border bg-bg-elevated hover:bg-bg-subtle text-muted hover:text-fg transition-all cursor-pointer"
             >
               Clear Selection (View All {allReports.length})
-            </button>
+            </ActionButton>
           </div>
         </div>
       )}

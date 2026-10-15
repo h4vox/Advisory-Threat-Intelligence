@@ -33,6 +33,7 @@ import {
   FileText,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { PageHeader, SegmentedTabs, Toolbar } from "@/components/layout/page";
 import { AieAgentChatDrawer } from "@/components/aie-agent-chat-drawer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -475,173 +476,109 @@ function MarketplacePage() {
         {/* ========================================================================= */}
         {/* 1. 100% STATIC TOP HEADER & NAVIGATION TABS (NEVER SCROLLS)               */}
         {/* ========================================================================= */}
-        <header className="shrink-0 border-b border-border bg-bg/85 backdrop-blur-xl px-6 pt-5 pb-0 z-20">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-accent/10 border border-accent/20 text-accent">
-                  <Cpu className="size-5" />
-                </div>
-                <h1 className="text-xl font-semibold tracking-tight">Marketplace & External Integrations</h1>
-                <Badge className="text-xs bg-bg-subtle text-muted border border-border">
-                  Ecosystem Hub
-                </Badge>
-              </div>
-              <p className="text-xs text-subtle mt-1 max-w-2xl">
-                Install, configure, and manage external AI agents, direct API endpoints, curated adversary feeds,
-                and execution blocks for threat intelligence and purple-team simulation.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* Agent Sandbox Environment Indicator */}
-              <div className="flex items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs shrink-0">
-                <div className="relative flex items-center justify-center">
-                  <div
-                    className={cn(
-                      "size-2.5 rounded-full",
-                      sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
-                        ? "bg-cyan-400 animate-pulse"
-                        : sandboxStatus?.isReady
-                          ? "bg-emerald-500"
-                          : "bg-amber-500"
-                    )}
-                  />
-                  <div
-                    className={cn(
-                      "absolute size-4 rounded-full",
-                      sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
-                        ? "bg-cyan-400/25"
-                        : sandboxStatus?.isReady
-                          ? "bg-emerald-500/20"
-                          : "bg-amber-500/20"
-                    )}
-                  />
-                </div>
-                <div className="text-xs">
-                  <div className="text-[10px] uppercase font-mono text-subtle tracking-wider flex items-center gap-1.5">
-                    <span>Execution Sandbox</span>
-                    {sandboxStatus?.runtime === "docker" && (
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/15 text-cyan-400 font-bold border border-cyan-500/20">
-                        ISOLATED
-                      </span>
-                    )}
-                  </div>
-                  <div className="font-medium text-fg flex items-center gap-1.5">
-                    <span className="font-mono text-[11px] text-accent">
-                      {sandboxStatus?.runtime === "docker"
-                        ? `${sandboxStatus.containerName} (Active)`
-                        : sandboxStatus?.runtime === "wsl"
-                          ? "WSL Linux Bridge"
-                          : sandboxStatus?.runtime === "native"
-                            ? "Host Native Runtime"
-                            : "Sandbox Standby"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => restartSandboxMutation.mutate()}
-                      disabled={restartSandboxMutation.isPending}
-                      title="Restart Agent Sandbox Container"
-                      className="p-1 rounded hover:bg-bg-subtle text-subtle hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {restartSandboxMutation.isPending ? (
-                        <ActivitySpinner size="xs" className="text-accent" />
-                      ) : (
-                        <RefreshCw className="size-3 text-subtle" />
+        <header className="shrink-0 border-b border-border bg-bg/85 backdrop-blur-xl px-4 pt-6 pb-4 md:px-10 md:pt-8 z-20">
+          <PageHeader
+            className="mb-0 md:mb-0"
+            title="Marketplace"
+            description="Install, configure, and manage external AI agents, API endpoints, curated adversary feeds, and execution blocks."
+            actions={
+              <>
+                {/* Agent Sandbox Environment Indicator */}
+                <div className="flex items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs shrink-0">
+                  <div className="relative flex items-center justify-center">
+                    <div
+                      className={cn(
+                        "size-2.5 rounded-full",
+                        sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
+                          ? "bg-cyan-400 animate-pulse"
+                          : sandboxStatus?.isReady
+                            ? "bg-emerald-500"
+                            : "bg-amber-500"
                       )}
-                    </button>
+                    />
+                    <div
+                      className={cn(
+                        "absolute size-4 rounded-full",
+                        sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
+                          ? "bg-cyan-400/25"
+                          : sandboxStatus?.isReady
+                            ? "bg-emerald-500/20"
+                            : "bg-amber-500/20"
+                      )}
+                    />
+                  </div>
+                  <div className="text-xs">
+                    <div className="text-[10px] uppercase font-mono text-subtle tracking-wider flex items-center gap-1.5">
+                      <span>Execution Sandbox</span>
+                      {sandboxStatus?.runtime === "docker" && (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/15 text-cyan-400 font-bold border border-cyan-500/20">
+                          ISOLATED
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-medium text-fg flex items-center gap-1.5">
+                      <span className="font-mono text-[11px] text-accent">
+                        {sandboxStatus?.runtime === "docker"
+                          ? `${sandboxStatus.containerName} (Active)`
+                          : sandboxStatus?.runtime === "wsl"
+                            ? "WSL Linux Bridge"
+                            : sandboxStatus?.runtime === "native"
+                              ? "Host Native Runtime"
+                              : "Sandbox Standby"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => restartSandboxMutation.mutate()}
+                        disabled={restartSandboxMutation.isPending}
+                        title="Restart Agent Sandbox Container"
+                        className="p-1 rounded hover:bg-bg-subtle text-subtle hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {restartSandboxMutation.isPending ? (
+                          <ActivitySpinner size="xs" className="text-accent" />
+                        ) : (
+                          <RefreshCw className="size-3 text-subtle" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Active AI Agent Indicator Badge */}
-              <div className="flex items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs shrink-0">
-                <div className="relative flex items-center justify-center">
-                  <div className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <div className="absolute size-4 rounded-full bg-emerald-500/20" />
-                </div>
-                <div className="text-xs">
-                  <div className="text-[10px] uppercase font-mono text-subtle tracking-wider">Active AI Agent</div>
-                  <div className="font-medium text-fg flex items-center gap-1.5">
-                    <span>{integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}</span>
-                    <span className="font-mono text-[11px] text-accent">({activeModel})</span>
+                {/* Active AI Agent Indicator Badge */}
+                <div className="flex min-w-0 max-w-full items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs">
+                  <div className="relative flex shrink-0 items-center justify-center">
+                    <div className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <div className="absolute size-4 rounded-full bg-emerald-500/20" />
+                  </div>
+                  <div className="min-w-0 text-xs">
+                    <div className="text-[10px] uppercase font-mono text-subtle tracking-wider">Active AI Agent</div>
+                    <div className="font-medium text-fg flex min-w-0 items-center gap-1.5">
+                      <span className="truncate">{integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-accent">({activeModel})</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Navigation Columns / Tabs - "Core AI" badge removed from Response Integration */}
-          <div className="flex items-center gap-1 border-b border-border/60 -mb-px overflow-x-auto select-none">
-            <button
-              onClick={() => setActiveTab("home")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all cursor-pointer whitespace-nowrap",
-                activeTab === "home"
-                  ? "border-accent text-accent bg-accent/5 rounded-t-md"
-                  : "border-transparent text-muted hover:text-fg hover:bg-bg-subtle"
-              )}
-            >
-              <Activity className="size-3.5" />
-              Home
-            </button>
-
-            <button
-              onClick={() => setActiveTab("curated")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all cursor-pointer whitespace-nowrap",
-                activeTab === "curated"
-                  ? "border-accent text-accent bg-accent/5 rounded-t-md"
-                  : "border-transparent text-muted hover:text-fg hover:bg-bg-subtle"
-              )}
-            >
-              <Globe className="size-3.5" />
-              Curated Resources
-              <Badge className="text-[10px] py-0 px-1.5 ml-1 border border-border">
-                {marketplaceState?.curatedResources?.length || 4}
-              </Badge>
-            </button>
-
-            {/* RESPONSE INTEGRATION TAB - CLEAN TITLE WITHOUT CORE AI BADGE */}
-            <button
-              onClick={() => setActiveTab("response")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all cursor-pointer whitespace-nowrap",
-                activeTab === "response"
-                  ? "border-accent text-accent bg-accent/5 rounded-t-md"
-                  : "border-transparent text-muted hover:text-fg hover:bg-bg-subtle"
-              )}
-            >
-              <Bot className="size-3.5" />
-              Response Integration
-            </button>
-
-            <button
-              onClick={() => setActiveTab("powerups")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all cursor-pointer whitespace-nowrap",
-                activeTab === "powerups"
-                  ? "border-accent text-accent bg-accent/5 rounded-t-md"
-                  : "border-transparent text-muted hover:text-fg hover:bg-bg-subtle"
-              )}
-            >
-              <Zap className="size-3.5" />
-              Powerups & Exporters
-            </button>
-
-            <button
-              onClick={() => setActiveTab("playbooks")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all cursor-pointer whitespace-nowrap",
-                activeTab === "playbooks"
-                  ? "border-accent text-accent bg-accent/5 rounded-t-md"
-                  : "border-transparent text-muted hover:text-fg hover:bg-bg-subtle"
-              )}
-            >
-              <Layers className="size-3.5" />
-              Playbook Blocks
-            </button>
-          </div>
+              </>
+            }
+            tabs={
+              <SegmentedTabs
+                ariaLabel="Marketplace sections"
+                value={activeTab}
+                onChange={setActiveTab}
+                items={[
+                  { value: "home", label: "Home", icon: Activity },
+                  {
+                    value: "curated",
+                    label: "Curated Resources",
+                    icon: Globe,
+                    count: marketplaceState?.curatedResources?.length || 4,
+                  },
+                  { value: "response", label: "Response Integration", icon: Bot, count: integrations.length },
+                  { value: "powerups", label: "Powerups & Exporters", icon: Zap },
+                  { value: "playbooks", label: "Playbook Blocks", icon: Layers },
+                ]}
+              />
+            }
+          />
         </header>
 
         {/* ========================================================================= */}
@@ -650,71 +587,58 @@ function MarketplacePage() {
         {activeTab === "response" && (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* 100% STATIC CATEGORIES & SEARCH TOOLBAR WITH TRANSLUCENT BACKDROP */}
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-6 py-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                {/* Category Filter Pills */}
-                <div className="flex items-center gap-1.5 overflow-x-auto">
-                  <span className="text-[11px] font-medium text-subtle mr-1 flex items-center gap-1 shrink-0">
-                    <Filter className="size-3" /> Category:
-                  </span>
-                  {["All", "Intelligence", "Analysis", "Automation"].map((cat) => (
-                    <button
-                      key={cat}
-                      onClick={() => setCategoryFilter(cat)}
-                      className={cn(
-                        "text-xs px-3 py-1 rounded-lg transition-all cursor-pointer font-medium whitespace-nowrap",
-                        categoryFilter === cat
-                          ? "bg-accent text-white shadow-xs"
-                          : "bg-bg-subtle text-muted hover:text-fg hover:bg-border/60"
-                      )}
-                    >
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Status & Search Input */}
-                <div className="flex items-center gap-2.5 shrink-0">
-                  <div className="flex items-center gap-1 bg-bg-subtle p-0.5 rounded-lg border border-border">
-                    {["All", "Installed", "Available"].map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setStatusFilter(st)}
-                        className={cn(
-                          "text-[11px] px-2.5 py-1 rounded-md transition-all cursor-pointer",
-                          statusFilter === st
-                            ? "bg-bg-elevated text-fg font-medium shadow-xs"
-                            : "text-subtle hover:text-fg"
-                        )}
-                      >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="relative w-full sm:w-60">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-subtle" />
-                    <Input
-                      placeholder="Filter integrations..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-8 h-8 text-xs bg-bg-subtle"
+            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3 md:px-10">
+              <Toolbar
+                className="mb-0"
+                left={
+                  <>
+                    <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-subtle">
+                      <Filter className="size-3" /> Category
+                    </span>
+                    <SegmentedTabs
+                      size="sm"
+                      ariaLabel="Integration category"
+                      value={categoryFilter}
+                      onChange={setCategoryFilter}
+                      items={["All", "Intelligence", "Analysis", "Automation"].map((cat) => ({ value: cat, label: cat }))}
                     />
-                    {searchQuery && (
-                      <button
-                        onClick={() => setSearchQuery("")}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-subtle hover:text-fg"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
+                  </>
+                }
+                right={
+                  <>
+                    <SegmentedTabs
+                      size="sm"
+                      ariaLabel="Install status"
+                      value={statusFilter}
+                      onChange={setStatusFilter}
+                      items={["All", "Installed", "Available"].map((st) => ({ value: st, label: st }))}
+                    />
+                    <div className="relative w-full sm:w-60">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-subtle" />
+                      <Input
+                        placeholder="Filter integrations..."
+                        aria-label="Filter integrations"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-8 h-8 text-xs bg-bg-subtle"
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery("")}
+                          aria-label="Clear filter"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-subtle hover:text-fg"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      )}
+                    </div>
+                  </>
+                }
+              />
             </div>
 
             {/* SCROLLABLE CARDS GRID CONTAINER: ONLY THIS AREA SCROLLS */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 pb-24 md:pb-8">
+            <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
               {/* Feedback Alert if tested */}
               {testResult && (
                 <div
@@ -900,7 +824,7 @@ function MarketplacePage() {
         {/* ========================================================================= */}
         {activeTab === "curated" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-6 py-3.5 flex items-center justify-between">
+            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-fg">Curated Threat Intelligence Feeds</h2>
                 <p className="text-xs text-subtle mt-0.5">
@@ -912,7 +836,7 @@ function MarketplacePage() {
               </Badge>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5 pb-24 md:pb-8">
+            <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {(marketplaceState?.curatedResources || []).map((res) => (
                   <div
@@ -959,7 +883,7 @@ function MarketplacePage() {
         {/* ========================================================================= */}
         {activeTab === "powerups" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-6 py-3.5 flex items-center justify-between">
+            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-fg">Automation Powerups & Exporters</h2>
                 <p className="text-xs text-subtle mt-0.5">
@@ -968,7 +892,7 @@ function MarketplacePage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5 pb-24 md:pb-8">
+            <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {(marketplaceState?.powerups || []).map((pwr) => (
                   <div
@@ -1019,7 +943,7 @@ function MarketplacePage() {
         {/* ========================================================================= */}
         {activeTab === "playbooks" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-6 py-3.5 flex items-center justify-between">
+            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-fg">Adversary Emulation Playbook Blocks</h2>
                 <p className="text-xs text-subtle mt-0.5">
@@ -1028,7 +952,7 @@ function MarketplacePage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5 pb-24 md:pb-8">
+            <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {(marketplaceState?.playbooks || []).map((pb) => (
                   <div
@@ -1080,7 +1004,7 @@ function MarketplacePage() {
         {/* TAB 5: HOME TAB                                                           */}
         {/* ========================================================================= */}
         {activeTab === "home" && (
-          <div className="flex-1 overflow-y-auto px-6 py-6 pb-24 md:pb-8 space-y-6">
+          <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8 space-y-6">
             <div className="rounded-2xl border border-border bg-gradient-to-br from-bg-elevated to-bg-subtle p-6">
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                 <div>

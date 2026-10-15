@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import {
-  ArrowLeft,
   CheckCircle2,
   Copy,
   Download,
@@ -28,6 +27,7 @@ import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
+import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 
 export const Route = createFileRoute("/library/$reportId")({
   beforeLoad: ({ params }) => {
@@ -106,38 +106,76 @@ function ReportPage() {
 
   return (
     <AppShell>
-      <div className="mb-4 flex items-center justify-between">
-        <Link
-          to="/library"
-          search={{ selected: reportId }}
-          className="inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-fg"
-        >
-          <ArrowLeft className="size-3.5" /> Back to Library
-        </Link>
-
-        {/* Action Buttons for PDF & Export */}
-        {data && (
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              className="h-8 gap-1.5 text-xs"
-              onClick={printDocument}
-            >
-              <Printer className="size-3.5" />
-              <span>Print to PDF</span>
-            </Button>
-            <Button
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              onClick={downloadDocument}
-            >
-              <Download className="size-3.5" />
-              <span>Download PDF File</span>
-            </Button>
-          </div>
-        )}
-      </div>
+      <PageHeader
+        backTo="/library"
+        icon={FileText}
+        title={data?.title ?? "Intelligence report"}
+        eyebrow={
+          data ? (
+            <span className="flex flex-wrap items-center gap-1.5 normal-case tracking-normal">
+              <IdBadge id={formatReportId(data.id)} category="report" size="xs" />
+              {(data.sourceDomain || data.url) && (
+                <IdBadge id={formatDomainId(data.sourceDomain || data.url)} category="domain" size="xs" />
+              )}
+            </span>
+          ) : undefined
+        }
+        description={
+          data ? (
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <a
+                href={data.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex min-w-0 items-center gap-1 font-mono text-subtle hover:text-fg"
+              >
+                <span className="max-w-[16rem] truncate sm:max-w-md">{data.url}</span>
+                <ExternalLink className="size-3 shrink-0" />
+              </a>
+              <span>Ingested: {formatDateTime(data.ingestedAt)}</span>
+              <span>Quality: {Math.round(data.qualityScore * 100)}%</span>
+              <span>{data.wordCount} words</span>
+            </span>
+          ) : undefined
+        }
+        actions={
+          data ? (
+            <>
+              <ActionButton variant="outline" icon={Printer} onClick={printDocument}>
+                Print to PDF
+              </ActionButton>
+              <ActionButton variant="primary" icon={Download} onClick={downloadDocument}>
+                Download PDF File
+              </ActionButton>
+            </>
+          ) : undefined
+        }
+        tabs={
+          data ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="neutral">{data.sourceName}</Badge>
+                {data.resourceKind && (
+                  <Badge tone="accent" className="font-semibold">
+                    {data.resourceKind.replace(/_/g, " ")}
+                  </Badge>
+                )}
+                <Badge tone="neutral">{data.classification}</Badge>
+                <Badge tone={data.status === "acquired" ? "sage" : "warn"}>{data.status}</Badge>
+                <Badge tone="neutral">{data.contentType}</Badge>
+                <Badge tone="neutral">via {data.discoveryMethod.replace(/_/g, " ")}</Badge>
+                <Badge tone="sage">High-Fidelity PDF Document Ready</Badge>
+              </div>
+              <SegmentedTabs
+                ariaLabel="Report sections"
+                items={TABS.map((t) => ({ value: t, label: t }))}
+                value={tab}
+                onChange={setTab}
+              />
+            </div>
+          ) : undefined
+        }
+      />
 
       {isLoading ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted">
@@ -148,69 +186,8 @@ function ReportPage() {
       {!isLoading && !data ? <p className="mt-6 text-sm text-danger">Report not found.</p> : null}
 
       {data ? (
-        <>
-          {/* Standardized AIE ID Bar: RST and DOM only */}
-          <div className="mt-2 flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border/60 bg-bg-elevated/70">
-            <IdBadge id={formatReportId(data.id)} category="report" size="sm" />
-            {(data.sourceDomain || data.url) && (
-              <IdBadge id={formatDomainId(data.sourceDomain || data.url)} category="domain" size="sm" />
-            )}
-          </div>
-
-          {/* Header Metadata */}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Badge tone="neutral">{data.sourceName}</Badge>
-            {data.resourceKind && (
-              <Badge tone="accent" className="font-semibold">
-                {data.resourceKind.replace(/_/g, " ")}
-              </Badge>
-            )}
-            <Badge tone="neutral">{data.classification}</Badge>
-            <Badge tone={data.status === "acquired" ? "sage" : "warn"}>{data.status}</Badge>
-            <Badge tone="neutral">{data.contentType}</Badge>
-            <Badge tone="neutral">via {data.discoveryMethod.replace(/_/g, " ")}</Badge>
-            <Badge tone="sage">High-Fidelity PDF Document Ready</Badge>
-          </div>
-
-          <h1 className="mt-3 max-w-4xl text-2xl font-medium tracking-tight md:text-3xl">
-            {data.title}
-          </h1>
-
-          <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-muted">
-            <a
-              href={data.url}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-1 font-mono text-subtle hover:text-fg"
-            >
-              <span className="truncate max-w-md">{data.url}</span>
-              <ExternalLink className="size-3 shrink-0" />
-            </a>
-            <span>·</span>
-            <span>Ingested: {formatDateTime(data.ingestedAt)}</span>
-            <span>·</span>
-            <span>Quality: {Math.round(data.qualityScore * 100)}%</span>
-            <span>·</span>
-            <span>{data.wordCount} words</span>
-          </div>
-
-          {/* Navigation Tabs */}
-          <div className="mt-8 flex flex-wrap gap-1 border-b border-border">
-            {TABS.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setTab(t)}
-                className={cn(
-                  "h-11 px-4 text-sm font-medium transition-colors",
-                  tab === t ? "border-b-2 border-accent text-fg" : "text-muted hover:text-fg",
-                )}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="min-w-0 [&>*:first-child]:mt-0">
           {/* TAB 1: DOCUMENT & PDF READER */}
           {tab === "Document & PDF Reader" && (
             <div className="mt-6 space-y-4">
@@ -627,7 +604,32 @@ function ReportPage() {
               </dl>
             </div>
           )}
-        </>
+          </div>
+
+          {/* Properties column */}
+          <aside className="h-fit rounded-xl border border-border bg-bg-card p-5 xl:sticky xl:top-6">
+            <h2 className="text-base font-medium text-fg">Properties</h2>
+            <dl className="mt-4 space-y-3 text-xs">
+              {(
+                [
+                  ["ID", <span key="id" className="font-mono">{formatReportId(data.id)}</span>],
+                  ["Publisher", data.publisher || data.sourceName || "—"],
+                  ["Published", data.publishedAt ? formatDateTime(data.publishedAt) : "—"],
+                  ["Ingested", formatDateTime(data.ingestedAt)],
+                  ["Classification", data.classification || "—"],
+                  ["Quality", `${Math.round(data.qualityScore * 100)}%`],
+                  ["Status", data.status],
+                  ["Words", data.wordCount],
+                ] as [string, React.ReactNode][]
+              ).map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4 border-b border-border pb-3 last:border-0 last:pb-0">
+                  <dt className="shrink-0 text-subtle">{label}</dt>
+                  <dd className="min-w-0 truncate text-right text-fg">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </aside>
+        </div>
       ) : null}
     </AppShell>
   );
