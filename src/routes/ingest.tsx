@@ -1,66 +1,46 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
   Activity,
-  ArrowRight,
-  ArrowUpDown,
   Bot,
-  Check,
   CheckCircle2,
-  CheckSquare,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-  Clock,
   Compass,
-  Cpu,
   Crosshair,
   Database,
   Download,
   ExternalLink,
   FileText,
-  Filter,
   Flame,
-  Gauge,
   GitBranch,
   Globe,
   Layers,
-  ListFilter,
+  Library,
   Network,
   Play,
-  RefreshCw,
-  Rss,
-  Search,
   Settings,
-  Share2,
-  Shield,
-  ShieldAlert,
-  SlidersHorizontal,
-  Sparkles,
   Square,
   Upload,
   X,
   XCircle,
-  Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { ActionButton, PageHeader, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ActionButton, PageHeader, SectionCard, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { DataTable } from "@/components/ui/data-table";
+import { EmptyState, Meter, PropertyList, StatusChip, StatusDot, type Tone } from "@/components/ui/primitives";
 import { Input, Textarea } from "@/components/ui/input";
-import { IdBadge } from "@/components/id-badge";
+import { RowMenu } from "@/components/sources/row-menu";
+import { FilterSelect, PaginationControls, SearchField, SectionHeading } from "@/components/ingest/controls";
+import { humanize, paginateList, shortDate } from "@/components/ingest/format";
 import {
   formatAuditId,
   formatDomainId,
   formatEdgeId,
   formatJobId,
-  formatOriginId,
   formatOutcomeId,
-  formatReportId,
   formatSourceId,
   formatSystemId,
 } from "@/lib/aie/ids";
@@ -77,17 +57,17 @@ import {
 } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
-import type { CrawlConfig, ResourceKind } from "@/lib/aie/types";
+import type { CrawlConfig } from "@/lib/aie/types";
 
 export const Route = createFileRoute("/ingest")({ component: IngestPage });
 
 const VIEWS = [
-  { id: "crawler", label: "Autonomous Crawler", icon: Bot },
-  { id: "queue", label: "Discovery Queue", icon: Compass },
-  { id: "graph", label: "Discovery Graph & Sources", icon: Network },
-  { id: "audit", label: "Pipeline Audit Log", icon: Activity },
-  { id: "manual", label: "Manual Ingest", icon: Upload },
-  { id: "catalog", label: "Curated Catalog", icon: Database },
+  { id: "crawler", label: "Crawler", icon: Bot },
+  { id: "queue", label: "Discovery queue", icon: Compass },
+  { id: "graph", label: "Sources & graph", icon: Network },
+  { id: "audit", label: "Audit log", icon: Activity },
+  { id: "manual", label: "Manual ingest", icon: Upload },
+  { id: "catalog", label: "Curated catalog", icon: Database },
 ] as const;
 
 const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
@@ -172,144 +152,6 @@ function formatResourceKind(kind?: string): { label: string; tone: "accent" | "w
   return { label: "Campaigns", tone: "neutral" };
 }
 
-function paginateList<T>(list: T[], page: number, pageSize: number | "all"): T[] {
-  if (pageSize === "all") return list;
-  const start = (page - 1) * pageSize;
-  return list.slice(start, start + pageSize);
-}
-
-function PaginationControls({
-  currentPage,
-  pageSize,
-  totalItems,
-  onPageChange,
-  onPageSizeChange,
-  itemLabel = "items",
-}: {
-  currentPage: number;
-  pageSize: number | "all";
-  totalItems: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number | "all") => void;
-  itemLabel?: string;
-}) {
-  const numericSize = pageSize === "all" ? Math.max(1, totalItems) : pageSize;
-  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / numericSize));
-  const safePage = Math.min(Math.max(1, currentPage), totalPages);
-
-  const startItem = totalItems === 0 ? 0 : (safePage - 1) * numericSize + 1;
-  const endItem = pageSize === "all" ? totalItems : Math.min(totalItems, safePage * numericSize);
-
-  const pages: (number | "...")[] = [];
-  if (totalPages <= 7) {
-    for (let i = 1; i <= totalPages; i++) pages.push(i);
-  } else {
-    pages.push(1);
-    if (safePage > 3) pages.push("...");
-    const start = Math.max(2, safePage - 1);
-    const end = Math.min(totalPages - 1, safePage + 1);
-    for (let i = start; i <= end; i++) pages.push(i);
-    if (safePage < totalPages - 2) pages.push("...");
-    pages.push(totalPages);
-  }
-
-  return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-t border-border/60 pt-3 text-xs">
-      <div className="flex flex-wrap items-center gap-3 text-muted">
-        <span>
-          Showing <span className="font-mono text-fg font-medium">{startItem}–{endItem}</span> of{" "}
-          <span className="font-mono text-fg font-medium">{totalItems}</span> {itemLabel}
-        </span>
-        <div className="flex items-center gap-1.5 pl-2 border-l border-border/80">
-          <span className="text-[11px] text-subtle">Per page:</span>
-          <div className="flex rounded-md border border-border bg-bg-elevated p-0.5">
-            {([10, 25, 50, 100, "all"] as const).map((sz) => (
-              <button
-                key={sz}
-                type="button"
-                onClick={() => {
-                  onPageSizeChange(sz);
-                  onPageChange(1);
-                }}
-                className={cn(
-                  "rounded px-2 py-0.5 text-[11px] font-mono transition-colors",
-                  pageSize === sz ? "bg-accent/20 text-accent font-semibold" : "text-subtle hover:text-fg",
-                )}
-              >
-                {sz === "all" ? "All" : sz}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            disabled={safePage <= 1}
-            onClick={() => onPageChange(1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none"
-            title="First page"
-          >
-            <ChevronsLeft className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            disabled={safePage <= 1}
-            onClick={() => onPageChange(safePage - 1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none"
-            title="Previous page"
-          >
-            <ChevronLeft className="size-3.5" />
-          </button>
-
-          <div className="flex items-center gap-1">
-            {pages.map((p, idx) =>
-              p === "..." ? (
-                <span key={`ell-${idx}`} className="px-1 text-subtle font-mono text-xs">…</span>
-              ) : (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => onPageChange(p)}
-                  className={cn(
-                    "h-7 min-w-[28px] rounded px-1.5 font-mono text-xs transition-colors",
-                    safePage === p
-                      ? "bg-accent text-bg font-semibold"
-                      : "text-muted hover:bg-bg-subtle hover:text-fg border border-border/50",
-                  )}
-                >
-                  {p}
-                </button>
-              ),
-            )}
-          </div>
-
-          <button
-            type="button"
-            disabled={safePage >= totalPages}
-            onClick={() => onPageChange(safePage + 1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none"
-            title="Next page"
-          >
-            <ChevronRight className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            disabled={safePage >= totalPages}
-            onClick={() => onPageChange(totalPages)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none"
-            title="Last page"
-          >
-            <ChevronsRight className="size-3.5" />
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function IngestPage() {
   const qc = useQueryClient();
   const [activeView, setActiveView] = useState<(typeof VIEWS)[number]["id"]>("crawler");
@@ -333,6 +175,13 @@ function IngestPage() {
   const [queueSort, setQueueSort] = useState<"newest" | "oldest" | "score_desc" | "title_asc" | "domain_asc">("newest");
   const [ingestingId, setIngestingId] = useState<string | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
+  // Bumped to remount the queue DataTable, which clears its internal checkbox state.
+  const [selectionEpoch, setSelectionEpoch] = useState(0);
+  const clearSelection = () => {
+    setSelectedCandidates(new Set());
+    setSelectionEpoch((n) => n + 1);
+  };
+  const navigate = useNavigate();
 
   // Pipeline Audit Log State (default 25 per page)
   const [auditPage, setAuditPage] = useState(1);
@@ -486,7 +335,7 @@ function IngestPage() {
       batchIngestDiscoveredUrls({ data: { discoveredIds, concurrency: 4 } }),
     onSuccess: (res) => {
       void qc.invalidateQueries();
-      setSelectedCandidates(new Set());
+      clearSelection();
       toast.success("Batch Ingestion Complete", {
         description: `Ingested: ${res.succeeded} / ${res.total} · Failed: ${res.failed}${res.durationMs ? ` (${res.durationMs}ms)` : ""}`,
       });
@@ -500,7 +349,7 @@ function IngestPage() {
       batchRejectDiscoveredUrls({ data: { discoveredIds } }),
     onSuccess: (res) => {
       void qc.invalidateQueries();
-      setSelectedCandidates(new Set());
+      clearSelection();
       toast.info("Batch Reject Complete", {
         description: `${res.count} candidate resources marked as rejected.`,
       });
@@ -716,41 +565,471 @@ function IngestPage() {
 
   const pagedJobs = paginateList(sortedJobs, jobsPage, jobsPageSize);
 
-  const kpiSkeleton = <span className="inline-block h-8 w-20 rounded bg-border/40 align-middle animate-pulse" />;
+  const kpiSkeleton = <span className="inline-block h-8 w-20 animate-pulse rounded bg-border/40 align-middle" />;
+
+  const progressDone = activeJob ? activeJob.evaluatedCount || activeJob.ingestedCount || 0 : 0;
+  const progressMax = activeJob ? activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35 : 1;
+  const progressPct = Math.min(100, Math.round((progressDone / progressMax) * 100));
+  const lastJob = activeJob ?? sortedJobsByRecency(jobs)[0];
+  const freq = Number(config.frequencyMinutes);
+  const cadence = !config.enabled
+    ? "Disabled"
+    : config.paused
+      ? "Paused"
+      : !Number.isFinite(freq) || freq <= 0
+        ? "Scheduled"
+        : `Every ${freq < 60 ? `${freq}m` : `${Math.floor(freq / 60)}h ${freq % 60 > 0 ? `${freq % 60}m` : ""}`.trim()}`;
+
+  const queueFiltersActive =
+    Boolean(queueSearch) || queueKind !== "all" || queueMinScore > 0 || queueNovelOnly || queueDomain !== "all" || queueFilter !== "all";
+  const auditFiltersActive =
+    Boolean(auditSearch) || auditDecision !== "all" || auditDepth !== "all" || auditStage !== "all" || auditPublisher !== "all";
+  const selectedIngestable = Array.from(selectedCandidates).filter(
+    (id) => discovered.find((d) => d.id === id)?.status !== "ingested",
+  );
+
+  // ----- Column definitions -----
+  type Discovered = (typeof discovered)[number];
+  type AuditItem = (typeof items)[number];
+  type Job = (typeof jobs)[number];
+  type DiscSource = (typeof discoveredSources)[number];
+  type Edge = (typeof graphEdges)[number];
+
+  const queueColumns: ColumnDef<Discovered, any>[] = [
+    {
+      accessorKey: "title",
+      header: "Title",
+      cell: ({ row }) => {
+        const res = row.original;
+        return (
+          <div className="min-w-0 max-w-[420px]">
+            <div className="truncate font-medium text-fg" title={res.title}>{res.title || res.canonicalUrl}</div>
+            <a
+              href={res.canonicalUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center gap-1 text-xs text-subtle hover:text-fg"
+            >
+              <span className="truncate">{res.canonicalUrl}</span>
+              <ExternalLink className="size-3 shrink-0" />
+            </a>
+            {res.rejectReason && (
+              <div className="mt-0.5 truncate text-xs text-danger/80" title={res.rejectReason}>
+                {res.rejectReason}
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: "sourceDomain",
+      header: "Domain",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted">{getValue() as string}</span>,
+      meta: { hideBelow: "md" },
+    },
+    {
+      id: "type",
+      header: "Type",
+      accessorFn: (r) => formatResourceKind(r.resourceKind || r.classification).label,
+      cell: ({ row, getValue }) => (
+        <span className="whitespace-nowrap text-muted" title={humanize(row.original.discoveryMethod)}>
+          {getValue() as string}
+        </span>
+      ),
+      meta: { hideBelow: "xl" },
+    },
+    {
+      id: "score",
+      header: "Score",
+      accessorFn: (r) => r.qualityScore ?? -1,
+      cell: ({ row }) => {
+        const res = row.original;
+        const q = res.qualityScore;
+        return (
+          <div className="w-28" title={res.agentRationale || undefined}>
+            {q !== null && q !== undefined ? (
+              <div className="flex items-center gap-2">
+                <Meter value={q} tone={q >= 0.8 ? "success" : q >= 0.5 ? "info" : "warning"} label="Quality score" />
+                <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{Math.round(q * 100)}%</span>
+              </div>
+            ) : (
+              <span className="text-subtle">—</span>
+            )}
+            {res.agentScore !== undefined && res.agentScore > 0 && (
+              <div className="mt-1 text-xs text-subtle tabular-nums">
+                AI {res.agentScore}%{res.agentApproved ? " · approved" : ""}
+                {res.simulationScore ? ` · sim ${Math.round(res.simulationScore * 100)}%` : ""}
+              </div>
+            )}
+          </div>
+        );
+      },
+      meta: { hideBelow: "sm" },
+    },
+    {
+      id: "novelty",
+      header: "Novelty",
+      accessorFn: (r) => (r.isEmergingTechnique ? 1 : 0),
+      cell: ({ row }) =>
+        row.original.isEmergingTechnique ? (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap text-warn" title={row.original.noveltyRationale || "Novel unmapped procedure"}>
+            <Flame className="size-3.5" strokeWidth={1.75} />
+            Novel
+          </span>
+        ) : (
+          <span className="text-subtle">—</span>
+        ),
+      meta: { hideBelow: "lg" },
+    },
+    {
+      accessorKey: "createdAt",
+      header: "Discovered",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted tabular-nums">{shortDate(getValue() as string)}</span>,
+      meta: { hideBelow: "lg" },
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => {
+        const st = row.original.status;
+        const pending = isItemAwaitingApproval(st);
+        return (
+          <StatusChip tone={pending ? "warning" : queueTone(st)} dot>
+            {ingestQueueItem.isPending && ingestingId === row.original.id ? "Ingesting…" : humanize(st)}
+          </StatusChip>
+        );
+      },
+    },
+    {
+      id: "actions",
+      header: () => <span className="sr-only">Actions</span>,
+      enableSorting: false,
+      cell: ({ row }) => {
+        const res = row.original;
+        const ingested = res.status === "ingested";
+        return (
+          <RowMenu
+            label={`Actions for ${res.title}`}
+            items={[
+              {
+                label: "Ingest",
+                icon: Download,
+                hidden: ingested,
+                disabled: ingestQueueItem.isPending,
+                onSelect: () => ingestQueueItem.mutate(res.id),
+              },
+              {
+                label: "View in library",
+                icon: Library,
+                hidden: !ingested,
+                onSelect: () =>
+                  void navigate({ to: "/library", search: { selected: res.reportId || res.canonicalUrl || res.title } as never }),
+              },
+              {
+                label: "Open source page",
+                icon: ExternalLink,
+                onSelect: () => window.open(res.canonicalUrl, "_blank", "noopener,noreferrer"),
+              },
+              {
+                label: "Reject",
+                icon: XCircle,
+                danger: true,
+                separated: true,
+                hidden: ingested || res.status === "rejected",
+                disabled: batchRejectMutation.isPending,
+                onSelect: () => batchRejectMutation.mutate([res.id]),
+              },
+            ]}
+          />
+        );
+      },
+      meta: { align: "right", className: "w-12" },
+    },
+  ];
+
+  const auditColumns: ColumnDef<AuditItem, any>[] = [
+    {
+      accessorKey: "createdAt",
+      header: "Time",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted tabular-nums">{formatDateTime(getValue())}</span>,
+      meta: { hideBelow: "sm" },
+    },
+    {
+      accessorKey: "title",
+      header: "URL",
+      cell: ({ row }) => {
+        const itm = row.original;
+        return (
+          <div className="min-w-0 max-w-[380px]">
+            <div className="truncate font-medium text-fg">
+              {itm.decision === "INGESTED" ? (
+                <Link
+                  to="/library"
+                  search={{ selected: itm.canonicalUrl || itm.title } as never}
+                  className="hover:text-accent hover:underline"
+                  title="View in library"
+                >
+                  {itm.title || itm.canonicalUrl}
+                </Link>
+              ) : (
+                itm.title || itm.canonicalUrl
+              )}
+            </div>
+            <div className="truncate text-xs text-subtle">{itm.canonicalUrl}</div>
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: "decision",
+      header: "Outcome",
+      cell: ({ row }) => {
+        const itm = row.original;
+        const pending = isItemAwaitingApproval(itm.stage, itm.decision);
+        return (
+          <StatusChip tone={pending ? "warning" : queueTone(itm.decision)} dot>
+            {humanize(pending ? "awaiting_approval" : itm.decision)}
+          </StatusChip>
+        );
+      },
+    },
+    {
+      id: "stage",
+      header: "Stage",
+      accessorFn: (i) => i.stage || "",
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap text-muted">
+          {humanize(row.original.stage || row.original.decision)} · depth {row.original.depth}
+        </span>
+      ),
+      meta: { hideBelow: "xl" },
+    },
+    {
+      accessorKey: "publisher",
+      header: "Publisher",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted">{(getValue() as string) || "—"}</span>,
+      meta: { hideBelow: "lg" },
+    },
+    {
+      accessorKey: "reason",
+      header: "Detail",
+      enableSorting: false,
+      cell: ({ getValue }) => (
+        <p className="line-clamp-2 max-w-[360px] text-xs leading-relaxed text-muted" title={getValue() as string}>
+          {getValue() as string}
+        </p>
+      ),
+      meta: { hideBelow: "md" },
+    },
+  ];
+
+  const jobColumns: ColumnDef<Job, any>[] = [
+    {
+      id: "job",
+      header: "Job",
+      accessorFn: (j) => formatJobId(j.id, j.triggerType),
+      cell: ({ row, getValue }) => (
+        <div className="min-w-0">
+          <div className="whitespace-nowrap font-mono text-[13px] text-fg">{getValue() as string}</div>
+          {row.original.errorSummary && (
+            <div className="max-w-[260px] truncate text-xs text-danger/80" title={row.original.errorSummary}>
+              {row.original.errorSummary}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      accessorKey: "triggerType",
+      header: "Trigger",
+      cell: ({ getValue }) => <span className="text-muted">{humanize(getValue() as string)}</span>,
+      meta: { hideBelow: "sm" },
+    },
+    {
+      accessorKey: "startedAt",
+      header: "Started",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted tabular-nums">{formatDateTime(getValue())}</span>,
+      meta: { hideBelow: "md" },
+    },
+    {
+      id: "duration",
+      header: "Duration",
+      accessorFn: (j) => durationMs(j.startedAt, j.completedAt) ?? -1,
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap text-muted tabular-nums">
+          {formatDuration(durationMs(row.original.startedAt, row.original.completedAt), row.original.status)}
+        </span>
+      ),
+      meta: { hideBelow: "lg" },
+    },
+    {
+      id: "items",
+      header: "Items",
+      accessorFn: (j) => j.ingestedCount,
+      cell: ({ row }) => {
+        const j = row.original;
+        return (
+          <span
+            className="whitespace-nowrap text-muted tabular-nums"
+            title={`Discovered ${j.discoveredCount} · evaluated ${j.evaluatedCount || j.discoveredCount} · qualified ${j.qualifiedCount} · duplicates ${j.duplicateCount} · rejected ${j.rejectedCount} · new sources ${j.newSourcesCount || 0}`}
+          >
+            <span className="text-fg">{j.ingestedCount}</span> ingested · {j.discoveredCount} found
+            {j.newSourcesCount ? ` · +${j.newSourcesCount} sources` : ""}
+          </span>
+        );
+      },
+      meta: { hideBelow: "sm" },
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ getValue }) => {
+        const st = getValue() as string;
+        return (
+          <StatusChip tone={st === "completed" ? "success" : st === "running" ? "info" : st === "failed" ? "danger" : "neutral"} dot>
+            {humanize(st)}
+          </StatusChip>
+        );
+      },
+      meta: { align: "right" },
+    },
+  ];
+
+  const sourceColumns: ColumnDef<DiscSource, any>[] = [
+    {
+      accessorKey: "domain",
+      header: "Domain",
+      cell: ({ row }) => (
+        <div className="min-w-0 max-w-[320px]">
+          <a
+            href={row.original.homepageUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex max-w-full items-center gap-1 font-mono text-[13px] text-fg hover:text-accent"
+          >
+            <span className="truncate">{row.original.domain}</span>
+            <ExternalLink className="size-3 shrink-0 text-subtle" />
+          </a>
+          <div className="truncate text-xs text-subtle">{row.original.name}</div>
+        </div>
+      ),
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ getValue }) => {
+        const st = getValue() as string;
+        return (
+          <StatusChip tone={st === "approved" || st === "verified" ? "success" : st === "rejected" || st === "ignored" ? "danger" : "neutral"} dot>
+            {humanize(st)}
+          </StatusChip>
+        );
+      },
+    },
+    {
+      accessorKey: "trustScore",
+      header: "Trust",
+      cell: ({ getValue }) => {
+        const v = getValue() as number;
+        return (
+          <div className="flex w-28 items-center gap-2">
+            <Meter value={v} tone={v >= 0.9 ? "success" : v >= 0.8 ? "info" : "warning"} label="Trust score" />
+            <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{Math.round(v * 100)}%</span>
+          </div>
+        );
+      },
+      meta: { hideBelow: "sm" },
+    },
+    {
+      accessorKey: "resourceCount",
+      header: "Resources",
+      meta: { align: "right", hideBelow: "md" },
+    },
+    {
+      accessorKey: "parentSource",
+      header: "Referrer",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted">{(getValue() as string) || "Seed"}</span>,
+      meta: { hideBelow: "lg" },
+    },
+    {
+      accessorKey: "firstDiscoveredAt",
+      header: "Discovered",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted tabular-nums">{shortDate(getValue() as string)}</span>,
+      meta: { hideBelow: "lg" },
+    },
+  ];
+
+  const edgeColumns: ColumnDef<Edge, any>[] = [
+    {
+      accessorKey: "from",
+      header: "From",
+      cell: ({ getValue }) => <div className="max-w-[260px] truncate text-muted" title={getValue() as string}>{getValue() as string}</div>,
+      meta: { hideBelow: "md" },
+    },
+    {
+      accessorKey: "relationship",
+      header: "Relationship",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-fg">{humanize(getValue() as string)}</span>,
+    },
+    {
+      accessorKey: "to",
+      header: "To",
+      cell: ({ getValue }) => (
+        <a
+          href={getValue() as string}
+          target="_blank"
+          rel="noreferrer"
+          className="flex max-w-[300px] items-center gap-1 text-fg hover:text-accent"
+        >
+          <span className="truncate">{getValue() as string}</span>
+          <ExternalLink className="size-3 shrink-0 text-subtle" />
+        </a>
+      ),
+    },
+    {
+      accessorKey: "label",
+      header: "Context",
+      cell: ({ getValue }) => <div className="max-w-[220px] truncate text-muted">{getValue() as string}</div>,
+      meta: { hideBelow: "xl" },
+    },
+    {
+      accessorKey: "createdAt",
+      header: "Time",
+      cell: ({ getValue }) => <span className="whitespace-nowrap text-muted tabular-nums">{formatDateTime(getValue())}</span>,
+      meta: { hideBelow: "lg" },
+    },
+  ];
+
+  const loadingBlock = (label: string) => (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-bg-card py-14 text-center">
+      <ActivitySpinner size="md" className="mb-2 text-accent" />
+      <p className="text-sm text-muted">{label}</p>
+    </div>
+  );
 
   return (
     <AppShell>
       <PageHeader
         title="Ingest"
-        description={
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-            <span>
-              Frontier crawler expanding from seeds to discover new sources, citation graphs, research papers, and pristine PDF evidence.
-            </span>
-            <Badge tone="sage" className="gap-1 font-mono text-[10px]">
-              <Network className="size-2.5" /> Discovery Graph Active
-            </Badge>
-            <Badge tone="accent" className="gap-1 font-mono text-[10px]">
-              <Globe className="size-2.5" /> Source Expansion ON
-            </Badge>
-          </span>
-        }
+        description="The frontier crawler expands from seed sources to discover new sources, citations and research, and preserves each report as PDF evidence."
         actions={
-          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap [&>*]:whitespace-nowrap">
+          <>
             <ActionButton icon={Download} onClick={exportStix}>
               Export STIX 2.1
             </ActionButton>
             {activeJob ? (
-              <Button
-                variant="danger"
-                size="sm"
+              <ActionButton
+                icon={cancelCrawl.isPending ? undefined : Square}
                 onClick={() => cancelCrawl.mutate(activeJob.id)}
                 disabled={cancelCrawl.isPending}
-                className="h-9 gap-2 px-3 text-sm"
+                title={`Cancel job ${activeJob.id}`}
               >
-                <XCircle className="size-4" />
-                <span>Cancel Scan ({activeJob.id.slice(0, 8)})</span>
-              </Button>
+                {cancelCrawl.isPending ? <ActivitySpinner size="xs" /> : null}
+                Cancel crawl
+              </ActionButton>
             ) : (
               <ActionButton
                 variant="primary"
@@ -758,641 +1037,355 @@ function IngestPage() {
                 onClick={() => runCrawl.mutate("MANUAL")}
                 disabled={runCrawl.isPending}
               >
-                Launch Discovery Crawl
+                {runCrawl.isPending ? "Launching…" : "Launch crawl"}
               </ActionButton>
             )}
-          </div>
+          </>
+        }
+        tabs={
+          <SegmentedTabs
+            ariaLabel="Ingest views"
+            value={activeView}
+            onChange={setActiveView}
+            items={VIEWS.map((v) => ({
+              value: v.id,
+              label: v.label,
+              icon: v.icon,
+              count:
+                v.id === "queue" && !isCrawlerLoading && discovered.length > 0
+                  ? discovered.length
+                  : v.id === "graph" && !isCrawlerLoading && (discoveredSources.length > 0 || graphEdges.length > 0)
+                    ? discoveredSources.length || graphEdges.length
+                    : v.id === "audit" && !isCrawlerLoading && items.length > 0
+                      ? items.length
+                      : v.id === "catalog" && (catalog.data?.length ?? 0) > 0
+                        ? catalog.data?.length
+                        : undefined,
+            }))}
+          />
         }
       />
 
-      {/* Live Telemetry Error Alert */}
       {crawlerState.isError && (
-        <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-danger">
+        <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-bg-card p-4 text-sm text-danger">
           <div className="flex items-center gap-2">
             <XCircle className="size-4 shrink-0" />
-            <span>Failed to sync live telemetry: {crawlerState.error?.message}</span>
+            <span>Couldn't sync crawler telemetry: {crawlerState.error?.message}</span>
           </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => crawlerState.refetch()}
-            className="text-xs shrink-0"
-          >
-            Retry Connection
-          </Button>
+          <ActionButton onClick={() => void crawlerState.refetch()}>Retry</ActionButton>
         </div>
       )}
 
-      {/* Top Metrics Telemetry Row */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           icon={Compass}
-          label="Discovered Candidates"
+          label="Discovered candidates"
           value={
             isCrawlerLoading
               ? kpiSkeleton
-              : state?.totalCounts?.discovered !== undefined
-                ? state.totalCounts.discovered.toLocaleString()
-                : discovered.length.toLocaleString()
+              : (state?.totalCounts?.discovered ?? discovered.length).toLocaleString()
           }
-          hint="URLs in store"
+          hint="URLs in the store"
         />
         <StatCard
           icon={Network}
-          label="Monitored CTI Sources"
+          label="Monitored sources"
           value={
             isCrawlerLoading
               ? kpiSkeleton
-              : state?.totalCounts?.sources !== undefined
-                ? state.totalCounts.sources.toLocaleString()
-                : discoveredSources.length.toLocaleString()
+              : (state?.totalCounts?.sources ?? discoveredSources.length).toLocaleString()
           }
-          hint="active domains"
+          hint="Active domains"
         />
         <StatCard
           icon={Bot}
-          label="Crawl Job Runs"
-          value={
-            isCrawlerLoading
-              ? kpiSkeleton
-              : state?.totalCounts?.jobs !== undefined
-                ? state.totalCounts.jobs.toLocaleString()
-                : jobs.length.toLocaleString()
-          }
-          hint="executed jobs"
+          label="Crawl jobs"
+          value={isCrawlerLoading ? kpiSkeleton : (state?.totalCounts?.jobs ?? jobs.length).toLocaleString()}
+          hint="Executed runs"
         />
         <StatCard
           icon={GitBranch}
-          label="Citation Graph Edges"
+          label="Citation edges"
           value={
             isCrawlerLoading
               ? kpiSkeleton
-              : state?.totalCounts?.graphEdges !== undefined
-                ? state.totalCounts.graphEdges.toLocaleString()
-                : graphEdges.length.toLocaleString()
+              : (state?.totalCounts?.graphEdges ?? graphEdges.length).toLocaleString()
           }
-          hint="mapped links"
+          hint="Mapped links"
         />
       </div>
 
-      {/* Sub-Navigation Tabs */}
-      <div className="mt-8">
-        <SegmentedTabs
-          ariaLabel="Ingest views"
-          value={activeView}
-          onChange={setActiveView}
-          items={VIEWS.map((v) => ({
-            value: v.id,
-            label: v.label,
-            icon: v.icon,
-            count:
-              v.id === "queue" && !isCrawlerLoading && discovered.length > 0
-                ? discovered.length
-                : v.id === "graph" && !isCrawlerLoading && (discoveredSources.length > 0 || graphEdges.length > 0)
-                  ? discoveredSources.length || graphEdges.length
-                  : v.id === "audit" && !isCrawlerLoading && items.length > 0
-                    ? items.length
-                    : v.id === "catalog" && (catalog.data?.length ?? 0) > 0
-                      ? catalog.data?.length
-                      : undefined,
-          }))}
-        />
-      </div>
-
-      {/* VIEW 1: AUTONOMOUS CRAWLER CONSOLE */}
+      {/* VIEW 1: CRAWLER */}
       {activeView === "crawler" && (
         <div className="mt-6 space-y-6">
-          {/* Active Job Alert / Live Status Cockpit */}
-          {activeJob && (
-            <div className="rounded-xl border border-accent/40 bg-accent/[0.04] p-4.5 space-y-3.5 shadow-sm">
-              {/* Header: Status, Workers, Throughput, Abort Button */}
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10">
-                    <ActivitySpinner size="sm" className="text-accent" />
-                    <span className="absolute -top-1 -right-1 size-2 rounded-full bg-accent animate-ping" />
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold text-fg">
-                        Autonomous Intelligence Discovery Active
-                      </span>
-                      <Badge tone="accent">{activeJob.triggerType}</Badge>
-                      <Badge tone="sage">Stage: {activeJob.currentStage || "evaluated"}</Badge>
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent font-medium">
-                        <Cpu className="size-3 text-accent" />
-                        {activeJob.activeWorkers ?? (config.concurrency || 4)} Parallel Workers
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg px-2 py-0.5 font-mono text-[11px] text-muted">
-                        <Gauge className="size-3 text-accent" />
-                        <span>Throughput:</span>
-                        <strong className="text-fg">{activeJob.throughputDocsPerSec ? activeJob.throughputDocsPerSec.toFixed(1) : "0.0"}</strong>
-                        <span className="text-[10px] text-subtle">docs/sec</span>
+          <SectionCard
+            title="Crawler"
+            actions={
+              activeJob ? (
+                <StatusDot tone="info">Running</StatusDot>
+              ) : (
+                <StatusDot tone={!config.enabled ? "neutral" : config.paused ? "warning" : "success"}>
+                  {!config.enabled ? "Schedule disabled" : config.paused ? "Schedule paused" : "Idle · scheduled"}
+                </StatusDot>
+              )
+            }
+          >
+            {activeJob ? (
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                      <ActivitySpinner size="xs" className="text-accent" />
+                      <span className="font-mono text-[13px] text-fg">{formatJobId(activeJob.id, activeJob.triggerType)}</span>
+                      <span className="text-muted">
+                        · {humanize(activeJob.triggerType)} · stage {humanize(activeJob.currentStage || "evaluated").toLowerCase()}
                       </span>
                     </div>
-                    <p className="mt-0.5 text-xs text-muted truncate max-w-xl">
-                      Current Frontier URL:{" "}
-                      <span className="font-mono text-fg">{activeJob.currentUrl || "Extracting citations & outlinks..."}</span>
+                    <p className="truncate text-sm text-muted">
+                      Current URL: <span className="font-mono text-xs text-fg">{activeJob.currentUrl || "Extracting citations and outlinks…"}</span>
+                    </p>
+                    <p className="text-xs text-subtle">
+                      {activeJob.activeWorkers ?? (config.concurrency || 4)} parallel workers ·{" "}
+                      {activeJob.throughputDocsPerSec ? activeJob.throughputDocsPerSec.toFixed(1) : "0.0"} docs/sec
+                      {activeJob.activeDomains && activeJob.activeDomains.length > 0
+                        ? ` · hosts: ${activeJob.activeDomains.join(", ")}`
+                        : ""}
                     </p>
                   </div>
+                  <div className="text-sm text-muted md:text-right">
+                    <div className="text-[28px] font-semibold leading-none text-fg tabular-nums">{progressPct}%</div>
+                    <div className="mt-1 tabular-nums">
+                      {progressDone} / {progressMax} items
+                    </div>
+                  </div>
                 </div>
-
-                <div className="flex items-center gap-2 self-end sm:self-center">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => cancelCrawl.mutate(activeJob.id)}
-                    disabled={cancelCrawl.isPending}
-                    className="border-danger/40 text-danger hover:bg-danger/10 hover:border-danger text-xs font-mono h-7.5 px-2.5 cursor-pointer"
-                  >
-                    {cancelCrawl.isPending ? (
-                      <ActivitySpinner size="xs" className="mr-1.5" />
-                    ) : (
-                      <Square className="size-3 mr-1.5 fill-danger/30" />
-                    )}
-                    Abort Crawl
-                  </Button>
+                <Meter value={progressPct / 100} tone="info" label="Job progress" />
+              </div>
+            ) : (
+              <div className="grid gap-4 text-sm sm:grid-cols-3">
+                <div>
+                  <div className="text-muted">Last run</div>
+                  <div className="mt-1 text-fg tabular-nums">{formatDateTime(config.lastRunAt, "Never")}</div>
+                </div>
+                <div>
+                  <div className="text-muted">Next run</div>
+                  <div className="mt-1 text-fg tabular-nums">
+                    {config.enabled && !config.paused ? formatDateTime(config.nextRunAt, "Scheduled soon") : "Inactive"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted">Cadence</div>
+                  <div className="mt-1 text-fg">{cadence}</div>
                 </div>
               </div>
+            )}
+          </SectionCard>
 
-              {/* Concurrency Telemetry: Active Target Hosts */}
-              {activeJob.activeDomains && activeJob.activeDomains.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs border-t border-border/40">
-                  <span className="font-mono text-[11px] text-subtle flex items-center gap-1 mr-1">
-                    <Globe className="size-3 text-accent" /> Active Concurrent Hosts:
-                  </span>
-                  {activeJob.activeDomains.map((dom) => (
-                    <span
-                      key={dom}
-                      className="inline-flex items-center gap-1 rounded border border-accent/30 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent animate-pulse"
-                    >
-                      {dom}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* Live Run Progress Bar */}
-              <div className="space-y-1.5 pt-1 border-t border-border/40">
-                <div className="flex items-center justify-between text-xs font-mono text-muted">
-                  <span className="flex items-center gap-2">
-                    <span className="text-subtle">Job Progress:</span>
-                    <strong className="text-fg">
-                      {activeJob.evaluatedCount || activeJob.ingestedCount || 0} / {activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35} items
-                    </strong>
-                  </span>
-                  <span className="text-accent font-semibold">
-                    {Math.min(100, Math.round(((activeJob.evaluatedCount || activeJob.ingestedCount || 0) / (activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35)) * 100))}%
-                  </span>
-                </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg border border-border/60">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-accent to-sage transition-all duration-500 ease-out"
-                    style={{
-                      width: `${Math.min(100, Math.max(4, Math.round(((activeJob.evaluatedCount || activeJob.ingestedCount || 0) / (activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35)) * 100)))}%`,
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Metrics Counters Footer */}
-              <div className="flex flex-wrap items-center gap-4 pt-1 font-mono text-xs text-muted border-t border-border/40">
-                <span>Discovered: <strong className="text-fg">{activeJob.discoveredCount}</strong></span>
-                <span>Evaluated: <strong className="text-fg">{activeJob.evaluatedCount || 0}</strong></span>
-                <span>Qualified: <strong className="text-sage">{activeJob.qualifiedCount}</strong></span>
-                <span>Ingested: <strong className="text-accent">{activeJob.ingestedCount}</strong></span>
-                <span>Duplicates: <strong className="text-warn">{activeJob.duplicateCount}</strong></span>
-                {activeJob.failedCount !== undefined && activeJob.failedCount > 0 && (
-                  <span>Failed/Timed out: <strong className="text-danger">{activeJob.failedCount}</strong></span>
-                )}
+          {lastJob && (
+            <div>
+              <p className="mb-3 text-sm text-muted">
+                {activeJob ? "Current job" : "Last job"} ·{" "}
+                <span className="font-mono text-xs">{formatJobId(lastJob.id, lastJob.triggerType)}</span>
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <StatCard icon={Compass} label="Discovered" value={lastJob.discoveredCount} hint={`${lastJob.evaluatedCount || 0} evaluated`} />
+                <StatCard icon={CheckCircle2} label="Qualified" value={lastJob.qualifiedCount} hint={`${lastJob.rejectedCount || 0} rejected`} />
+                <StatCard icon={Upload} label="Ingested" value={lastJob.ingestedCount} hint={`${lastJob.newSourcesCount || 0} new sources`} />
+                <StatCard
+                  icon={Layers}
+                  label="Duplicates"
+                  value={lastJob.duplicateCount}
+                  hint={lastJob.failedCount ? `${lastJob.failedCount} failed or timed out` : "No failures"}
+                />
               </div>
             </div>
           )}
 
-          {/* Targeted Threat Hunt Bar */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Crosshair className="size-4 text-accent" />
-                  <h2 className="text-sm font-medium">Targeted Threat & Adversary Emulation Hunt</h2>
-                </div>
-                <p className="mt-0.5 text-xs text-muted">
-                  Input an adversary group, CVE, or malware family to initiate an outlink-expanding intelligence crawl.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2 w-full sm:w-auto">
+          <SectionCard title="Targeted hunt" info="Runs a search-triggered crawl that expands outlinks and citations for one topic.">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <p className="text-sm text-muted">Enter an adversary group, CVE or malware family to start a focused crawl.</p>
+              <form
+                className="flex w-full items-center gap-2 md:w-auto"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (targetedTopic.trim()) targetedCrawl.mutate(targetedTopic);
+                }}
+              >
                 <Input
                   value={targetedTopic}
                   onChange={(e) => setTargetedTopic(e.target.value)}
-                  placeholder="e.g. Akira Ransomware, Volt Typhoon, MOVEit CVE-2023-34362..."
-                  className="w-full sm:w-80 text-xs"
+                  placeholder="e.g. Akira ransomware, Volt Typhoon, CVE-2023-34362"
+                  aria-label="Hunt topic"
+                  className="h-9 w-full text-sm md:w-80"
                 />
-                <Button
-                  size="sm"
-                  onClick={() => targetedCrawl.mutate(targetedTopic)}
-                  disabled={targetedCrawl.isPending || !targetedTopic.trim()}
-                  className="shrink-0 text-xs"
-                >
-                  Hunt Intel
-                </Button>
-              </div>
+                <ActionButton type="submit" icon={Crosshair} disabled={targetedCrawl.isPending || !targetedTopic.trim()}>
+                  Hunt
+                </ActionButton>
+              </form>
             </div>
-          </div>
+          </SectionCard>
 
-          {/* Engine Architecture & Crawl Scheduling Cards */}
           <div className="grid gap-6 lg:grid-cols-3">
-            <div className="flex flex-col justify-between rounded-xl border border-border bg-bg-elevated p-5 lg:col-span-2">
-              <div>
-                <h2 className="text-base font-medium">Iterative Discovery Pipeline</h2>
-                <p className="mt-1 text-xs text-muted">
-                  How the autonomous engine expands outward from seed sources to discover unmapped CTI resources.
-                </p>
-              </div>
+            <SectionCard title="Discovery pipeline" className="lg:col-span-2">
+              <ol className="grid gap-4 sm:grid-cols-5">
+                {PIPELINE_STEPS.map((step, i) => (
+                  <li key={step.title}>
+                    <span className="flex size-6 items-center justify-center rounded-md bg-bg-subtle text-xs font-medium text-muted tabular-nums">
+                      {i + 1}
+                    </span>
+                    <div className="mt-2 text-sm font-medium text-fg">{step.title}</div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted">{step.body}</p>
+                  </li>
+                ))}
+              </ol>
 
-              <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-5">
-                <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">01 · SEED SOURCES</div>
-                  <div className="mt-1 text-sm font-medium">Trusted Entry</div>
-                  <p className="mt-1 text-xs text-muted">
-                    Continuous RSS feeds & permalinks from verified CTI partners.
-                  </p>
-                </div>
-
-                <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">02 · GRAPH EXPANSION</div>
-                  <div className="mt-1 text-sm font-medium">Outlink Citations</div>
-                  <p className="mt-1 text-xs text-muted">
-                    Follows external references, technical whitepapers, and GitHub repos.
-                  </p>
-                </div>
-
-                <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">03 · SOURCE DISCOVERY</div>
-                  <div className="mt-1 text-sm font-medium">New CTI Domains</div>
-                  <p className="mt-1 text-xs text-muted">
-                    Evaluates domain trust scores and registers newly discovered sources.
-                  </p>
-                </div>
-
-                <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">04 · QUALIFICATION</div>
-                  <div className="mt-1 text-sm font-medium">Deep TTP Scoring</div>
-                  <p className="mt-1 text-xs text-muted">
-                    Verifies attack chains, IOC density, and MITRE ATT&CK techniques.
-                  </p>
-                </div>
-
-                <div className="flex flex-col rounded-lg border border-border bg-bg-subtle p-3">
-                  <div className="font-mono text-[10px] text-subtle">05 · PRESERVATION</div>
-                  <div className="mt-1 text-sm font-medium">PDF & Knowledge Base</div>
-                  <p className="mt-1 text-xs text-muted">
-                    Pristine vector document generation and secure database persistence.
-                  </p>
-                </div>
-              </div>
-
-              {/* Source Performance Stats */}
-              <div className="mt-8 border-t border-border pt-5">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium">Source Ingestion Performance</h3>
-                  <span className="font-mono text-[11px] text-subtle">Live Pipeline Feed</span>
-                </div>
+              <div className="mt-6 border-t border-border pt-5">
+                <h3 className="mb-2 text-sm font-medium text-fg">Source performance</h3>
                 {crawlerState.isLoading ? (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 animate-pulse">
-                    {[1, 2, 3, 4].map((i) => (
-                      <div key={i} className="h-14 rounded-lg border border-border bg-bg-subtle/50" />
-                    ))}
-                  </div>
-                ) : (state?.sourceStats && state.sourceStats.length > 0) ? (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="h-20 animate-pulse rounded-lg bg-bg-subtle/50" />
+                ) : state?.sourceStats && state.sourceStats.length > 0 ? (
+                  <ul className="grid gap-x-8 sm:grid-cols-2">
                     {state.sourceStats.map((s) => (
-                      <div key={s.sourceName} className="rounded-lg border border-border bg-bg-subtle px-3 py-2 hover:border-border/80 transition-colors">
-                        <div className="truncate text-xs font-medium text-fg">{s.sourceName}</div>
-                        <div className="mt-1 flex items-baseline gap-1.5 font-mono text-xs text-muted">
-                          <span className="text-fg font-medium">{s.ingested}</span>
-                          <span>ingested</span>
-                          <span className="text-subtle text-[11px]">({s.found} found)</span>
-                        </div>
-                      </div>
+                      <li key={s.sourceName} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0 sm:[&:nth-last-child(2)]:border-b-0">
+                        <span className="truncate text-fg">{s.sourceName}</span>
+                        <span className="shrink-0 text-muted tabular-nums">
+                          <span className="text-fg">{s.ingested}</span> ingested · {s.found} found
+                        </span>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 ) : (
-                  <p className="text-xs text-muted">No source telemetry recorded yet.</p>
+                  <p className="text-sm text-muted">No source telemetry recorded yet.</p>
                 )}
               </div>
-            </div>
+            </SectionCard>
 
-            {/* Quick Run & Scheduler Controls */}
-            <div className="flex flex-col justify-between rounded-xl border border-border bg-bg-elevated p-5">
-              <div>
-                <h2 className="text-base font-medium">Engine Control Plane</h2>
-                <p className="mt-1 text-xs text-muted">Live parameters applied to the frontier crawler.</p>
-
-                {isCrawlerLoading ? (
-                  <div className="mt-5 space-y-3 animate-pulse">
-                    {[1, 2, 3, 4, 5, 6].map((i) => (
-                      <div key={i} className="flex justify-between border-b border-border pb-2">
-                        <div className="h-4 w-28 bg-border/40 rounded" />
-                        <div className="h-4 w-20 bg-border/40 rounded" />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <dl className="mt-5 space-y-3 font-mono text-xs">
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Max Resources / Job</dt>
-                      <dd className="text-accent font-semibold">{config.maxResourcesPerJob || config.maxResourcesPerRun || 35} URLs</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Execution Time Limit</dt>
-                      <dd className="text-accent font-semibold">{config.maxRunTimeMinutes ?? 5} min cap</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Per-Domain Cap</dt>
-                      <dd className="text-fg">{config.maxResourcesPerDomain ?? 8} per host</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Max Traversal Depth</dt>
-                      <dd className="text-fg">Depth {config.maxDepth ?? 3}</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">External Domain Expansion</dt>
-                      <dd className={config.allowExternalDomains !== false ? "text-sage" : "text-muted"}>
-                        {config.allowExternalDomains !== false ? "ENABLED" : "DISABLED"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Deduplication Method</dt>
-                      <dd className="text-fg uppercase">{config.dedupMethod || "smart_hybrid"}</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Auto-Ingestion</dt>
-                      <dd className={config.autoIngest ? "text-sage" : "text-warn"}>
-                        {config.autoIngest ? "AUTO-PERSIST" : "APPROVAL QUEUE"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Strictness Mode</dt>
-                      <dd className="text-fg capitalize">{config.strictnessMode || "balanced"}</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Parallel Workers</dt>
-                      <dd className="text-accent font-semibold flex items-center gap-1">
-                        <Cpu className="size-3 text-accent" />
-                        {config.concurrency || 4} threads (host-aware)
-                      </dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Polite Host Spacing</dt>
-                      <dd className="text-fg">{config.rateLimitMs || 150}ms per domain</dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Autonomous Cadence</dt>
-                      <dd className={!config.enabled ? "text-muted" : config.paused ? "text-warn" : "text-sage font-medium"}>
-                        {!config.enabled
-                          ? "DISABLED"
-                          : config.paused
-                            ? "PAUSED"
-                            : `ACTIVE (${config.frequencyMinutes < 60 ? `${config.frequencyMinutes}m` : `${Math.floor(config.frequencyMinutes / 60)}h ${config.frequencyMinutes % 60 > 0 ? `${config.frequencyMinutes % 60}m` : ""}`.trim()})`}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between border-b border-border pb-2">
-                      <dt className="text-subtle">Last Discovery Run</dt>
-                      <dd className="text-fg">{formatDateTime(config.lastRunAt, "Never")}</dd>
-                    </div>
-                    <div className="flex justify-between pb-2">
-                      <dt className="text-subtle">Next Scheduled Run</dt>
-                      <dd className="text-accent font-medium">
-                        {config.enabled && !config.paused
-                          ? formatDateTime(config.nextRunAt, "Scheduled Soon")
-                          : "Inactive"}
-                      </dd>
-                    </div>
-                  </dl>
-                )}
-              </div>
-
-              <div className="mt-6 flex flex-col gap-2">
-                <Button
-                  onClick={() => runCrawl.mutate("MANUAL")}
-                  disabled={runCrawl.isPending || !!activeJob}
-                  className="w-full gap-2"
-                >
-                  <Play className="size-4" />
-                  <span>Execute Discovery Scan</span>
-                </Button>
-                <Link to="/settings" search={{ tab: "crawler" }}>
-                  <Button
-                    variant="secondary"
-                    className="w-full text-xs gap-1.5"
-                  >
-                    <Settings className="size-3.5 text-muted" />
-                    <span>Configure Granular Controls in Settings</span>
-                    <ArrowRight className="size-3 text-muted ml-auto" />
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          </div>
-
-          {/* Recent Crawl Job Runs History */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-3">
-              <div>
-                <h2 className="text-base font-medium">Recent Crawl Jobs History</h2>
-                <p className="text-xs text-muted">Complete audit trail of automated and targeted graph discovery jobs.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge tone="neutral" className="font-mono text-[10px]">
-                  Total: {jobs.length} Runs
-                </Badge>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveView("audit")}
-                  className="text-xs"
-                >
-                  Detailed Pipeline Audit
-                </Button>
-              </div>
-            </div>
-
-            {/* Filter Controls Row */}
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <div className="relative flex-1 min-w-[200px] max-w-xs">
-                <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
-                <input
-                  type="text"
-                  value={jobsSearch}
-                  onChange={(e) => {
-                    setJobsSearch(e.target.value);
-                    setJobsPage(1);
-                  }}
-                  placeholder="Search Job ID or error details..."
-                  className="w-full rounded-md border border-border bg-bg-subtle pl-8 pr-7 py-1.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-                {jobsSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setJobsSearch("")}
-                    className="absolute right-2 top-2 text-subtle hover:text-fg"
-                  >
-                    <X className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              {/* Status Filter */}
-              <select
-                value={jobsStatus}
-                onChange={(e) => {
-                  setJobsStatus(e.target.value);
-                  setJobsPage(1);
-                }}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="all">All Statuses ({jobs.length})</option>
-                <option value="completed">Completed ({jobs.filter((j) => j.status === "completed").length})</option>
-                <option value="running">Running ({jobs.filter((j) => j.status === "running").length})</option>
-                <option value="failed">Failed ({jobs.filter((j) => j.status === "failed").length})</option>
-              </select>
-
-              {/* Trigger Filter */}
-              <select
-                value={jobsTrigger}
-                onChange={(e) => {
-                  setJobsTrigger(e.target.value);
-                  setJobsPage(1);
-                }}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="all">All Triggers</option>
-                <option value="MANUAL">MANUAL</option>
-                <option value="SCHEDULED">SCHEDULED</option>
-                <option value="SEARCH">SEARCH</option>
-              </select>
-
-              {/* Sort Order */}
-              <select
-                value={jobsSort}
-                onChange={(e) => setJobsSort(e.target.value as any)}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="newest">Newest First</option>
-                <option value="oldest">Oldest First</option>
-              </select>
-            </div>
-
-            {isCrawlerLoading ? (
-              <div className="py-10 text-center">
-                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
-                <p className="text-xs text-muted">Retrieving crawl jobs execution history from database...</p>
-              </div>
-            ) : filteredJobs.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted">No crawl jobs match the selected filters.</p>
-            ) : (
-              <div className="space-y-4">
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[850px] text-left text-xs">
-                    <thead className="border-b border-border bg-bg-subtle/70 font-mono text-[10px] uppercase text-subtle">
-                      <tr>
-                        <th className="py-2.5 px-3">Job ID</th>
-                        <th className="py-2.5 px-3">Trigger</th>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3">Discovered</th>
-                        <th className="py-2.5 px-3">Evaluated</th>
-                        <th className="py-2.5 px-3">Qualified</th>
-                        <th className="py-2.5 px-3">Ingested</th>
-                        <th className="py-2.5 px-3">New Sources</th>
-                        <th className="py-2.5 px-3">Duplicates</th>
-                        <th className="py-2.5 px-3">Rejected</th>
-                        <th className="py-2.5 px-3">Completed</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {pagedJobs.map((j) => (
-                        <tr key={j.id} className="hover:bg-bg-subtle/40">
-                          <td className="py-2.5 px-3">
-                            <IdBadge
-                              id={formatJobId(j.id, j.triggerType)}
-                              category="job"
-                              tone={j.status === "completed" ? "sage" : j.status === "running" ? "accent" : "danger"}
-                              size="xs"
-                            />
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-subtle">{j.triggerType}</td>
-                          <td className="py-2.5 px-3">
-                            <div className="flex flex-col gap-0.5">
-                              <Badge
-                                tone={
-                                  j.status === "completed"
-                                    ? "sage"
-                                    : j.status === "running"
-                                      ? "accent"
-                                      : "danger"
-                                }
-                              >
-                                {j.status}
-                              </Badge>
-                              {j.errorSummary ? (
-                                <span className="text-[10px] text-danger font-mono max-w-[150px] truncate" title={j.errorSummary}>
-                                  {j.errorSummary}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono">{j.discoveredCount}</td>
-                          <td className="py-2.5 px-3 font-mono text-muted">{j.evaluatedCount || j.discoveredCount}</td>
-                          <td className="py-2.5 px-3 font-mono text-sage">{j.qualifiedCount}</td>
-                          <td className="py-2.5 px-3 font-mono font-medium text-accent">{j.ingestedCount}</td>
-                          <td className="py-2.5 px-3 font-mono text-sage">{j.newSourcesCount ? `+${j.newSourcesCount}` : "0"}</td>
-                          <td className="py-2.5 px-3 font-mono text-warn">{j.duplicateCount}</td>
-                          <td className="py-2.5 px-3 font-mono text-muted">{j.rejectedCount}</td>
-                          <td className="py-2.5 px-3 font-mono text-subtle">{formatDateTime(j.completedAt || j.startedAt, "Running...")}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <SectionCard
+              title="Engine configuration"
+              actions={
+                <ActionButton variant="ghost" icon={Settings} onClick={() => void navigate({ to: "/settings", search: { tab: "crawler" } as never })}>
+                  Configure
+                </ActionButton>
+              }
+            >
+              {isCrawlerLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3, 4, 5, 6].map((i) => (
+                    <div key={i} className="h-4 animate-pulse rounded bg-border/40" />
+                  ))}
                 </div>
-
-                <PaginationControls
-                  currentPage={jobsPage}
-                  pageSize={jobsPageSize}
-                  totalItems={filteredJobs.length}
-                  onPageChange={setJobsPage}
-                  onPageSizeChange={setJobsPageSize}
-                  itemLabel="crawl jobs"
+              ) : (
+                <PropertyList
+                  title={null}
+                  items={[
+                    { label: "Resources per job", value: `${config.maxResourcesPerJob || config.maxResourcesPerRun || 35} URLs` },
+                    { label: "Time limit", value: `${config.maxRunTimeMinutes ?? 5} min` },
+                    { label: "Per-domain cap", value: `${config.maxResourcesPerDomain ?? 8} per host` },
+                    { label: "Max depth", value: `Depth ${config.maxDepth ?? 3}` },
+                    { label: "External domains", value: config.allowExternalDomains !== false ? "Enabled" : "Disabled" },
+                    { label: "Deduplication", value: humanize(config.dedupMethod || "smart_hybrid") },
+                    { label: "Ingestion", value: config.autoIngest ? "Automatic" : "Approval queue" },
+                    { label: "Strictness", value: humanize(config.strictnessMode || "balanced") },
+                    { label: "Workers", value: `${config.concurrency || 4} parallel` },
+                    { label: "Host spacing", value: `${config.rateLimitMs || 150} ms` },
+                    { label: "Cadence", value: cadence },
+                  ]}
                 />
-              </div>
-            )}
+              )}
+            </SectionCard>
           </div>
+
+          <section>
+            <SectionHeading
+              title="Job history"
+              description="Every automated and targeted crawl job."
+              actions={
+                <ActionButton variant="ghost" icon={Activity} onClick={() => setActiveView("audit")}>
+                  Pipeline audit log
+                </ActionButton>
+              }
+            />
+            <Toolbar
+              left={
+                <>
+                  <SearchField
+                    value={jobsSearch}
+                    onChange={(v) => {
+                      setJobsSearch(v);
+                      setJobsPage(1);
+                    }}
+                    placeholder="Search job ID or error…"
+                  />
+                  <FilterSelect
+                    label="Job status"
+                    value={jobsStatus}
+                    onChange={(v) => {
+                      setJobsStatus(v);
+                      setJobsPage(1);
+                    }}
+                  >
+                    <option value="all">All statuses ({jobs.length})</option>
+                    <option value="completed">Completed ({jobs.filter((j) => j.status === "completed").length})</option>
+                    <option value="running">Running ({jobs.filter((j) => j.status === "running").length})</option>
+                    <option value="failed">Failed ({jobs.filter((j) => j.status === "failed").length})</option>
+                  </FilterSelect>
+                  <FilterSelect
+                    label="Trigger"
+                    value={jobsTrigger}
+                    onChange={(v) => {
+                      setJobsTrigger(v);
+                      setJobsPage(1);
+                    }}
+                  >
+                    <option value="all">All triggers</option>
+                    <option value="MANUAL">Manual</option>
+                    <option value="SCHEDULED">Scheduled</option>
+                    <option value="SEARCH">Search</option>
+                  </FilterSelect>
+                </>
+              }
+              right={
+                <FilterSelect label="Sort jobs" value={jobsSort} onChange={(v) => setJobsSort(v as typeof jobsSort)}>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </FilterSelect>
+              }
+            />
+            {isCrawlerLoading ? (
+              loadingBlock("Loading crawl job history…")
+            ) : (
+              <>
+                <DataTable
+                  data={pagedJobs}
+                  columns={jobColumns}
+                  getRowId={(j) => j.id}
+                  caption="Crawl job history"
+                  empty={<EmptyState icon={Bot} title="No crawl jobs" description={jobs.length ? "No jobs match these filters." : "Launch a crawl to see its history here."} />}
+                />
+                {filteredJobs.length > 0 && (
+                  <PaginationControls
+                    currentPage={jobsPage}
+                    pageSize={jobsPageSize}
+                    totalItems={filteredJobs.length}
+                    onPageChange={setJobsPage}
+                    onPageSizeChange={setJobsPageSize}
+                    itemLabel="jobs"
+                  />
+                )}
+              </>
+            )}
+          </section>
         </div>
       )}
 
       {/* VIEW 2: DISCOVERY QUEUE */}
       {activeView === "queue" && (
-        <div className="mt-6 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-medium">Candidate Discovery Queue</h2>
-                <Badge tone="accent" className="font-mono text-[10px]">
-                  {isCrawlerLoading ? "…" : `${discovered.length} Total`}
-                </Badge>
-                {!isCrawlerLoading && filteredDiscovered.length !== discovered.length && (
-                  <Badge tone="neutral" className="font-mono text-[10px]">
-                    {filteredDiscovered.length} Filtered
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-muted">
-                Candidate resources discovered across seeds, citations, and outlink graphs. Default view: 25 items per page.
-              </p>
-            </div>
-
-            {/* Status Pills */}
+        <section className="mt-6">
+          <SectionHeading
+            title="Discovery queue"
+            description="Candidate reports found across seeds, citations and outlinks. Items awaiting approval are pinned to the top."
+          />
+          <div className="mb-4">
             <SegmentedTabs
               size="sm"
               ariaLabel="Queue status"
@@ -1405,1213 +1398,575 @@ function IngestPage() {
                 { value: "all", label: "All", count: isCrawlerLoading ? undefined : discovered.length },
                 {
                   value: "awaiting_approval",
-                  label: "Awaiting Approval",
+                  label: "Awaiting approval",
                   count: isCrawlerLoading ? undefined : discovered.filter((d) => isItemAwaitingApproval(d.status)).length,
                 },
-                {
-                  value: "qualified",
-                  label: "Qualified",
-                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "qualified").length,
-                },
-                {
-                  value: "ingested",
-                  label: "Ingested",
-                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "ingested").length,
-                },
-                {
-                  value: "rejected",
-                  label: "Rejected",
-                  count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "rejected").length,
-                },
+                { value: "qualified", label: "Qualified", count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "qualified").length },
+                { value: "ingested", label: "Ingested", count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "ingested").length },
+                { value: "rejected", label: "Rejected", count: isCrawlerLoading ? undefined : discovered.filter((d) => d.status === "rejected").length },
               ]}
             />
           </div>
 
-          {/* Rich Filter & Search Toolbar */}
           <Toolbar
-            className="mb-0 text-xs"
             left={
               <>
-            {/* Search Input */}
-            <div className="relative flex-1 min-w-[220px] max-w-sm">
-              <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
-              <input
-                type="text"
-                value={queueSearch}
-                onChange={(e) => {
-                  setQueueSearch(e.target.value);
-                  setQueuePage(1);
-                }}
-                placeholder="Search candidates (title, URL, publisher, domain)..."
-                className="w-full rounded-md border border-border bg-bg-subtle pl-8 pr-7 py-1.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-              />
-              {queueSearch && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQueueSearch("");
+                <SearchField
+                  value={queueSearch}
+                  onChange={(v) => {
+                    setQueueSearch(v);
                     setQueuePage(1);
                   }}
-                  className="absolute right-2 top-2 text-subtle hover:text-fg"
+                  placeholder="Search title, URL, publisher, domain…"
+                />
+                <FilterSelect
+                  label="Resource type"
+                  value={queueKind}
+                  onChange={(v) => {
+                    setQueueKind(v);
+                    setQueuePage(1);
+                  }}
                 >
-                  <X className="size-3" />
+                  <option value="all">All types ({queueKinds.length})</option>
+                  {queueKinds.map((k) => (
+                    <option key={k} value={k}>
+                      {humanize(k)}
+                    </option>
+                  ))}
+                </FilterSelect>
+                <FilterSelect
+                  label="Minimum quality score"
+                  value={queueMinScore}
+                  onChange={(v) => {
+                    setQueueMinScore(Number(v));
+                    setQueuePage(1);
+                  }}
+                >
+                  <option value={0}>Any score</option>
+                  <option value={0.8}>Score ≥ 80%</option>
+                  <option value={0.6}>Score ≥ 60%</option>
+                  <option value={0.4}>Score ≥ 40%</option>
+                </FilterSelect>
+                <FilterSelect
+                  label="Source domain"
+                  value={queueDomain}
+                  onChange={(v) => {
+                    setQueueDomain(v);
+                    setQueuePage(1);
+                  }}
+                >
+                  <option value="all">All domains ({queueDomains.length})</option>
+                  {queueDomains.map((dm) => (
+                    <option key={dm} value={dm}>
+                      {dm}
+                    </option>
+                  ))}
+                </FilterSelect>
+                <button
+                  type="button"
+                  aria-pressed={queueNovelOnly}
+                  onClick={() => {
+                    setQueueNovelOnly(!queueNovelOnly);
+                    setQueuePage(1);
+                  }}
+                  className={cn(
+                    "inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm transition-colors",
+                    queueNovelOnly ? "border-warn/50 bg-bg-subtle text-warn" : "border-border bg-bg-elevated text-muted hover:text-fg",
+                  )}
+                >
+                  <Flame className="size-4" strokeWidth={1.75} />
+                  Novel only ({discovered.filter((d) => d.isEmergingTechnique).length})
                 </button>
-              )}
-            </div>
-
-            {/* Resource Kind Dropdown */}
-            <select
-              value={queueKind}
-              onChange={(e) => {
-                setQueueKind(e.target.value);
-                setQueuePage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value="all">All Resource Types ({queueKinds.length})</option>
-              {queueKinds.map((k) => (
-                <option key={k} value={k}>
-                  {k.replace(/_/g, " ")}
-                </option>
-              ))}
-            </select>
-
-            {/* Quality Threshold Dropdown */}
-            <select
-              value={queueMinScore}
-              onChange={(e) => {
-                setQueueMinScore(Number(e.target.value));
-                setQueuePage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value={0}>Any Quality Score</option>
-              <option value={0.8}>≥ 80% High Quality</option>
-              <option value={0.6}>≥ 60% Moderate</option>
-              <option value={0.4}>≥ 40% Minimal</option>
-            </select>
-
-            {/* Source Domain Dropdown */}
-            <select
-              value={queueDomain}
-              onChange={(e) => {
-                setQueueDomain(e.target.value);
-                setQueuePage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none max-w-[170px] truncate"
-            >
-              <option value="all">All Source Domains ({queueDomains.length})</option>
-              {queueDomains.map((dm) => (
-                <option key={dm} value={dm}>
-                  {dm}
-                </option>
-              ))}
-            </select>
-
-            {/* Novel TTP Toggle */}
-            <button
-              type="button"
-              onClick={() => {
-                setQueueNovelOnly(!queueNovelOnly);
-                setQueuePage(1);
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
-                queueNovelOnly
-                  ? "border-danger/60 bg-danger/15 text-danger font-semibold"
-                  : "border-border bg-bg-subtle text-muted hover:text-fg",
-              )}
-            >
-              <Flame className="size-3.5" />
-              <span>Novel TTPs ({discovered.filter((d) => d.isEmergingTechnique).length})</span>
-            </button>
-
+                {queueFiltersActive && (
+                  <ActionButton
+                    variant="ghost"
+                    icon={X}
+                    onClick={() => {
+                      setQueueSearch("");
+                      setQueueKind("all");
+                      setQueueMinScore(0);
+                      setQueueNovelOnly(false);
+                      setQueueDomain("all");
+                      setQueueFilter("all");
+                      setQueuePage(1);
+                    }}
+                  >
+                    Reset
+                  </ActionButton>
+                )}
               </>
             }
             right={
-              <>
-            {/* Sort Order Dropdown */}
-            <select
-              value={queueSort}
-              onChange={(e) => setQueueSort(e.target.value as any)}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value="newest">Latest Discovered</option>
-              <option value="oldest">Oldest Discovered</option>
-              <option value="score_desc">Highest Quality Score</option>
-              <option value="title_asc">Title (A–Z)</option>
-              <option value="domain_asc">Domain (A–Z)</option>
-            </select>
-
-            {/* Reset Filter Button */}
-            {(queueSearch || queueKind !== "all" || queueMinScore > 0 || queueNovelOnly || queueDomain !== "all" || queueFilter !== "all") && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setQueueSearch("");
-                  setQueueKind("all");
-                  setQueueMinScore(0);
-                  setQueueNovelOnly(false);
-                  setQueueDomain("all");
-                  setQueueFilter("all");
-                  setQueuePage(1);
-                }}
-                className="h-7 px-2 text-xs text-subtle hover:text-fg"
-              >
-                <X className="size-3 mr-1" />
-                Reset
-              </Button>
-            )}
-              </>
+              selectedCandidates.size > 0 ? (
+                <>
+                  <span className="text-sm text-muted tabular-nums">{selectedCandidates.size} selected</span>
+                  <ActionButton
+                    variant="primary"
+                    icon={batchIngestMutation.isPending ? undefined : Play}
+                    disabled={batchIngestMutation.isPending || batchRejectMutation.isPending || selectedIngestable.length === 0}
+                    onClick={() => batchIngestMutation.mutate(selectedIngestable)}
+                    title="Ingest selected candidates across 4 parallel workers"
+                  >
+                    {batchIngestMutation.isPending ? "Ingesting…" : "Ingest selected"}
+                  </ActionButton>
+                  <ActionButton
+                    icon={XCircle}
+                    disabled={batchIngestMutation.isPending || batchRejectMutation.isPending}
+                    onClick={() => batchRejectMutation.mutate(Array.from(selectedCandidates))}
+                  >
+                    {batchRejectMutation.isPending ? "Rejecting…" : "Reject"}
+                  </ActionButton>
+                  <ActionButton variant="ghost" onClick={clearSelection}>
+                    Clear
+                  </ActionButton>
+                </>
+              ) : (
+                <FilterSelect label="Sort candidates" value={queueSort} onChange={(v) => setQueueSort(v as typeof queueSort)}>
+                  <option value="newest">Latest discovered</option>
+                  <option value="oldest">Oldest discovered</option>
+                  <option value="score_desc">Highest score</option>
+                  <option value="title_asc">Title (A–Z)</option>
+                  <option value="domain_asc">Domain (A–Z)</option>
+                </FilterSelect>
+              )
             }
           />
 
           {isCrawlerLoading ? (
-            <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
-              <ActivitySpinner size="lg" className="text-accent mx-auto mb-3" />
-              <p className="text-sm font-medium text-fg">Synchronizing Discovery Queue...</p>
-              <p className="mt-1 text-xs text-muted">Retrieving candidate URLs, qualification scores, and triage status from central database.</p>
-            </div>
-          ) : filteredDiscovered.length === 0 ? (
-            <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
-              No discovered resources match the selected filters.
-            </div>
+            loadingBlock("Loading the discovery queue…")
           ) : (
-            <div className="space-y-4">
-              {/* Multi-Candidate Batch Action Toolbar */}
-              {selectedCandidates.size > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/[0.08] p-3.5 shadow-md">
-                  <div className="flex items-center gap-3">
-                    <span className="inline-flex items-center gap-1.5 rounded-md bg-accent/20 px-2.5 py-1 text-xs font-semibold text-accent">
-                      <CheckSquare className="size-3.5" />
-                      {selectedCandidates.size} Candidates Selected
-                    </span>
-                    <span className="hidden text-xs text-muted sm:inline-flex items-center gap-1.5">
-                      <Cpu className="size-3 text-accent" />
-                      Dispatching across 4 concurrent worker threads
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={batchIngestMutation.isPending || batchRejectMutation.isPending}
-                      onClick={() => batchIngestMutation.mutate(Array.from(selectedCandidates))}
-                      className="gap-1.5 whitespace-nowrap"
-                    >
-                      {batchIngestMutation.isPending ? (
-                        <>
-                          <ActivitySpinner size="xs" className="text-bg mr-1.5" />
-                          <span>Batch Ingesting...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play className="size-3.5 fill-current" />
-                          <span>Ingest Selected (Parallel)</span>
-                        </>
-                      )}
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={batchIngestMutation.isPending || batchRejectMutation.isPending}
-                      onClick={() => batchRejectMutation.mutate(Array.from(selectedCandidates))}
-                      className="gap-1.5 text-danger hover:text-danger whitespace-nowrap"
-                    >
-                      {batchRejectMutation.isPending ? (
-                        <>
-                          <ActivitySpinner size="xs" className="mr-1.5" />
-                          <span>Rejecting...</span>
-                        </>
-                      ) : (
-                        <>
-                          <XCircle className="size-3.5" />
-                          <span>Reject Selected</span>
-                        </>
-                      )}
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setSelectedCandidates(new Set())}
-                      className="text-xs text-subtle hover:text-fg"
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <div className="overflow-x-auto rounded-xl border border-border bg-bg-elevated">
-                <table className="w-full min-w-[800px] text-left text-xs">
-                  <thead className="border-b border-border bg-bg-subtle font-mono text-[10px] uppercase text-subtle">
-                    <tr>
-                      <th className="w-10 p-3 text-center">
-                        <input
-                          type="checkbox"
-                          checked={
-                            pagedDiscovered.length > 0 &&
-                            pagedDiscovered.filter((i) => i.status !== "ingested").length > 0 &&
-                            pagedDiscovered
-                              .filter((i) => i.status !== "ingested")
-                              .every((item) => selectedCandidates.has(item.id))
-                          }
-                          onChange={(e) => {
-                            const next = new Set(selectedCandidates);
-                            if (e.target.checked) {
-                              for (const item of pagedDiscovered) {
-                                if (item.status !== "ingested") {
-                                  next.add(item.id);
-                                }
-                              }
-                            } else {
-                              for (const item of pagedDiscovered) {
-                                next.delete(item.id);
-                              }
-                            }
-                            setSelectedCandidates(next);
-                          }}
-                          aria-label="Select all candidate resources on this page"
-                          className="size-3.5 rounded border-border bg-bg-subtle text-accent focus:ring-accent focus:ring-offset-0 cursor-pointer"
-                        />
-                      </th>
-                      <th className="p-3">Status</th>
-                      <th className="p-3">Resource Kind</th>
-                      <th className="p-3">Title / Canonical URL</th>
-                      <th className="p-3">Source Domain</th>
-                      <th className="p-3">Method</th>
-                      <th className="p-3">Score</th>
-                      <th className="p-3 text-right whitespace-nowrap min-w-[170px] w-[170px]">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {pagedDiscovered.map((res) => {
-                      const isPending = isItemAwaitingApproval(res.status);
-                      const isSelected = selectedCandidates.has(res.id);
-                      const outcomeMeta = formatOutcomeId(res.status, res.reportId || res.id, res.canonicalUrl);
-                      const prefix =
-                        res.status === "ingested"
-                          ? "ING"
-                          : res.status === "duplicate"
-                            ? "DUP"
-                            : res.status === "rejected"
-                              ? "REJ"
-                              : res.status === "failed"
-                                ? "FAIL"
-                                : "DISC";
-
-                      return (
-                        <tr
-                          key={res.id || res.canonicalUrl}
-                          className={cn(
-                            "transition-colors",
-                            isSelected
-                              ? "bg-accent/[0.08] hover:bg-accent/[0.12]"
-                              : isPending
-                                ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
-                                : "hover:bg-bg-subtle/30",
-                          )}
-                        >
-                          <td className="p-3 text-center">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              disabled={res.status === "ingested"}
-                              onChange={() => {
-                                const next = new Set(selectedCandidates);
-                                if (next.has(res.id)) {
-                                  next.delete(res.id);
-                                } else {
-                                  next.add(res.id);
-                                }
-                                setSelectedCandidates(next);
-                              }}
-                              aria-label={`Select ${res.title}`}
-                              className="size-3.5 rounded border-border bg-bg-subtle text-accent focus:ring-accent focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                            />
-                          </td>
-                          <td className="p-3">
-                            <div className="flex flex-col items-start gap-1">
-                              <IdBadge
-                                id={outcomeMeta.id}
-                                category={outcomeMeta.category}
-                                tone={outcomeMeta.tone}
-                                size="xs"
-                                prefixLabel={prefix}
-                              />
-                              <span
-                                className={cn(
-                                  "font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-semibold",
-                                  res.status === "ingested"
-                                    ? "text-emerald-400 bg-emerald-950/40"
-                                    : res.status === "duplicate"
-                                      ? "text-amber-400 bg-amber-950/40"
-                                      : res.status === "rejected"
-                                        ? "text-rose-400 bg-rose-950/40"
-                                        : res.status === "failed"
-                                          ? "text-red-400 bg-red-950/40"
-                                          : isPending
-                                            ? "text-amber-300 bg-amber-950/70 border border-amber-500/40"
-                                            : "text-cyan-400 bg-cyan-950/40",
-                                )}
-                              >
-                                {res.status.replace(/_/g, " ")}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            {(() => {
-                              const meta = formatResourceKind(res.resourceKind || res.classification);
-                              return (
-                                <Badge tone={meta.tone} className="text-[10px] font-semibold whitespace-nowrap">
-                                  {meta.label}
-                                </Badge>
-                              );
-                            })()}
-                          </td>
-                          <td className="max-w-[280px] p-3">
-                            {res.reportId && (
-                              <div className="mb-1">
-                                <IdBadge id={formatReportId(res.reportId)} category="report" size="xs" prefixLabel="RPT" />
-                              </div>
-                            )}
-                            <div className="flex items-center gap-1.5 truncate">
-                              <span className="truncate font-medium text-fg">{res.title}</span>
-                              {res.isEmergingTechnique && (
-                                <span className="shrink-0 rounded bg-danger/15 px-1 py-0.2 text-[9px] font-bold text-danger font-mono" title={res.noveltyRationale || "Novel unmapped procedure"}>
-                                  NOVEL
-                                </span>
-                              )}
-                            </div>
-                            <a
-                              href={res.canonicalUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="truncate font-mono text-[10px] text-subtle hover:text-accent flex items-center gap-1"
-                            >
-                              <span className="truncate">{res.canonicalUrl}</span>
-                              <ExternalLink className="size-2.5 shrink-0" />
-                            </a>
-                            {res.rejectReason && (
-                              <div className="mt-0.5 truncate font-mono text-[10px] text-danger/80" title={res.rejectReason}>
-                                {res.rejectReason}
-                              </div>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            <div className="flex flex-col items-start gap-1">
-                              <span className="text-muted text-xs">{res.sourceDomain}</span>
-                              <IdBadge id={formatDomainId(res.sourceDomain)} category="domain" size="xs" />
-                            </div>
-                          </td>
-                          <td className="p-3 font-mono text-[10px] text-subtle">
-                            {res.discoveryMethod.replace(/_/g, " ")}
-                          </td>
-                        <td className="p-3 font-mono">
-                          <div className="flex flex-col gap-1">
-                            {/* Crawler Engine Qualification Score */}
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-sans text-subtle">Engine:</span>
-                              <span className="font-semibold text-fg text-xs">
-                                {res.qualityScore !== null && res.qualityScore !== undefined
-                                  ? `${Math.round(res.qualityScore * 100)}%`
-                                  : "—"}
-                              </span>
-                            </div>
-
-                            {/* AI Agent Confidence Score */}
-                            {res.agentScore !== undefined && res.agentScore > 0 && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-sans text-subtle">AI:</span>
-                                <span
-                                  className={cn(
-                                    "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold font-mono",
-                                    res.agentApproved
-                                      ? "bg-emerald-950/60 border border-emerald-800/40 text-emerald-400"
-                                      : "bg-amber-950/60 border border-amber-800/40 text-amber-400",
-                                  )}
-                                >
-                                  <Sparkles className="size-2.5 mr-0.5" />
-                                  {res.agentScore}%
-                                  {res.agentApproved && " ✓"}
-                                </span>
-                              </div>
-                            )}
-
-                            {/* Simulation Score (if present) */}
-                            {res.simulationScore !== undefined && res.simulationScore > 0 && (
-                              <div className="flex items-center gap-1.5 text-[10px] text-accent">
-                                <span className="font-sans text-subtle">SIM:</span>
-                                <span>{Math.round(res.simulationScore * 100)}%</span>
-                              </div>
-                            )}
-
-                            {/* Agent Rationale */}
-                            {res.agentRationale && (
-                              <div
-                                className="truncate text-[9px] text-subtle italic max-w-[150px]"
-                                title={res.agentRationale}
-                              >
-                                {res.agentRationale}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                        <td className="p-3 text-right whitespace-nowrap min-w-[170px] w-[170px]">
-                          {res.status === "ingested" ? (
-                            <Link
-                              to="/library"
-                              search={{ selected: res.reportId || res.canonicalUrl || res.title }}
-                              className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-medium whitespace-nowrap"
-                            >
-                              View in Library
-                            </Link>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant={isPending ? "primary" : "secondary"}
-                              className={cn(
-                                "h-7.5 px-3 text-xs gap-1.5 whitespace-nowrap shrink-0 inline-flex flex-row items-center justify-center font-medium",
-                                isPending && "font-semibold shadow-xs"
-                              )}
-                              disabled={ingestQueueItem.isPending}
-                              onClick={() => ingestQueueItem.mutate(res.id)}
-                            >
-                              {ingestQueueItem.isPending && ingestingId === res.id ? (
-                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                                  <ActivitySpinner size="xs" className="text-accent shrink-0" />
-                                  <span>Acquiring…</span>
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                                  <Download className="size-3 text-muted shrink-0" />
-                                  <span>Acquire & Ingest</span>
-                                </span>
-                              )}
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  </tbody>
-                </table>
-              </div>
-
-              <PaginationControls
-                currentPage={queuePage}
-                pageSize={queuePageSize}
-                totalItems={filteredDiscovered.length}
-                onPageChange={setQueuePage}
-                onPageSizeChange={setQueuePageSize}
-                itemLabel="candidate resources"
+            <>
+              <DataTable
+                key={selectionEpoch}
+                data={pagedDiscovered}
+                columns={queueColumns}
+                getRowId={(r) => r.id}
+                selectable
+                onSelectionChange={(ids) => setSelectedCandidates(new Set(ids))}
+                isRowActive={(r) => isItemAwaitingApproval(r.status)}
+                caption="Discovery queue"
+                empty={
+                  <EmptyState
+                    icon={Compass}
+                    title={discovered.length ? "No candidates match these filters" : "The queue is empty"}
+                    description={discovered.length ? "Adjust or reset the filters." : "Launch a crawl to discover candidate reports."}
+                  />
+                }
               />
-            </div>
+              {filteredDiscovered.length > 0 && (
+                <PaginationControls
+                  currentPage={queuePage}
+                  pageSize={queuePageSize}
+                  totalItems={filteredDiscovered.length}
+                  onPageChange={setQueuePage}
+                  onPageSizeChange={setQueuePageSize}
+                  itemLabel="candidates"
+                />
+              )}
+            </>
           )}
-        </div>
+        </section>
       )}
 
-      {/* VIEW 3: DISCOVERY GRAPH & EXPANDED SOURCES */}
+      {/* VIEW 3: SOURCES & GRAPH */}
       {activeView === "graph" && (
-        <div className="mt-6 space-y-6">
-          <div>
-            <h2 className="text-lg font-medium">Discovered Sources & Citation Graph</h2>
-            <p className="text-xs text-muted">
-              Domains and technical references discovered autonomously through citation extraction.
-            </p>
-          </div>
-
-          {/* Discovered Sources Table */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-3">
-              <div>
-                <h3 className="text-sm font-medium">Autonomously Discovered CTI Sources</h3>
-                <p className="text-xs text-muted">External domains identified via hyperlinks, citations, and research papers.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge tone="accent">
-                  {isCrawlerLoading ? "…" : `Total: ${discoveredSources.length} Domains`}
-                </Badge>
-                {!isCrawlerLoading && filteredSources.length !== discoveredSources.length && (
-                  <Badge tone="neutral">{filteredSources.length} Filtered</Badge>
-                )}
-              </div>
-            </div>
-
-            {/* Discovered Sources Filter Toolbar */}
+        <div className="mt-6 space-y-8">
+          <section>
+            <SectionHeading
+              title="Discovered sources"
+              description="External domains found through links, citations and research papers."
+            />
             <Toolbar
-              className="mb-0 text-xs"
               left={
                 <>
-              <div className="relative flex-1 min-w-[200px] max-w-xs">
-                <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
-                <input
-                  type="text"
-                  value={sourcesSearch}
-                  onChange={(e) => {
-                    setSourcesSearch(e.target.value);
-                    setSourcesPage(1);
-                  }}
-                  placeholder="Search discovered domain or publisher..."
-                  className="w-full rounded-md border border-border bg-bg-subtle pl-8 pr-7 py-1.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-                {sourcesSearch && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSourcesSearch("");
+                  <SearchField
+                    value={sourcesSearch}
+                    onChange={(v) => {
+                      setSourcesSearch(v);
                       setSourcesPage(1);
                     }}
-                    className="absolute right-2 top-2 text-subtle hover:text-fg"
+                    placeholder="Search domain or publisher…"
+                  />
+                  <FilterSelect
+                    label="Trust level"
+                    value={sourcesTrust}
+                    onChange={(v) => {
+                      setSourcesTrust(v as typeof sourcesTrust);
+                      setSourcesPage(1);
+                    }}
                   >
-                    <X className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              <select
-                value={sourcesTrust}
-                onChange={(e) => {
-                  setSourcesTrust(e.target.value as any);
-                  setSourcesPage(1);
-                }}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="all">All Trust Levels</option>
-                <option value="high">High Trust (≥ 90%)</option>
-                <option value="medium">Medium Trust (≥ 80%)</option>
-              </select>
+                    <option value="all">All trust levels</option>
+                    <option value="high">High trust (≥ 90%)</option>
+                    <option value="medium">Medium trust (≥ 80%)</option>
+                  </FilterSelect>
                 </>
               }
               right={
-              <select
-                value={sourcesSort}
-                onChange={(e) => setSourcesSort(e.target.value as any)}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="trust_desc">Highest Trust Score</option>
-                <option value="resources_desc">Most Discovered Resources</option>
-                <option value="domain_asc">Domain (A–Z)</option>
-                <option value="newest">Recently Discovered</option>
-              </select>
+                <FilterSelect label="Sort sources" value={sourcesSort} onChange={(v) => setSourcesSort(v as typeof sourcesSort)}>
+                  <option value="trust_desc">Highest trust</option>
+                  <option value="resources_desc">Most resources</option>
+                  <option value="domain_asc">Domain (A–Z)</option>
+                  <option value="newest">Recently discovered</option>
+                </FilterSelect>
               }
             />
-
             {isCrawlerLoading ? (
-              <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
-                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
-                <p className="text-xs text-muted">Analyzing outlink graph and discovered CTI domain authorities...</p>
-              </div>
-            ) : filteredSources.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted">
-                No external sources match the current filter criteria.
-              </p>
+              loadingBlock("Loading discovered sources…")
             ) : (
-              <div className="space-y-4">
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[700px] text-left text-xs">
-                    <thead className="border-b border-border bg-bg-subtle/70 font-mono text-[10px] uppercase text-subtle">
-                      <tr>
-                        <th className="py-2.5 px-3">Domain</th>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3">Trust Score</th>
-                        <th className="py-2.5 px-3">Resources</th>
-                        <th className="py-2.5 px-3">Referrer / Parent</th>
-                        <th className="py-2.5 px-3">Discovered Date</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {pagedSources.map((src) => (
-                        <tr key={src.domain} className="hover:bg-bg-subtle/40">
-                          <td className="py-2.5 px-3">
-                            <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                              <IdBadge id={formatSourceId(src.id, src.domain)} category="source" size="xs" prefixLabel="SRC" />
-                              <IdBadge id={formatDomainId(src.domain)} category="domain" size="xs" />
-                            </div>
-                            <a href={src.homepageUrl} target="_blank" rel="noreferrer" className="hover:text-accent font-mono text-fg font-medium flex items-center gap-1.5">
-                              <span>{src.domain}</span>
-                              <ExternalLink className="size-2.5 text-subtle" />
-                            </a>
-                            <div className="text-[10px] text-subtle font-sans">{src.name}</div>
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <Badge tone={src.status === "approved" ? "sage" : "neutral"}>
-                              {src.status}
-                            </Badge>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-accent font-medium">
-                            {Math.round(src.trustScore * 100)}%
-                          </td>
-                          <td className="py-2.5 px-3 font-mono">{src.resourceCount}</td>
-                          <td className="py-2.5 px-3">
-                            <div className="flex flex-col items-start gap-1">
-                              <span className="text-muted font-mono text-[11px]">{src.parentSource || "Seed"}</span>
-                              <IdBadge id={formatOriginId(src.parentSource)} category="origin" size="xs" />
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-subtle text-[10px]">{formatDateTime(src.firstDiscoveredAt)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <PaginationControls
-                  currentPage={sourcesPage}
-                  pageSize={sourcesPageSize}
-                  totalItems={filteredSources.length}
-                  onPageChange={setSourcesPage}
-                  onPageSizeChange={setSourcesPageSize}
-                  itemLabel="discovered sources"
+              <>
+                <DataTable
+                  data={pagedSources}
+                  columns={sourceColumns}
+                  getRowId={(src) => src.id || src.domain}
+                  caption="Discovered sources"
+                  empty={<EmptyState icon={Globe} title="No discovered sources" description={discoveredSources.length ? "No sources match these filters." : "Sources appear here as the crawler follows citations."} />}
                 />
-              </div>
-            )}
-          </div>
-
-          {/* Citation Graph Edges */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-3">
-              <div>
-                <h3 className="text-sm font-medium">Recent Citation & Outlink Graph Edges</h3>
-                <p className="text-xs text-muted">Relationship links established between documents, repositories, and PDFs.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge tone="neutral">
-                  {isCrawlerLoading ? "…" : `Total: ${graphEdges.length} Edges`}
-                </Badge>
-                {!isCrawlerLoading && filteredEdges.length !== graphEdges.length && (
-                  <Badge tone="accent">{filteredEdges.length} Filtered</Badge>
+                {filteredSources.length > 0 && (
+                  <PaginationControls
+                    currentPage={sourcesPage}
+                    pageSize={sourcesPageSize}
+                    totalItems={filteredSources.length}
+                    onPageChange={setSourcesPage}
+                    onPageSizeChange={setSourcesPageSize}
+                    itemLabel="sources"
+                  />
                 )}
-              </div>
-            </div>
+              </>
+            )}
+          </section>
 
-            {/* Graph Edges Filter Toolbar */}
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <div className="relative flex-1 min-w-[200px] max-w-xs">
-                <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
-                <input
-                  type="text"
-                  value={edgesSearch}
-                  onChange={(e) => {
-                    setEdgesSearch(e.target.value);
-                    setEdgesPage(1);
-                  }}
-                  placeholder="Search source origin, target, or context..."
-                  className="w-full rounded-md border border-border bg-bg-subtle pl-8 pr-7 py-1.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-                {edgesSearch && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEdgesSearch("");
+          <section>
+            <SectionHeading
+              title="Citation graph"
+              description="Links between documents, repositories and PDFs found during crawling."
+            />
+            <Toolbar
+              left={
+                <>
+                  <SearchField
+                    value={edgesSearch}
+                    onChange={(v) => {
+                      setEdgesSearch(v);
                       setEdgesPage(1);
                     }}
-                    className="absolute right-2 top-2 text-subtle hover:text-fg"
+                    placeholder="Search origin, target or context…"
+                  />
+                  <FilterSelect
+                    label="Relationship"
+                    value={edgesRelationship}
+                    onChange={(v) => {
+                      setEdgesRelationship(v);
+                      setEdgesPage(1);
+                    }}
                   >
-                    <X className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              <select
-                value={edgesRelationship}
-                onChange={(e) => {
-                  setEdgesRelationship(e.target.value);
-                  setEdgesPage(1);
-                }}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="all">All Relationships ({edgeRelationships.length})</option>
-                {edgeRelationships.map((rel) => (
-                  <option key={rel} value={rel}>
-                    {rel.replace(/_/g, " ")}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={edgesSort}
-                onChange={(e) => setEdgesSort(e.target.value as any)}
-                className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-              >
-                <option value="newest">Newest First</option>
-                <option value="oldest">Oldest First</option>
-              </select>
-            </div>
-
+                    <option value="all">All relationships ({edgeRelationships.length})</option>
+                    {edgeRelationships.map((rel) => (
+                      <option key={rel} value={rel}>
+                        {humanize(rel)}
+                      </option>
+                    ))}
+                  </FilterSelect>
+                </>
+              }
+              right={
+                <FilterSelect label="Sort edges" value={edgesSort} onChange={(v) => setEdgesSort(v as typeof edgesSort)}>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </FilterSelect>
+              }
+            />
             {isCrawlerLoading ? (
-              <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
-                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
-                <p className="text-xs text-muted">Mapping citation relationships and threat intelligence links...</p>
-              </div>
-            ) : filteredEdges.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted">No graph edges match the current filters.</p>
+              loadingBlock("Mapping citation relationships…")
             ) : (
-              <div className="space-y-4">
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[750px] text-left text-xs">
-                    <thead className="border-b border-border bg-bg-subtle/70 font-mono text-[10px] uppercase text-subtle">
-                      <tr>
-                        <th className="py-2.5 px-3">Source Origin</th>
-                        <th className="py-2.5 px-3">Relationship</th>
-                        <th className="py-2.5 px-3">Target Reference</th>
-                        <th className="py-2.5 px-3">Label / Context</th>
-                        <th className="py-2.5 px-3">Timestamp</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {pagedEdges.map((edge) => (
-                        <tr key={edge.id} className="hover:bg-bg-subtle/40">
-                          <td className="max-w-[220px] py-2.5 px-3">
-                            <div className="flex flex-wrap items-center gap-1 mb-1">
-                              <IdBadge id={formatEdgeId(edge.id, `${edge.from}->${edge.to}`)} category="edge" size="xs" prefixLabel="EDGE" />
-                              <IdBadge id={formatDomainId(edge.sourceDomain || edge.from)} category="domain" size="xs" />
-                            </div>
-                            <div className="truncate font-mono text-[11px] text-muted">{edge.from}</div>
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <Badge
-                              tone={
-                                edge.relationship === "DOWNLOADS_PDF"
-                                  ? "sage"
-                                  : edge.relationship === "REFERENCES_REPO"
-                                    ? "accent"
-                                    : "neutral"
-                              }
-                            >
-                              {edge.relationship.replace(/_/g, " ")}
-                            </Badge>
-                          </td>
-                          <td className="max-w-[260px] py-2.5 px-3">
-                            <div className="mb-1">
-                              <IdBadge id={formatDomainId(edge.targetDomain || edge.to)} category="domain" size="xs" />
-                            </div>
-                            <a href={edge.to} target="_blank" rel="noreferrer" className="hover:text-accent font-mono text-[11px] text-fg flex items-center gap-1 truncate">
-                              <span className="truncate">{edge.to}</span>
-                              <ExternalLink className="size-2.5 shrink-0 text-subtle" />
-                            </a>
-                          </td>
-                          <td className="max-w-[180px] py-2.5 px-3 truncate text-muted text-[11px]">
-                            {edge.label}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-[10px] text-subtle">
-                            {formatDateTime(edge.createdAt)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <PaginationControls
-                  currentPage={edgesPage}
-                  pageSize={edgesPageSize}
-                  totalItems={filteredEdges.length}
-                  onPageChange={setEdgesPage}
-                  onPageSizeChange={setEdgesPageSize}
-                  itemLabel="graph edges"
+              <>
+                <DataTable
+                  data={pagedEdges}
+                  columns={edgeColumns}
+                  getRowId={(e) => e.id}
+                  caption="Citation graph edges"
+                  empty={<EmptyState icon={GitBranch} title="No graph edges" description={graphEdges.length ? "No edges match these filters." : "Edges appear as the crawler follows links."} />}
                 />
-              </div>
+                {filteredEdges.length > 0 && (
+                  <PaginationControls
+                    currentPage={edgesPage}
+                    pageSize={edgesPageSize}
+                    totalItems={filteredEdges.length}
+                    onPageChange={setEdgesPage}
+                    onPageSizeChange={setEdgesPageSize}
+                    itemLabel="edges"
+                  />
+                )}
+              </>
             )}
-          </div>
+          </section>
         </div>
       )}
 
       {/* VIEW 4: PIPELINE AUDIT LOG */}
       {activeView === "audit" && (
-        <div className="mt-6 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-medium">Pipeline Progression Audit Log</h2>
-                <Badge tone="accent" className="font-mono text-[10px]">
-                  {isCrawlerLoading ? "…" : `${items.length} Total`}
-                </Badge>
-                {!isCrawlerLoading && filteredAuditItems.length !== items.length && (
-                  <Badge tone="neutral" className="font-mono text-[10px]">
-                    {filteredAuditItems.length} Filtered
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-muted">
-                Complete visibility into every evaluated URL across the 7 pipeline stages. Default view: 25 items per page.
-              </p>
-            </div>
-          </div>
-
-          {/* Audit Filter Toolbar */}
+        <section className="mt-6">
+          <SectionHeading
+            title="Pipeline audit log"
+            description="Every evaluated URL across the seven pipeline stages, with its outcome and reason."
+          />
           <Toolbar
-            className="mb-0 text-xs"
             left={
               <>
-            {/* Search Input */}
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
-              <Search className="absolute left-2.5 top-2 size-3.5 text-subtle" />
-              <input
-                type="text"
-                value={auditSearch}
-                onChange={(e) => {
-                  setAuditSearch(e.target.value);
-                  setAuditPage(1);
-                }}
-                placeholder="Search URL, title, publisher, reason..."
-                className="w-full rounded-md border border-border bg-bg-subtle pl-8 pr-7 py-1.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
-              />
-              {auditSearch && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuditSearch("");
+                <SearchField
+                  value={auditSearch}
+                  onChange={(v) => {
+                    setAuditSearch(v);
                     setAuditPage(1);
                   }}
-                  className="absolute right-2 top-2 text-subtle hover:text-fg"
+                  placeholder="Search URL, title, publisher, reason…"
+                />
+                <FilterSelect
+                  label="Outcome"
+                  value={auditDecision}
+                  onChange={(v) => {
+                    setAuditDecision(v);
+                    setAuditPage(1);
+                  }}
                 >
-                  <X className="size-3" />
-                </button>
-              )}
-            </div>
-
-            {/* Decision Filter */}
-            <select
-              value={auditDecision}
-              onChange={(e) => {
-                setAuditDecision(e.target.value);
-                setAuditPage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value="all">All Decisions</option>
-              <option value="INGESTED">INGESTED</option>
-              <option value="AWAITING_APPROVAL">AWAITING APPROVAL</option>
-              <option value="QUALIFIED">QUALIFIED</option>
-              <option value="DUPLICATE">DUPLICATE</option>
-              <option value="REJECTED">REJECTED</option>
-              <option value="FAILED">FAILED</option>
-            </select>
-
-            {/* Depth Filter */}
-            <select
-              value={auditDepth}
-              onChange={(e) => {
-                setAuditDepth(e.target.value);
-                setAuditPage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value="all">All Depths</option>
-              <option value="0">Depth 0 (Seeds)</option>
-              <option value="1">Depth 1 (Citations)</option>
-              <option value="2+">Depth 2+ (Graph Outlinks)</option>
-            </select>
-
-            {/* Stage Filter */}
-            <select
-              value={auditStage}
-              onChange={(e) => {
-                setAuditStage(e.target.value);
-                setAuditPage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none max-w-[150px] truncate"
-            >
-              <option value="all">All Stages ({auditStages.length})</option>
-              {auditStages.map((st) => (
-                <option key={st} value={st}>
-                  {st.replace(/_/g, " ")}
-                </option>
-              ))}
-            </select>
-
-            {/* Publisher Filter */}
-            <select
-              value={auditPublisher}
-              onChange={(e) => {
-                setAuditPublisher(e.target.value);
-                setAuditPage(1);
-              }}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none max-w-[160px] truncate"
-            >
-              <option value="all">All Publishers ({auditPublishers.length})</option>
-              {auditPublishers.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-
+                  <option value="all">All outcomes</option>
+                  <option value="INGESTED">Ingested</option>
+                  <option value="AWAITING_APPROVAL">Awaiting approval</option>
+                  <option value="QUALIFIED">Qualified</option>
+                  <option value="DUPLICATE">Duplicate</option>
+                  <option value="REJECTED">Rejected</option>
+                  <option value="FAILED">Failed</option>
+                </FilterSelect>
+                <FilterSelect
+                  label="Depth"
+                  value={auditDepth}
+                  onChange={(v) => {
+                    setAuditDepth(v);
+                    setAuditPage(1);
+                  }}
+                >
+                  <option value="all">All depths</option>
+                  <option value="0">Depth 0 (seeds)</option>
+                  <option value="1">Depth 1 (citations)</option>
+                  <option value="2+">Depth 2+ (outlinks)</option>
+                </FilterSelect>
+                <FilterSelect
+                  label="Stage"
+                  value={auditStage}
+                  onChange={(v) => {
+                    setAuditStage(v);
+                    setAuditPage(1);
+                  }}
+                >
+                  <option value="all">All stages ({auditStages.length})</option>
+                  {auditStages.map((st) => (
+                    <option key={st} value={st}>
+                      {humanize(st)}
+                    </option>
+                  ))}
+                </FilterSelect>
+                <FilterSelect
+                  label="Publisher"
+                  value={auditPublisher}
+                  onChange={(v) => {
+                    setAuditPublisher(v);
+                    setAuditPage(1);
+                  }}
+                >
+                  <option value="all">All publishers ({auditPublishers.length})</option>
+                  {auditPublishers.map((pub) => (
+                    <option key={pub} value={pub}>
+                      {pub}
+                    </option>
+                  ))}
+                </FilterSelect>
+                {auditFiltersActive && (
+                  <ActionButton
+                    variant="ghost"
+                    icon={X}
+                    onClick={() => {
+                      setAuditSearch("");
+                      setAuditDecision("all");
+                      setAuditDepth("all");
+                      setAuditStage("all");
+                      setAuditPublisher("all");
+                      setAuditPage(1);
+                    }}
+                  >
+                    Reset
+                  </ActionButton>
+                )}
               </>
             }
             right={
-              <>
-            {/* Sort Order */}
-            <select
-              value={auditSort}
-              onChange={(e) => setAuditSort(e.target.value as any)}
-              className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-            >
-              <option value="newest">Newest First</option>
-              <option value="oldest">Oldest First</option>
-            </select>
-
-            {/* Reset Filters */}
-            {(auditSearch || auditDecision !== "all" || auditDepth !== "all" || auditStage !== "all" || auditPublisher !== "all") && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setAuditSearch("");
-                  setAuditDecision("all");
-                  setAuditDepth("all");
-                  setAuditStage("all");
-                  setAuditPublisher("all");
-                  setAuditPage(1);
-                }}
-                className="h-7 px-2 text-xs text-subtle hover:text-fg"
-              >
-                <X className="size-3 mr-1" />
-                Reset
-              </Button>
-            )}
-              </>
+              <FilterSelect label="Sort audit log" value={auditSort} onChange={(v) => setAuditSort(v as typeof auditSort)}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </FilterSelect>
             }
           />
-
           {isCrawlerLoading ? (
-            <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
-              <ActivitySpinner size="lg" className="text-accent mx-auto mb-3" />
-              <p className="text-sm font-medium text-fg">Loading Pipeline Audit Trail...</p>
-              <p className="mt-1 text-xs text-muted">Fetching multi-stage URL evaluations, content extractions, and ingestion verdicts from central database.</p>
-            </div>
-          ) : filteredAuditItems.length === 0 ? (
-            <div className="rounded-xl border border-border bg-bg-elevated py-12 text-center text-sm text-muted">
-              No audit log items match the selected filters.
-            </div>
+            loadingBlock("Loading the pipeline audit trail…")
           ) : (
-            <div className="space-y-4">
-              <div className="overflow-x-auto rounded-xl border border-border bg-bg-elevated">
-                <table className="w-full min-w-[850px] text-left text-xs">
-                  <thead className="border-b border-border bg-bg-subtle font-mono text-[10px] uppercase text-subtle">
-                    <tr>
-                      <th className="p-3">Decision</th>
-                      <th className="p-3">Pipeline Stage</th>
-                      <th className="p-3">Title / Canonical URL</th>
-                      <th className="p-3">Depth</th>
-                      <th className="p-3">Publisher</th>
-                      <th className="p-3">Diagnostic Reason</th>
-                      <th className="p-3">Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {pagedAuditItems.map((itm) => {
-                      const isPending = isItemAwaitingApproval(itm.stage, itm.decision);
-                      const outcomeMeta = formatOutcomeId(itm.decision, itm.id, itm.url);
-                      const prefix =
-                        itm.decision === "INGESTED"
-                          ? "ING"
-                          : itm.decision === "DUPLICATE"
-                            ? "DUP"
-                            : itm.decision === "REJECTED"
-                              ? "REJ"
-                              : itm.decision === "FAILED"
-                                ? "FAIL"
-                                : "DISC";
-
-                      return (
-                        <tr
-                          key={itm.id}
-                          className={cn(
-                            "transition-colors",
-                            isPending
-                              ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09] border-l-2 border-l-amber-400"
-                              : "hover:bg-bg-subtle/30",
-                          )}
-                        >
-                          <td className="p-3">
-                            <div className="flex flex-col items-start gap-1">
-                              <IdBadge
-                                id={formatAuditId(itm.id)}
-                                category="audit"
-                                size="xs"
-                                prefixLabel="AUD"
-                              />
-                              <IdBadge
-                                id={outcomeMeta.id}
-                                category={outcomeMeta.category}
-                                tone={outcomeMeta.tone}
-                                size="xs"
-                                label={itm.decision}
-                                prefixLabel={prefix}
-                              />
-                            </div>
-                          </td>
-                          <td className="p-3 font-mono text-[11px]">
-                            <span className="capitalize text-muted">{itm.stage || itm.decision.toLowerCase()}</span>
-                          </td>
-                          <td className="max-w-[240px] p-3">
-                            <div className="truncate font-medium text-fg">
-                              {itm.decision === "INGESTED" ? (
-                                <Link
-                                  to="/library"
-                                  search={{ selected: itm.canonicalUrl || itm.title }}
-                                  className="text-accent hover:underline"
-                                  title="View in Library"
-                                >
-                                  {itm.title || itm.canonicalUrl}
-                                </Link>
-                              ) : (
-                                itm.title || itm.canonicalUrl
-                              )}
-                            </div>
-                            <div className="truncate font-mono text-[10px] text-subtle">{itm.canonicalUrl}</div>
-                          </td>
-                          <td className="p-3 font-mono text-muted">
-                            Depth {itm.depth}
-                          </td>
-                          <td className="p-3">
-                            <div className="flex flex-col items-start gap-1">
-                              <span className="text-muted text-xs">{itm.publisher}</span>
-                              <IdBadge id={formatDomainId(itm.canonicalUrl)} category="domain" size="xs" />
-                            </div>
-                          </td>
-                          <td className="max-w-[300px] p-3 text-muted">
-                            <p className="line-clamp-2 text-[11px] leading-relaxed">{itm.reason}</p>
-                          </td>
-                          <td className="p-3 font-mono text-[10px] text-subtle">
-                            {formatDateTime(itm.createdAt)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <PaginationControls
-                currentPage={auditPage}
-                pageSize={auditPageSize}
-                totalItems={filteredAuditItems.length}
-                onPageChange={setAuditPage}
-                onPageSizeChange={setAuditPageSize}
-                itemLabel="audit log entries"
+            <>
+              <DataTable
+                data={pagedAuditItems}
+                columns={auditColumns}
+                getRowId={(i) => i.id}
+                isRowActive={(i) => isItemAwaitingApproval(i.stage, i.decision)}
+                caption="Pipeline audit log"
+                empty={<EmptyState icon={Activity} title="No audit entries" description={items.length ? "No entries match these filters." : "Entries appear once a crawl evaluates URLs."} />}
               />
-            </div>
+              {filteredAuditItems.length > 0 && (
+                <PaginationControls
+                  currentPage={auditPage}
+                  pageSize={auditPageSize}
+                  totalItems={filteredAuditItems.length}
+                  onPageChange={setAuditPage}
+                  onPageSizeChange={setAuditPageSize}
+                  itemLabel="entries"
+                />
+              )}
+            </>
           )}
-        </div>
+        </section>
       )}
 
       {/* VIEW 5: MANUAL INGEST */}
       {activeView === "manual" && (
-        <div className="mt-6 max-w-2xl space-y-6">
-          <div>
-            <h2 className="text-lg font-medium">Manual Report Acquisition</h2>
-            <p className="text-xs text-muted">Directly acquire and parse permalinks or paste raw incident telemetry.</p>
-          </div>
-
-          <div className="space-y-4 rounded-xl border border-border bg-bg-elevated p-5">
-            <div>
-              <label className="text-xs font-medium">Report Permalink URL</label>
-              <div className="mt-1.5 flex gap-2">
-                <Input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="text-xs"
-                />
-                <Button
-                  size="sm"
-                  disabled={manualIngest.isPending || !url.trim()}
-                  onClick={() => manualIngest.mutate({ url })}
-                  className="shrink-0 text-xs"
-                >
-                  Acquire & PDF
-                </Button>
-              </div>
-            </div>
-
-            <div className="relative border-t border-border pt-4">
-              <div className="absolute inset-x-0 -top-2 flex justify-center">
-                <span className="bg-bg-elevated px-2 font-mono text-[10px] uppercase text-subtle">OR</span>
-              </div>
-              <label className="text-xs font-medium">Paste Technical CTI Text / Advisory</label>
-              <Textarea
-                rows={6}
-                value={pasted}
-                onChange={(e) => setPasted(e.target.value)}
-                placeholder="Paste report text, malware analysis, or incident notes…"
-                className="mt-1.5 text-xs font-mono"
+        <div className="mt-6 grid max-w-3xl gap-6">
+          <SectionCard title="Ingest by URL" info="Fetches the page, extracts the report and generates a PDF copy.">
+            <form
+              className="flex flex-col gap-2 sm:flex-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (url.trim()) manualIngest.mutate({ url });
+              }}
+            >
+              <label htmlFor="ingest-url" className="sr-only">Report URL</label>
+              <Input
+                id="ingest-url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://…"
+                className="h-9 text-sm"
               />
-              <div className="mt-3 flex justify-end">
-                <Button
-                  size="sm"
-                  disabled={manualIngest.isPending || !pasted.trim()}
-                  onClick={() => manualIngest.mutate({ pastedText: pasted })}
-                  className="text-xs"
-                >
-                  Ingest Pasted Text
-                </Button>
-              </div>
+              <ActionButton type="submit" variant="primary" icon={Upload} disabled={manualIngest.isPending || !url.trim()}>
+                {manualIngest.isPending ? "Ingesting…" : "Ingest URL"}
+              </ActionButton>
+            </form>
+          </SectionCard>
+
+          <SectionCard title="Ingest pasted text">
+            <label htmlFor="ingest-text" className="mb-1.5 block text-sm text-muted">
+              Report text, malware analysis or incident notes
+            </label>
+            <Textarea
+              id="ingest-text"
+              rows={7}
+              value={pasted}
+              onChange={(e) => setPasted(e.target.value)}
+              placeholder="Paste the advisory or report text…"
+              className="font-mono text-xs"
+            />
+            <div className="mt-3 flex justify-end">
+              <ActionButton
+                disabled={manualIngest.isPending || !pasted.trim()}
+                onClick={() => manualIngest.mutate({ pastedText: pasted })}
+                icon={FileText}
+              >
+                Ingest text
+              </ActionButton>
             </div>
-          </div>
+          </SectionCard>
         </div>
       )}
 
       {/* VIEW 6: CURATED CATALOG */}
       {activeView === "catalog" && (
-        <div className="mt-6 space-y-4">
-          <div>
-            <h2 className="text-lg font-medium">Curated Golden CTI Reports Catalog</h2>
-            <p className="text-xs text-muted">
-              Pre-validated high-signal intrusion reports from DFIR, Mandiant, Unit 42, and CISA.
-            </p>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            {catalog.data?.map((c) => (
-              <div
-                key={c.url}
-                className="flex flex-col justify-between rounded-xl border border-border bg-bg-elevated p-5"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <Badge tone="neutral">{c.sourceName}</Badge>
+        <SectionCard
+          className="mt-6"
+          title="Curated catalog"
+          info="Pre-validated, high-signal intrusion reports from DFIR, Mandiant, Unit 42 and CISA."
+          bodyClassName="px-5 pb-2 pt-3"
+        >
+          {catalog.isLoading ? (
+            <div className="py-8 text-center text-sm text-muted">Loading catalog…</div>
+          ) : !catalog.data?.length ? (
+            <EmptyState icon={Database} title="The catalog is empty" />
+          ) : (
+            <ul className="divide-y divide-border">
+              {catalog.data.map((c) => (
+                <li key={c.url} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="font-medium text-fg">{c.title}</div>
+                    <p className="mt-0.5 text-sm text-muted">
+                      {c.sourceName} · {c.why}
+                    </p>
+                    <a
+                      href={c.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 flex items-center gap-1 text-xs text-subtle hover:text-fg"
+                    >
+                      <span className="truncate">{c.url}</span>
+                      <ExternalLink className="size-3 shrink-0" />
+                    </a>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
                     {c.alreadyIngested ? (
-                      <Badge tone="sage">Ingested & PDF Ready</Badge>
+                      <StatusChip tone="success" dot>Ingested</StatusChip>
                     ) : (
-                      <Badge tone="accent">Ready to Acquire</Badge>
+                      <ActionButton
+                        icon={Download}
+                        disabled={manualIngest.isPending}
+                        onClick={() => manualIngest.mutate({ url: c.url })}
+                      >
+                        Ingest
+                      </ActionButton>
                     )}
                   </div>
-                  <h3 className="mt-3 text-base font-medium">{c.title}</h3>
-                  <p className="mt-2 text-xs text-muted leading-relaxed">{c.why}</p>
-                  <a
-                    href={c.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 flex items-center gap-1 font-mono text-[11px] text-subtle hover:text-fg"
-                  >
-                    <span className="truncate">{c.url}</span>
-                    <ExternalLink className="size-3 shrink-0" />
-                  </a>
-                </div>
-
-                <div className="mt-4 border-t border-border pt-3">
-                  <Button
-                    size="sm"
-                    variant={c.alreadyIngested ? "secondary" : "primary"}
-                    disabled={manualIngest.isPending || c.alreadyIngested}
-                    onClick={() => manualIngest.mutate({ url: c.url })}
-                    className="w-full text-xs"
-                  >
-                    {c.alreadyIngested ? "Stored in Knowledge Base" : "One-Click Ingest & PDF"}
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </SectionCard>
       )}
     </AppShell>
   );
+}
+
+const PIPELINE_STEPS = [
+  { title: "Seed sources", body: "RSS feeds and permalinks from verified CTI publishers." },
+  { title: "Graph expansion", body: "Follows citations, whitepapers and GitHub repositories." },
+  { title: "Source discovery", body: "Scores domain trust and registers new sources." },
+  { title: "Qualification", body: "Checks attack chains, IOC density and ATT&CK coverage." },
+  { title: "Preservation", body: "Generates the PDF copy and stores the report." },
+];
+
+function queueTone(status?: string | null): Tone {
+  const s = (status || "").toLowerCase();
+  if (s === "ingested") return "success";
+  if (s === "qualified") return "info";
+  if (s === "duplicate") return "warning";
+  if (s === "rejected" || s === "failed") return "danger";
+  return "neutral";
+}
+
+function durationMs(start?: string | null, end?: string | null): number | null {
+  if (!start || !end) return null;
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  return Number.isFinite(ms) && ms >= 0 ? ms : null;
+}
+
+function formatDuration(ms: number | null, status?: string): string {
+  if (ms === null) return status === "running" ? "Running" : "—";
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+function sortedJobsByRecency<T extends { startedAt: string | null; completedAt: string | null }>(list: T[]): T[] {
+  return [...list].sort((a, b) => (b.completedAt || b.startedAt || "").localeCompare(a.completedAt || a.startedAt || ""));
 }
