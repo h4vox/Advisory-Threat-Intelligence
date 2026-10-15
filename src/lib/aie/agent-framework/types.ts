@@ -201,3 +201,57 @@ export interface AgentDriver {
    */
   reset(): Promise<{ success: boolean; error?: string }>;
 }
+
+export interface AgentModelOption {
+  id: string;
+  name: string;
+  description?: string;
+  family: "gemini" | "claude" | "gpt";
+  isFast?: boolean;
+}
+
+export const AGY_AVAILABLE_MODELS: AgentModelOption[] = [
+  { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", family: "gemini", isFast: true, description: "Default ultra-fast reasoning model (sub-2s responses)." },
+  { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", family: "gemini", description: "Balanced inference with standard reasoning effort." },
+  { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", family: "gemini", description: "High-effort Flash model for in-depth adversary analysis." },
+  { id: "gemini-3.7-flash-low", name: "Gemini 3.7 Flash (Low)", family: "gemini", isFast: true, description: "Fast, resilient threat data parsing." },
+  { id: "gemini-3.7-flash-medium", name: "Gemini 3.7 Flash (Medium)", family: "gemini", description: "Deep extraction of complex attack chains." },
+  { id: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)", family: "gemini", description: "Comprehensive MITRE ATT&CK technique mapping." },
+  { id: "gemini-3.6-flash-low", name: "Gemini 3.6 Flash (Low)", family: "gemini", isFast: true },
+  { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Medium)", family: "gemini" },
+  { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", family: "gemini" },
+  { id: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)", family: "gemini", description: "Pro reasoning tier with lower latency." },
+  { id: "gemini-3.1-pro-high", name: "Gemini 3.1 Pro (High)", family: "gemini", description: "Maximum depth reasoning for complex TTP reverse engineering." },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)", family: "claude", description: "Anthropic extended thinking architecture for TTP extraction." },
+  { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)", family: "claude", description: "High-capacity frontier model for deep campaign dossiers." },
+  { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", family: "gpt", description: "Open-weight frontier model running at medium effort." },
+];
+
+export const DEFAULT_AGY_MODEL = "gemini-3.8-flash-low";
+
+export function sanitizeAgyModel(model?: string | null): string {
+  if (!model) return DEFAULT_AGY_MODEL;
+  const clean = model.replace(/^AGY:\s*/i, "").trim().toLowerCase();
+
+  // Direct match in verified models
+  const direct = AGY_AVAILABLE_MODELS.find(
+    (m) => m.id.toLowerCase() === clean || m.name.toLowerCase() === clean
+  );
+  if (direct) return direct.id;
+
+  // Map legacy / deprecated identifiers
+  if (clean.includes("2.5") || clean.includes("1.5") || clean === "gemini-flash" || clean === "gemini-pro") {
+    return DEFAULT_AGY_MODEL;
+  }
+  if (clean.includes("claude-sonnet") || clean.includes("claude-3-7") || clean.includes("sonnet")) {
+    return "claude-sonnet-4-6";
+  }
+  if (clean.includes("claude-opus") || clean.includes("opus")) {
+    return "claude-opus-4-6-thinking";
+  }
+  if (clean.includes("gpt") || clean.includes("120b")) {
+    return "gpt-oss-120b-medium";
+  }
+
+  return DEFAULT_AGY_MODEL;
+}

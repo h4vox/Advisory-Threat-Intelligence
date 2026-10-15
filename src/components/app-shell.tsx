@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Bot, Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
+import { Bot, Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sparkles, Sun, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
 
@@ -24,6 +24,19 @@ function AieMark({ className }: { className?: string }) {
   );
 }
 
+function applyGlassBlurTokens(val: number) {
+  if (typeof document === "undefined") return;
+  const blurPx = Math.round(6 + (val / 100) * 36.0);
+  const opacityDark = (0.05 + (val / 100) * 0.16).toFixed(3);
+  const opacityLight = (0.50 + (val / 100) * 0.28).toFixed(3);
+  const specular = (0.22 + (val / 100) * 0.38).toFixed(3);
+  document.documentElement.style.setProperty("--glass-blur-ratio", `${val}%`);
+  document.documentElement.style.setProperty("--glass-blur", `${blurPx}px`);
+  document.documentElement.style.setProperty("--glass-opacity-dark", `${opacityDark}`);
+  document.documentElement.style.setProperty("--glass-opacity-light", `${opacityLight}`);
+  document.documentElement.style.setProperty("--glass-specular-opacity", `${specular}`);
+}
+
 export function AppShell({
   children,
   className,
@@ -35,6 +48,7 @@ export function AppShell({
 }) {
   const pathname = useRouterState({ select: (s) => s?.location?.pathname ?? "" }) ?? "";
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">("default");
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -47,6 +61,50 @@ export function AppShell({
     } else {
       document.documentElement.classList.remove("light");
     }
+
+    const savedStyle = (localStorage.getItem("aie_ui_style") as "default" | "liquid-glass" | null) || "default";
+    setUiStyle(savedStyle);
+    document.documentElement.setAttribute("data-style", savedStyle);
+    if (savedStyle === "liquid-glass") {
+      document.documentElement.classList.add("theme-liquid-glass");
+    } else {
+      document.documentElement.classList.remove("theme-liquid-glass");
+    }
+
+    // Restore glass blur ratio tokens
+    const savedRatio = localStorage.getItem("aie_glass_blur_ratio");
+    const ratioVal = savedRatio ? parseInt(savedRatio, 10) : 70;
+    if (!isNaN(ratioVal) && ratioVal >= 5 && ratioVal <= 110) {
+      applyGlassBlurTokens(ratioVal);
+    }
+
+    const handleStyleChange = () => {
+      const updatedStyle = (localStorage.getItem("aie_ui_style") as "default" | "liquid-glass" | null) || "default";
+      setUiStyle(updatedStyle);
+      document.documentElement.setAttribute("data-style", updatedStyle);
+      if (updatedStyle === "liquid-glass") {
+        document.documentElement.classList.add("theme-liquid-glass");
+        const currentRatio = localStorage.getItem("aie_glass_blur_ratio");
+        applyGlassBlurTokens(currentRatio ? parseInt(currentRatio, 10) : 70);
+      } else {
+        document.documentElement.classList.remove("theme-liquid-glass");
+      }
+    };
+
+    const handleRatioChange = () => {
+      const currentRatio = localStorage.getItem("aie_glass_blur_ratio");
+      if (currentRatio) {
+        const parsed = parseInt(currentRatio, 10);
+        if (!isNaN(parsed)) applyGlassBlurTokens(parsed);
+      }
+    };
+
+    window.addEventListener("aie-style-changed", handleStyleChange);
+    window.addEventListener("aie-glass-ratio-changed", handleRatioChange);
+    return () => {
+      window.removeEventListener("aie-style-changed", handleStyleChange);
+      window.removeEventListener("aie-glass-ratio-changed", handleRatioChange);
+    };
   }, []);
 
   const toggleTheme = () => {
@@ -59,12 +117,28 @@ export function AppShell({
     } else {
       document.documentElement.classList.remove("light");
     }
+    window.dispatchEvent(new Event("aie-theme-changed"));
+  };
+
+  const toggleUiStyle = () => {
+    const next = uiStyle === "liquid-glass" ? "default" : "liquid-glass";
+    setUiStyle(next);
+    localStorage.setItem("aie_ui_style", next);
+    document.documentElement.setAttribute("data-style", next);
+    if (next === "liquid-glass") {
+      document.documentElement.classList.add("theme-liquid-glass");
+      const currentRatio = localStorage.getItem("aie_glass_blur_ratio");
+      applyGlassBlurTokens(currentRatio ? parseInt(currentRatio, 10) : 75);
+    } else {
+      document.documentElement.classList.remove("theme-liquid-glass");
+    }
+    window.dispatchEvent(new Event("aie-style-changed"));
   };
 
   return (
-    <div className="h-dvh w-full overflow-hidden flex bg-bg text-fg">
+    <div className={cn("h-dvh w-full overflow-hidden flex text-fg app-shell-root", uiStyle === "liquid-glass" ? "bg-transparent" : "bg-bg")}>
       {/* 100% STATIC DESKTOP SIDEBAR: Never moves or shifts during page scrolling */}
-      <aside className="hidden md:flex h-full w-56 shrink-0 flex-col border-r border-border bg-bg px-4 py-6 overflow-y-auto select-none">
+      <aside className={cn("hidden md:flex h-full w-56 shrink-0 flex-col border-r border-border px-4 py-6 overflow-y-auto select-none", uiStyle === "liquid-glass" ? "bg-bg/80 backdrop-blur-xl" : "bg-bg")}>
         <div className="mb-8 flex items-center gap-2.5 px-1">
           <AieMark className="size-8 text-accent" />
           <div>
@@ -101,7 +175,7 @@ export function AppShell({
       {/* Main Content Column: Strictly fills remaining screen with static header and scrollable body */}
       <div className="flex min-w-0 flex-1 flex-col h-full overflow-hidden">
         {/* 100% STATIC TOP HEADER: Fixed in place, never scrolls away or jitters */}
-        <header className="shrink-0 z-30 flex items-center justify-between border-b border-border bg-bg px-4 py-3 md:px-8">
+        <header className={cn("shrink-0 z-30 flex items-center justify-between border-b border-border px-4 py-3 md:px-8", uiStyle === "liquid-glass" ? "bg-bg/75 backdrop-blur-xl" : "bg-bg")}>
           <div className="flex items-center gap-2 md:hidden">
             <AieMark className="size-7 text-accent" />
             <span className="text-sm font-medium">AIE</span>

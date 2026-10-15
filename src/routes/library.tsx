@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports, auditLibraryWithAi, evaluateReportWithAi } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
@@ -227,13 +228,6 @@ function LibraryPage() {
   const [pageSize, setPageSize] = useState<number | "all">(20);
 
   const targetHighlightId = searchParams.selected || searchParams.highlight;
-
-  // Sync URL if pdf parameter arrives or changes
-  useEffect(() => {
-    if (searchParams.pdf && searchParams.pdf !== previewReportId) {
-      setPreviewReportId(searchParams.pdf);
-    }
-  }, [searchParams.pdf]);
 
   const openPdfModal = (id: string) => {
     setPreviewReportId(id);
@@ -491,6 +485,15 @@ function LibraryPage() {
     return null;
   }, [targetHighlightId, allReports]);
 
+  // Sync URL if pdf parameter arrives or changes, or if selected report is specified
+  useEffect(() => {
+    if (searchParams.pdf && searchParams.pdf !== previewReportId) {
+      setPreviewReportId(searchParams.pdf);
+    } else if (searchParams.selected && !previewReportId && targetReport) {
+      setPreviewReportId(targetReport.id);
+    }
+  }, [searchParams.pdf, searchParams.selected, targetReport, previewReportId]);
+
   // Jump and highlight tracking effect with retry polling until rendered in DOM
   useEffect(() => {
     if (!targetHighlightId) return;
@@ -550,14 +553,15 @@ function LibraryPage() {
 
   // Filter and sort reports
   const filteredReports = useMemo(() => {
+    // Direct Item Selector: If a specific resource is requested via ?selected=..., isolate directly to only that exact resource
+    if (searchParams.selected) {
+      return targetReport ? [targetReport] : [];
+    }
+
     const query = q.trim().toLowerCase();
 
     const list = activeReportsPool
       .filter((r) => {
-        // Targeted Jump: Always show the target item being tracked from /ingest or matrix
-        if (targetReport && r.id === targetReport.id) {
-          return true;
-        }
 
         // If viewing rejected, show ONLY records flagged/rejected by AI quality audit
         if (sortBy === "rejected") {
@@ -667,6 +671,7 @@ function LibraryPage() {
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
+    if (searchParams.selected) count++;
     if (selectedTag !== "ALL") count++;
     if (selectedActor !== "ALL") count++;
     if (selectedMalware !== "ALL") count++;
@@ -675,7 +680,7 @@ function LibraryPage() {
     if (minQuality > 0) count++;
     if (onlyWithIocs) count++;
     return count;
-  }, [selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
+  }, [searchParams.selected, selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
 
   // Reset pagination to page 1 on filter changes
   useEffect(() => {
@@ -732,6 +737,16 @@ function LibraryPage() {
     setMinQuality(0);
     setOnlyWithIocs(false);
     setQ("");
+    if (searchParams.selected || searchParams.highlight) {
+      void navigate({
+        search: (prev) => {
+          const next = { ...prev };
+          delete (next as any).selected;
+          delete (next as any).highlight;
+          return next;
+        },
+      });
+    }
   };
 
   const { data: previewData, isLoading: isPreviewLoading, isError: isPreviewError, refetch: refetchPreview } = useQuery({
@@ -1052,6 +1067,31 @@ function LibraryPage() {
       {activeFiltersCount > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-mono text-muted mr-1">Active filters:</span>
+          {searchParams.selected && (
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 text-xs font-mono font-medium shadow-xs">
+              <span className="truncate max-w-[280px]">
+                Selected: {targetReport ? targetReport.title : searchParams.selected}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigate({
+                    search: (prev) => {
+                      const next = { ...prev };
+                      delete (next as any).selected;
+                      delete (next as any).highlight;
+                      delete (next as any).pdf;
+                      return next;
+                    },
+                  });
+                }}
+                className="hover:opacity-75 cursor-pointer"
+                title="Remove selection filter"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          )}
           {selectedTag !== "ALL" && (
             <span className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent border border-accent/20 px-2 py-0.5 text-xs font-mono">
               Tag: {selectedTag}
@@ -1111,9 +1151,41 @@ function LibraryPage() {
           <button
             type="button"
             onClick={resetFilters}
-            className="text-[11px] text-subtle hover:text-fg underline ml-2"
+            className="text-[11px] text-subtle hover:text-fg underline ml-2 cursor-pointer"
           >
             Clear all
+          </button>
+        </div>
+      )}
+
+      {/* Selected Resource Isolation Banner */}
+      {searchParams.selected && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-accent/10 border border-accent/30 text-xs text-accent shadow-xs">
+          <div className="flex items-center gap-2">
+            <FileText className="size-4 shrink-0 text-accent" />
+            <span>
+              Showing isolated report:{" "}
+              <strong className="text-fg font-semibold">
+                {targetReport ? targetReport.title : searchParams.selected}
+              </strong>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              void navigate({
+                search: (prev) => {
+                  const next = { ...prev };
+                  delete (next as any).selected;
+                  delete (next as any).highlight;
+                  delete (next as any).pdf;
+                  return next;
+                },
+              });
+            }}
+            className="text-xs font-mono font-medium underline hover:text-accent/80 cursor-pointer"
+          >
+            Show All Reports (Exit Isolation) →
           </button>
         </div>
       )}
@@ -1146,11 +1218,59 @@ function LibraryPage() {
         )}
       </div>
 
+      {/* Direct Item Selector Banner */}
+      {targetReport && (
+        <div className="mt-4 p-3.5 rounded-xl border border-accent/40 bg-accent/10 card-liquid-glass flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in-0 duration-150">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="p-1.5 rounded-lg bg-accent/20 text-accent shrink-0">
+              <CheckCircle2 className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono uppercase text-accent font-semibold tracking-wider">
+                  Direct Resource Selector Active
+                </span>
+                <Badge className="bg-accent/20 text-accent border border-accent/30 text-[9px] font-mono">
+                  {formatReportId(targetReport.id)}
+                </Badge>
+              </div>
+              <p className="text-xs text-fg font-medium truncate">{targetReport.title}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => openPdfModal(targetReport.id)}
+              className="px-2.5 py-1 text-xs rounded-lg bg-accent text-accent-fg font-medium hover:scale-[1.02] transition-all cursor-pointer shadow-xs"
+            >
+              Open Document Preview
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void navigate({
+                  search: (prev) => {
+                    const next = { ...prev };
+                    delete next.selected;
+                    delete next.highlight;
+                    return next;
+                  },
+                  replace: true,
+                });
+              }}
+              className="px-2.5 py-1 text-xs rounded-lg border border-border bg-bg-elevated hover:bg-bg-subtle text-muted hover:text-fg transition-all cursor-pointer"
+            >
+              Clear Selection (View All {allReports.length})
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Reports Grid */}
       <div className="mt-4 grid gap-3">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted">
-            <RefreshCw className="size-6 animate-spin text-accent mb-2" />
+            <ActivitySpinner size="lg" className="text-accent mb-2" />
             <p className="text-sm">Querying Central Intelligence Store…</p>
           </div>
         ) : null}
@@ -1539,8 +1659,9 @@ function LibraryPage() {
             {/* Modal Body / Document Preview */}
             <div className="flex-1 overflow-hidden bg-neutral-900">
               {isPreviewLoading ? (
-                <div className="flex h-full items-center justify-center text-muted text-sm">
-                  Loading high-fidelity PDF document representation...
+                <div className="flex h-full flex-col items-center justify-center text-muted text-sm gap-2">
+                  <ActivitySpinner size="lg" className="text-accent" />
+                  <span>Loading high-fidelity PDF document representation...</span>
                 </div>
               ) : isPreviewError || (previewData && !previewData.ok) ? (
                 <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">

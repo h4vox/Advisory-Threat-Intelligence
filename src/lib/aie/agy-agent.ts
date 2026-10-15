@@ -16,6 +16,8 @@ import { spawn, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { ResourceClassification } from "./qualification";
 import type { ResourceKind, AgentScoreBreakdown } from "./types";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "./agent-framework/types";
+import { warmAgentService } from "./warm-agent-service";
 
 export type DiscoveredAgentSource = {
   source_name: string;
@@ -213,30 +215,37 @@ function isSandboxContainerActive(): boolean {
  * Resolve the CLI command & arguments based on sandbox container and OS platform
  */
 function getAgyCommandArgs(args: string[]): { command: string; finalArgs: string[] } {
+  const sanitizedArgs = [...args];
+  for (let i = 0; i < sanitizedArgs.length; i++) {
+    if (sanitizedArgs[i] === "--model" && sanitizedArgs[i + 1]) {
+      sanitizedArgs[i + 1] = sanitizeAgyModel(sanitizedArgs[i + 1]);
+    }
+  }
+
   if (isSandboxContainerActive()) {
     return {
       command: "docker",
-      finalArgs: ["exec", "-i", "aie-agent-sandbox", "agy", ...args],
+      finalArgs: ["exec", "-i", "aie-agent-sandbox", "agy", ...sanitizedArgs],
     };
   }
 
   if (existsSync("/home/havox/.local/bin/agy")) {
     return {
       command: "/home/havox/.local/bin/agy",
-      finalArgs: args,
+      finalArgs: sanitizedArgs,
     };
   }
 
   if (process.platform === "win32") {
     return {
       command: "wsl.exe",
-      finalArgs: ["-e", "/home/havox/.local/bin/agy", ...args],
+      finalArgs: ["-e", "/home/havox/.local/bin/agy", ...sanitizedArgs],
     };
   }
 
   return {
     command: "agy",
-    finalArgs: args,
+    finalArgs: sanitizedArgs,
   };
 }
 
@@ -244,8 +253,14 @@ function getAgyCommandArgs(args: string[]): { command: string; finalArgs: string
  * Execute agy CLI command with strict timeout and output capturing
  */
 function runAgyCli(args: string[], timeoutMs = 60000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  const effectiveArgs = [...args];
+  const convId = warmAgentService.getConversationId();
+  if (convId && !effectiveArgs.includes("--conversation") && !effectiveArgs.includes("--continue")) {
+    effectiveArgs.push("--conversation", convId);
+  }
+
   return new Promise((resolve, reject) => {
-    const { command, finalArgs } = getAgyCommandArgs(args);
+    const { command, finalArgs } = getAgyCommandArgs(effectiveArgs);
     let proc: any = null;
     let stdout = "";
     let stderr = "";
@@ -332,7 +347,42 @@ function extractJsonPayload(text: string): any {
     clean = clean.slice(start, end + 1);
   }
 
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch {
+    // Resilient fallback: sanitize smart quotes, trailing commas, unescaped characters
+    try {
+      const sanitized = clean
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/,\s*([\]}])/g, "$1")
+        .replace(/[\r\n\t]+/g, " ");
+      return JSON.parse(sanitized);
+    } catch {
+      // Regex recovery of structured fields to prevent crashes
+      const result: any = {};
+      const boolMatch = clean.match(/"isRelevant"\s*:\s*(true|false)/i);
+      if (boolMatch) result.isRelevant = boolMatch[1].toLowerCase() === "true";
+      const scoreMatch = clean.match(/"passScore"\s*:\s*(\d+)/i);
+      if (scoreMatch) result.passScore = parseInt(scoreMatch[1], 10);
+      const classMatch = clean.match(/"classification"\s*:\s*"([^"]+)"/i);
+      if (classMatch) result.classification = classMatch[1];
+      const kindMatch = clean.match(/"resourceKind"\s*:\s*"([^"]+)"/i);
+      if (kindMatch) result.resourceKind = kindMatch[1];
+      const ratMatch = clean.match(/"rationale"\s*:\s*"([^"]+)"/i);
+      if (ratMatch) result.rationale = ratMatch[1];
+
+      const cves = Array.from(clean.matchAll(/\bCVE-\d{4}-\d{4,7}\b/gi)).map((m) => m[0].toUpperCase());
+      if (cves.length > 0) result.cves = Array.from(new Set(cves));
+      const ttps = Array.from(clean.matchAll(/\bT\d{4}(?:\.\d{3})?\b/gi)).map((m) => m[0].toUpperCase());
+      if (ttps.length > 0) result.mitreTechniques = Array.from(new Set(ttps));
+
+      if (Object.keys(result).length > 0) {
+        return result;
+      }
+      return JSON.parse(clean);
+    }
+  }
 }
 
 /**
@@ -375,7 +425,7 @@ export async function discoverAgentSources(options: {
 }> {
   const limit = Math.min(Math.max(options.limit ?? 6, 1), 20);
   const timeoutSec = options.timeoutSeconds ?? 90;
-  const model = options.model || "gemini-2.5-flash";
+  const model = sanitizeAgyModel(options.model);
   const knownDomains = options.existingDomains || [];
 
   const knownListSnippet =
@@ -424,29 +474,78 @@ Return pure, valid JSON with this exact structure:
 Return pure JSON only. No markdown fences.`;
 
   try {
-    const res = await runAgyCli(
-      [
-        "--print",
-        prompt,
-        "--output-format",
-        "json",
-        "--model",
+    let outputText = "";
+    try {
+      const warmRes = await warmAgentService.executeSkill({
+        skill: "SOURCE_HARVESTER",
+        payload: `Discover exactly ${limit} new, distinct technical threat intelligence sources or research lab endpoints.`,
+        context: knownDomains.length > 0 ? knownDomains.slice(0, 60).map((d) => `- ${d}`).join("\n") : undefined,
         model,
-        "--dangerously-skip-permissions",
-        "--print-timeout",
-        `${timeoutSec}s`,
-      ],
-      (timeoutSec + 15) * 1000,
-    );
+        timeoutMs: timeoutSec * 1000,
+      });
+      if (warmRes.success && warmRes.text) {
+        outputText = warmRes.text;
+      }
+    } catch {}
 
-    if (res.code !== 0 && !res.stdout) {
-      return {
-        sources: [],
-        error: `Agent exited with code ${res.code}: ${res.stderr.slice(0, 200)}`,
-      };
+    if (!outputText) {
+      const res = await runAgyCli(
+        [
+          "--print",
+          prompt,
+          "--output-format",
+          "json",
+          "--model",
+          model,
+          "--dangerously-skip-permissions",
+          "--print-timeout",
+          `${timeoutSec}s`,
+        ],
+        (timeoutSec + 15) * 1000,
+      );
+
+      if (res.code !== 0 && !res.stdout) {
+        if (
+          model !== DEFAULT_AGY_MODEL &&
+          (res.stderr.toLowerCase().includes("quota") ||
+            res.stderr.toLowerCase().includes("subscription") ||
+            res.code === 3)
+        ) {
+          console.warn(`[crawler] Model ${model} exceeded quota, retrying discovery with ${DEFAULT_AGY_MODEL}...`);
+          const retryRes = await runAgyCli(
+            [
+              "--print",
+              prompt,
+              "--output-format",
+              "json",
+              "--model",
+              DEFAULT_AGY_MODEL,
+              "--dangerously-skip-permissions",
+              "--print-timeout",
+              `${timeoutSec}s`,
+            ],
+            (timeoutSec + 15) * 1000,
+          );
+          if (retryRes.code === 0 && retryRes.stdout) {
+            outputText = retryRes.stdout;
+          } else {
+            return {
+              sources: [],
+              error: `Agent exited with code ${res.code}: ${res.stderr.slice(0, 200)}`,
+            };
+          }
+        } else {
+          return {
+            sources: [],
+            error: `Agent exited with code ${res.code}: ${res.stderr.slice(0, 200)}`,
+          };
+        }
+      } else {
+        outputText = res.stdout;
+      }
     }
 
-    const payload = extractJsonPayload(res.stdout);
+    const payload = extractJsonPayload(outputText);
     const rawList: any[] = Array.isArray(payload)
       ? payload
       : Array.isArray(payload?.sources)
@@ -545,7 +644,7 @@ export async function discoverDomainResourcesWithAgent(options: {
   timeoutSeconds?: number;
 }): Promise<DomainResourceHarvestResult> {
   const timeoutSec = options.timeoutSeconds ?? 60;
-  const model = options.model || "gemini-2.5-flash";
+  const model = sanitizeAgyModel(options.model);
   const domain = options.domain.toLowerCase().replace(/^www\./, "");
   const baseUrl = options.baseUrl.startsWith("http") ? options.baseUrl : `https://${domain}`;
 
@@ -577,23 +676,43 @@ Return pure JSON with this exact structure:
 Return pure JSON only.`;
 
   try {
-    const res = await runAgyCli(
-      [
-        "--print",
-        prompt,
-        "--output-format",
-        "json",
-        "--model",
+    let outputText = "";
+    try {
+      const warmRes = await warmAgentService.executeSkill({
+        skill: "DOMAIN_HARVESTER",
+        payload: `${domain} (base: ${baseUrl})`,
+        context: (options.htmlSnippet || "").slice(0, 2500),
         model,
-        "--dangerously-skip-permissions",
-        "--print-timeout",
-        `${timeoutSec}s`,
-      ],
-      (timeoutSec + 15) * 1000,
-    );
+        timeoutMs: timeoutSec * 1000,
+      });
+      if (warmRes.success && warmRes.text) {
+        outputText = warmRes.text;
+      }
+    } catch {}
 
-    if (res.code === 0 && res.stdout) {
-      const parsed = extractJsonPayload(res.stdout);
+    if (!outputText) {
+      const res = await runAgyCli(
+        [
+          "--print",
+          prompt,
+          "--output-format",
+          "json",
+          "--model",
+          model,
+          "--dangerously-skip-permissions",
+          "--print-timeout",
+          `${timeoutSec}s`,
+        ],
+        (timeoutSec + 15) * 1000,
+      );
+
+      if (res.code === 0 && res.stdout) {
+        outputText = res.stdout;
+      }
+    }
+
+    if (outputText) {
+      const parsed = extractJsonPayload(outputText);
       const rawList = Array.isArray(parsed)
         ? parsed
         : Array.isArray(parsed?.resources)
@@ -714,7 +833,7 @@ export async function evaluateResourceWithAgent(options: {
   model?: string;
 }): Promise<AgentEvaluationResult> {
   const timeoutSec = options.timeoutSeconds ?? 45;
-  const model = options.model || "gemini-2.5-flash";
+  const model = sanitizeAgyModel(options.model);
   const textSnippet = options.text.slice(0, 4500);
 
   const prompt = `You are the Senior Threat Intelligence Analysis & Adversary Emulation Evaluation Agent operating under the domain-resource-discovery-intel skill.
@@ -780,40 +899,100 @@ Return pure JSON matching this exact schema:
 Return pure JSON only.`;
 
   try {
-    const res = await runAgyCli(
-      [
-        "--print",
-        prompt,
-        "--output-format",
-        "json",
-        "--model",
+    let outputText = "";
+    const qualifierPayload = `TITLE: ${options.title}\nURL: ${options.url}\nCONTENT SNIPPET:\n${textSnippet}`;
+    try {
+      const warmRes = await warmAgentService.executeSkill({
+        skill: "REPORT_QUALIFIER",
+        payload: qualifierPayload,
         model,
-        "--dangerously-skip-permissions",
-        "--print-timeout",
-        `${timeoutSec}s`,
-      ],
-      (timeoutSec + 15) * 1000,
-    );
+        timeoutMs: timeoutSec * 1000,
+      });
+      if (warmRes.success && warmRes.text) {
+        outputText = warmRes.text;
+      }
+    } catch {}
 
-    if (res.code !== 0 && !res.stdout) {
-      return {
-        success: false,
-        fallback: true,
-        isRelevant: false,
-        passScore: 0,
-        recommendApproval: false,
-        classification: "OTHER",
-        resourceKind: "CAMPAIGN_INTEL",
-        threatActors: [],
-        malwareFamilies: [],
-        cves: [],
-        mitreTechniques: [],
-        rationale: "Agent process failed or returned empty output",
-        error: res.stderr.slice(0, 200),
-      };
+    if (!outputText) {
+      const res = await runAgyCli(
+        [
+          "--print",
+          prompt,
+          "--output-format",
+          "json",
+          "--model",
+          model,
+          "--dangerously-skip-permissions",
+          "--print-timeout",
+          `${timeoutSec}s`,
+        ],
+        (timeoutSec + 15) * 1000,
+      );
+
+      if (res.code !== 0 && !res.stdout) {
+        if (
+          model !== DEFAULT_AGY_MODEL &&
+          (res.stderr.toLowerCase().includes("quota") ||
+            res.stderr.toLowerCase().includes("subscription") ||
+            res.code === 3)
+        ) {
+          console.warn(`[crawler] Model ${model} exceeded quota, retrying evaluation with ${DEFAULT_AGY_MODEL}...`);
+          const retryRes = await runAgyCli(
+            [
+              "--print",
+              prompt,
+              "--output-format",
+              "json",
+              "--model",
+              DEFAULT_AGY_MODEL,
+              "--dangerously-skip-permissions",
+              "--print-timeout",
+              `${timeoutSec}s`,
+            ],
+            (timeoutSec + 15) * 1000,
+          );
+          if (retryRes.code === 0 && retryRes.stdout) {
+            outputText = retryRes.stdout;
+          } else {
+            return {
+              success: false,
+              fallback: true,
+              isRelevant: false,
+              passScore: 0,
+              recommendApproval: false,
+              classification: "OTHER",
+              resourceKind: "CAMPAIGN_INTEL",
+              threatActors: [],
+              malwareFamilies: [],
+              cves: [],
+              mitreTechniques: [],
+              rationale: "Agent process failed or returned empty output",
+              error: res.stderr.slice(0, 200),
+            };
+          }
+        } else {
+          return {
+            success: false,
+            fallback: true,
+            isRelevant: false,
+            passScore: 0,
+            recommendApproval: false,
+            classification: "OTHER",
+            resourceKind: "CAMPAIGN_INTEL",
+            threatActors: [],
+            malwareFamilies: [],
+            cves: [],
+            mitreTechniques: [],
+            rationale: "Agent process failed or returned empty output",
+            error: res.stderr.slice(0, 200),
+          };
+        }
+      } else {
+        outputText = res.stdout;
+      }
     }
 
-    const parsed = extractJsonPayload(res.stdout);
+    const parsed = extractJsonPayload(outputText);
 
     // Validate classification against crawler taxonomy
     let classification: ResourceClassification = "OTHER";

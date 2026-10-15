@@ -49,6 +49,7 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { Input, Textarea } from "@/components/ui/input";
 import { IdBadge } from "@/components/id-badge";
 import {
@@ -912,7 +913,7 @@ function IngestPage() {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3">
                   <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10">
-                    <RefreshCw className="size-4 animate-spin text-accent" />
+                    <ActivitySpinner size="sm" className="text-accent" />
                     <span className="absolute -top-1 -right-1 size-2 rounded-full bg-accent animate-ping" />
                   </div>
                   <div>
@@ -949,7 +950,7 @@ function IngestPage() {
                     className="border-danger/40 text-danger hover:bg-danger/10 hover:border-danger text-xs font-mono h-7.5 px-2.5 cursor-pointer"
                   >
                     {cancelCrawl.isPending ? (
-                      <RefreshCw className="size-3 animate-spin mr-1.5" />
+                      <ActivitySpinner size="xs" className="mr-1.5" />
                     ) : (
                       <Square className="size-3 mr-1.5 fill-danger/30" />
                     )}
@@ -1330,7 +1331,7 @@ function IngestPage() {
 
             {isCrawlerLoading ? (
               <div className="py-10 text-center">
-                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
                 <p className="text-xs text-muted">Retrieving crawl jobs execution history from database...</p>
               </div>
             ) : filteredJobs.length === 0 ? (
@@ -1609,7 +1610,7 @@ function IngestPage() {
 
           {isCrawlerLoading ? (
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
-              <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
+              <ActivitySpinner size="lg" className="text-accent mx-auto mb-3" />
               <p className="text-sm font-medium text-fg">Synchronizing Discovery Queue...</p>
               <p className="mt-1 text-xs text-muted">Retrieving candidate URLs, qualification scores, and triage status from central database.</p>
             </div>
@@ -1643,7 +1644,7 @@ function IngestPage() {
                     >
                       {batchIngestMutation.isPending ? (
                         <>
-                          <RefreshCw className="size-3.5 animate-spin text-bg" />
+                          <ActivitySpinner size="xs" className="text-bg mr-1.5" />
                           <span>Batch Ingesting...</span>
                         </>
                       ) : (
@@ -1663,7 +1664,7 @@ function IngestPage() {
                     >
                       {batchRejectMutation.isPending ? (
                         <>
-                          <RefreshCw className="size-3.5 animate-spin" />
+                          <ActivitySpinner size="xs" className="mr-1.5" />
                           <span>Rejecting...</span>
                         </>
                       ) : (
@@ -1923,7 +1924,7 @@ function IngestPage() {
                             >
                               {ingestQueueItem.isPending && ingestingId === res.id ? (
                                 <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                                  <RefreshCw className="size-3 animate-spin text-accent shrink-0" />
+                                  <ActivitySpinner size="xs" className="text-accent shrink-0" />
                                   <span>Acquiring…</span>
                                 </span>
                               ) : (
@@ -2037,7 +2038,7 @@ function IngestPage() {
 
             {isCrawlerLoading ? (
               <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
-                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
                 <p className="text-xs text-muted">Analyzing outlink graph and discovered CTI domain authorities...</p>
               </div>
             ) : filteredSources.length === 0 ? (
@@ -2179,7 +2180,7 @@ function IngestPage() {
 
             {isCrawlerLoading ? (
               <div className="rounded-xl border border-border/60 bg-bg p-8 text-center">
-                <RefreshCw className="size-5 text-accent animate-spin mx-auto mb-2" />
+                <ActivitySpinner size="md" className="text-accent mx-auto mb-2" />
                 <p className="text-xs text-muted">Mapping citation relationships and threat intelligence links...</p>
               </div>
             ) : filteredEdges.length === 0 ? (
@@ -2406,7 +2407,7 @@ function IngestPage() {
 
           {isCrawlerLoading ? (
             <div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
-              <RefreshCw className="size-6 text-accent animate-spin mx-auto mb-3" />
+              <ActivitySpinner size="lg" className="text-accent mx-auto mb-3" />
               <p className="text-sm font-medium text-fg">Loading Pipeline Audit Trail...</p>
               <p className="mt-1 text-xs text-muted">Fetching multi-stage URL evaluations, content extractions, and ingestion verdicts from central database.</p>
             </div>

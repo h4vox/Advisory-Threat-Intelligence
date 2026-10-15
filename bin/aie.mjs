@@ -31,7 +31,7 @@ function generateAgyOAuthUrl() {
 
   const params = new URLSearchParams({
     access_type: "offline",
-    client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+    client_id: process.env.AGY_CLIENT_ID || "",
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     prompt: "consent",

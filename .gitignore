@@ -45,6 +45,8 @@ lerna-debug.log*
 .grok/status
 .grok/og-pending
 .grok/*.tmp
+.grok/preview.pid
+.agy_conversation_id
 
 # OS & Filesystem Metadata
 .DS_Store

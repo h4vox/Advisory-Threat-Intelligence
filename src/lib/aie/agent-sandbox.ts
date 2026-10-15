@@ -346,6 +346,30 @@ export function injectContainerOAuthToken(tokenData: any): { success: boolean; m
   }
 }
 
+export function autoSyncTokenFromHostIfAvailable(): boolean {
+  try {
+    const hostPath = "/home/havox/.gemini/antigravity-cli/antigravity-oauth-token";
+    if (!existsSync(hostPath)) return false;
+    const content = readFileSync(hostPath, "utf-8");
+    if (!content || content.length < 50) return false;
+
+    try {
+      const containerContent = execSync(
+        `docker exec ${CONTAINER_NAME} cat /root/.gemini/antigravity-cli/antigravity-oauth-token 2>/dev/null`,
+        { encoding: "utf-8", timeout: 3000 }
+      ).trim();
+      if (containerContent === content.trim()) {
+        return true;
+      }
+    } catch {}
+
+    injectContainerOAuthToken(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function checkContainerOAuthToken(): {
   exists: boolean;
   tokenPreview?: string;
@@ -353,6 +377,7 @@ export function checkContainerOAuthToken(): {
   hasRefreshToken?: boolean;
 } {
   try {
+    autoSyncTokenFromHostIfAvailable();
     const out = execSync(
       `docker exec ${CONTAINER_NAME} cat /root/.gemini/antigravity-cli/antigravity-oauth-token`,
       {

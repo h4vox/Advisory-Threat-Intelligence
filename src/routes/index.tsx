@@ -34,6 +34,7 @@ import { useState, useRef } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
@@ -1027,7 +1028,12 @@ function Home() {
               </Link>
             </div>
             <div className="divide-y divide-border rounded-xl border border-border bg-bg-elevated shadow-xs">
-              {isLoading && <p className="p-5 text-sm text-muted">Loading intelligence store…</p>}
+              {isLoading && (
+                <div className="flex flex-col items-center justify-center py-10 text-muted">
+                  <ActivitySpinner size="md" className="text-accent mb-2" />
+                  <p className="text-xs">Loading intelligence store…</p>
+                </div>
+              )}
               {data?.recent.map((r) => (
                 <Link
                   key={r.id}

@@ -34,6 +34,7 @@ import type {
 } from "./types";
 import { getSql, type Sql } from "@/lib/db";
 import { logger } from "./logger";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "./agent-framework/types";
 import { getThreatIntelCollection, isMongoConfigured } from "../mongodb/client.server";
 import {
   mongoFindReportByCanonical,
@@ -313,7 +314,7 @@ export async function executeCrawlJob(
         logger.agent(
           "DISCOVERY",
           "Launching autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...",
-          { model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(), timeout: `${config.agentTimeoutSeconds || 45}s` }
+          { model: sanitizeAgyModel(config.agentModel), timeout: `${config.agentTimeoutSeconds || 45}s` }
         );
         console.log(`[crawler] [AI AGENT] Running autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...`);
 
@@ -332,12 +333,27 @@ export async function executeCrawlJob(
           }
         } catch {}
 
-        const agentResult = await runUnifiedSourceDiscovery({
-          limit: 4,
-          existingDomains: Array.from(new Set(knownDomains)),
-          model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
-          timeoutSeconds: config.agentTimeoutSeconds || 45,
-        });
+        const agentResult = await Promise.race([
+          runUnifiedSourceDiscovery({
+            limit: 4,
+            existingDomains: Array.from(new Set(knownDomains)),
+            model: sanitizeAgyModel(config.agentModel),
+            timeoutSeconds: config.agentTimeoutSeconds || 45,
+          }),
+          new Promise<Awaited<ReturnType<typeof runUnifiedSourceDiscovery>>>((resolve) =>
+            setTimeout(() => {
+              console.warn("[crawler] AI Agent source discovery reached safety timeout, proceeding with core crawler sources");
+              resolve({
+                success: false,
+                fallback: true,
+                providerId: "safety_timeout",
+                providerName: "Crawler Safety Watchdog",
+                sources: [],
+                error: "Discovery safety timeout exceeded",
+              });
+            }, (Math.min(config.agentTimeoutSeconds || 45, 60) + 10) * 1000)
+          ),
+        ]);
 
         if (agentResult.sources && agentResult.sources.length > 0) {
           logger.agent(
@@ -688,8 +704,8 @@ export async function executeCrawlJob(
                 });
               }
 
-              // Coordinated Domain Harvesting: Extract all technical report permalinks for this seed source domain
-              if (config.agentDiscoveryEnabled !== false && html) {
+              // Coordinated Domain Harvesting: Fallback AI extraction ONLY if standard regex extracted 0 links
+              if (config.agentDiscoveryEnabled !== false && html && discoveredLinks.length === 0) {
                 try {
                   const sHost = new URL(source.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
                   const domainHarvest = await runUnifiedDomainResourceDiscovery({
@@ -1373,7 +1389,7 @@ export async function executeCrawlJob(
               url: current.canonicalUrl,
               domain: current.domain,
               timeoutSeconds: config.agentTimeoutSeconds || 45,
-              model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
+              model: sanitizeAgyModel(config.agentModel),
             });
 
             if (agentResult.success && !agentResult.fallback) {

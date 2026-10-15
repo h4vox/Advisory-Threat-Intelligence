@@ -6,11 +6,13 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  Check,
   CheckCircle2,
   Clock,
   Compass,
   Database,
   Download,
+  Eye,
   FileCode,
   FileText,
   Filter,
@@ -37,6 +39,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import {
   checkCrawlerSchedule,
   getAppSettings,
@@ -51,6 +54,7 @@ import {
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
+import { AGY_AVAILABLE_MODELS, DEFAULT_AGY_MODEL, sanitizeAgyModel } from "@/lib/aie/agent-framework/types";
 
 const settingsSearchSchema = z.object({
   tab: z.enum(["crawler", "policy", "storage", "display", "agent"]).optional(),
@@ -136,6 +140,141 @@ function SettingsPage() {
   const [crawlForm, setCrawlForm] = useState<Partial<CrawlConfig>>({});
   const [appForm, setAppForm] = useState<Partial<AppSettings>>({});
   const [isDirty, setIsDirty] = useState(false);
+
+  // Visual Theme & UI Preferences
+  const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("aie_ui_style") as "default" | "liquid-glass") || "default";
+    }
+    return "default";
+  });
+
+  const [colorTheme, setColorTheme] = useState<"dark" | "light">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("aie_theme") as "dark" | "light") || "dark";
+    }
+    return "dark";
+  });
+
+  const [spinnerVariant, setSpinnerVariant] = useState<"radial" | "ring" | "dots">(() => {
+    if (typeof window !== "undefined") {
+      const saved = (localStorage.getItem("aie_spinner_variant") as string | null) || "radial";
+      return saved === "ios" ? "radial" : (saved as "radial" | "ring" | "dots");
+    }
+    return "radial";
+  });
+
+  const [previewSpinnerSize, setPreviewSpinnerSize] = useState<"xs" | "sm" | "md" | "lg">("md");
+
+  const [glassRatio, setGlassRatio] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("aie_glass_blur_ratio");
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 5 && parsed <= 110) return parsed;
+      }
+    }
+    return 70;
+  });
+
+  const applyGlassRatioTokens = (val: number) => {
+    if (typeof document === "undefined") return;
+    const blurPx = Math.round(6 + (val / 100) * 36.0);
+    const opacityDark = (0.05 + (val / 100) * 0.16).toFixed(3);
+    const opacityLight = (0.50 + (val / 100) * 0.28).toFixed(3);
+    const specular = (0.22 + (val / 100) * 0.38).toFixed(3);
+    document.documentElement.style.setProperty("--glass-blur-ratio", `${val}%`);
+    document.documentElement.style.setProperty("--glass-blur", `${blurPx}px`);
+    document.documentElement.style.setProperty("--glass-opacity-dark", `${opacityDark}`);
+    document.documentElement.style.setProperty("--glass-opacity-light", `${opacityLight}`);
+    document.documentElement.style.setProperty("--glass-specular-opacity", `${specular}`);
+  };
+
+  const handleGlassRatioChange = (val: number) => {
+    setGlassRatio(val);
+    localStorage.setItem("aie_glass_blur_ratio", String(val));
+    applyGlassRatioTokens(val);
+    window.dispatchEvent(new Event("aie-glass-ratio-changed"));
+  };
+
+  // Keep settings synchronized across tabs and components
+  useEffect(() => {
+    const handleStyleSync = () => {
+      const saved = (localStorage.getItem("aie_ui_style") as "default" | "liquid-glass") || "default";
+      setUiStyle(saved);
+    };
+    const handleThemeSync = () => {
+      const savedTheme = (localStorage.getItem("aie_theme") as "dark" | "light") || "dark";
+      setColorTheme(savedTheme);
+    };
+    const handleSpinnerSync = () => {
+      const saved = (localStorage.getItem("aie_spinner_variant") as string | null) || "radial";
+      setSpinnerVariant(saved === "ios" ? "radial" : (saved as "radial" | "ring" | "dots"));
+    };
+    const handleGlassRatioSync = () => {
+      const saved = localStorage.getItem("aie_glass_blur_ratio");
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed)) {
+          setGlassRatio(parsed);
+          applyGlassRatioTokens(parsed);
+        }
+      }
+    };
+
+    window.addEventListener("aie-style-changed", handleStyleSync);
+    window.addEventListener("aie-theme-changed", handleThemeSync);
+    window.addEventListener("aie-spinner-changed", handleSpinnerSync);
+    window.addEventListener("aie-glass-ratio-changed", handleGlassRatioSync);
+    return () => {
+      window.removeEventListener("aie-style-changed", handleStyleSync);
+      window.removeEventListener("aie-theme-changed", handleThemeSync);
+      window.removeEventListener("aie-spinner-changed", handleSpinnerSync);
+      window.removeEventListener("aie-glass-ratio-changed", handleGlassRatioSync);
+    };
+  }, []);
+
+  const handleUiStyleChange = (nextStyle: "default" | "liquid-glass") => {
+    setUiStyle(nextStyle);
+    localStorage.setItem("aie_ui_style", nextStyle);
+    document.documentElement.setAttribute("data-style", nextStyle);
+    if (nextStyle === "liquid-glass") {
+      document.documentElement.classList.add("theme-liquid-glass");
+      applyGlassRatioTokens(glassRatio);
+    } else {
+      document.documentElement.classList.remove("theme-liquid-glass");
+    }
+    window.dispatchEvent(new Event("aie-style-changed"));
+    toast.success(
+      nextStyle === "liquid-glass"
+        ? "Liquid Glass mode activated"
+        : "Tactical Slate (Default) activated"
+    );
+  };
+
+  const handleColorThemeChange = (nextTheme: "dark" | "light") => {
+    setColorTheme(nextTheme);
+    localStorage.setItem("aie_theme", nextTheme);
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    if (nextTheme === "light") {
+      document.documentElement.classList.add("light");
+    } else {
+      document.documentElement.classList.remove("light");
+    }
+    window.dispatchEvent(new Event("aie-theme-changed"));
+    toast.success(
+      nextTheme === "dark"
+        ? "Dark Mode (OLED / Midnight) enabled"
+        : "Light Mode enabled"
+    );
+  };
+
+  const handleSpinnerVariantChange = (nextVariant: "radial" | "ring" | "dots") => {
+    setSpinnerVariant(nextVariant);
+    localStorage.setItem("aie_spinner_variant", nextVariant);
+    window.dispatchEvent(new Event("aie-spinner-changed"));
+    toast.success(`Activity indicator set to ${nextVariant === "radial" ? "Radial Blade" : nextVariant === "ring" ? "Activity Ring" : "Pulse Dots"}`);
+  };
 
   // Sync initial server values to local form state
   useEffect(() => {
@@ -261,7 +400,12 @@ function SettingsPage() {
         {/* ========================================================================= */}
         {/* TOP ACTION BAR: UNSAVED STATUS, SAVE, DISCARD, PURGE CACHE                */}
         {/* ========================================================================= */}
-        <div className="sticky top-14 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-bg/95 backdrop-blur-md px-4 py-3 shadow-xs">
+        <div className={cn(
+          "sticky top-14 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3 transition-all",
+          uiStyle === "liquid-glass"
+            ? "sticky-liquid-glass"
+            : "border border-border bg-bg/95 backdrop-blur-md shadow-xs"
+        )}>
           <div className="flex items-center gap-2.5">
             {isDirty ? (
               <span className="flex items-center gap-1.5 font-mono text-xs text-warn">
@@ -946,7 +1090,7 @@ function SettingsPage() {
                     <span className="font-medium block">Auto-Ingest Qualified Reports</span>
                     <span className="text-[10px] text-muted block">Direct save vs manual review approval queue</span>
                     {!(currentCrawl.autoIngest ?? true) && Boolean(currentCrawl.agentAutoIngestEnabled) && (
-                      <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-amber-400 font-medium bg-amber-950/40 border border-amber-800/40 rounded px-1.5 py-0.5">
+                      <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
                         <AlertTriangle className="size-2.5" />
                         Pauses AI Agent autonomous ingestion until enabled
                       </span>
@@ -1223,6 +1367,444 @@ function SettingsPage() {
         {/* ========================================================================= */}
         {activeSection === "display" && (
           <div className="space-y-6">
+            {/* Visual Interface Theme & Aesthetic Engine */}
+            <div className="rounded-2xl border border-border bg-bg-elevated p-5 space-y-6 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-border gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold flex items-center gap-2 text-fg">
+                    <Sparkles className="size-4 text-accent" />
+                    Appearance & Visual Interface Theme
+                  </h3>
+                  <p className="text-xs text-subtle mt-0.5">
+                    Select your visual presentation aesthetic, glassmorphism translucency, and refined micro-interactions.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-accent/10 text-accent border border-accent/25 text-[10px] px-2 py-0.5">
+                    Theme Engine v2.5
+                  </Badge>
+                  <span className={cn(
+                    "text-[10px] px-2 py-0.5 rounded-full font-mono border",
+                    uiStyle === "liquid-glass"
+                      ? "border-accent/40 bg-accent/15 text-accent"
+                      : "border-border bg-bg-subtle text-muted"
+                  )}>
+                    {uiStyle === "liquid-glass" ? "Liquid Glass" : "Tactical Slate"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Theme Presets: 2 Rich Cards */}
+              <div className="space-y-2.5">
+                <label className="text-xs font-medium text-fg block">
+                  Interface Theme Preset
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Preset 1: Default (Tactical Slate) */}
+                  <div
+                    onClick={() => handleUiStyleChange("default")}
+                    className={cn(
+                      "group relative p-4 rounded-xl border transition-all cursor-pointer space-y-3",
+                      uiStyle === "default"
+                        ? "border-accent ring-2 ring-accent/30 bg-bg-card shadow-sm"
+                        : "border-border bg-bg-subtle/40 hover:border-border-strong hover:bg-bg-subtle/80"
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="size-9 rounded-lg bg-bg-subtle border border-border flex items-center justify-center text-fg">
+                          <Layers className="size-4.5 text-accent" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-fg">Tactical Slate</span>
+                            <Badge className="text-[9px] bg-border/50 text-subtle border-none">Default</Badge>
+                          </div>
+                          <span className="text-[11px] text-subtle block">Standard SOC Opaque Architecture</span>
+                        </div>
+                      </div>
+                      <div className={cn(
+                        "size-5 rounded-full border flex items-center justify-center transition-colors",
+                        uiStyle === "default"
+                          ? "border-accent bg-accent text-accent-fg"
+                          : "border-border text-transparent"
+                      )}>
+                        <Check className="size-3 stroke-[3]" />
+                      </div>
+                    </div>
+
+                    {/* Mini Specimen Visualizer (Default Slate) */}
+                    <div className="p-2.5 rounded-lg border border-border bg-bg-subtle space-y-1.5 pointer-events-none select-none">
+                      <div className="flex items-center justify-between text-[10px] text-muted">
+                        <span className="font-mono">RETRIEVAL MATRIX</span>
+                        <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                      </div>
+                      <div className="h-5 rounded-md bg-bg-card border border-border flex items-center px-2 text-[10px] text-muted font-medium">
+                        Solid High-Contrast Surface
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-subtle leading-relaxed">
+                      Solid, opaque surfaces engineered for high data density, zero visual distraction, and long operational SOC shifts. Crisp text rendering across all monitors.
+                    </p>
+                  </div>
+
+                  {/* Preset 2: Liquid Glass */}
+                  <div
+                    onClick={() => handleUiStyleChange("liquid-glass")}
+                    className={cn(
+                      "group relative p-4 rounded-xl border transition-all cursor-pointer space-y-3",
+                      uiStyle === "liquid-glass"
+                        ? "border-accent ring-2 ring-accent/30 bg-bg-card shadow-sm"
+                        : "border-border bg-bg-subtle/40 hover:border-border-strong hover:bg-bg-subtle/80"
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="size-9 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shadow-xs backdrop-blur-md">
+                          <Sparkles className="size-4.5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-fg">Liquid Glass</span>
+                            <Badge className="text-[9px] bg-accent/15 text-accent border border-accent/30 font-medium">Glassmorphism</Badge>
+                          </div>
+                          <span className="text-[11px] text-subtle block">Refractive Frosted Glassmorphism</span>
+                        </div>
+                      </div>
+                      <div className={cn(
+                        "size-5 rounded-full border flex items-center justify-center transition-colors",
+                        uiStyle === "liquid-glass"
+                          ? "border-accent bg-accent text-accent-fg"
+                          : "border-border text-transparent"
+                      )}>
+                        <Check className="size-3 stroke-[3]" />
+                      </div>
+                    </div>
+
+                    {/* Mini Specimen Visualizer (Liquid Glass) */}
+                    <div className="p-2.5 rounded-lg border border-border/80 card-liquid-glass space-y-1.5 pointer-events-none select-none relative overflow-hidden">
+                      <div className="flex items-center justify-between text-[10px] text-accent font-semibold">
+                        <span className="font-mono">FROSTED COGNITIVE CAPSULE</span>
+                        <ActivitySpinner size="xs" variant={spinnerVariant} className="text-accent" />
+                      </div>
+                      <div className="h-6 rounded-lg pill-liquid-glass flex items-center justify-between px-2.5 text-[10px] font-medium text-fg">
+                        <span>{Math.round(8 + (glassRatio / 100) * 32.4)}px Diffusion Blur · Specular Glare</span>
+                        <span className="font-mono text-accent">{glassRatio}% Ratio</span>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-subtle leading-relaxed">
+                      Frosted liquid glass with dynamic ambient luminance, specular rim highlights, and deep diffusion blur. Targeted to floating drawers, session lists, badges, and interactive cards.
+                    </p>
+
+                    {/* Liquid Glass Blur & Translucency Ratio Control (Inside Liquid Glass Selection) */}
+                    {uiStyle === "liquid-glass" && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="pt-3 border-t border-accent/25 space-y-3 cursor-default"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-fg">
+                              Blur Liquid Ratio & Translucency
+                            </span>
+                            <Badge className="text-[9px] bg-accent/15 text-accent border border-accent/30 font-mono">
+                              {glassRatio}% · {Math.round(8 + (glassRatio / 100) * 32.4)}px Blur
+                            </Badge>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleGlassRatioChange(70)}
+                            className="text-[10px] font-mono text-muted hover:text-fg underline cursor-pointer"
+                          >
+                            Reset (70%)
+                          </button>
+                        </div>
+
+                        {/* Interactive Slider */}
+                        <div className="space-y-1">
+                          <input
+                            type="range"
+                            min="5"
+                            max="110"
+                            step="5"
+                            value={glassRatio}
+                            onChange={(e) => handleGlassRatioChange(Number(e.target.value))}
+                            className="w-full accent-accent h-1.5 bg-bg-subtle rounded-lg cursor-pointer"
+                          />
+                          <div className="flex justify-between text-[9px] font-mono text-subtle">
+                            <span>5% (Pure Glass)</span>
+                            <span>35% (Crystal)</span>
+                            <span>70% (Balanced)</span>
+                            <span>110% (Ultra Frost)</span>
+                          </div>
+                        </div>
+
+                        {/* Presets */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-0.5">
+                          {[
+                            { label: "Pure Glass", ratio: 5, desc: "Ultra clear, glassy refraction" },
+                            { label: "Crystal Clear", ratio: 35, desc: "Crisp reflection with depth" },
+                            { label: "Balanced Velvet", ratio: 70, desc: "Default optimal frosted look" },
+                            { label: "Ultra Frost", ratio: 110, desc: "Maximum diffusion (46px)" },
+                          ].map((preset) => {
+                            const isSelected = glassRatio === preset.ratio;
+                            return (
+                              <button
+                                key={preset.ratio}
+                                type="button"
+                                onClick={() => handleGlassRatioChange(preset.ratio)}
+                                className={cn(
+                                  "p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col gap-0.5",
+                                  isSelected
+                                    ? "border-accent bg-accent/20 text-fg shadow-xs"
+                                    : "border-border/60 hover:border-border pill-liquid-glass text-muted hover:text-fg"
+                                )}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-medium">{preset.label}</span>
+                                  <span className="text-[9px] font-mono opacity-80">{preset.ratio}%</span>
+                                </div>
+                                <span className="text-[9px] text-subtle">{preset.desc}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Color Mode & Appearance */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-medium text-fg block">
+                      Color Mode (OLED Dark / Daylight Light)
+                    </label>
+                    <span className="text-[11px] text-subtle">
+                      Adaptive high-contrast color scheme for tactical operations
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => handleColorThemeChange("dark")}
+                    className={cn(
+                      "flex items-center justify-between p-3 rounded-xl border text-xs font-medium transition-all cursor-pointer",
+                      colorTheme === "dark"
+                        ? "border-accent bg-accent/10 text-fg ring-1 ring-accent/30"
+                        : "border-border bg-bg-subtle/40 text-muted hover:border-border-strong hover:text-fg"
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="size-7 rounded-lg bg-bg-subtle border border-border flex items-center justify-center text-accent">
+                        <Moon className="size-3.5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="block font-medium">Dark Mode (OLED / Midnight)</span>
+                        <span className="text-[10px] text-subtle block">Low-light SOC tactical monitoring</span>
+                      </div>
+                    </div>
+                    {colorTheme === "dark" && <Check className="size-4 text-accent" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleColorThemeChange("light")}
+                    className={cn(
+                      "flex items-center justify-between p-3 rounded-xl border text-xs font-medium transition-all cursor-pointer",
+                      colorTheme === "light"
+                        ? "border-accent bg-accent/10 text-fg ring-1 ring-accent/30"
+                        : "border-border bg-bg-subtle/40 text-muted hover:border-border-strong hover:text-fg"
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="size-7 rounded-lg bg-bg-subtle border border-border flex items-center justify-center text-accent">
+                        <Sun className="size-3.5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="block font-medium">Light Mode (Daylight)</span>
+                        <span className="text-[10px] text-subtle block">High-key daylight documentation</span>
+                      </div>
+                    </div>
+                    {colorTheme === "light" && <Check className="size-4 text-accent" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Activity Indicator (Spinner) Style */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <div>
+                    <label className="text-xs font-medium text-fg block">
+                      Activity Indicator & Progress Animations
+                    </label>
+                    <span className="text-[11px] text-subtle">
+                      Real-time animated indicators for AI generation, sandbox probes, and retrieval streams
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 bg-bg-subtle p-1 rounded-lg border border-border">
+                    <span className="text-[10px] text-subtle font-mono px-1.5">Size:</span>
+                    {(["xs", "sm", "md", "lg"] as const).map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => setPreviewSpinnerSize(sz)}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors",
+                          previewSpinnerSize === sz
+                            ? "bg-accent text-accent-fg font-semibold shadow-xs"
+                            : "text-subtle hover:text-fg"
+                        )}
+                      >
+                        {sz.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Option 1: Radial Blade */}
+                  <button
+                    type="button"
+                    onClick={() => handleSpinnerVariantChange("radial")}
+                    className={cn(
+                      "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
+                      spinnerVariant === "radial"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <ActivitySpinner size={previewSpinnerSize} variant="radial" className="text-accent" />
+                      {spinnerVariant === "radial" && <Check className="size-3.5 text-accent" />}
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-fg block">Radial Blade</span>
+                      <span className="text-[10px] text-subtle leading-tight block mt-0.5">
+                        Stepped rotation & graduated blade opacity
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Option 2: Activity Ring */}
+                  <button
+                    type="button"
+                    onClick={() => handleSpinnerVariantChange("ring")}
+                    className={cn(
+                      "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
+                      spinnerVariant === "ring"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <ActivitySpinner size={previewSpinnerSize} variant="ring" className="text-accent" />
+                      {spinnerVariant === "ring" && <Check className="size-3.5 text-accent" />}
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-fg block">Activity Ring</span>
+                      <span className="text-[10px] text-subtle leading-tight block mt-0.5">
+                        Continuous rotating gradient activity ring
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Option 3: Pulse Dots */}
+                  <button
+                    type="button"
+                    onClick={() => handleSpinnerVariantChange("dots")}
+                    className={cn(
+                      "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
+                      spinnerVariant === "dots"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <ActivitySpinner size={previewSpinnerSize} variant="dots" className="text-accent" />
+                      {spinnerVariant === "dots" && <Check className="size-3.5 text-accent" />}
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-fg block">Pulse Dots</span>
+                      <span className="text-[10px] text-subtle leading-tight block mt-0.5">
+                        Smooth bouncing triple-dot indicator
+                      </span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Interactive Live Glass Specimen Playground */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-fg flex items-center gap-1.5">
+                    <Eye className="size-3.5 text-accent" />
+                    Live Interface Component Specimen
+                  </label>
+                  <span className="text-[10px] font-mono text-subtle">
+                    Real-time CSS Rendering Test
+                  </span>
+                </div>
+
+                <div className={cn(
+                  "p-4 rounded-xl border transition-all space-y-3",
+                  uiStyle === "liquid-glass"
+                    ? "card-liquid-glass"
+                    : "border-border bg-bg-card"
+                )}>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-fg">AI Agent Interaction Capsule</span>
+                      <Badge className={cn(
+                        "text-[10px]",
+                        uiStyle === "liquid-glass"
+                          ? "bg-accent/20 text-accent border border-accent/40 backdrop-blur-md shadow-xs"
+                          : "bg-accent/10 text-accent border border-accent/20"
+                      )}>
+                        Live Specimen
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <ActivitySpinner size="sm" variant={spinnerVariant} className="text-accent" />
+                      <span className="text-[11px] font-mono text-subtle">Streaming active</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                    <div className={cn(
+                      "p-3 rounded-lg text-xs space-y-1 transition-all",
+                      uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
+                    )}>
+                      <span className="font-semibold block text-fg">Session Switcher</span>
+                      <p className="text-[10px] text-subtle">Frosted glass backdrop with zero transparency leakage.</p>
+                    </div>
+
+                    <div className={cn(
+                      "p-3 rounded-lg text-xs space-y-1 transition-all",
+                      uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
+                    )}>
+                      <span className="font-semibold block text-fg">Grounded CTI Cards</span>
+                      <p className="text-[10px] text-subtle">Frosted links with hover glow & direct report modal jumps.</p>
+                    </div>
+
+                    <div className={cn(
+                      "p-3 rounded-lg text-xs space-y-1 transition-all",
+                      uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
+                    )}>
+                      <span className="font-semibold block text-fg">Micro-Interactions</span>
+                      <p className="text-[10px] text-subtle">Specular top edge lighting with graduated blade spinners.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
               <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
                 <Sliders className="size-4 text-accent" />
@@ -1298,10 +1880,10 @@ function SettingsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className={cn(
-                    "flex size-10 items-center justify-center rounded-lg",
-                    agentStatusQuery.data?.available ? "bg-emerald-950/50" : "bg-red-950/50"
+                    "flex size-10 items-center justify-center rounded-lg border",
+                    agentStatusQuery.data?.available ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"
                   )}>
-                    <Bot className={cn("size-5", agentStatusQuery.data?.available ? "text-emerald-400" : "text-red-400")} />
+                    <Bot className={cn("size-5", agentStatusQuery.data?.available ? "text-emerald-500 dark:text-emerald-400" : "text-red-500 dark:text-red-400")} />
                   </div>
                   <div>
                     <h3 className="text-sm font-medium">AGY Agent Status</h3>
@@ -1313,10 +1895,10 @@ function SettingsPage() {
                   </div>
                 </div>
                 <div className={cn(
-                  "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium",
+                  "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border",
                   agentStatusQuery.data?.available
-                    ? "bg-emerald-950/40 text-emerald-400"
-                    : "bg-red-950/40 text-red-400"
+                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                    : "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30"
                 )}>
                   <div className={cn("size-2 rounded-full", agentStatusQuery.data?.available ? "bg-emerald-500" : "bg-red-500")} />
                   {agentStatusQuery.data?.available ? "Online" : "Offline"}
@@ -1409,7 +1991,7 @@ function SettingsPage() {
 
                       {/* Safety Guardrail banner for Auto-Prune */}
                       {toggle.key === "agentAutoPruneJunkEnabled" && isChecked && (
-                        <div className="mt-2.5 flex items-center gap-2 text-[11px] text-emerald-400 bg-emerald-950/30 border border-emerald-800/40 rounded-md px-2.5 py-1.5 font-medium">
+                        <div className="mt-2.5 flex items-center gap-2 text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-md px-2.5 py-1.5 font-medium">
                           <CheckCircle2 className="size-3.5 shrink-0" />
                           <span>Strict Safety Guardrails Active: Legitimate threat reports with IOCs, CVEs, or ATT&CK techniques are strictly protected and will never be pruned.</span>
                         </div>
@@ -1508,7 +2090,7 @@ function SettingsPage() {
                 <div>
                   <label className="block text-xs font-medium text-muted mb-1.5">Agent Model</label>
                   <select
-                    value={crawlForm.agentModel || "gemini-2.5-flash"}
+                    value={sanitizeAgyModel(crawlForm.agentModel)}
                     onChange={(e) => {
                       const selectedVal = e.target.value;
                       setCrawlForm((prev) => ({ ...prev, agentModel: selectedVal }));
@@ -1537,11 +2119,11 @@ function SettingsPage() {
                       ))
                     ) : (
                       <>
-                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-                        <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
+                        {AGY_AVAILABLE_MODELS.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
                       </>
                     )}
                   </select>
@@ -1571,12 +2153,12 @@ function SettingsPage() {
             </div>
 
             {/* Fail-Safe Notice */}
-            <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 p-4">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
               <div className="flex items-start gap-3">
-                <ShieldAlert className="size-5 text-amber-400 shrink-0 mt-0.5" />
+                <ShieldAlert className="size-5 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium text-amber-300">Zero Point of Failure Design</p>
-                  <p className="mt-1 text-xs text-amber-400/80">
+                  <p className="text-sm font-medium text-amber-600 dark:text-amber-300">Zero Point of Failure Design</p>
+                  <p className="mt-1 text-xs text-muted dark:text-amber-400/80">
                     If the AGY agent is unavailable, times out, or returns an error, the crawler automatically
                     falls back to rule-based heuristic qualification and standard ingestion — zero disruption to
                     the core pipeline.

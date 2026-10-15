@@ -18,7 +18,6 @@ import {
   Globe,
   Key,
   Layers,
-  Loader2,
   Play,
   Plug,
   RefreshCw,
@@ -38,8 +37,10 @@ import { AieAgentChatDrawer } from "@/components/aie-agent-chat-drawer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
   OFFICIAL_AGY_OAUTH_URL,
   generateAgyOAuthSession,
@@ -192,7 +193,7 @@ function MarketplacePage() {
 
   const integrations = marketplaceState?.integrations || [];
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
-  const activeModel = (marketplaceState?.activeModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
+  const activeModel = sanitizeAgyModel(marketplaceState?.activeModel);
 
   // Real installation mutation (executes real script, rm for reconfig, captures stdout/stderr)
   const realInstallMutation = useMutation({
@@ -523,9 +524,11 @@ function MarketplacePage() {
                       title="Restart Agent Sandbox Container"
                       className="p-1 rounded hover:bg-bg-subtle text-subtle hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
                     >
-                      <RefreshCw
-                        className={cn("size-3", restartSandboxMutation.isPending && "animate-spin text-accent")}
-                      />
+                      {restartSandboxMutation.isPending ? (
+                        <ActivitySpinner size="xs" className="text-accent" />
+                      ) : (
+                        <RefreshCw className="size-3 text-subtle" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -540,7 +543,7 @@ function MarketplacePage() {
                 <div className="text-xs">
                   <div className="text-[10px] uppercase font-mono text-subtle tracking-wider">Active AI Agent</div>
                   <div className="font-medium text-fg flex items-center gap-1.5">
-                    <span>{integrations.find((x) => x.id === activeProviderId)?.name || "Antigravity AGY Agent"}</span>
+                    <span>{integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}</span>
                     <span className="font-mono text-[11px] text-accent">({activeModel})</span>
                   </div>
                 </div>
@@ -719,8 +722,14 @@ function MarketplacePage() {
               )}
 
               {/* 4 IN A ROW CONTAINER GRID */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {filteredIntegrations.map((item) => {
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center py-20 text-muted">
+                  <ActivitySpinner size="lg" className="text-accent mb-2" />
+                  <p className="text-sm">Loading Integration Framework & Marketplace...</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {filteredIntegrations.map((item) => {
                   const isInstalled = item.status === "installed";
                   const isActive = activeProviderId === item.id;
 
@@ -841,8 +850,9 @@ function MarketplacePage() {
                   );
                 })}
               </div>
+              )}
 
-              {filteredIntegrations.length === 0 && (
+              {!isLoading && filteredIntegrations.length === 0 && (
                 <div className="text-center py-16 border border-dashed border-border rounded-xl">
                   <Cpu className="size-8 text-subtle mx-auto mb-2 opacity-50" />
                   <div className="text-sm font-medium text-fg">No integrations match your filters</div>
@@ -1083,7 +1093,7 @@ function MarketplacePage() {
                 <div className="p-3 bg-bg/50 rounded-xl border border-border">
                   <div className="text-[10px] text-subtle uppercase font-mono">Active Provider</div>
                   <div className="text-sm font-semibold text-accent mt-1 truncate">
-                    {integrations.find((x) => x.id === activeProviderId)?.name || "Antigravity AGY Agent"}
+                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}
                   </div>
                 </div>
                 <div className="p-3 bg-bg/50 rounded-xl border border-border">
@@ -1115,11 +1125,11 @@ function MarketplacePage() {
             />
 
             {/* Drawer Container: EXACTLY 1/4 SCREEN WIDTH (w-full sm:w-80 md:w-96 lg:w-[25vw] min-w-[320px] max-w-[400px]) */}
-            <div className="relative w-full sm:w-80 md:w-96 lg:w-[25vw] min-w-[320px] max-w-[400px] h-full bg-bg-elevated/95 backdrop-blur-2xl border-l border-border/80 shadow-2xl flex flex-col z-10 animate-in slide-in-from-right duration-200">
+            <div className="relative w-full sm:w-80 md:w-96 lg:w-[25vw] min-w-[320px] max-w-[400px] h-full drawer-liquid-glass shadow-2xl flex flex-col z-10 animate-in slide-in-from-right duration-200">
               {/* Drawer Header */}
-              <div className="p-4 border-b border-border flex items-start justify-between gap-3 bg-bg/60 shrink-0">
+              <div className="p-4 flex items-start justify-between gap-3 drawer-section-header shrink-0">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="p-2 rounded-lg bg-bg-subtle border border-border text-accent shrink-0">
+                  <div className="p-2 rounded-xl bg-accent/15 border border-accent/30 text-accent shrink-0 shadow-inner backdrop-blur-xs">
                     {selectedIntegration.type === "cli_agent" ? (
                       <Terminal className="size-4" />
                     ) : (
@@ -1127,7 +1137,7 @@ function MarketplacePage() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <h2 className="text-sm font-semibold text-fg truncate">{selectedIntegration.name}</h2>
+                    <h2 className="text-sm font-semibold text-fg tracking-tight truncate">{selectedIntegration.name}</h2>
                     <div className="flex items-center gap-1.5 text-[11px] text-subtle mt-0.5">
                       <span>{selectedIntegration.provider}</span>
                       <span>·</span>
@@ -1138,7 +1148,7 @@ function MarketplacePage() {
 
                 <button
                   onClick={() => setSelectedIntegration(null)}
-                  className="p-1.5 rounded-lg text-subtle hover:text-fg hover:bg-bg-subtle transition-colors cursor-pointer shrink-0"
+                  className="p-1.5 rounded-xl text-subtle hover:text-fg hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer shrink-0"
                 >
                   <X className="size-4" />
                 </button>
@@ -1147,22 +1157,22 @@ function MarketplacePage() {
               {/* Drawer Body (Scrollable inside drawer) */}
               <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs">
                 {/* Status Bar */}
-                <div className="flex items-center justify-between p-2.5 rounded-lg bg-bg-subtle border border-border/70">
+                <div className="flex items-center justify-between p-3 rounded-xl card-liquid-glass">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[11px] text-subtle">Status:</span>
                     {selectedIntegration.status === "installed" ? (
-                      <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px]">
+                      <Badge className="bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30 text-[10px]">
                         Installed
                       </Badge>
                     ) : (
-                      <Badge className="text-subtle text-[10px] border border-border">
+                      <Badge className="text-subtle text-[10px] border border-border bg-bg-subtle">
                         Available
                       </Badge>
                     )}
                   </div>
                   {activeProviderId === selectedIntegration.id ? (
-                    <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] flex items-center gap-1">
-                      <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <Badge className="bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30 text-[10px] flex items-center gap-1">
+                      <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       Active Provider
                     </Badge>
                   ) : null}
@@ -1170,13 +1180,13 @@ function MarketplacePage() {
 
                 {/* Agent Engine Status Overview */}
                 {selectedIntegration.type === "cli_agent" && (
-                  <div className="p-3.5 rounded-xl bg-bg-elevated border border-border/80 space-y-2.5">
+                  <div className="p-3.5 rounded-2xl card-liquid-glass space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
                         <Terminal className="size-3.5 text-accent" />
                         <span>Agent Engine Status</span>
                       </div>
-                      <Badge className={cn("text-[9px] font-mono", selectedIntegration.status === "installed" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30" : "bg-amber-500/10 text-amber-400 border border-amber-500/30")}>
+                      <Badge className={cn("text-[9px] font-mono", selectedIntegration.status === "installed" ? "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30" : "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30")}>
                         {selectedIntegration.status === "installed" ? "ONLINE & READY" : "ONBOARDING REQUIRED"}
                       </Badge>
                     </div>
@@ -1339,13 +1349,13 @@ function MarketplacePage() {
 
                 {/* Agent Interactive Test & Prompt Debug Section (Very bottom of details) */}
                 {selectedIntegration.id === "agy_agent" && selectedIntegration.status === "installed" && (
-                  <div className="border border-accent/30 rounded-xl bg-bg-subtle/40 overflow-hidden space-y-2 p-3">
+                  <div className="rounded-2xl card-liquid-glass overflow-hidden space-y-2.5 p-3.5 shadow-sm">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
                         <Terminal className="size-3.5 text-accent" />
                         <span>Interactive Agent Test Console</span>
                       </div>
-                      <Badge className="text-[9px] border border-emerald-500/30 text-emerald-400 font-mono">
+                      <Badge className="text-[9px] border border-emerald-500/30 text-emerald-500 dark:text-emerald-400 font-mono">
                         --dangerously-skip-permissions
                       </Badge>
                     </div>
@@ -1366,7 +1376,7 @@ function MarketplacePage() {
               </div>
 
               {/* Drawer Footer: Actions & Re-Config */}
-              <div className="p-3.5 border-t border-border bg-bg/70 space-y-2 shrink-0">
+              <div className="p-3.5 drawer-section-footer space-y-2 shrink-0">
                 {selectedIntegration.status === "installed" ? (
                   <>
                     <div className="grid grid-cols-2 gap-2">
@@ -1397,9 +1407,11 @@ function MarketplacePage() {
                         onClick={() => testConnectionMutation.mutate(selectedIntegration.id)}
                         className="text-xs h-7.5 gap-1 truncate"
                       >
-                        <RefreshCw
-                          className={cn("size-3 text-accent shrink-0", testConnectionMutation.isPending && "animate-spin")}
-                        />
+                        {testConnectionMutation.isPending ? (
+                          <ActivitySpinner size="xs" className="text-accent shrink-0" />
+                        ) : (
+                          <RefreshCw className="size-3 text-accent shrink-0" />
+                        )}
                         <span>{testConnectionMutation.isPending ? "Testing..." : "Test Connection"}</span>
                       </Button>
                     </div>
@@ -1458,9 +1470,11 @@ function MarketplacePage() {
                       className="text-xs h-8 px-2.5"
                       title="Test if already present in environment"
                     >
-                      <RefreshCw
-                        className={cn("size-3 text-accent", testConnectionMutation.isPending && "animate-spin")}
-                      />
+                      {testConnectionMutation.isPending ? (
+                        <ActivitySpinner size="xs" className="text-accent" />
+                      ) : (
+                        <RefreshCw className="size-3 text-accent" />
+                      )}
                     </Button>
                   </div>
                 )}
@@ -1599,9 +1613,11 @@ function MarketplacePage() {
                       onClick={() => modalTestConnectionMutation.mutate(configModalItem.id)}
                       className="text-xs h-8 gap-1.5"
                     >
-                      <RefreshCw
-                        className={cn("size-3 text-accent", modalTestConnectionMutation.isPending && "animate-spin")}
-                      />
+                      {modalTestConnectionMutation.isPending ? (
+                        <ActivitySpinner size="xs" className="text-accent" />
+                      ) : (
+                        <RefreshCw className="size-3 text-accent" />
+                      )}
                       <span>{modalTestConnectionMutation.isPending ? "Testing..." : "Test Connection"}</span>
                     </Button>
                   </div>
@@ -1652,7 +1668,7 @@ function MarketplacePage() {
               </div>
               <p className="text-xs text-subtle leading-relaxed mb-6">
                 This will remove the configuration and credentials for {uninstallConfirmItem.name}. If this was the
-                active AI provider, AIE will automatically revert back to Antigravity AGY Agent.
+                active AI provider, AIE will automatically revert back to the Autonomous Threat Intelligence Agent.
               </p>
               <div className="flex items-center justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setUninstallConfirmItem(null)} className="text-xs">

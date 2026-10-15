@@ -21,6 +21,7 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { IdBadge } from "@/components/id-badge";
 import { formatDomainId, formatSourceId } from "@/lib/aie/ids";
 import { cn } from "@/lib/cn";
@@ -302,7 +303,7 @@ function SourcesPage() {
           >
             {probeMut.isPending ? (
               <>
-                <RefreshCw className="size-3.5 animate-spin text-accent" />
+                <ActivitySpinner size="xs" className="text-accent" />
                 <span>Probing Feeds...</span>
               </>
             ) : (
@@ -469,7 +470,10 @@ function SourcesPage() {
       {activeTab === "discovered" && (
         <div className="mt-6">
           {discoveredLoading && (
-            <p className="py-12 text-center text-sm text-muted">Loading discovered sources...</p>
+            <div className="flex flex-col items-center justify-center py-16 text-muted">
+              <ActivitySpinner size="lg" className="text-accent mb-2" />
+              <p className="text-sm">Loading discovered intelligence sources...</p>
+            </div>
           )}
           {!discoveredLoading && filteredDiscovered.length === 0 && (
             <div className="py-12 text-center">

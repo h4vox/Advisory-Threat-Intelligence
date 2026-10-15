@@ -102,6 +102,11 @@ import {
   mongoSaveMarketplaceIntegration,
   mongoUninstallMarketplaceIntegration,
   DEFAULT_CRAWL_CONFIG,
+  mongoSaveChatMessage,
+  mongoGetChatSessionMessages,
+  mongoClearChatSession,
+  mongoListChatSessions,
+  type AgentChatMessageRecord,
 } from "../mongodb/repository.server";
 import {
   getAvailableAgentModels,
@@ -109,6 +114,7 @@ import {
   runUnifiedSourceDiscovery,
   runUnifiedResourceEvaluation,
 } from "./ai-manager";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL, AGY_AVAILABLE_MODELS } from "./agent-framework/types";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
 import { getProviderAdapter } from "./providers";
 import {
@@ -743,7 +749,7 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" })
       limit,
       existingDomains,
       timeoutSeconds: config.agentTimeoutSeconds ?? 90,
-      model: (config.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
+      model: sanitizeAgyModel(config.agentModel),
     });
 
     const inserted: DiscoveredSourceRecord[] = [];
@@ -3014,7 +3020,7 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" })
       throw new Error(`Integration ${data.id} not found`);
     }
 
-    const modelToSet = data.model || selected.supportedModels[0] || "gemini-2.5-flash";
+    const modelToSet = sanitizeAgyModel(data.model || selected.supportedModels[0]);
 
     await mongoUpdateAppSettings({
       activeAgentProvider: data.id,
@@ -3274,33 +3280,100 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
     z.object({
       message: z.string().min(1),
       model: z.string().optional(),
+      sessionId: z.string().optional(),
     })
   )
   .handler(async ({ data }) => {
-    const model = (data.model || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
+    const model = sanitizeAgyModel(data.model);
     const userMsg = data.message.trim();
+    const sessionId = data.sessionId || "active-investigation";
 
-    // 1. Knowledge Retrieval Phase: Query MongoDB for matching threat intelligence
+    // Persist user prompt to session history
+    const userMsgId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await mongoSaveChatMessage({
+      id: userMsgId,
+      sessionId,
+      sender: "user",
+      text: userMsg,
+      timestamp: new Date().toISOString(),
+    });
+
+    // 1. Strict CTI Intent Gate: Only retrieve library evidence if query actually warrants CTI data
     let matchedReports: ReportListItem[] = [];
+    const lowerMsg = userMsg.toLowerCase();
+
+    // Check for conversational pleasantries, greetings, or meta questions
+    const conversationalTokens = /^(hi|hello|hey|yo|howdy|sup|greetings|good\s+(morning|afternoon|evening|day)|thanks|thank\s+you|ok|okay|cool|bye|goodbye)[\s,!.?]*$/i;
+    const startsWithGreeting = /^(hi|hello|hey|yo|howdy|sup|greetings|good\s+(morning|afternoon|evening|day))[\s,!.?]/i.test(userMsg);
+    const metaQuestionPatterns = /\b(who\s+are\s+you|what\s+can\s+you\s+do|what\s+is\s+your\s+name|how\s+are\s+you|how\s+does\s+this\s+work|what\s+are\s+your\s+capabilities|help\s+me|tell\s+me\s+about\s+yourself|what\s+is\s+this\s+platform|what\s+is\s+this\s+app|how\s+do\s+i\s+use|can\s+you\s+help)\b/i;
+    const isConversational =
+      conversationalTokens.test(userMsg.trim()) ||
+      startsWithGreeting ||
+      metaQuestionPatterns.test(lowerMsg) ||
+      userMsg.trim().length <= 4;
+
+    // High-confidence CTI entity/advisory patterns
+    const hasCve = /\bCVE-\d{4}-\d{4,7}\b/i.test(userMsg);
+    const hasTechnique = /\bT\d{4}(?:\.\d{3})?\b/i.test(userMsg);
+    const hasThreatActor = /\b(apt\d+|unc\d+|fin\d+|ta\d+|lazarus|sandworm|volt\s+typhoon|blackcat|lockbit|alphv|qakbot|emotet|cobalt\s+strike|mimikatz|fancy\s+bear|cozy\s+bear|redline|darkside|conti|revil|scattered\s+spider|midnight\s+blizzard|forest\s+blizzard|charming\s+kitten|oilrig)\b/i.test(lowerMsg);
+    const isExplicitReportQuery = /\b(search|find|retrieve|show|list|get|fetch|lookup)\b.*?\b(reports?|advisories|documents?|intel|evidence|papers?|files?)\b/i.test(lowerMsg);
+
+    // Stop words specific to generic CTI domain terms that match every report
+    const domainStopWords = new Set([
+      "threat", "threats", "intel", "intelligence", "report", "reports", "advisory", "advisories",
+      "security", "cyber", "cybersecurity", "system", "systems", "data", "platform", "info", "information",
+      "help", "please", "today", "latest", "recent", "show", "find", "search", "view", "read", "tell",
+      "about", "what", "where", "when", "which", "give", "list", "they", "them", "their", "this", "that",
+      "with", "from", "have", "does", "will", "were", "some", "more", "like", "look", "there", "here"
+    ]);
+
+    // Extract high-value specific technical tokens (excluding domain stop words)
     const searchTerms = userMsg.replace(/[^\w\s-]/g, " ").slice(0, 120).trim();
-    if (isMongoConfigured() && searchTerms.length >= 2) {
-      try {
-        matchedReports = await mongoListReports({ q: searchTerms });
-        if (matchedReports.length === 0) {
-          // Sub-token fallback retrieval (extract first 3 meaningful technical words)
-          const tokens = searchTerms
-            .split(/\s+/)
-            .filter((t) => t.length >= 3 && !/^(what|where|when|which|show|tell|about|with|from|have|this|that)$/i.test(t));
-          for (const tok of tokens.slice(0, 3)) {
-            const hits = await mongoListReports({ q: tok });
-            if (hits.length > 0) {
-              matchedReports = hits;
-              break;
-            }
-          }
+    const meaningfulTokens = searchTerms
+      .split(/\s+/)
+      .map((t) => t.toLowerCase())
+      .filter((t) => t.length >= 3 && !domainStopWords.has(t));
+
+    // Strictly gate CTI query: NEVER trigger on conversational greetings or non-advisory prompts
+    const hasSpecificEntity = hasCve || hasTechnique || hasThreatActor || meaningfulTokens.length >= 2;
+    const isCtiQuery = !isConversational && (hasCve || hasTechnique || hasThreatActor || isExplicitReportQuery || (hasSpecificEntity && userMsg.length > 12));
+
+    if (isCtiQuery && isMongoConfigured()) {
+      if (isExplicitReportQuery && meaningfulTokens.length === 0) {
+        // User explicitly asked for latest/recent reports in general
+        const numMatch = userMsg.match(/\b([1-9]|10)\b/);
+        const limit = numMatch ? parseInt(numMatch[1], 10) : 4;
+        try {
+          matchedReports = await mongoListReports({ limit });
+        } catch (err) {
+          console.warn("[chat-rag] Explicit reports retrieval error:", err);
         }
-      } catch (err) {
-        console.warn("[chat-rag] Retrieval fallback:", err);
+      } else {
+        try {
+          // Priority 1: Direct CVE query
+          const cveMatch = userMsg.match(/\bCVE-\d{4}-\d{4,7}\b/i);
+          if (cveMatch) {
+            matchedReports = await mongoListReports({ q: cveMatch[0], limit: 4 });
+          }
+
+          // Priority 2: Direct Technique query
+          const techMatch = userMsg.match(/\bT\d{4}(?:\.\d{3})?\b/i);
+          if (matchedReports.length === 0 && techMatch) {
+            matchedReports = await mongoListReports({ q: techMatch[0], limit: 4 });
+          }
+
+          // Priority 3: Combined meaningful search tokens with relevance threshold
+          if (matchedReports.length === 0 && meaningfulTokens.length > 0) {
+            const hits = await mongoListReports({ q: meaningfulTokens.join(" "), limit: 6 });
+            // Strict relevance gate: only keep documents that actually contain the matched search terms
+            matchedReports = hits.filter((r) => {
+              const fullSearchable = `${r.title} ${r.publisher || ""} ${r.analysis?.threatActors?.join(" ") || ""} ${r.analysis?.malware?.join(" ") || ""} ${r.extractedEntities?.cves?.join(" ") || ""}`.toLowerCase();
+              return meaningfulTokens.some((tok) => tok.length >= 3 && fullSearchable.includes(tok));
+            });
+          }
+        } catch (err) {
+          console.warn("[chat-rag] Targeted retrieval error:", err);
+        }
       }
     }
 
@@ -3316,11 +3389,45 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
       snippet: r.matchedSnippet || r.excerpt,
     }));
 
-    const chatRes = await chatWithUnifiedAgent({
-      userMessage: userMsg,
-      groundedReports: topReports,
-      model,
-      timeoutSeconds: 40,
+    // Fetch prior messages to provide continuous conversational history
+    let priorHistory: Array<{ sender: "user" | "agent"; text: string }> = [];
+    try {
+      const prior = await mongoGetChatSessionMessages(sessionId);
+      priorHistory = prior.map((m) => ({ sender: m.sender, text: m.text }));
+    } catch {}
+
+    let chatRes: any;
+    try {
+      chatRes = await chatWithUnifiedAgent({
+        userMessage: userMsg,
+        history: priorHistory,
+        groundedReports: topReports,
+        model,
+        timeoutSeconds: 65,
+      });
+    } catch (err: any) {
+      console.error("[chatWithAgyAgent] Unified agent error:", err);
+      chatRes = {
+        success: false,
+        reply: `Autonomous agent analysis encountered an issue: ${err?.message || "Execution error"}. Please retry.`,
+        model,
+        providerId: "agy_agent",
+        latencyMs: 0,
+        error: err?.message,
+      };
+    }
+
+    // Persist agent response to session history
+    const agentMsgId = `agent-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await mongoSaveChatMessage({
+      id: agentMsgId,
+      sessionId,
+      sender: "agent",
+      text: chatRes.reply,
+      model: chatRes.model,
+      latencyMs: chatRes.latencyMs,
+      sources,
+      timestamp: new Date().toISOString(),
     });
 
     return {
@@ -3329,6 +3436,7 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
       latencyMs: chatRes.latencyMs,
       model: chatRes.model,
       providerId: chatRes.providerId,
+      sessionId,
       timestamp: new Date().toISOString(),
       error: chatRes.error,
       trace: chatRes.trace,
@@ -3336,6 +3444,26 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" })
       sources,
       groundedReportCount: topReports.length,
     };
+  });
+
+export const getAgentChatSessionMessages = createServerFn({ method: "POST" })
+  .validator(z.object({ sessionId: z.string().min(1) }))
+  .handler(async ({ data }) => {
+    const messages = await mongoGetChatSessionMessages(data.sessionId);
+    return { success: true, messages };
+  });
+
+export const clearAgentChatSession = createServerFn({ method: "POST" })
+  .validator(z.object({ sessionId: z.string().min(1) }))
+  .handler(async ({ data }) => {
+    await mongoClearChatSession(data.sessionId);
+    return { success: true };
+  });
+
+export const listAgentChatSessions = createServerFn({ method: "POST" })
+  .handler(async () => {
+    const sessions = await mongoListChatSessions();
+    return { success: true, sessions };
   });
 
 export interface ContainerDetailedMetrics {

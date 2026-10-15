@@ -2,6 +2,7 @@ import type { AttackStep, IntelAnalysis } from "./types";
 import { getActiveAIProvider, stripModelPrefix, extractJsonFromLlmText } from "./ai-manager";
 import { getProviderAdapter } from "./providers";
 import { executeInAgentSandbox } from "./agent-sandbox";
+import { warmAgentService } from "./warm-agent-service";
 import { logger } from "./logger";
 
 const KNOWN_ACTORS = [
@@ -422,12 +423,26 @@ Return pure JSON only.`;
         outputText = res.text;
       }
     } else {
-      const res = await executeInAgentSandbox(
-        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-        { timeoutMs: timeoutSeconds * 1000, category: "agent" }
-      );
-      if (res.success && res.output) {
-        outputText = res.output;
+      try {
+        const warmRes = await warmAgentService.executeSkill({
+          skill: "ATTACK_CHAIN",
+          payload: `TITLE: ${title}\nCONTENT SNIPPET:\n${snippet}`,
+          model: rawModel,
+          timeoutMs: timeoutSeconds * 1000,
+        });
+        if (warmRes.success && warmRes.text) {
+          outputText = warmRes.text;
+        }
+      } catch {}
+
+      if (!outputText) {
+        const res = await executeInAgentSandbox(
+          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+          { timeoutMs: timeoutSeconds * 1000, category: "agent" }
+        );
+        if (res.success && res.output) {
+          outputText = res.output;
+        }
       }
     }
 
@@ -511,11 +526,23 @@ Return pure JSON only.`;
       });
       if (res.success) output = res.text;
     } else {
-      const res = await executeInAgentSandbox(
-        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-        { timeoutMs: 35000, category: "agent" }
-      );
-      if (res.success) output = res.output;
+      try {
+        const warmRes = await warmAgentService.executePrompt(prompt, {
+          model: rawModel,
+          timeoutMs: 35000,
+        });
+        if (warmRes.success && warmRes.text) {
+          output = warmRes.text;
+        }
+      } catch {}
+
+      if (!output) {
+        const res = await executeInAgentSandbox(
+          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+          { timeoutMs: 35000, category: "agent" }
+        );
+        if (res.success) output = res.output;
+      }
     }
 
     if (output) {
@@ -594,11 +621,23 @@ Return pure JSON only.`;
       });
       if (res.success) output = res.text;
     } else {
-      const res = await executeInAgentSandbox(
-        ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
-        { timeoutMs: 35000, category: "agent" }
-      );
-      if (res.success) output = res.output;
+      try {
+        const warmRes = await warmAgentService.executePrompt(prompt, {
+          model: rawModel,
+          timeoutMs: 35000,
+        });
+        if (warmRes.success && warmRes.text) {
+          output = warmRes.text;
+        }
+      } catch {}
+
+      if (!output) {
+        const res = await executeInAgentSandbox(
+          ["--dangerously-skip-permissions", "--print", prompt, "--model", rawModel],
+          { timeoutMs: 35000, category: "agent" }
+        );
+        if (res.success) output = res.output;
+      }
     }
 
     if (output) {

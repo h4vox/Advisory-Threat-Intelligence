@@ -99,13 +99,13 @@ export function IdBadge({
         copyable && "cursor-pointer hover:shadow-xs active:scale-95",
         // Tones
         effectiveTone === "sage" &&
-          "border-emerald-500/25 bg-emerald-950/20 text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-900/30",
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:border-emerald-500/50 hover:bg-emerald-500/20",
         effectiveTone === "warn" &&
-          "border-amber-500/25 bg-amber-950/20 text-amber-400 hover:border-amber-500/40 hover:bg-amber-900/30",
+          "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:border-amber-500/50 hover:bg-amber-500/20",
         effectiveTone === "danger" &&
-          "border-rose-500/25 bg-rose-950/20 text-rose-400 hover:border-rose-500/40 hover:bg-rose-900/30",
+          "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:border-rose-500/50 hover:bg-rose-500/20",
         effectiveTone === "accent" &&
-          "border-cyan-500/25 bg-cyan-950/20 text-cyan-400 hover:border-cyan-500/40 hover:bg-cyan-900/30",
+          "border-accent/40 bg-accent/10 text-accent hover:border-accent hover:bg-accent/20",
         effectiveTone === "neutral" &&
           "border-border/70 bg-bg-elevated/70 text-subtle hover:border-border hover:text-fg hover:bg-bg-subtle",
         className,

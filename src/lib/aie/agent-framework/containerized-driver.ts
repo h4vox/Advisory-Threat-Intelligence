@@ -11,6 +11,11 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { AgentAuthOption, AgentDriver } from "./types";
 import {
+  AGY_AVAILABLE_MODELS,
+  DEFAULT_AGY_MODEL,
+  sanitizeAgyModel,
+} from "./types";
+import {
   DEFAULT_PKCE_VERIFIER,
   generateAgyOAuthSession,
   exchangeOAuthCodeForToken,
@@ -19,6 +24,7 @@ import {
   injectContainerOAuthToken,
   checkContainerOAuthToken,
 } from "../agent-sandbox";
+import { warmAgentService } from "../warm-agent-service";
 
 const execAsync = promisify(exec);
 const CONTAINER_NAME = "aie-agent-sandbox";
@@ -49,14 +55,9 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
 
   readonly defaultAuthMethod = "google_oauth";
 
-  readonly supportedModels: string[] = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-  ];
+  readonly supportedModels: string[] = AGY_AVAILABLE_MODELS.map((m) => m.id);
 
-  readonly defaultModel = "gemini-2.5-flash";
+  readonly defaultModel = DEFAULT_AGY_MODEL;
 
   // Active PKCE session memory for code verification
   private activeCodeVerifier: string = DEFAULT_PKCE_VERIFIER;
@@ -328,33 +329,19 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
   }
 
   /**
-   * Execute prompt or inference via container agent
+   * Execute prompt or inference via warm container agent session
    */
   async executeInference(
     prompt: string,
     model?: string
   ): Promise<{ text: string; latencyMs: number; error?: string }> {
-    const startTime = Date.now();
-    const targetModel = model || this.defaultModel;
-
-    try {
-      const sanitizedPrompt = prompt.replace(/"/g, '\\"');
-      const { stdout, stderr } = await execAsync(
-        `docker exec -i ${CONTAINER_NAME} agy --model "${targetModel}" -p "${sanitizedPrompt}"`,
-        { timeout: 60000 }
-      );
-
-      const latencyMs = Date.now() - startTime;
-      const text = stdout.trim() || stderr.trim();
-      return { text, latencyMs };
-    } catch (err: any) {
-      const latencyMs = Date.now() - startTime;
-      return {
-        text: "",
-        latencyMs,
-        error: err?.message || "Agent execution failed.",
-      };
-    }
+    const targetModel = sanitizeAgyModel(model || this.defaultModel);
+    const result = await warmAgentService.executePrompt(prompt, { model: targetModel });
+    return {
+      text: result.text,
+      latencyMs: result.latencyMs,
+      error: result.error,
+    };
   }
 
   /**

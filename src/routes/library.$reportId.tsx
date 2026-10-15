@@ -28,6 +28,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IdBadge } from "@/components/id-badge";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
@@ -142,7 +143,12 @@ function ReportPage() {
         )}
       </div>
 
-      {isLoading ? <p className="mt-6 text-sm text-muted">Loading intelligence record…</p> : null}
+      {isLoading ? (
+        <div className="flex flex-col items-center justify-center py-16 text-muted">
+          <ActivitySpinner size="lg" className="text-accent mb-2" />
+          <p className="text-sm">Loading threat intelligence record…</p>
+        </div>
+      ) : null}
       {!isLoading && !data ? <p className="mt-6 text-sm text-danger">Report not found.</p> : null}
 
       {data ? (

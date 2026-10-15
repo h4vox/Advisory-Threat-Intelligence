@@ -60,6 +60,43 @@ function RootDocument() {
     <html lang="en" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){
+              try {
+                var t = localStorage.getItem('aie_theme');
+                if (t === 'light' || (!t && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)) {
+                  document.documentElement.setAttribute('data-theme', 'light');
+                  document.documentElement.classList.add('light');
+                } else {
+                  document.documentElement.setAttribute('data-theme', 'dark');
+                  document.documentElement.classList.remove('light');
+                }
+                var s = localStorage.getItem('aie_ui_style');
+                if (s === 'liquid-glass') {
+                  document.documentElement.setAttribute('data-style', 'liquid-glass');
+                  document.documentElement.classList.add('theme-liquid-glass');
+                } else {
+                  document.documentElement.setAttribute('data-style', 'default');
+                  document.documentElement.classList.remove('theme-liquid-glass');
+                }
+                var gr = localStorage.getItem('aie_glass_blur_ratio');
+                var val = gr ? parseInt(gr, 10) : 70;
+                if (!isNaN(val) && val >= 5 && val <= 110) {
+                  var blurPx = Math.round(6 + (val / 100) * 36.0);
+                  var opDark = (0.05 + (val / 100) * 0.16).toFixed(3);
+                  var opLight = (0.50 + (val / 100) * 0.28).toFixed(3);
+                  var spec = (0.22 + (val / 100) * 0.38).toFixed(3);
+                  document.documentElement.style.setProperty('--glass-blur-ratio', val + '%');
+                  document.documentElement.style.setProperty('--glass-blur', blurPx + 'px');
+                  document.documentElement.style.setProperty('--glass-opacity-dark', opDark);
+                  document.documentElement.style.setProperty('--glass-opacity-light', opLight);
+                  document.documentElement.style.setProperty('--glass-specular-opacity', spec);
+                }
+              } catch(e) {}
+            })()`,
+          }}
+        />
       </head>
       <body>
         <PreviewHostBridge />
@@ -67,15 +104,9 @@ function RootDocument() {
           <QueryClientProvider client={queryClient}>
             <Outlet />
             <Toaster
-              theme="dark"
               position="bottom-right"
-              toastOptions={{
-                style: {
-                  background: "#12141a",
-                  border: "1px solid #2a2d33",
-                  color: "#ecece8",
-                },
-              }}
+              richColors
+              closeButton
             />
           </QueryClientProvider>
         </AuthProvider>

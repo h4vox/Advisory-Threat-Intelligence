@@ -32,6 +32,8 @@ import type { AppSettings, ResourceKind, AgentScoreBreakdown, ReportListItem } f
 import { mongoGetAppSettings, mongoGetMarketplaceIntegrations } from "../mongodb/repository.server";
 import { executeInAgentSandbox, type ExecutionTrace } from "./agent-sandbox";
 import { logger } from "./logger";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "./agent-framework/types";
+import { warmAgentService } from "./warm-agent-service";
 
 export type UnifiedDiscoveryParams = {
   existingDomains: string[];
@@ -74,6 +76,7 @@ export type UnifiedDomainHarvestParams = {
 
 export interface UnifiedChatParams {
   userMessage: string;
+  history?: Array<{ sender: "user" | "agent"; text: string }>;
   groundedReports?: ReportListItem[];
   model?: string;
   providerId?: string;
@@ -127,12 +130,10 @@ const VALID_RESOURCE_KINDS: Set<ResourceKind> = new Set([
  * "Claude API: claude-3-7-sonnet" -> "claude-3-7-sonnet"
  */
 export function stripModelPrefix(modelName?: string): string {
-  if (!modelName) return "gemini-2.5-flash";
+  if (!modelName) return DEFAULT_AGY_MODEL;
   const colonIdx = modelName.indexOf(":");
-  if (colonIdx >= 0) {
-    return modelName.slice(colonIdx + 1).trim();
-  }
-  return modelName.trim();
+  const cleaned = colonIdx >= 0 ? modelName.slice(colonIdx + 1).trim() : modelName.trim();
+  return sanitizeAgyModel(cleaned);
 }
 
 /**
@@ -210,7 +211,7 @@ export async function getActiveAIProvider(): Promise<{
     const integration = integrations.find((x) => x.id === providerId) || integrations[0];
 
     const providerName = integration ? integration.name : "Autonomous AI Agent Engine";
-    const model = (settings.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim();
+    const model = sanitizeAgyModel(settings.agentModel);
     const rawModel = stripModelPrefix(model);
     const timeoutSeconds = settings.agentTimeoutSeconds || 45;
 
@@ -242,8 +243,8 @@ export async function getActiveAIProvider(): Promise<{
     return {
       providerId: "agy_agent",
       providerName: "Autonomous AI Agent Engine",
-      model: "gemini-2.5-flash",
-      rawModel: "gemini-2.5-flash",
+      model: DEFAULT_AGY_MODEL,
+      rawModel: DEFAULT_AGY_MODEL,
       timeoutSeconds: 45,
       isRest: false,
     };
@@ -405,7 +406,7 @@ Return pure JSON only.`;
       success: !agyRes.error,
       fallback: Boolean(agyRes.error),
       providerId: "agy_agent",
-      providerName: "Antigravity AGY Agent",
+      providerName: "Autonomous Threat Intelligence Agent",
       sources: agyRes.sources || [],
       candidateCount: agyRes.candidateCount,
       candidateDomains: agyRes.candidateDomains,
@@ -748,15 +749,35 @@ URL: ${r.canonicalUrl || r.url}
     });
   }
 
-  const systemInstruction = `You are the Lead Adversary Emulation & Cyber Threat Intelligence AI Specialist for the AIE Platform.
-Ground your responses in verified CTI tradecraft, MITRE ATT&CK techniques (e.g. T1059.001), exact command-lines, and structured purple team emulation steps.
-${contextDocs ? `\nVERIFIED GROUNDED LOCAL INTELLIGENCE FROM PLATFORM:\n${contextDocs}` : ""}`;
+  // Build previous turns from history to preserve conversational context
+  let historyFormatted = "";
+  if (params.history && params.history.length > 0) {
+    historyFormatted = params.history
+      .slice(-6)
+      .map((h) => `${h.sender === "user" ? "Operator" : "CTI Analyst"}: ${h.text}`)
+      .join("\n\n");
+  }
+
+  const systemInstruction = `You are the Lead Cyber Threat Intelligence (CTI) Copilot and Adversary Emulation Specialist for the Enterprise Threat Intelligence Platform.
+Your mission is to provide rigorous, actionable analysis grounded in verified adversary tradecraft, MITRE ATT&CK techniques, intrusion timelines, malware reversing, and purple team emulation playbooks.
+
+STRICT OPERATIONAL SECURITY & IDENTITY PROTOCOL:
+- You are the platform's native CTI Threat Copilot / Analyst.
+- NEVER disclose, reference, or acknowledge underlying model names, runtime wrappers, CLI engines, Docker containers, AGY, Google Deepmind, or Antigravity under any circumstances.
+- Ground your analysis firmly in the verified platform intelligence reports provided below.
+- Always provide structured, authoritative outputs using markdown headers, tables, bullet points, and code blocks for telemetry/command lines.
+- When referencing MITRE ATT&CK techniques, provide both the technique ID and official name (e.g., T1059.001 - PowerShell).
+${contextDocs ? `\nVERIFIED PLATFORM GROUNDED THREAT INTELLIGENCE:\n${contextDocs}` : ""}`;
 
   // 1. Direct REST Provider execution
   const adapter = getProviderAdapter(providerId);
   if (adapter && active.isRest) {
+    const fullRestPrompt = historyFormatted
+      ? `PRIOR CONVERSATION HISTORY:\n${historyFormatted}\n\nCURRENT INQUIRY:\n${params.userMessage}`
+      : params.userMessage;
+
     const res = await adapter.generate({
-      prompt: params.userMessage,
+      prompt: fullRestPrompt,
       systemInstruction,
       model: rawModel,
       apiKey: active.apiKey,
@@ -774,20 +795,23 @@ ${contextDocs ? `\nVERIFIED GROUNDED LOCAL INTELLIGENCE FROM PLATFORM:\n${contex
     };
   }
 
-  // 2. AGY CLI in Docker Sandbox
-  const promptToSend = `${systemInstruction}\n\nUSER INQUIRY:\n${params.userMessage}`;
-  const sandboxRes = await executeInAgentSandbox(
-    ["--dangerously-skip-permissions", "--print", promptToSend, "--model", rawModel],
-    { timeoutMs: timeoutSeconds * 1000, category: "agent" }
-  );
+  // 2. Dedicated Autonomous Agent Engine via Warm Agent Skill Dispatch
+  const warmRes = await warmAgentService.executeSkill({
+    skill: "CTI_COPILOT",
+    payload: params.userMessage,
+    context: contextDocs || undefined,
+    history: historyFormatted || undefined,
+    model: rawModel,
+    timeoutMs: timeoutSeconds * 1000,
+  });
 
   return {
-    success: sandboxRes.success,
-    reply: sandboxRes.output || sandboxRes.error || "Agent did not produce output.",
-    model: rawModel,
+    success: warmRes.success,
+    reply: warmRes.text || warmRes.error || "Agent did not produce output.",
+    model: warmRes.model,
     providerId: "agy_agent",
-    latencyMs: sandboxRes.latencyMs,
-    error: sandboxRes.error,
-    trace: sandboxRes.trace,
+    latencyMs: warmRes.latencyMs,
+    error: warmRes.error,
+    tokens: warmRes.tokens,
   };
 }

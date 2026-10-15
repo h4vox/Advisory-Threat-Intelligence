@@ -38,6 +38,7 @@ import {
 } from "../aie/marketplace-registry";
 import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
 import { isCandidateResourceUrl } from "../aie/qualification";
+import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "../aie/agent-framework/types";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -403,6 +404,7 @@ export async function mongoListReports(params?: {
   publisher?: string;
   minScore?: number;
   hasIocs?: boolean;
+  limit?: number;
 }): Promise<ReportListItem[]> {
   const isDefaultQuery =
     !params ||
@@ -416,7 +418,9 @@ export async function mongoListReports(params?: {
       `Returned ${cachedReportsList.data.length} cached intelligence reports`,
       true,
     );
-    return cachedReportsList.data;
+    return typeof params?.limit === "number" && params.limit > 0
+      ? cachedReportsList.data.slice(0, params.limit)
+      : cachedReportsList.data;
   }
 
   await ensureMongoIndexes();
@@ -642,6 +646,9 @@ export async function mongoListReports(params?: {
   }
 
   const cursor = col.find(filter).sort({ ingestedAt: -1 }).project(projection);
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    cursor.limit(params.limit);
+  }
 
   const docs = await cursor.toArray();
   logger.mongo(
@@ -1002,7 +1009,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   agentCrawlSourcesEnabled: true,
   agentLibraryAuditEnabled: true,
   agentAutoPruneJunkEnabled: false,
-  agentModel: "gemini-2.5-flash",
+  agentModel: DEFAULT_AGY_MODEL,
   agentTimeoutSeconds: 45,
 };
 
@@ -1067,7 +1074,7 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       agentCrawlSourcesEnabled: Boolean(doc.agentCrawlSourcesEnabled ?? true),
       agentLibraryAuditEnabled: Boolean(doc.agentLibraryAuditEnabled ?? true),
       agentAutoPruneJunkEnabled: Boolean(doc.agentAutoPruneJunkEnabled ?? false),
-      agentModel: (doc.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
+      agentModel: sanitizeAgyModel(doc.agentModel),
       agentTimeoutSeconds: Number(doc.agentTimeoutSeconds ?? 45),
     };
   } else {
@@ -3266,7 +3273,7 @@ export async function mongoUninstallMarketplaceIntegration(id: string): Promise<
     if (settings.activeAgentProvider === id) {
       await mongoUpdateAppSettings({
         activeAgentProvider: "agy_agent",
-        agentModel: "gemini-2.5-flash",
+        agentModel: DEFAULT_AGY_MODEL,
       });
     }
   } catch (err) {
@@ -3282,11 +3289,105 @@ export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
 
   return {
     activeProviderId: settings.activeAgentProvider || "agy_agent",
-    activeModel: (settings.agentModel || "gemini-2.5-flash").replace(/^AGY:\s*/i, "").trim(),
+    activeModel: sanitizeAgyModel(settings.agentModel),
     integrations,
     curatedResources: DEFAULT_CURATED_RESOURCES,
     powerups: DEFAULT_POWERUPS,
     playbooks: DEFAULT_PLAYBOOKS,
   };
+}
+
+export interface AgentChatMessageRecord {
+  id: string;
+  sessionId: string;
+  sender: "user" | "agent";
+  text: string;
+  model?: string;
+  latencyMs?: number;
+  sources?: any[];
+  timestamp: string;
+}
+
+export async function mongoSaveChatMessage(message: AgentChatMessageRecord): Promise<void> {
+  if (!isMongoConfigured()) return;
+  try {
+    const col = await getThreatIntelCollection();
+    await col.insertOne({
+      docType: "agent_chat_message",
+      ...message,
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    console.warn("[chat-repo] Failed to persist chat message:", err);
+  }
+}
+
+export async function mongoGetChatSessionMessages(sessionId: string): Promise<AgentChatMessageRecord[]> {
+  if (!isMongoConfigured()) return [];
+  try {
+    const col = await getThreatIntelCollection();
+    const docs = await col
+      .find({ docType: "agent_chat_message", sessionId })
+      .sort({ createdAt: 1 })
+      .limit(100)
+      .toArray();
+
+    return docs.map((d: any) => ({
+      id: d.id || String(d._id),
+      sessionId: d.sessionId,
+      sender: d.sender,
+      text: d.text,
+      model: d.model,
+      latencyMs: d.latencyMs,
+      sources: d.sources,
+      timestamp: d.timestamp || d.createdAt?.toISOString?.() || new Date().toISOString(),
+    }));
+  } catch (err) {
+    console.warn("[chat-repo] Failed to get session messages:", err);
+    return [];
+  }
+}
+
+export async function mongoClearChatSession(sessionId: string): Promise<void> {
+  if (!isMongoConfigured()) return;
+  try {
+    const col = await getThreatIntelCollection();
+    await col.deleteMany({ docType: "agent_chat_message", sessionId });
+  } catch (err) {
+    console.warn("[chat-repo] Failed to clear session:", err);
+  }
+}
+
+export async function mongoListChatSessions(): Promise<
+  Array<{ sessionId: string; lastMessage: string; messageCount: number; updatedAt: string }>
+> {
+  if (!isMongoConfigured()) return [];
+  try {
+    const col = await getThreatIntelCollection();
+    const pipeline = [
+      { $match: { docType: "agent_chat_message" } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$sessionId",
+          lastMessage: { $first: "$text" },
+          messageCount: { $sum: 1 },
+          updatedAt: { $first: "$createdAt" },
+        },
+      },
+      { $sort: { updatedAt: -1 } },
+      { $limit: 15 },
+    ];
+    const results = await col.aggregate(pipeline).toArray();
+    return results.map((r: any) => ({
+      sessionId: r._id,
+      lastMessage: (r.lastMessage || "").slice(0, 80),
+      messageCount: r.messageCount || 0,
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+    }));
+  } catch (err) {
+    console.warn("[chat-repo] Failed to list sessions:", err);
+    return [];
+  }
 }
 

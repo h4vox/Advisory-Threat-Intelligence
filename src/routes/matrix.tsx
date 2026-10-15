@@ -27,6 +27,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { getReportPdf, listReports } from "@/lib/aie/server";
 import {
   mapReportsToMitreMatrix,
@@ -361,7 +362,11 @@ function MatrixPage() {
               onClick={() => refetch()}
               disabled={isFetching}
             >
-              <RefreshCw className={cn("size-3.5", isFetching && "animate-spin text-accent")} />
+              {isFetching ? (
+                <ActivitySpinner size="xs" className="text-accent" />
+              ) : (
+                <RefreshCw className="size-3.5 text-accent" />
+              )}
               <span>Sync Intel ({stats.totalMappedReports})</span>
             </Button>
 
@@ -1115,7 +1120,7 @@ function MatrixPage() {
               <div className="flex-1 overflow-hidden bg-neutral-950">
                 {isPreviewLoading ? (
                   <div className="flex h-full flex-col items-center justify-center text-muted">
-                    <RefreshCw className="size-6 animate-spin text-accent mb-2" />
+                    <ActivitySpinner size="lg" className="text-accent mb-2" />
                     <p className="text-sm font-mono">Rendering document view...</p>
                   </div>
                 ) : previewData?.rawHtml ? (
