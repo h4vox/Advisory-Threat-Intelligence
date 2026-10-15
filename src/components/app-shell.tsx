@@ -1,19 +1,73 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Bot, Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sparkles, Sun, Upload } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  Bot,
+  ChevronDown,
+  ChevronsUpDown,
+  Cpu,
+  Globe2,
+  Layers,
+  LayoutDashboard,
+  Library,
+  LogOut,
+  Menu,
+  Moon,
+  Search,
+  Settings,
+  Sparkles,
+  Sun,
+  Upload,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/cn";
+import { getStorageStats } from "@/lib/aie/server";
+import { authEnabled, signOut } from "@/lib/auth/client";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
-import { UserButton } from "@/lib/auth/gates";
+import { CommandPalette, type PaletteNavItem } from "./layout/command-palette";
 
-const NAV = [
-  { to: "/", label: "Overview", icon: Radar },
-  { to: "/matrix", label: "ATT&CK Matrix", icon: Layers },
-  { to: "/sources", label: "Sources", icon: Globe2 },
-  { to: "/ingest", label: "Ingest", icon: Upload },
-  { to: "/library", label: "Library", icon: Library },
-  { to: "/marketplace", label: "Marketplace", icon: Cpu },
-  { to: "/settings", label: "Settings", icon: Settings },
-] as const;
+type NavIcon = ComponentType<{ className?: string; strokeWidth?: number }>;
+type NavItem = { to: string; label: string; icon: NavIcon };
+type NavGroup = { id: string; label: string | null; items: NavItem[] };
+
+const NAV_GROUPS: NavGroup[] = [
+  { id: "home", label: null, items: [{ to: "/", label: "Overview", icon: LayoutDashboard }] },
+  {
+    id: "intel",
+    label: "Intelligence",
+    items: [
+      { to: "/library", label: "Library", icon: Library },
+      { to: "/matrix", label: "ATT&CK Matrix", icon: Layers },
+    ],
+  },
+  {
+    id: "collection",
+    label: "Collection",
+    items: [
+      { to: "/sources", label: "Sources", icon: Globe2 },
+      { to: "/ingest", label: "Ingest", icon: Upload },
+    ],
+  },
+  {
+    id: "platform",
+    label: "Platform",
+    items: [
+      { to: "/marketplace", label: "Marketplace", icon: Cpu },
+      { to: "/settings", label: "Settings", icon: Settings },
+    ],
+  },
+];
+
+const PALETTE_ITEMS: PaletteNavItem[] = NAV_GROUPS.flatMap((g) =>
+  g.items.map((i) => ({ ...i, group: g.label ?? "Home" })),
+);
+
+function isActive(pathname: string, to: string) {
+  return to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
+}
 
 function AieMark({ className }: { className?: string }) {
   return (
@@ -51,6 +105,39 @@ export function AppShell({
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">("default");
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const user = useCurrentUser();
+
+  const countsQuery = useQuery({
+    queryKey: ["nav-counts"],
+    queryFn: () => getStorageStats(),
+    staleTime: 5 * 60_000,
+  });
+  // Only show counts the store actually reports (no badge rather than a misleading 0).
+  const storeCounts = countsQuery.data?.configured ? countsQuery.data : undefined;
+  const counts: Record<string, number | undefined> = {
+    "/library": storeCounts?.totalReports,
+    "/sources": storeCounts?.totalSources,
+  };
+
+  // ⌘K / Ctrl+K opens search from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Close the mobile drawer on navigation.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     const saved = localStorage.getItem("aie_theme") as "dark" | "light" | null;
@@ -136,131 +223,226 @@ export function AppShell({
     window.dispatchEvent(new Event("aie-style-changed"));
   };
 
-  return (
-    <div className={cn("h-dvh w-full overflow-hidden flex text-fg app-shell-root", uiStyle === "liquid-glass" ? "bg-transparent" : "bg-bg")}>
-      {/* 100% STATIC DESKTOP SIDEBAR: Never moves or shifts during page scrolling */}
-      <aside className={cn("hidden md:flex h-full w-56 shrink-0 flex-col border-r border-border px-4 py-6 overflow-y-auto select-none", uiStyle === "liquid-glass" ? "bg-bg/80 backdrop-blur-xl" : "bg-bg")}>
-        <div className="mb-8 flex items-center gap-2.5 px-1">
-          <AieMark className="size-8 text-accent" />
-          <div>
-            <div className="text-sm font-medium tracking-tight">AIE</div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-subtle">
-              Phase 1 · Retrieval
-            </div>
+  const workspaceMenu = (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-bg-subtle"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-elevated">
+            <AieMark className="size-6 text-accent" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold text-fg">AIE</span>
+            <span className="block truncate text-xs text-muted">{user?.primaryEmail ?? "Adversary Intelligence Engine"}</span>
+          </span>
+          <ChevronsUpDown className="size-4 shrink-0 text-subtle" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="start"
+          sideOffset={6}
+          className="z-50 w-60 rounded-lg border border-border bg-bg-elevated p-1 text-sm shadow-xl"
+        >
+          <div className="px-2 py-1.5">
+            <div className="truncate font-medium text-fg">{user?.displayName ?? "Analyst"}</div>
+            <div className="truncate text-xs text-muted">{user?.primaryEmail ?? ""}</div>
           </div>
-        </div>
-        <nav className="flex flex-1 flex-col gap-1">
-          {NAV.map((item) => {
-            const active = item.to === "/" ? pathname === "/" : Boolean(pathname && pathname.startsWith(item.to));
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                preload="intent"
-                className={cn(
-                  "flex h-11 items-center gap-2.5 rounded-md px-3 text-sm transition-colors duration-150",
-                  active ? "bg-bg-subtle text-fg font-medium" : "text-muted hover:bg-bg-elevated hover:text-fg",
-                )}
+          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <DropdownMenu.Item
+            onSelect={toggleTheme}
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+          >
+            {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            {theme === "dark" ? "Light theme" : "Dark theme"}
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={toggleUiStyle}
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+          >
+            <Sparkles className="size-4" />
+            {uiStyle === "liquid-glass" ? "Default style" : "Liquid glass style"}
+          </DropdownMenu.Item>
+          {authEnabled && (
+            <>
+              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+              <DropdownMenu.Item
+                onSelect={() => void signOut().catch(() => undefined)}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
               >
-                <item.icon className="size-4" strokeWidth={1.75} />
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="mt-auto border-t border-border pt-4 text-[11px] leading-relaxed text-subtle">
-          Public CTI only. Evidence-preserving ingest. No production malware.
+                <LogOut className="size-4" />
+                Sign out
+              </DropdownMenu.Item>
+            </>
+          )}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+
+  const sidebarBody = (
+    <>
+      <div className="border-b border-border px-3 py-3">{workspaceMenu}</div>
+      <div className="border-b border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setPaletteOpen(true)}
+          className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
+        >
+          <Search className="size-4" strokeWidth={1.75} />
+          Search
+          <kbd className="ml-auto rounded border border-border bg-bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-subtle">⌘K</kbd>
+        </button>
+      </div>
+      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-2">
+        {NAV_GROUPS.map((group) => {
+          const isCollapsed = group.label ? collapsed[group.id] : false;
+          return (
+            <div key={group.id} className={cn(group.label && "mt-2 border-t border-border pt-2")}>
+              {group.label && (
+                <button
+                  type="button"
+                  aria-expanded={!isCollapsed}
+                  onClick={() => setCollapsed((c) => ({ ...c, [group.id]: !c[group.id] }))}
+                  className="flex h-9 w-full items-center justify-between rounded-md px-2.5 text-[13px] font-medium text-muted transition-colors hover:text-fg"
+                >
+                  {group.label}
+                  <ChevronDown className={cn("size-4 transition-transform", isCollapsed && "-rotate-90")} />
+                </button>
+              )}
+              {!isCollapsed && (
+                <ul className="flex flex-col gap-0.5">
+                  {group.items.map((item) => {
+                    const active = isActive(pathname, item.to);
+                    const count = counts[item.to];
+                    return (
+                      <li key={item.to}>
+                        <Link
+                          to={item.to}
+                          preload="intent"
+                          aria-current={active ? "page" : undefined}
+                          className={cn(
+                            "relative flex h-10 items-center gap-2.5 rounded-lg px-2.5 text-sm transition-colors",
+                            active ? "bg-bg-subtle font-medium text-fg" : "text-muted hover:bg-bg-elevated hover:text-fg",
+                          )}
+                        >
+                          {active && <span aria-hidden className="absolute -left-3 top-1.5 bottom-1.5 w-[3px] rounded-r bg-accent" />}
+                          <item.icon className="size-[18px]" strokeWidth={1.75} />
+                          {item.label}
+                          {typeof count === "number" && (
+                            <span className="ml-auto rounded bg-bg-elevated px-1.5 py-px font-mono text-[10px] text-muted tabular-nums">
+                              {count}
+                            </span>
+                          )}
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </nav>
+      <div className="border-t border-border px-3 py-3">
+        <button
+          type="button"
+          onClick={() => setAgentDrawerOpen(true)}
+          className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
+          title="Open the AI agent chat"
+        >
+          <Bot className="size-[18px]" strokeWidth={1.75} />
+          AI Agent
+          <span className="relative ml-auto flex size-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sage opacity-60" />
+            <span className="relative inline-flex size-2 rounded-full bg-sage" />
+          </span>
+        </button>
+        <div className="mt-2 px-2.5 text-[11px] leading-relaxed text-subtle">
+          Public CTI only. Evidence-preserving ingest.
         </div>
+      </div>
+    </>
+  );
+
+  return (
+    <div className={cn("flex h-dvh w-full overflow-hidden text-fg app-shell-root", uiStyle === "liquid-glass" ? "bg-transparent" : "bg-bg")}>
+      {/* Desktop sidebar */}
+      <aside
+        className={cn(
+          "hidden h-full w-64 shrink-0 select-none flex-col border-r border-border md:flex",
+          uiStyle === "liquid-glass" ? "bg-bg/80 backdrop-blur-xl" : "bg-bg",
+        )}
+      >
+        {sidebarBody}
       </aside>
 
-      {/* Main Content Column: Strictly fills remaining screen with static header and scrollable body */}
-      <div className="flex min-w-0 flex-1 flex-col h-full overflow-hidden">
-        {/* 100% STATIC TOP HEADER: Fixed in place, never scrolls away or jitters */}
-        <header className={cn("shrink-0 z-30 flex items-center justify-between border-b border-border px-4 py-3 md:px-8", uiStyle === "liquid-glass" ? "bg-bg/75 backdrop-blur-xl" : "bg-bg")}>
-          <div className="flex items-center gap-2 md:hidden">
-            <AieMark className="size-7 text-accent" />
-            <span className="text-sm font-medium">AIE</span>
-          </div>
-          <div className="hidden font-mono text-[11px] uppercase tracking-widest text-subtle md:block">
-            Adversary Intelligence Engine
-          </div>
-          <div className="flex items-center gap-3 text-subtle">
-            <div className="flex items-center gap-2">
-              <Database className="size-3.5" />
-              <span className="font-mono text-[11px] uppercase tracking-wider hidden sm:inline">Retrieval store</span>
-            </div>
+      {/* Mobile drawer */}
+      <Dialog.Root open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 md:hidden" />
+          <Dialog.Content className="fixed inset-y-0 left-0 z-50 flex w-[82vw] max-w-xs flex-col border-r border-border bg-bg md:hidden">
+            <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+            <Dialog.Description className="sr-only">Main navigation</Dialog.Description>
+            <Dialog.Close
+              aria-label="Close navigation"
+              className="absolute right-3 top-4 z-10 rounded-md p-1.5 text-muted hover:bg-bg-subtle hover:text-fg"
+            >
+              <X className="size-4" />
+            </Dialog.Close>
+            {sidebarBody}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
-            {/* AI Agent Drawer Trigger Button */}
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Mobile top bar (desktop pages carry their own header) */}
+        <header className="flex shrink-0 items-center gap-2 border-b border-border bg-bg px-3 py-2 md:hidden">
+          <button
+            type="button"
+            aria-label="Open navigation"
+            onClick={() => setMobileNavOpen(true)}
+            className="rounded-md p-2 text-muted hover:bg-bg-subtle hover:text-fg"
+          >
+            <Menu className="size-5" />
+          </button>
+          <AieMark className="size-6 text-accent" />
+          <span className="text-sm font-semibold">AIE</span>
+          <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
+              aria-label="Search"
+              onClick={() => setPaletteOpen(true)}
+              className="rounded-md p-2 text-muted hover:bg-bg-subtle hover:text-fg"
+            >
+              <Search className="size-5" />
+            </button>
+            <button
+              type="button"
+              aria-label="Open AI agent"
               onClick={() => setAgentDrawerOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-accent/30 bg-accent/10 hover:bg-accent/20 text-accent transition-colors cursor-pointer group"
-              title="Open AI Agent Cognitive Chat & IPC Console"
+              className="rounded-md p-2 text-muted hover:bg-bg-subtle hover:text-fg"
             >
-              <span className="relative flex size-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
-              </span>
-              <Bot className="size-3.5 text-accent" />
-              <span className="font-mono text-[11px] font-medium hidden sm:inline">AI Agent</span>
+              <Bot className="size-5" />
             </button>
-
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="flex size-8 items-center justify-center rounded-lg border border-border bg-bg-elevated text-muted hover:text-fg hover:bg-bg-subtle transition-colors"
-              title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-            >
-              {theme === "dark" ? <Sun className="size-4 text-warn" /> : <Moon className="size-4 text-accent" />}
-            </button>
-            <div className="hidden sm:block">
-              <UserButton />
-            </div>
           </div>
         </header>
 
-        {/* Main Content Container */}
         <main
           className={cn(
-            "flex-1 w-full",
-            flush
-              ? "overflow-hidden p-0 flex flex-col"
-              : "overflow-y-auto px-4 py-6 md:px-8 md:py-8 pb-20 md:pb-8",
-            className
+            "w-full flex-1",
+            flush ? "flex flex-col overflow-hidden p-0" : "overflow-y-auto px-4 py-6 md:px-10 md:py-8",
+            className,
           )}
         >
           {children}
         </main>
       </div>
 
-      {/* Global AI Agent Slide-Over Chat Drawer (Matches 1/4 Screen Width) */}
-      <AieAgentChatDrawer
-        isOpen={agentDrawerOpen}
-        onClose={() => setAgentDrawerOpen(false)}
-      />
-
-      {/* Mobile Bottom Navigation: Fixed to bottom */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 backdrop-blur md:hidden">
-        <div className="grid grid-cols-7">
-          {NAV.map((item) => {
-            const active = item.to === "/" ? pathname === "/" : Boolean(pathname && pathname.startsWith(item.to));
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                preload="intent"
-                className={cn(
-                  "flex h-14 flex-col items-center justify-center gap-0.5 text-[10px] uppercase tracking-wider",
-                  active ? "text-fg" : "text-subtle",
-                )}
-              >
-                <item.icon className="size-4" strokeWidth={1.75} />
-                {item.label}
-              </Link>
-            );
-          })}
-        </div>
-      </nav>
+      <AieAgentChatDrawer isOpen={agentDrawerOpen} onClose={() => setAgentDrawerOpen(false)} />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} navItems={PALETTE_ITEMS} />
     </div>
   );
 }
