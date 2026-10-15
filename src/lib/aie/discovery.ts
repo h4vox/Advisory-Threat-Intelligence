@@ -1,4 +1,5 @@
 import { deriveCrawlPattern, isCandidateResourceUrl, matchesCrawlPattern } from "./qualification";
+import { isSafeCrawlPatternString, isSafePublicUrlString } from "./security";
 import type { DiscoveredSourceRecord, DiscoveryGraphEdge, ResourceKind } from "./types";
 
 export type OutlinkKind = "citation" | "pdf_document" | "repository" | "research_paper" | "internal_article";
@@ -304,6 +305,8 @@ export function extractOutlinksAndCitations(
 
       const cleanUrl = resolved.toString();
       if (seenUrls.has(cleanUrl) || cleanUrl === baseUrlStr) continue;
+      // SSRF guard: drop outlinks to private/internal hosts or non-http(s) schemes before they are recorded.
+      if (!isSafePublicUrlString(cleanUrl)) continue;
 
       // Determine outlink kind
       let outlinkKind: OutlinkKind = "internal_article";
@@ -392,11 +395,21 @@ export function extractOutlinksAndCitations(
       if (isExternal && trust.trustScore >= 0.60) {
         const crawlPattern = deriveCrawlPattern(cleanUrl);
         const baseEndpoint = crawlPattern.replace(/\/\*+$/, "");
+        const sourceHomepage = baseEndpoint.startsWith("http") ? baseEndpoint : `${resolved.protocol}//${targetHost}/`;
+        // SSRF guard: never persist a discovered source that points at an internal/private host.
+        if (
+          !isSafePublicUrlString(targetHost) ||
+          !isSafePublicUrlString(sourceHomepage) ||
+          !isSafeCrawlPatternString(crawlPattern)
+        ) {
+          console.warn(`[discovery] skipping unsafe discovered source candidate: ${targetHost.slice(0, 120)}`);
+          continue;
+        }
         newDiscoveredSources.push({
           id: `src_disc_${targetHost.replace(/[^a-z0-9]/gi, "_").slice(0, 30)}`,
           domain: targetHost,
           name: targetHost.charAt(0).toUpperCase() + targetHost.slice(1),
-          homepageUrl: baseEndpoint.startsWith("http") ? baseEndpoint : `${resolved.protocol}//${targetHost}/`,
+          homepageUrl: sourceHomepage,
           crawlPattern,
           parentSource: host,
           parentUrl: baseUrlStr,

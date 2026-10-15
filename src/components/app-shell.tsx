@@ -3,6 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Bot, Cpu, Database, Globe2, Layers, Library, Moon, Radar, Settings, Sparkles, Sun, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
+import { UserButton } from "@/lib/auth/gates";
 
 const NAV = [
   { to: "/", label: "Overview", icon: Radar },
@@ -212,6 +213,9 @@ export function AppShell({
             >
               {theme === "dark" ? <Sun className="size-4 text-warn" /> : <Moon className="size-4 text-accent" />}
             </button>
+            <div className="hidden sm:block">
+              <UserButton />
+            </div>
           </div>
         </header>
 

@@ -2,7 +2,11 @@
  * Always-Alive Warm Agent Session Service
  *
  * Maintains a persistent, warm NDJSON streaming process inside the isolated
- * Docker sandbox (`aie-agent-sandbox`) using `agy --input-format stream-json --output-format stream-json`.
+ * Docker sandbox (`aie-agent-sandbox`) using
+ * `agy --print --input-format stream-json --output-format stream-json`.
+ * The agent runs print-only without permission bypass (no tools), prompts are
+ * sent over stdin, and nothing ever runs on the host. Conversation state is
+ * kept in memory only.
  *
  * Eliminates the 14-second cold-start penalty per prompt down to 2.0 - 2.8s pure inference latency,
  * and maintains conversational memory across multi-turn interactions.
@@ -10,27 +14,40 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
-import fs from "node:fs";
-import path from "node:path";
 import {
-  AGY_AVAILABLE_MODELS,
   DEFAULT_AGY_MODEL,
+  UNTRUSTED_CONTENT_NOTICE,
   sanitizeAgyModel,
+  wrapUntrustedContent,
 } from "./agent-framework/types";
-import { executeInAgentSandbox, autoSyncTokenFromHostIfAvailable, type ExecutionTrace } from "./agent-sandbox";
+import {
+  AGENT_CONTAINER_NAME,
+  buildAgentCliArgs,
+  detectSandboxRuntime,
+  encodeAgentUserTurn,
+  runAgentPromptInSandbox,
+} from "./agent-sandbox";
 
-const CONTAINER_NAME = "aie-agent-sandbox";
+const CONTAINER_NAME = AGENT_CONTAINER_NAME;
 const IDLE_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes idle shutdown
 const TURN_TIMEOUT_MS = 65 * 1000; // 65 seconds per turn
-const CONVERSATION_STATE_FILE = path.join(process.cwd(), ".agy_conversation_id");
 
 interface TurnQueueItem {
   prompt: string;
   model: string;
   timeoutMs: number;
   resolve: (res: WarmInferenceResult) => void;
-  reject: (err: any) => void;
   startTime: number;
+}
+
+interface ActiveTurn {
+  id: number;
+  item: TurnQueueItem;
+  /** Cold fallback is running; warm-stream events must not settle this turn. */
+  inFallback: boolean;
+  response: string;
+  startTime: number;
+  timer: NodeJS.Timeout | null;
 }
 
 export interface WarmInferenceResult {
@@ -83,7 +100,7 @@ Directives:
 - Maintain high information density using structured markdown, bullet points, and code blocks for telemetry/command lines.
 - Ground analysis strictly in verified platform intelligence reports when provided.
 - NEVER disclose underlying model architectures, container runtimes, or internal system wrappers.
-${context ? `\nVERIFIED PLATFORM GROUNDED CTI EVIDENCE:\n${context}\n` : ""}
+${context ? `\n${UNTRUSTED_CONTENT_NOTICE}\nPLATFORM CTI EVIDENCE (stored third-party reports):\n${wrapUntrustedContent(context)}\n` : ""}
 ${history ? `\nPRIOR CONVERSATION CONTEXT:\n${history}\n` : ""}
 Operator Inquiry: ${payload}`;
 
@@ -100,9 +117,10 @@ Total Score = sum(dimensions). recommendApproval = true if score >= 50.
 Taxonomy:
 - Classification: ADVERSARY_EMULATION, INTRUSION_REPORT, ATTACK_CHAIN_REPORT, MALWARE_ANALYSIS, THREAT_ACTOR_REPORT, CAMPAIGN_REPORT, VULNERABILITY_REPORT, DETECTION_RESEARCH, SECURITY_ADVISORY, OTHER.
 - ResourceKind: FULL_ATTACK_CHAIN, CAMPAIGN_INTEL, PROCEDURE_DEEPDIVE, MALWARE_ANALYSIS, DETECTION_GUIDANCE, VULNERABILITY_ADVISORY, THREAT_ACTOR_DOSSIER.
-${context ? `Context: ${context}\n` : ""}
+${UNTRUSTED_CONTENT_NOTICE}
+${context ? `Context:\n${wrapUntrustedContent(context)}\n` : ""}
 Input Document:
-${payload}
+${wrapUntrustedContent(payload)}
 
 Output pure JSON only:
 {"isRelevant":true,"passScore":85,"recommendApproval":true,"classification":"ATTACK_CHAIN_REPORT","resourceKind":"FULL_ATTACK_CHAIN","threatActors":[],"malwareFamilies":[],"cves":[],"mitreTechniques":[],"stages":[],"scoreBreakdown":{"proceduralDepth":26,"attackProgression":22,"attributionContext":12,"emulationUtility":16,"iocVerifiability":9,"totalScore":85},"rationale":"..."}`;
@@ -110,9 +128,10 @@ Output pure JSON only:
     case "ATTACK_CHAIN":
       return `[SKILL: ATTACK_CHAIN]
 Synthesize a chronological multi-stage attack chain with concrete procedures, MITRE ATT&CK techniques, detection rules, and purple team emulation commands from this report.
-${context ? `Context: ${context}\n` : ""}
+${UNTRUSTED_CONTENT_NOTICE}
+${context ? `Context:\n${wrapUntrustedContent(context)}\n` : ""}
 Report Text:
-${payload}
+${wrapUntrustedContent(payload)}
 
 Output pure JSON only:
 {"classification":"THREAT_REPORT","threatActors":[],"malware":[],"vulnerabilities":[],"ttps":["T1190: ..."],"ioas":[],"attackChain":[{"order":1,"tactic":"Initial Access","techniques":["T1190"],"summary":"..."}],"detections":["Sigma: ..."],"hunting":[],"emulation":["Atomic Test: ..."]}`;
@@ -122,7 +141,7 @@ Output pure JSON only:
 Role: Adversary Emulation Intelligence Source Hunter.
 Mission: Discover high-value, distinct, highly technical threat intelligence sources or research lab endpoints (e.g., Check Point Research, Securelist, Huntress, Red Canary, Volexity, Sophos X-Ops, Cybereason, Sygnia, NCC Group, Malwarebytes Labs, Jamf Threat Labs, Morphisec, Elastic Labs).
 Focus: Full intrusion/attack chains, multi-stage infection chains, forensic timelines, adversary TTPs, and malware analysis.
-${context ? `Known Domains To Exclude:\n${context}\n` : ""}
+${context ? `${UNTRUSTED_CONTENT_NOTICE}\nKnown Domains To Exclude:\n${wrapUntrustedContent(context)}\n` : ""}
 Task: ${payload}
 
 Requirements:
@@ -136,8 +155,9 @@ Requirements:
       return `[SKILL: DOMAIN_HARVESTER]
 Task: Extract or identify authoritative technical threat intelligence articles, research papers, malware reverse-engineering posts, and attack chain timelines hosted on this domain.
 Focus: DFIR timelines, loader mechanics, APT dossiers, CVE exploits, living-off-the-land techniques. Exclude marketing, generic news, privacy policies.
+${UNTRUSTED_CONTENT_NOTICE}
 Target Domain: ${payload}
-${context ? `HTML / Context Excerpt:\n${context}\n` : ""}
+${context ? `HTML / Context Excerpt:\n${wrapUntrustedContent(context)}\n` : ""}
 
 Output pure JSON only:
 {"domain":"...","resources":[{"url":"https://...","title":"...","estimatedType":"FULL_ATTACK_CHAIN","relevanceReason":"...","isHighValue":true}]}`;
@@ -148,40 +168,19 @@ class WarmAgentService {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private rl: readline.Interface | null = null;
   private currentModel: string = DEFAULT_AGY_MODEL;
+  /** In-memory only; never persisted to disk. */
   private activeConversationId: string | null = null;
-  private isProcessing: boolean = false;
   private queue: TurnQueueItem[] = [];
+  private activeTurn: ActiveTurn | null = null;
+  private turnSeq = 0;
   private idleTimer: NodeJS.Timeout | null = null;
-  private activeTurnTimer: NodeJS.Timeout | null = null;
-  private currentTurnResponse: string = "";
-  private currentTurnResolve: ((res: WarmInferenceResult) => void) | null = null;
-  private currentTurnReject: ((err: any) => void) | null = null;
-  private currentTurnStartTime: number = 0;
   private bootPromise: Promise<void> | null = null;
   private turnCount: number = 0;
   private workerReadyResolve: (() => void) | null = null;
   private lastStderr: string = "";
 
   constructor() {
-    this.activeConversationId = this.getSavedConversationId();
     this.resetIdleTimer();
-  }
-
-  private getSavedConversationId(): string | null {
-    try {
-      if (fs.existsSync(CONVERSATION_STATE_FILE)) {
-        const id = fs.readFileSync(CONVERSATION_STATE_FILE, "utf-8").trim();
-        if (id && id.length >= 8) return id;
-      }
-    } catch {}
-    return null;
-  }
-
-  private saveConversationId(id: string) {
-    this.activeConversationId = id;
-    try {
-      fs.writeFileSync(CONVERSATION_STATE_FILE, id, "utf-8");
-    } catch {}
   }
 
   /**
@@ -194,7 +193,7 @@ class WarmAgentService {
       currentModel: this.currentModel,
       activeConversationId: this.activeConversationId,
       queueLength: this.queue.length,
-      isProcessing: this.isProcessing,
+      isProcessing: this.activeTurn !== null,
       turnCount: this.turnCount,
     };
   }
@@ -206,9 +205,9 @@ class WarmAgentService {
     try {
       const targetModel = sanitizeAgyModel(model);
       await this.ensureProcess(targetModel);
-      return true;
+      return Boolean(this.proc);
     } catch (err) {
-      console.warn("[warm-agent] Prewarm warning:", err);
+      console.warn("[warm-agent] Prewarm warning:", (err as Error)?.message);
       return false;
     }
   }
@@ -219,23 +218,25 @@ class WarmAgentService {
   private resetIdleTimer() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
-      if (!this.isProcessing && this.queue.length === 0) {
+      if (!this.activeTurn && this.queue.length === 0) {
         console.log("[warm-agent] Idle timeout reached. Gracefully closing warm agent process.");
         this.destroyProcess("idle_timeout");
       }
     }, IDLE_TIMEOUT_MS);
+    this.idleTimer.unref?.();
   }
 
   /**
-   * Ensure process is running with requested model
+   * Ensure process is running with requested model (inside the container only)
    */
   private async ensureProcess(targetModel: string): Promise<void> {
-    try {
-      autoSyncTokenFromHostIfAvailable();
-    } catch {}
-
     if (this.proc && !this.proc.killed && this.currentModel === targetModel) {
       return;
+    }
+
+    if (this.bootPromise) {
+      await this.bootPromise;
+      if (this.proc && !this.proc.killed && this.currentModel === targetModel) return;
     }
 
     if (this.proc && !this.proc.killed && this.currentModel !== targetModel) {
@@ -243,8 +244,9 @@ class WarmAgentService {
       this.destroyProcess("model_change");
     }
 
-    if (this.bootPromise) {
-      return this.bootPromise;
+    const runtime = detectSandboxRuntime();
+    if (runtime.runtime !== "docker") {
+      throw new Error(`Agent sandbox container unavailable: ${runtime.details}`);
     }
 
     this.bootPromise = this.spawnWorker(targetModel);
@@ -256,90 +258,74 @@ class WarmAgentService {
   }
 
   /**
-   * Spawn containerized worker process
+   * Spawn containerized worker process (docker exec, args array, no shell)
    */
   private spawnWorker(model: string): Promise<void> {
     return new Promise((resolve) => {
       this.currentModel = model;
       console.log(`[warm-agent] Spawning warm agent worker in ${CONTAINER_NAME} with model ${model}...`);
 
-      const args = [
-        "exec",
-        "-i",
-        CONTAINER_NAME,
-        "agy",
-        "--dangerously-skip-permissions",
-        "--disable-slash-commands",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--model",
-        model,
-      ];
-
-      const convId = this.activeConversationId || this.getSavedConversationId();
-      if (convId) {
-        args.push("--conversation", convId);
+      const args = ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model)];
+      if (this.activeConversationId) {
+        args.push("--conversation", this.activeConversationId);
       }
 
+      let isSettled = false;
+      let initTimer: NodeJS.Timeout | null = null;
+      const settleReady = () => {
+        if (!isSettled) {
+          isSettled = true;
+          if (initTimer) clearTimeout(initTimer);
+          this.workerReadyResolve = null;
+          resolve();
+        }
+      };
+
+      // If agy takes longer than 10s to emit init, allow turns to proceed
+      initTimer = setTimeout(settleReady, 10000);
+      this.workerReadyResolve = settleReady;
+
+      let child: ChildProcessWithoutNullStreams;
       try {
-        let isSettled = false;
-        const settleReady = () => {
-          if (!isSettled) {
-            isSettled = true;
-            if (initTimer) clearTimeout(initTimer);
-            resolve();
-          }
-        };
-
-        // Fallback timer: if agy takes longer than 10s to emit init, allow turns to proceed
-        const initTimer = setTimeout(() => {
-          console.log("[warm-agent] Init handshake elapsed, worker ready.");
-          settleReady();
-        }, 10000);
-
-        this.workerReadyResolve = settleReady;
-
-        this.proc = spawn("docker", args, {
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-
-        this.rl = readline.createInterface({
-          input: this.proc.stdout,
-          crlfDelay: Infinity,
-        });
-
-        this.rl.on("line", (line) => {
-          this.handleStdoutLine(line);
-        });
-
-        this.proc.stderr.on("data", (chunk) => {
-          const str = chunk.toString();
-          // Filter routine auth / debug noise from stderr
-          if (!str.includes("Print mode: not authenticated") && !str.includes("silent auth")) {
-            const trimmed = str.trim();
-            console.warn(`[warm-agent:stderr] ${trimmed}`);
-            this.lastStderr = trimmed;
-          }
-        });
-
-        this.proc.on("error", (err) => {
-          console.error("[warm-agent] Process spawn error:", err);
-          settleReady();
-          this.destroyProcess(`spawn_error_${err?.message || "unknown"}`);
-        });
-
-        this.proc.on("exit", (code, signal) => {
-          console.log(`[warm-agent] Process exited with code ${code}, signal ${signal}`);
-          settleReady();
-          this.destroyProcess(`process_exit_${code ?? signal}`);
-        });
+        child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
       } catch (err) {
-        console.error("[warm-agent] Failed to spawn docker child process:", err);
-        this.destroyProcess("spawn_failure");
-        resolve(); // Allow turns to fallback
+        console.error("[warm-agent] Failed to spawn docker child process:", (err as Error)?.message);
+        settleReady();
+        return;
       }
+
+      this.proc = child;
+      this.lastStderr = "";
+      this.rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+      this.rl.on("line", (line) => {
+        if (this.proc === child) this.handleStdoutLine(line);
+      });
+
+      child.stderr.on("data", (chunk) => {
+        const str = chunk.toString();
+        if (!str.includes("Print mode: not authenticated") && !str.includes("silent auth")) {
+          this.lastStderr = str.trim().slice(0, 500);
+        }
+      });
+
+      // Prevent EPIPE from crashing the server if the worker dies mid-write.
+      child.stdin.on("error", () => {
+        if (this.proc === child) this.destroyProcess("stdin_error");
+      });
+
+      child.on("error", (err) => {
+        console.error("[warm-agent] Process spawn error:", err?.message);
+        settleReady();
+        if (this.proc === child) this.destroyProcess("spawn_error");
+      });
+
+      child.on("exit", (code, signal) => {
+        settleReady();
+        if (this.proc === child) {
+          console.log(`[warm-agent] Process exited with code ${code}, signal ${signal}`);
+          this.destroyProcess(`process_exit_${code ?? signal}`);
+        }
+      });
     });
   }
 
@@ -350,264 +336,206 @@ class WarmAgentService {
     const trimmed = line.trim();
     if (!trimmed) return;
 
+    let data: any;
     try {
-      const data = JSON.parse(trimmed);
-
-      if (data.event === "init") {
-        if (data.conversation_id) {
-          this.saveConversationId(data.conversation_id);
-        }
-        if (this.workerReadyResolve) {
-          this.workerReadyResolve();
-          this.workerReadyResolve = null;
-        }
-      } else if (data.event === "step_update") {
-        const stepUpdate = data.step_update || {};
-        const step = data.step || {};
-
-        if (stepUpdate.text_delta) {
-          this.currentTurnResponse += stepUpdate.text_delta;
-        } else if (step.type === "PLANNER_RESPONSE" && step.content) {
-          this.currentTurnResponse = step.content;
-        }
-      } else if (data.event === "result") {
-        const result = data.result || {};
-        const finalResponse = (result.response || this.currentTurnResponse || "").trim();
-        const latencyMs = Date.now() - this.currentTurnStartTime;
-        const tokens = result.usage
-          ? {
-              inputTokens: result.usage.input_tokens || 0,
-              outputTokens: result.usage.output_tokens || 0,
-              totalTokens: result.usage.total_tokens || 0,
-            }
-          : undefined;
-
-        if (this.activeTurnTimer) {
-          clearTimeout(this.activeTurnTimer);
-          this.activeTurnTimer = null;
-        }
-
-        if (this.currentTurnResolve) {
-          this.turnCount++;
-          this.currentTurnResolve({
-            success: result.status === "SUCCESS",
-            text: finalResponse || (result.error ? `Error: ${result.error}` : "Analysis completed."),
-            latencyMs,
-            model: this.currentModel,
-            conversationId: this.activeConversationId || result.conversation_id,
-            tokens,
-            isWarm: true,
-            error: result.error,
-          });
-          this.currentTurnResolve = null;
-          this.currentTurnReject = null;
-        }
-
-        this.currentTurnResponse = "";
-        this.isProcessing = false;
-        this.processNextInQueue();
-      }
+      data = JSON.parse(trimmed);
     } catch {
-      // Plain text or unformatted trace output
-      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-        // Ignored unparsable JSON
-      }
+      return; // Plain text trace output is ignored
     }
-  }
 
-  /**
-   * Process next queued turn
-   */
-  private async processNextInQueue() {
-    this.resetIdleTimer();
-
-    if (this.isProcessing || this.queue.length === 0) {
+    if (data.event === "init") {
+      if (typeof data.conversation_id === "string" && data.conversation_id.length >= 8) {
+        this.activeConversationId = data.conversation_id;
+      }
+      this.workerReadyResolve?.();
       return;
     }
 
-    const next = this.queue.shift();
-    if (!next) return;
+    const turn = this.activeTurn;
+    if (!turn || turn.inFallback) return;
 
-    this.isProcessing = true;
-    this.currentTurnStartTime = Date.now();
-    this.currentTurnResponse = "";
-    this.currentTurnResolve = next.resolve;
-    this.currentTurnReject = next.reject;
-
-    try {
-      await this.ensureProcess(next.model);
-
-      if (!this.proc || this.proc.killed || !this.proc.stdin.writable) {
-        throw new Error("Warm agent process is not writable");
+    if (data.event === "step_update") {
+      const stepUpdate = data.step_update || {};
+      const step = data.step || {};
+      if (stepUpdate.text_delta) {
+        turn.response += stepUpdate.text_delta;
+      } else if (step.type === "PLANNER_RESPONSE" && step.content) {
+        turn.response = step.content;
       }
-
-      // Set turn timeout guard: if warm stream stalls, recycle and execute cold fallback
-      this.activeTurnTimer = setTimeout(async () => {
-        console.warn(`[warm-agent] Warm stream timed out after ${next.timeoutMs}ms. Recycling process and executing fallback.`);
-        const resolve = this.currentTurnResolve;
-        this.currentTurnResolve = null;
-        this.currentTurnReject = null;
-        this.destroyProcess("turn_timeout");
-
-        try {
-          const fallbackRes = await this.executeColdFallback(next.prompt, next.model, 45000);
-          if (resolve) resolve(fallbackRes);
-        } catch (e: any) {
-          if (resolve) {
-            resolve({
-              success: false,
-              text: "Analysis temporarily unavailable due to concurrent background operations. Please retry your query.",
-              latencyMs: Date.now() - this.currentTurnStartTime,
-              model: this.currentModel,
-              isWarm: false,
-              error: e?.message || "Execution timeout",
-            });
+    } else if (data.event === "result") {
+      const result = data.result || {};
+      const finalResponse = String(result.response || turn.response || "").trim();
+      const tokens = result.usage
+        ? {
+            inputTokens: result.usage.input_tokens || 0,
+            outputTokens: result.usage.output_tokens || 0,
+            totalTokens: result.usage.total_tokens || 0,
           }
-        } finally {
-          this.isProcessing = false;
-          this.processNextInQueue();
-        }
-      }, next.timeoutMs);
-
-      // Write NDJSON turn to container agent stdin
-      const ndjsonMessage =
-        JSON.stringify({
-          event: "user",
-          message: {
-            content: next.prompt,
-          },
-        }) + "\n";
-
-      this.proc.stdin.write(ndjsonMessage);
-    } catch (err: any) {
-      console.warn("[warm-agent] Turn dispatch failed, attempting cold fallback:", err?.message);
-      if (this.activeTurnTimer) {
-        clearTimeout(this.activeTurnTimer);
-        this.activeTurnTimer = null;
-      }
-
-      // Fallback to cold execution
-      this.destroyProcess("turn_dispatch_error");
-      this.executeColdFallback(next.prompt, next.model, next.timeoutMs)
-        .then(next.resolve)
-        .catch(next.reject)
-        .finally(() => {
-          this.isProcessing = false;
-          this.processNextInQueue();
-        });
+        : undefined;
+      this.turnCount++;
+      this.settleTurn(turn, {
+        success: result.status === "SUCCESS",
+        text: finalResponse || (result.error ? `Error: ${result.error}` : "Analysis completed."),
+        latencyMs: Date.now() - turn.startTime,
+        model: this.currentModel,
+        conversationId: this.activeConversationId || result.conversation_id,
+        tokens,
+        isWarm: true,
+        error: result.error,
+      });
     }
   }
 
   /**
-   * Robust cold execution fallback using executeInAgentSandbox
+   * Resolve a turn exactly once and start the next queued turn.
+   */
+  private settleTurn(turn: ActiveTurn, res: WarmInferenceResult) {
+    if (this.activeTurn !== turn) return;
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+      turn.timer = null;
+    }
+    this.activeTurn = null;
+    try {
+      turn.item.resolve(res);
+    } finally {
+      this.resetIdleTimer();
+      setImmediate(() => void this.processNextInQueue());
+    }
+  }
+
+  /**
+   * Hand the active turn to the cold one-shot path. The queue stays blocked
+   * until the fallback settles this turn.
+   */
+  private failoverTurn(turn: ActiveTurn, reason: string) {
+    if (this.activeTurn !== turn || turn.inFallback) return;
+    turn.inFallback = true;
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+      turn.timer = null;
+    }
+    console.warn(`[warm-agent] Warm turn failed (${reason}); running one-shot fallback in sandbox.`);
+    this.executeColdFallback(turn.item.prompt, turn.item.model, turn.item.timeoutMs)
+      .then((res) => this.settleTurn(turn, res))
+      .catch((err: any) =>
+        this.settleTurn(turn, {
+          success: false,
+          text: "",
+          latencyMs: Date.now() - turn.startTime,
+          model: turn.item.model,
+          isWarm: false,
+          error: err?.message || "Agent execution failed.",
+        })
+      );
+  }
+
+  /**
+   * Process next queued turn (one at a time)
+   */
+  private async processNextInQueue() {
+    this.resetIdleTimer();
+    if (this.activeTurn || this.queue.length === 0) return;
+
+    const item = this.queue.shift();
+    if (!item) return;
+
+    const turn: ActiveTurn = {
+      id: ++this.turnSeq,
+      item,
+      inFallback: false,
+      response: "",
+      startTime: Date.now(),
+      timer: null,
+    };
+    this.activeTurn = turn;
+
+    try {
+      await this.ensureProcess(item.model);
+
+      // The worker may have died (and failed this turn over) while booting.
+      if (this.activeTurn !== turn || turn.inFallback) return;
+
+      const proc = this.proc;
+      if (!proc || proc.killed || !proc.stdin.writable) {
+        throw new Error("Warm agent process is not writable");
+      }
+
+      // Stall guard: recycle the worker and fail over to a one-shot run.
+      turn.timer = setTimeout(() => {
+        if (this.activeTurn !== turn || turn.inFallback) return;
+        console.warn(`[warm-agent] Warm stream timed out after ${item.timeoutMs}ms.`);
+        this.failoverTurn(turn, "turn_timeout");
+        this.destroyProcess("turn_timeout");
+      }, item.timeoutMs);
+
+      proc.stdin.write(encodeAgentUserTurn(item.prompt));
+    } catch (err: any) {
+      if (this.activeTurn === turn && !turn.inFallback) {
+        this.failoverTurn(turn, `dispatch_error: ${err?.message || "unknown"}`);
+      }
+      this.destroyProcess("turn_dispatch_error");
+    }
+  }
+
+  /**
+   * One-shot execution inside the sandbox (stdin prompt, print mode, no tools).
    */
   private async executeColdFallback(
     prompt: string,
     model: string,
     timeoutMs: number
   ): Promise<WarmInferenceResult> {
-    const startTime = Date.now();
     let sanitizedModel = sanitizeAgyModel(model);
-    const convId = this.activeConversationId || this.getSavedConversationId();
-    const buildArgs = (m: string) => {
-      const a = ["--dangerously-skip-permissions", "--disable-slash-commands", "--print", prompt, "--model", m];
-      if (convId) a.push("--conversation", convId);
-      return a;
-    };
+    let res = await runAgentPromptInSandbox(prompt, { model: sanitizedModel, timeoutMs, category: "agent" });
 
-    try {
-      let sandboxRes = await executeInAgentSandbox(
-        buildArgs(sanitizedModel),
-        { timeoutMs, category: "agent" }
-      );
-
-      // Quota / subscription resilience: if requested model fails (e.g. Claude quota reached), auto fallback to default Gemini
-      if (
-        !sandboxRes.success &&
-        (sandboxRes.error?.toLowerCase().includes("quota") ||
-          sandboxRes.error?.toLowerCase().includes("subscription") ||
-          sandboxRes.exitCode === 3)
-      ) {
-        if (sanitizedModel !== DEFAULT_AGY_MODEL) {
-          console.warn(
-            `[warm-agent] Model ${sanitizedModel} exceeded quota/subscription limits. Automatically falling back to default ${DEFAULT_AGY_MODEL}`
-          );
-          sanitizedModel = DEFAULT_AGY_MODEL;
-          sandboxRes = await executeInAgentSandbox(
-            buildArgs(sanitizedModel),
-            { timeoutMs, category: "agent" }
-          );
-        }
-      }
-
-      return {
-        success: sandboxRes.success,
-        text: sandboxRes.output || sandboxRes.error || "Agent did not produce output.",
-        latencyMs: sandboxRes.latencyMs || Date.now() - startTime,
-        model: sanitizedModel,
-        isWarm: false,
-        error: sandboxRes.error,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        text: "",
-        latencyMs: Date.now() - startTime,
-        model: sanitizedModel,
-        isWarm: false,
-        error: err?.message || "Cold execution failed.",
-      };
+    // Quota / subscription resilience: retry once with the default model.
+    const errText = (res.error || "").toLowerCase();
+    if (
+      !res.success &&
+      res.runtime === "docker" &&
+      sanitizedModel !== DEFAULT_AGY_MODEL &&
+      (errText.includes("quota") || errText.includes("subscription") || res.exitCode === 3)
+    ) {
+      console.warn(`[warm-agent] Model ${sanitizedModel} hit quota limits; retrying with ${DEFAULT_AGY_MODEL}`);
+      sanitizedModel = DEFAULT_AGY_MODEL;
+      res = await runAgentPromptInSandbox(prompt, { model: sanitizedModel, timeoutMs, category: "agent" });
     }
+
+    return {
+      success: res.success,
+      text: res.success ? res.text : "",
+      latencyMs: res.latencyMs,
+      model: sanitizedModel,
+      isWarm: false,
+      tokens: res.tokens,
+      error: res.success ? undefined : res.error || "Agent did not produce output.",
+    };
   }
 
   /**
-   * Handle unexpected worker error
-   */
-  private handleWorkerError(err: any) {
-    this.destroyProcess(`worker_error_${err?.message || "unknown"}`);
-  }
-
-  /**
-   * Cleanly terminate process, cleanup streams, and ensure pending turns are settled
+   * Terminate the worker. An in-flight warm turn is failed over to the
+   * one-shot path (it is never resolved twice and the queue waits for it).
    */
   destroyProcess(reason: string) {
-    console.log(`[warm-agent] Destroying process (reason: ${reason})`);
-    if (this.activeTurnTimer) {
-      clearTimeout(this.activeTurnTimer);
-      this.activeTurnTimer = null;
-    }
     if (this.rl) {
       try {
         this.rl.close();
       } catch {}
       this.rl = null;
     }
-    if (this.proc) {
+    const proc = this.proc;
+    this.proc = null; // detach first so its exit handler is a no-op
+    if (proc) {
+      console.log(`[warm-agent] Destroying process (reason: ${reason})`);
       try {
-        this.proc.kill("SIGKILL");
+        proc.kill("SIGKILL");
       } catch {}
-      this.proc = null;
     }
 
-    // CRITICAL: Guarantee waiting turns never hang when a worker process terminates
-    if (this.currentTurnResolve) {
-      const resolve = this.currentTurnResolve;
-      this.currentTurnResolve = null;
-      this.currentTurnReject = null;
-      const errorMsg = this.lastStderr
-        ? `Agent worker exited: ${this.lastStderr}`
-        : `Agent worker terminated unexpectedly (${reason})`;
-      resolve({
-        success: false,
-        text: this.currentTurnResponse || "",
-        latencyMs: Date.now() - this.currentTurnStartTime,
-        model: this.currentModel,
-        isWarm: false,
-        error: errorMsg,
-      });
-      this.currentTurnResponse = "";
-      this.isProcessing = false;
-      this.processNextInQueue();
+    const turn = this.activeTurn;
+    if (turn && !turn.inFallback) {
+      this.failoverTurn(turn, this.lastStderr ? `worker exited: ${this.lastStderr}` : reason);
     }
   }
 
@@ -621,24 +549,14 @@ class WarmAgentService {
     const model = sanitizeAgyModel(options?.model || this.currentModel);
     const timeoutMs = options?.timeoutMs || TURN_TIMEOUT_MS;
 
-    return new Promise<WarmInferenceResult>((resolve, reject) => {
-      this.queue.push({
-        prompt,
-        model,
-        timeoutMs,
-        resolve,
-        reject,
-        startTime: Date.now(),
-      });
-
-      this.processNextInQueue();
+    return new Promise<WarmInferenceResult>((resolve) => {
+      this.queue.push({ prompt, model, timeoutMs, resolve, startTime: Date.now() });
+      void this.processNextInQueue();
     });
   }
 
   /**
-   * Skill-Based Task Dispatch:
-   * Executes a specialized internal skill on the dedicated agent without
-   * spinning up a new AGY instance or sending repetitive boilerplates.
+   * Skill-Based Task Dispatch on the dedicated agent.
    */
   executeSkill(options: SkillOptions): Promise<WarmInferenceResult> {
     const prompt = buildSkillPrompt(options.skill, options.payload, options.context, options.history);
@@ -656,9 +574,11 @@ class WarmAgentService {
   }
 
   /**
-   * Gracefully reset consolidated conversation thread
+   * Start a fresh conversation: forget the current id and recycle the worker
+   * so the next turn starts without `--conversation`.
    */
   resetConversation() {
+    this.activeConversationId = null;
     this.destroyProcess("user_thread_reset");
   }
 }

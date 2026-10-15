@@ -74,17 +74,17 @@ export class GeminiRestAdapter implements AIProviderAdapter {
       };
     }
 
-    addLog("AUTH", `API key detected (prefix: ${effectiveKey.slice(0, 6)}...${effectiveKey.slice(-4)})`);
+    addLog("AUTH", `API key present`);
     addLog("EXEC", `Dispatching live lightweight probe to verify quota & authentication...`);
 
     try {
-      const url = `${GEMINI_BASE_URL}/models/${modelToTest}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
+      const url = `${GEMINI_BASE_URL}/models/${modelToTest}:generateContent`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 12000);
 
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": String(effectiveKey) },
         body: JSON.stringify({
           contents: [{ parts: [{ text: "Ping: Respond with single word 'OK'." }] }],
           generationConfig: {
@@ -186,7 +186,7 @@ export class GeminiRestAdapter implements AIProviderAdapter {
     }
 
     try {
-      const url = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
+      const url = `${GEMINI_BASE_URL}/models/${model}:generateContent`;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -227,7 +227,7 @@ export class GeminiRestAdapter implements AIProviderAdapter {
 
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": String(effectiveKey) },
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });

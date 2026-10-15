@@ -2,7 +2,7 @@
  * Unified AI Provider & Agent Orchestration Layer
  *
  * Provides a modular, provider-agnostic interface for AI operations across:
- * - Local CLI Agents (Antigravity AGY Agent in Docker Sandbox, WSL, Native)
+ * - Local CLI Agent (Antigravity AGY Agent, Docker sandbox container only — no host execution)
  * - Direct REST API Providers (Google Gemini API, Anthropic Claude API, OpenAI/Local LLM API)
  *
  * Guiding Principles:
@@ -30,9 +30,14 @@ import {
 import type { ResourceClassification } from "./qualification";
 import type { AppSettings, ResourceKind, AgentScoreBreakdown, ReportListItem } from "./types";
 import { mongoGetAppSettings, mongoGetMarketplaceIntegrations } from "../mongodb/repository.server";
-import { executeInAgentSandbox, type ExecutionTrace } from "./agent-sandbox";
+import type { ExecutionTrace } from "./agent-sandbox";
 import { logger } from "./logger";
-import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "./agent-framework/types";
+import {
+  sanitizeAgyModel,
+  DEFAULT_AGY_MODEL,
+  UNTRUSTED_CONTENT_NOTICE,
+  wrapUntrustedContent,
+} from "./agent-framework/types";
 import { warmAgentService } from "./warm-agent-service";
 
 export type UnifiedDiscoveryParams = {
@@ -144,6 +149,61 @@ export function formatPrefixedModel(providerName: string, rawModel: string): str
   return `${providerName}: ${rawModel}`;
 }
 
+/** Removes a "Provider: " display prefix without AGY model normalisation. */
+function stripProviderPrefix(modelName: string): string {
+  const colonIdx = modelName.indexOf(":");
+  return (colonIdx >= 0 ? modelName.slice(colonIdx + 1) : modelName).trim();
+}
+
+const REST_PROVIDER_DEFAULT_MODELS: Record<string, string> = {
+  gemini_api: "gemini-2.5-flash",
+  claude_api: "claude-3-7-sonnet",
+  openai_api: "gpt-4o",
+  codex_agent: "gpt-4o",
+};
+
+const REST_PROVIDER_MODEL_PATTERNS: Record<string, RegExp> = {
+  gemini_api: /^gemini[-\w.]*$/i,
+  claude_api: /^claude[-\w.]*$/i,
+  openai_api: /^(gpt|o\d|chatgpt|codex)[-\w.]*$/i,
+  codex_agent: /^(gpt|o\d|chatgpt|codex)[-\w.]*$/i,
+};
+
+/** True when `model` (prefix already stripped) is a model of `providerId`. */
+function modelBelongsToProvider(providerId: string, model: string, supportedModels: string[] = []): boolean {
+  if (!model) return false;
+  const lower = model.toLowerCase();
+  if (supportedModels.some((m) => stripProviderPrefix(m).toLowerCase() === lower)) return true;
+  return REST_PROVIDER_MODEL_PATTERNS[providerId]?.test(model) ?? false;
+}
+
+/**
+ * Resolve which model to use for the active provider.
+ * - restModel: honours `requested` only if it belongs to the active REST
+ *   provider; otherwise the provider's configured model. Never an AGY id for
+ *   Claude/OpenAI.
+ * - agyModel: a valid AGY sandbox model (used for the agent path and for the
+ *   agent cascade after a REST failure).
+ */
+export function resolveProviderModels(
+  active: { providerId: string; rawModel: string; isRest: boolean; supportedModels?: string[] },
+  requested?: string
+): { restModel: string; agyModel: string } {
+  const requestedRaw = requested ? stripProviderPrefix(requested) : "";
+  if (active.isRest) {
+    const restModel =
+      requestedRaw && modelBelongsToProvider(active.providerId, requestedRaw, active.supportedModels)
+        ? requestedRaw
+        : active.rawModel;
+    const agyCandidate = requestedRaw && AGY_REQUEST_PREFIX.test(requested || "") ? requestedRaw : "";
+    return { restModel, agyModel: sanitizeAgyModel(agyCandidate || DEFAULT_AGY_MODEL) };
+  }
+  const agyModel = requestedRaw ? sanitizeAgyModel(requestedRaw) : sanitizeAgyModel(active.rawModel);
+  return { restModel: agyModel, agyModel };
+}
+
+const AGY_REQUEST_PREFIX = /^\s*AGY\s*:/i;
+
 /**
  * Extracts clean JSON payload from raw LLM output, handling markdown code fences
  */
@@ -202,6 +262,7 @@ export async function getActiveAIProvider(): Promise<{
   apiKey?: string;
   endpointUrl?: string;
   isRest: boolean;
+  supportedModels?: string[];
 }> {
   try {
     const settings = await mongoGetAppSettings();
@@ -211,8 +272,22 @@ export async function getActiveAIProvider(): Promise<{
     const integration = integrations.find((x) => x.id === providerId) || integrations[0];
 
     const providerName = integration ? integration.name : "Autonomous AI Agent Engine";
-    const model = sanitizeAgyModel(settings.agentModel);
-    const rawModel = stripModelPrefix(model);
+    const isRestProvider = isRestApiProvider(providerId);
+    const supportedModels: string[] = Array.isArray(integration?.supportedModels) ? integration!.supportedModels : [];
+    // REST providers use their own configured model; AGY ids are never sent to them.
+    let model: string;
+    if (isRestProvider) {
+      const candidates = [integration?.config?.selectedModel, settings.agentModel];
+      model =
+        candidates
+          .map((c) => (typeof c === "string" ? stripProviderPrefix(c) : ""))
+          .find((c) => c && modelBelongsToProvider(providerId, c, supportedModels)) ||
+        REST_PROVIDER_DEFAULT_MODELS[providerId] ||
+        "";
+    } else {
+      model = sanitizeAgyModel(settings.agentModel);
+    }
+    const rawModel = isRestProvider ? model : stripModelPrefix(model);
     const timeoutSeconds = settings.agentTimeoutSeconds || 45;
 
     // Resolve API key from integration config or environment variables
@@ -227,7 +302,7 @@ export async function getActiveAIProvider(): Promise<{
         : undefined);
 
     const endpointUrl = integration?.endpointUrl;
-    const isRest = isRestApiProvider(providerId);
+    const isRest = isRestProvider;
 
     return {
       providerId,
@@ -238,6 +313,7 @@ export async function getActiveAIProvider(): Promise<{
       apiKey,
       endpointUrl,
       isRest,
+      supportedModels,
     };
   } catch (err) {
     return {
@@ -296,7 +372,7 @@ export async function runUnifiedSourceDiscovery(
 ): Promise<UnifiedDiscoveryResult> {
   const active = await getActiveAIProvider();
   const providerId = params.providerId || active.providerId;
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const timeoutSeconds = params.timeoutSeconds || active.timeoutSeconds;
   const limit = Math.min(Math.max(params.limit ?? 5, 1), 20);
   const knownDomains = params.existingDomains || [];
@@ -311,7 +387,7 @@ export async function runUnifiedSourceDiscovery(
   if (adapter && active.isRest) {
     const knownListSnippet =
       knownDomains.length > 0
-        ? `\nALREADY KNOWN DOMAINS (DO NOT RETURN THESE):\n${knownDomains.slice(0, 60).map((d) => `- ${d}`).join("\n")}\n`
+        ? `\nALREADY KNOWN DOMAINS (DO NOT RETURN THESE).\n${UNTRUSTED_CONTENT_NOTICE}\n${wrapUntrustedContent(knownDomains.slice(0, 60).map((d) => `- ${d}`).join("\n"))}\n`
         : "";
 
     const prompt = `You are an Adversary Emulation Intelligence Source Hunter operating under the Resource Collection Skill.
@@ -398,7 +474,7 @@ Return pure JSON only.`;
     const agyRes = await discoverAgentSources({
       existingDomains: params.existingDomains,
       limit,
-      model: rawModel,
+      model: agyModel,
       timeoutSeconds,
     });
 
@@ -453,7 +529,7 @@ export async function runUnifiedDomainResourceDiscovery(
 ): Promise<DomainResourceHarvestResult> {
   const active = await getActiveAIProvider();
   const providerId = params.providerId || active.providerId;
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const timeoutSeconds = params.timeoutSeconds || active.timeoutSeconds;
   const domain = params.domain.toLowerCase().replace(/^www\./, "");
   const baseUrl = params.baseUrl.startsWith("http") ? params.baseUrl : `https://${domain}`;
@@ -464,8 +540,9 @@ export async function runUnifiedDomainResourceDiscovery(
     const prompt = `You are the Adversary Emulation Domain Harvester operating under the domain-resource-discovery-intel skill.
 TARGET DOMAIN: ${domain}
 BASE URL: ${baseUrl}
+${UNTRUSTED_CONTENT_NOTICE}
 CONTEXT / HTML EXCERPT:
-${(params.htmlSnippet || "").slice(0, 4500)}
+${wrapUntrustedContent(params.htmlSnippet || "", 4500)}
 
 MISSION:
 Identify all authoritative technical threat intelligence articles, research papers, malware reverse-engineering posts, and attack chain timelines hosted on this domain.
@@ -553,7 +630,7 @@ Return pure JSON only.`;
     domain: params.domain,
     baseUrl: params.baseUrl,
     htmlSnippet: params.htmlSnippet,
-    model: rawModel,
+    model: agyModel,
     timeoutSeconds,
   });
 }
@@ -566,7 +643,7 @@ export async function runUnifiedResourceEvaluation(
 ): Promise<AgentEvaluationResult> {
   const active = await getActiveAIProvider();
   const providerId = params.providerId || active.providerId;
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const timeoutSeconds = params.timeoutSeconds || active.timeoutSeconds;
   const textSnippet = params.text.slice(0, 4800);
 
@@ -576,10 +653,9 @@ export async function runUnifiedResourceEvaluation(
     const prompt = `You are the Senior Threat Intelligence Analysis & Adversary Emulation Evaluation Agent operating under the domain-resource-discovery-intel skill.
 Analyze the following threat intelligence report snippet and determine whether it contains actionable adversary tradecraft, multi-stage attack chains, or emulation utility using a strict 5-dimensional scoring rubric.
 
-TITLE: ${params.title || "Threat Report"}
-URL: ${params.url}
-CONTENT SNIPPET:
-${textSnippet}
+${UNTRUSTED_CONTENT_NOTICE}
+REPORT UNDER EVALUATION (title, URL and content snippet):
+${wrapUntrustedContent(`TITLE: ${params.title || "Threat Report"}\nURL: ${params.url}\nCONTENT SNIPPET:\n${textSnippet}`)}
 
 INSTRUCTIONS:
 1. Evaluate the content against this 5-DIMENSIONAL RUBRIC (Total 100 points):
@@ -711,7 +787,7 @@ Return pure JSON only.`;
     domain: params.domain,
     title: params.title || "",
     text: params.text,
-    model: rawModel,
+    model: agyModel,
     timeoutSeconds,
   });
 }
@@ -722,7 +798,7 @@ Return pure JSON only.`;
 export async function chatWithUnifiedAgent(params: UnifiedChatParams): Promise<UnifiedChatResult> {
   const active = await getActiveAIProvider();
   const providerId = params.providerId || active.providerId;
-  const rawModel = params.model ? stripModelPrefix(params.model) : active.rawModel;
+  const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const timeoutSeconds = params.timeoutSeconds || 40;
 
   // Build Grounded Context from Local Library Reports
@@ -767,7 +843,7 @@ STRICT OPERATIONAL SECURITY & IDENTITY PROTOCOL:
 - Ground your analysis firmly in the verified platform intelligence reports provided below.
 - Always provide structured, authoritative outputs using markdown headers, tables, bullet points, and code blocks for telemetry/command lines.
 - When referencing MITRE ATT&CK techniques, provide both the technique ID and official name (e.g., T1059.001 - PowerShell).
-${contextDocs ? `\nVERIFIED PLATFORM GROUNDED THREAT INTELLIGENCE:\n${contextDocs}` : ""}`;
+${contextDocs ? `\n${UNTRUSTED_CONTENT_NOTICE}\nPLATFORM THREAT INTELLIGENCE (stored third-party reports):\n${wrapUntrustedContent(contextDocs)}` : ""}`;
 
   // 1. Direct REST Provider execution
   const adapter = getProviderAdapter(providerId);
@@ -801,7 +877,7 @@ ${contextDocs ? `\nVERIFIED PLATFORM GROUNDED THREAT INTELLIGENCE:\n${contextDoc
     payload: params.userMessage,
     context: contextDocs || undefined,
     history: historyFormatted || undefined,
-    model: rawModel,
+    model: agyModel,
     timeoutMs: timeoutSeconds * 1000,
   });
 

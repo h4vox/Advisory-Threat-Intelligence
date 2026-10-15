@@ -33,6 +33,7 @@ import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
+import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 
 export const Route = createFileRoute("/library/$reportId")({
   beforeLoad: ({ params }) => {
@@ -268,10 +269,10 @@ function ReportPage() {
               >
                 {data.rawHtml ? (
                   <iframe
-                    srcDoc={data.rawHtml}
+                    srcDoc={toSafeSrcDoc(data.rawHtml)}
                     title={data.title}
                     className="size-full border-0"
-                    sandbox="allow-scripts allow-popups"
+                    sandbox=""
                   />
                 ) : (
                   <div className="flex size-full items-center justify-center p-8 text-sm text-neutral-500">

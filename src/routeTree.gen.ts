@@ -12,11 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IngestRouteImport } from './routes/ingest'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as MarketplaceRouteImport } from './routes/marketplace'
 import { Route as MatrixRouteImport } from './routes/matrix'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as LibraryReportIdRouteImport } from './routes/library.$reportId'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -31,6 +33,11 @@ const IngestRoute = IngestRouteImport.update({
 const LibraryRoute = LibraryRouteImport.update({
   id: '/library',
   path: '/library',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MarketplaceRoute = MarketplaceRouteImport.update({
@@ -58,37 +65,48 @@ const LibraryReportIdRoute = LibraryReportIdRouteImport.update({
   path: '/$reportId',
   getParentRoute: () => LibraryRoute,
 } as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRouteWithChildren
+  '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/library/$reportId': typeof LibraryReportIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -96,41 +114,49 @@ export interface FileRouteTypes {
     | '/'
     | '/ingest'
     | '/library'
+    | '/login'
     | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
     | '/library/$reportId'
+    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/ingest'
     | '/library'
+    | '/login'
     | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
     | '/library/$reportId'
+    | '/api/auth/$'
   id:
     | '__root__'
     | '/'
     | '/ingest'
     | '/library'
+    | '/login'
     | '/marketplace'
     | '/matrix'
     | '/settings'
     | '/sources'
     | '/library/$reportId'
+    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IngestRoute: typeof IngestRoute
   LibraryRoute: typeof LibraryRouteWithChildren
+  LoginRoute: typeof LoginRoute
   MarketplaceRoute: typeof MarketplaceRoute
   MatrixRoute: typeof MatrixRoute
   SettingsRoute: typeof SettingsRoute
   SourcesRoute: typeof SourcesRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -154,6 +180,13 @@ declare module '@tanstack/react-router' {
       path: '/library'
       fullPath: '/library'
       preLoaderRoute: typeof LibraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/marketplace': {
@@ -191,6 +224,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryReportIdRouteImport
       parentRoute: typeof LibraryRoute
     }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -209,10 +249,12 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IngestRoute: IngestRoute,
   LibraryRoute: LibraryRouteWithChildren,
+  LoginRoute: LoginRoute,
   MarketplaceRoute: MarketplaceRoute,
   MatrixRoute: MatrixRoute,
   SettingsRoute: SettingsRoute,
   SourcesRoute: SourcesRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

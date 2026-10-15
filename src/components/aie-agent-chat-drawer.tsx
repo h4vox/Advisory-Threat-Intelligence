@@ -479,7 +479,7 @@ export function AieAgentChatDrawer({
                     <div className="flex items-center gap-1.5">
                       <FileText className="size-3 text-accent" />
                       <span>
-                        Verified Intelligence Evidence ({msg.sources?.length} Report{msg.sources?.length === 1 ? "" : "s"})
+                        Reports retrieved for this answer ({msg.sources?.length} Report{msg.sources?.length === 1 ? "" : "s"})
                       </span>
                     </div>
                     <div className="flex items-center gap-1 text-[9px] text-accent/80 font-sans">

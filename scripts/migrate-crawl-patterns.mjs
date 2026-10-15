@@ -4,12 +4,15 @@ import dns from "node:dns";
 if (typeof dns.setDefaultResultOrder === "function") {
   dns.setDefaultResultOrder("ipv4first");
 }
-try {
-  dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
-} catch {}
 
-const MONGO_URI =
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MONGO_URI = process.env.MONGODB_URI;
+if (!MONGO_URI) {
+  console.error("MONGODB_URI is not set. Export it in your environment (see .env.example); no built-in credentials are provided.");
+  process.exit(1);
+}
+
+// Writes to the database: dry-run by default; pass --apply to modify the database.
+const APPLY = process.argv.slice(2).includes("--apply");
 
 const SOURCE_PATTERNS = {
   src_dfir: "https://thedfirreport.com/reports/*, https://thedfirreport.com/20*/*",
@@ -46,6 +49,11 @@ async function main() {
 
   console.log("Updating Curated Sources crawl patterns...");
   for (const [id, pattern] of Object.entries(SOURCE_PATTERNS)) {
+    if (!APPLY) {
+      const n = await col.countDocuments({ docType: "source", id });
+      console.log(`- [dry-run] ${id}: would update ${n} doc(s)`);
+      continue;
+    }
     const res = await col.updateMany(
       { docType: "source", id },
       { $set: { crawlPattern: pattern } }
@@ -60,15 +68,17 @@ async function main() {
       const pattern = doc.homepageUrl && doc.homepageUrl.length > 8
         ? `${doc.homepageUrl.replace(/\/+$/, "")}/*`
         : `https://${doc.domain}/*`;
-      await col.updateOne(
-        { _id: doc._id },
-        { $set: { crawlPattern: pattern } }
-      );
-      console.log(`- Discovered ${doc.domain}: set pattern to ${pattern}`);
+      if (APPLY) {
+        await col.updateOne(
+          { _id: doc._id },
+          { $set: { crawlPattern: pattern } }
+        );
+      }
+      console.log(`- ${APPLY ? "" : "[dry-run] "}Discovered ${doc.domain}: set pattern to ${pattern}`);
     }
   }
 
-  console.log("Done!");
+  console.log(APPLY ? "Done!" : "Done (dry-run; re-run with --apply to write changes).");
   await client.close();
 }
 

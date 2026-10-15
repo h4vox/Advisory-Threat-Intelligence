@@ -173,7 +173,10 @@ export class AgentOnboardingOrchestrator {
         authMethod: selectedMethod,
         authUrl: authSession.authUrl,
         authState: authSession.state,
-        codeVerifier: authSession.codeVerifier,
+        // PKCE verifier stays server-side (config.oauthCodeVerifier is redacted
+        // before integration data reaches the browser).
+        oauthCodeVerifier: authSession.codeVerifier,
+        codeVerifier: undefined,
         agentVersion: installRes.version,
         onboardingHistory: history,
         lastError: undefined,
@@ -264,7 +267,8 @@ export class AgentOnboardingOrchestrator {
     try {
       // Step 8: Authentication successful (exchange code)
       pushStep("authentication_successful", "in_progress");
-      const verifier = options?.codeVerifier || savedConfig.codeVerifier;
+      // Only the server-stored verifier is used; a client-supplied one is ignored.
+      const verifier: string | undefined = savedConfig.oauthCodeVerifier;
       const authRes = await driver.submitAuthCode(codeOrKey, {
         codeVerifier: verifier,
         methodId: options?.methodId || savedConfig.authMethod,
@@ -297,6 +301,8 @@ export class AgentOnboardingOrchestrator {
         agentVersion: testRes.version || savedConfig.agentVersion,
         onboardingHistory: history,
         lastError: undefined,
+        oauthCodeVerifier: undefined,
+        codeVerifier: undefined,
       };
 
       if (existing) {
@@ -419,6 +425,7 @@ export class AgentOnboardingOrchestrator {
           authUrl: undefined,
           authState: undefined,
           codeVerifier: undefined,
+          oauthCodeVerifier: undefined,
           lastError: undefined,
           onboardingHistory: [],
         },

@@ -1,4 +1,5 @@
 import { analyzeThreatIntelligence, extractStructuredEntities } from "./attack-chain";
+import { lookupAttackTechnique } from "./mitre-matrix";
 import {
   DISCOVERY_KNOWLEDGE_POOL,
   evaluateDomainTrust,
@@ -19,7 +20,7 @@ import {
 } from "./extract";
 import { parseRssOrAtomXml } from "./feeds";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
-import { safeFetchResource, validateSafePublicUrl } from "./security";
+import { isSafeCrawlPatternString, isSafePublicUrlString, safeFetchResource, safeFetchText, validateSafePublicUrl } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
 import { runUnifiedSourceDiscovery, runUnifiedResourceEvaluation, runUnifiedDomainResourceDiscovery } from "./ai-manager";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
@@ -93,6 +94,8 @@ interface FrontierItem {
   domain: string;
   preloadedText?: string;
   title?: string;
+  /** Publication date reported by the source (feed or page metadata); null when unknown. */
+  publishedAt?: string | null;
 }
 
 export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
@@ -363,6 +366,15 @@ export async function executeCrawlJob(
           );
           console.log(`[crawler] [AI AGENT] Discovered ${agentResult.sources.length} new high-value CTI sources!`);
           for (const s of agentResult.sources) {
+            if (
+              !s.domain ||
+              !isSafePublicUrlString(s.domain) ||
+              (s.base_url && !isSafePublicUrlString(s.base_url)) ||
+              (s.crawl_pattern && !isSafeCrawlPatternString(s.crawl_pattern))
+            ) {
+              logger.warn("SECURITY", `Skipping agent-discovered source with unsafe domain/URL: ${String(s.domain).slice(0, 120)}`);
+              continue;
+            }
             try {
               const created = await mongoCreateDiscoveredSource({
                 domain: s.domain,
@@ -445,17 +457,41 @@ export async function executeCrawlJob(
         for (const ds of discoveredSourcesList) {
           if (ds.enabled !== false && ds.status !== "rejected" && ds.status !== "ignored") {
             const domain = ds.domain;
+            if (!domain || !isSafePublicUrlString(domain)) {
+              logger.warn("SECURITY", `Skipping discovered source with unsafe domain: ${String(domain).slice(0, 120)}`);
+              continue;
+            }
+            if (ds.crawlPattern && !isSafeCrawlPatternString(ds.crawlPattern)) {
+              logger.warn("SECURITY", `Skipping discovered source ${domain}: unsafe crawl pattern ${ds.crawlPattern.slice(0, 160)}`);
+              continue;
+            }
+            if (ds.homepageUrl && !isSafePublicUrlString(ds.homepageUrl)) {
+              logger.warn("SECURITY", `Skipping discovered source ${domain}: unsafe homepage URL ${ds.homepageUrl.slice(0, 160)}`);
+              continue;
+            }
             const slug = domain.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-            const rootUrl = ds.crawlPattern ? ds.crawlPattern.replace(/\/\*$/, "") : ds.homepageUrl || `https://${domain}`;
+            // Multi-entry patterns ("a/*, b/*") derive their root from the first entry.
+            const firstPattern = ds.crawlPattern
+              ? ds.crawlPattern.split(/[,;\n]+/).map((p) => p.trim()).find((p) => p && p !== "*")
+              : undefined;
+            const rootUrl = firstPattern ? firstPattern.replace(/\/\*+$/, "") : ds.homepageUrl || `https://${domain}`;
+            const homepageUrl = rootUrl.startsWith("http") ? rootUrl : `https://${rootUrl}`;
+            if (!validateSafePublicUrl(homepageUrl).safe) {
+              logger.warn("SECURITY", `Skipping discovered source ${domain}: derived homepage URL is unsafe (${homepageUrl.slice(0, 160)})`);
+              continue;
+            }
+            const archiveRoot = firstPattern ? firstPattern.replace(/\/\*+$/, "") : undefined;
+            const researchArchives =
+              archiveRoot && validateSafePublicUrl(archiveRoot).safe ? [archiveRoot] : undefined;
             sources.push({
               id: ds.id,
               name: ds.name || domain,
               slug,
               category: "discovered_source",
-              homepageUrl: rootUrl.startsWith("http") ? rootUrl : `https://${rootUrl}`,
+              homepageUrl,
               crawlPattern: ds.crawlPattern,
               feedUrl: undefined,
-              researchArchives: ds.crawlPattern ? [ds.crawlPattern.replace(/\/\*$/, "")] : undefined,
+              researchArchives,
               enabled: true,
               priority: ds.trustScore ? Math.round(ds.trustScore / 10) : 6,
               trustLevel: ds.trustScore >= 70 ? "reputable" : "community",
@@ -587,21 +623,15 @@ export async function executeCrawlJob(
           if (!source.enabled) return;
           const feedTarget = source.feedUrl || `${source.homepageUrl.replace(/\/+$/, "")}/feed/`;
           try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 4500);
+            // SSRF-guarded fetch: DNS-validated on every hop, deadline spans the body read, size-capped.
+            const xml = await safeFetchText(feedTarget, {
+              timeoutMs: 4500,
+              maxBytes: 3_000_000,
+              userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+              acceptHeader: "application/rss+xml, application/atom+xml, text/xml, */*",
+            });
 
-            const feedRes = await fetch(feedTarget, {
-              signal: controller.signal,
-              headers: {
-                "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-                accept: "application/rss+xml, application/atom+xml, text/xml, */*",
-              },
-            }).catch(() => null);
-
-            clearTimeout(timeout);
-
-            if (feedRes && feedRes.ok) {
-              const xml = await feedRes.text();
+            if (xml !== null) {
               const feedItems = parseRssOrAtomXml(xml);
 
               for (const item of feedItems) {
@@ -623,6 +653,7 @@ export async function executeCrawlJob(
                     domain,
                     title: item.title,
                     preloadedText: item.rawContent || item.summary,
+                    publishedAt: item.publishedAt ? item.publishedAt.slice(0, 10) : null,
                   });
                 } catch {
                   /* skip invalid */
@@ -642,21 +673,15 @@ export async function executeCrawlJob(
         sources.map(async (source) => {
           if (!source.enabled) return;
           try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 4500);
+            // SSRF-guarded fetch: DNS-validated on every hop, deadline spans the body read, size-capped.
+            const html = await safeFetchText(source.homepageUrl, {
+              timeoutMs: 4500,
+              maxBytes: 3_000_000,
+              userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+              acceptHeader: "text/html,application/xhtml+xml,text/plain",
+            });
 
-            const res = await fetch(source.homepageUrl, {
-              signal: controller.signal,
-              headers: {
-                "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-                accept: "text/html,application/xhtml+xml,text/plain",
-              },
-            }).catch(() => null);
-
-            clearTimeout(timeout);
-
-            if (res && res.ok) {
-              const html = await res.text();
+            if (html !== null) {
               const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
                 html,
                 source.homepageUrl,
@@ -749,14 +774,13 @@ export async function executeCrawlJob(
                 for (const archiveUrl of source.researchArchives) {
                   if (archiveUrl === source.homepageUrl) continue;
                   try {
-                    const archRes = await fetch(archiveUrl, {
-                      headers: {
-                        "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-                        accept: "text/html,application/xhtml+xml,text/plain",
-                      },
-                    }).catch(() => null);
-                    if (archRes && archRes.ok) {
-                      const archHtml = await archRes.text();
+                    const archHtml = await safeFetchText(archiveUrl, {
+                      timeoutMs: 8000,
+                      maxBytes: 3_000_000,
+                      userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
+                      acceptHeader: "text/html,application/xhtml+xml,text/plain",
+                    });
+                    if (archHtml !== null) {
                       const archLinks = extractOutlinksAndCitations(archHtml, archiveUrl, {
                         sourceId: source.id,
                         publisher: source.name,
@@ -794,13 +818,12 @@ export async function executeCrawlJob(
               if ((breadth === "wide" || maxDepth >= 3) && source.paginationPattern) {
                 const page2Url = source.paginationPattern.replace("{n}", "2");
                 try {
-                  const p2Res = await fetch(page2Url, {
-                    headers: {
-                      "user-agent": "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal)",
-                    },
-                  }).catch(() => null);
-                  if (p2Res && p2Res.ok) {
-                    const p2Html = await p2Res.text();
+                  const p2Html = await safeFetchText(page2Url, {
+                    timeoutMs: 8000,
+                    maxBytes: 3_000_000,
+                    userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal)",
+                  });
+                  if (p2Html !== null) {
                     const p2Links = extractOutlinksAndCitations(p2Html, page2Url, {
                       sourceId: source.id,
                       publisher: source.name,
@@ -851,23 +874,16 @@ export async function executeCrawlJob(
 
         for (const term of searchTerms) {
           try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 6000);
-
             const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
-            const res = await fetch(searchUrl, {
-              signal: controller.signal,
-              headers: {
-                "user-agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                accept: "text/html,application/xhtml+xml,text/plain",
-              },
-            }).catch(() => null);
+            const html = await safeFetchText(searchUrl, {
+              timeoutMs: 6000,
+              maxBytes: 3_000_000,
+              userAgent:
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+              acceptHeader: "text/html,application/xhtml+xml,text/plain",
+            });
 
-            clearTimeout(timeout);
-
-            if (res && res.ok) {
-              const html = await res.text();
+            if (html !== null) {
               const uddgMatches = [...html.matchAll(/\/l\/\?kh=-1&amp;uddg=([^"&]+)/g)];
               for (const m of uddgMatches) {
                 try {
@@ -1211,6 +1227,9 @@ export async function executeCrawlJob(
               }
 
               const htmlMeta = extractHtmlMetadata(body);
+              if (!current.publishedAt && htmlMeta.publishedAt) {
+                current.publishedAt = htmlMeta.publishedAt.slice(0, 10);
+              }
               if (htmlMeta.author && (!current.author || current.author === current.domain)) {
                 current.author = htmlMeta.author;
               }
@@ -1303,7 +1322,10 @@ export async function executeCrawlJob(
 
         // Check dateRangeDays filter if configured
         if (config.dateRangeDays && config.dateRangeDays > 0) {
-          const pubDateMatch = textContent.slice(0, 1500).match(/\b(202[0-6])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
+          // Prefer the source-reported date; fall back to the first ISO-style date near the top.
+          const pubDateMatch = current.publishedAt
+            ? [current.publishedAt]
+            : textContent.slice(0, 1500).match(/\b((?:19|20)\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
           if (pubDateMatch) {
             const parsedPubDate = new Date(pubDateMatch[0]).getTime();
             const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
@@ -1598,7 +1620,7 @@ export async function executeCrawlJob(
             canonicalUrl: current.canonicalUrl,
             publisher: current.publisher || current.domain,
             author: current.publisher || current.domain,
-            publishedAt: new Date().toISOString().slice(0, 10),
+            publishedAt: current.publishedAt ?? null,
             ingestedAt: new Date().toISOString(),
             classification: qual.classification,
             rawHash,
@@ -1678,12 +1700,11 @@ export async function executeCrawlJob(
                   const existingIds = new Set((extractedEntities.techniques || []).map((t) => t.id));
                   for (const techId of agentResult.mitreTechniques) {
                     if (!existingIds.has(techId)) {
-                      extractedEntities.techniques.push({
-                        id: techId,
-                        name: techId,
-                        tactic: "Execution",
-                      });
-                      existingIds.add(techId);
+                      // Resolve name/tactic from ATT&CK reference data; skip ids we can't verify.
+                      const ref = lookupAttackTechnique(techId);
+                      if (!ref) continue;
+                      extractedEntities.techniques.push({ id: ref.id, name: ref.name, tactic: ref.tactic });
+                      existingIds.add(ref.id);
                     }
                   }
                 }
@@ -1696,7 +1717,7 @@ export async function executeCrawlJob(
                 title: docTitle,
                 url: current.url,
                 canonicalUrl: current.canonicalUrl,
-                publishedAt: new Date().toISOString().slice(0, 10),
+                publishedAt: current.publishedAt ?? null,
                 contentType,
                 status: "acquired",
                 rawHash,

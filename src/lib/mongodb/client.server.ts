@@ -10,14 +10,6 @@ try {
   // Ignore in environments where setDefaultResultOrder is not supported
 }
 
-function applyDnsServersFallback() {
-  try {
-    dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
-  } catch {
-    // Ignore in sandboxes where setServers is restricted
-  }
-}
-
 declare global {
   // eslint-disable-next-line no-var
   var __mongoClientPromise: Promise<MongoClient> | undefined;
@@ -26,18 +18,15 @@ declare global {
 const DEFAULT_DB_NAME = "threat-intel-DB";
 const DEFAULT_COLLECTION_NAME = "threat-intel";
 
-const DEFAULT_MONGO_URI =
-  "mongodb://threatintel_app:UsvyDIqA5d5YztAf@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/threat-intel-DB?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0";
+const MISSING_URI_MESSAGE =
+  "MONGODB_URI is not set. Configure MONGODB_URI in your environment (see .env.example); no built-in database credentials are provided.";
 
 export function getMongoUri(): string | undefined {
-  let envUri = process.env.MONGODB_URI;
-  if (envUri && (envUri.includes("<") && envUri.includes(">") || envUri.includes("NEW_PASSWORD"))) {
-    envUri = undefined;
-  }
-  if (!envUri) return DEFAULT_MONGO_URI;
-  if (envUri.includes("cluster0.gr9ihel.mongodb.net")) {
-    const direct = getDirectSeedUri(envUri);
-    if (direct) return direct;
+  const envUri = process.env.MONGODB_URI?.trim();
+  if (!envUri) return undefined;
+  // Treat obvious template placeholders as unset.
+  if ((envUri.includes("<") && envUri.includes(">")) || envUri.includes("NEW_PASSWORD")) {
+    return undefined;
   }
   return envUri;
 }
@@ -55,28 +44,10 @@ export function isMongoConfigured(): boolean {
   return Boolean(uri && uri.startsWith("mongodb"));
 }
 
-/**
- * Fallback to direct replica set seed nodes if local network/ISP blocks DNS SRV queries.
- */
-function getDirectSeedUri(srvUri: string): string | null {
-  try {
-    if (!srvUri.includes("cluster0.gr9ihel.mongodb.net")) return null;
-    const authMatch = srvUri.match(/mongodb\+srv:\/\/([^@]+)@/);
-    if (!authMatch) return null;
-    const auth = authMatch[1];
-    const db = getDatabaseName();
-    return `mongodb://${auth}@ac-0e7499a-shard-00-00.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-01.gr9ihel.mongodb.net:27017,ac-0e7499a-shard-00-02.gr9ihel.mongodb.net:27017/${db}?ssl=true&replicaSet=atlas-ekdr6v-shard-0&authSource=admin&appName=Cluster0`;
-  } catch {
-    return null;
-  }
-}
-
 export async function getMongoClient(): Promise<MongoClient> {
   const uri = getMongoUri();
   if (!uri) {
-    throw new Error(
-      "MONGODB_URI is not defined. Please configure MONGODB_URI in .env or your deployment environment variables.",
-    );
+    throw new Error(MISSING_URI_MESSAGE);
   }
 
   if (globalThis.__mongoClientPromise) {
@@ -100,8 +71,6 @@ export async function getMongoClient(): Promise<MongoClient> {
       waitQueueTimeoutMS: 30000,
       retryWrites: true,
       retryReads: true,
-      tls: true,
-      tlsAllowInvalidCertificates: true,
     });
     return await client.connect();
   };
@@ -113,28 +82,6 @@ export async function getMongoClient(): Promise<MongoClient> {
         return await tryConnect(uri);
       } catch (srvErr) {
         lastErr = srvErr;
-        const isDnsOrTlsError =
-          srvErr instanceof Error &&
-          (srvErr.message.includes("querySrv") ||
-            srvErr.message.includes("ECONNREFUSED") ||
-            srvErr.message.includes("ENOTFOUND") ||
-            srvErr.message.includes("tlsv1 alert") ||
-            srvErr.message.includes("SSL alert"));
-
-        if (isDnsOrTlsError) {
-          applyDnsServersFallback();
-        }
-
-        const directUri: string | null = isDnsOrTlsError ? getDirectSeedUri(uri) : null;
-        if (directUri && directUri !== uri) {
-          console.warn("[mongodb] SRV connection failed; attempting direct replica-set seed nodes...");
-          try {
-            return await tryConnect(directUri);
-          } catch (directErr) {
-            lastErr = directErr;
-          }
-        }
-
         if (attempt < 2) {
           console.warn(
             `[mongodb] Connection attempt ${attempt} failed, retrying in 1s...`,

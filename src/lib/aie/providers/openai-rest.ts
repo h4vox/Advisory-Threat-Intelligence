@@ -1,3 +1,4 @@
+import { isAllowedProviderEndpoint } from "../redact";
 /**
  * OpenAI & Local LLM REST API Direct Adapter
  *
@@ -37,8 +38,12 @@ export class OpenAiRestAdapter implements AIProviderAdapter {
 
   async testConnection(apiKey?: string, config?: Record<string, any>): Promise<ProviderConnectionTestResult> {
     const startTime = Date.now();
-    const effectiveKey = apiKey || config?.apiKey || process.env.OPENAI_API_KEY;
     const baseUrl = config?.endpointUrl || process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_URL;
+    if (config?.endpointUrl && !isAllowedProviderEndpoint(config.endpointUrl)) {
+      throw new Error("Endpoint is not on the approved provider host list (AIE_ALLOWED_LLM_HOSTS).");
+    }
+    // The server's own key is only ever sent to the server-configured endpoint.
+    const effectiveKey = apiKey || config?.apiKey || (config?.endpointUrl ? undefined : process.env.OPENAI_API_KEY);
     const modelToTest = normalizeModel(config?.selectedModel);
     const logs: string[] = [];
 
@@ -151,8 +156,11 @@ export class OpenAiRestAdapter implements AIProviderAdapter {
 
   async generate(options: LLMGenerateOptions): Promise<LLMGenerateResult> {
     const startTime = Date.now();
-    const effectiveKey = options.apiKey || process.env.OPENAI_API_KEY;
     const baseUrl = options.endpointUrl || process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_URL;
+    if (options.endpointUrl && !isAllowedProviderEndpoint(options.endpointUrl)) {
+      throw new Error("Endpoint is not on the approved provider host list (AIE_ALLOWED_LLM_HOSTS).");
+    }
+    const effectiveKey = options.apiKey || (options.endpointUrl ? undefined : process.env.OPENAI_API_KEY);
     const model = normalizeModel(options.model);
     const timeoutMs = options.timeoutMs || 45000;
 

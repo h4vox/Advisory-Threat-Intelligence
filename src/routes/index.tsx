@@ -4,28 +4,19 @@ import {
   Activity,
   ArrowRight,
   ArrowUpRight,
-  Bot,
   Bug,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Cpu,
   Database,
-  Eye,
   FileText,
   Fingerprint,
   Flame,
   Globe2,
   Hash,
   Layers,
-  Library,
   MapPin,
   Network,
-  Play,
-  Radar,
-  RefreshCw,
   Shield,
-  ShieldAlert,
   Terminal,
   Workflow,
   Zap,
@@ -39,7 +30,6 @@ import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
 import { getDashboard } from "@/lib/aie/server";
-import { computeDashboardAnalytics } from "@/lib/aie/dashboard-analytics";
 import type {
   ThreatRegionStats,
   TacticDistributionStats,
@@ -52,88 +42,8 @@ import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/")({ component: Home });
 
-// Global Threat Geolocation Hotspots
-const THREAT_REGIONS = [
-  {
-    name: "North America",
-    x: 180,
-    y: 95,
-    actors: ["Scattered Spider", "FIN7", "Volt Typhoon Targets"],
-    count: 42,
-    threatLevel: "high",
-    sectors: ["Defense Industrial Base", "Critical Infrastructure", "Finance"],
-    topVector: "SIM Swapping, Cloud Token Replay, WMI Abuse",
-  },
-  {
-    name: "Western Europe",
-    x: 440,
-    y: 75,
-    actors: ["LockBit Affiliates", "BlackCat", "Akira"],
-    count: 35,
-    threatLevel: "medium",
-    sectors: ["Healthcare", "Manufacturing", "Government"],
-    topVector: "VPN Exploitation, Ransomware Deployment, AuKill",
-  },
-  {
-    name: "Eastern Europe",
-    x: 530,
-    y: 65,
-    actors: ["Midnight Blizzard", "Sandworm", "APT28"],
-    count: 88,
-    threatLevel: "critical",
-    sectors: ["Energy Grid", "Foreign Affairs", "Military Logistics"],
-    topVector: "Kerberoasting, Supply Chain, Exchange Zero-Days",
-  },
-  {
-    name: "Middle East",
-    x: 555,
-    y: 135,
-    actors: ["MuddyWater", "Charming Kitten", "OilRig"],
-    count: 29,
-    threatLevel: "medium",
-    sectors: ["Oil & Gas", "Telecommunications", "Aviation"],
-    topVector: "Spearphishing Attachments, ScreenConnect, Chisel",
-  },
-  {
-    name: "East Asia",
-    x: 750,
-    y: 110,
-    actors: ["Volt Typhoon", "Lazarus Group", "Flax Typhoon"],
-    count: 74,
-    threatLevel: "critical",
-    sectors: ["Ports & Maritime", "Financial Institutions", "Defense"],
-    topVector: "Living-off-the-Land, Router Botnets, Fast-Flux C2",
-  },
-  {
-    name: "Southeast Asia",
-    x: 720,
-    y: 175,
-    actors: ["Mustang Panda", "BlackTech"],
-    count: 21,
-    threatLevel: "low",
-    sectors: ["Public Sector", "Diplomatic Channels", "Education"],
-    topVector: "USB Staging, PlugX DLL Side-Loading, Web Shells",
-  },
-];
-
-// Tactical Phases for Live Matrix Coverage Bar Chart
-const TACTIC_PHASE_DISTRIBUTION = [
-  { name: "Initial Access", id: "TA0001", count: 18, pct: 75 },
-  { name: "Execution", id: "TA0002", count: 24, pct: 90 },
-  { name: "Persistence", id: "TA0003", count: 16, pct: 68 },
-  { name: "Priv Escalation", id: "TA0004", count: 14, pct: 60 },
-  { name: "Stealth", id: "TA0005.1", count: 22, pct: 85 },
-  { name: "Defense Impairment", id: "TA0005.2", count: 20, pct: 82 },
-  { name: "Credential Access", id: "TA0006", count: 28, pct: 95 },
-  { name: "Discovery", id: "TA0007", count: 19, pct: 70 },
-  { name: "Lateral Movement", id: "TA0008", count: 17, pct: 65 },
-  { name: "Command & Control", id: "TA0011", count: 21, pct: 80 },
-  { name: "Exfiltration", id: "TA0010", count: 15, pct: 62 },
-  { name: "Impact", id: "TA0040", count: 19, pct: 78 },
-];
-
 function Home() {
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => getDashboard(),
     refetchInterval: 30000,
@@ -141,40 +51,20 @@ function Home() {
     placeholderData: (previousData) => previousData,
   });
 
-  const fallbackAnalytics = computeDashboardAnalytics([]);
-
-  const threatRegions: ThreatRegionStats[] =
-    data?.threatRegions && data.threatRegions.length > 0
-      ? data.threatRegions
-      : fallbackAnalytics.threatRegions;
-
-  const tacticDistribution: TacticDistributionStats[] =
-    data?.tacticDistribution && data.tacticDistribution.length > 0
-      ? data.tacticDistribution
-      : fallbackAnalytics.tacticDistribution;
-
-  const topThreatActors: MonitoredActorItem[] =
-    data?.topThreatActors && data.topThreatActors.length > 0
-      ? data.topThreatActors
-      : fallbackAnalytics.topThreatActors;
-
-  const cveVelocity: CveVelocityItem[] =
-    data?.cveVelocity && data.cveVelocity.length > 0
-      ? data.cveVelocity
-      : fallbackAnalytics.cveVelocity;
-
-  const threatFlows: ThreatFlowItem[] =
-    data?.threatFlows && data.threatFlows.length > 0
-      ? data.threatFlows
-      : fallbackAnalytics.threatFlows;
-
-  const attackHeatmap: AttackHeatmapCell[] =
-    data?.attackHeatmap && data.attackHeatmap.length > 0
-      ? data.attackHeatmap
-      : fallbackAnalytics.attackHeatmap;
+  // Every widget below renders only what the server computed from acquired
+  // reports. There is deliberately no client-side fallback data: missing or
+  // empty analytics render an honest empty state instead.
+  const threatRegions: ThreatRegionStats[] = data?.threatRegions ?? [];
+  const tacticDistribution: TacticDistributionStats[] = data?.tacticDistribution ?? [];
+  const topThreatActors: MonitoredActorItem[] = data?.topThreatActors ?? [];
+  const cveVelocity: CveVelocityItem[] = data?.cveVelocity ?? [];
+  const threatFlows: ThreatFlowItem[] = data?.threatFlows ?? [];
+  const attackHeatmap: AttackHeatmapCell[] = data?.attackHeatmap ?? [];
+  const analyticsLoading = isLoading && !data;
+  const topTacticNames = tacticDistribution.slice(0, 2).map((t) => t.name);
 
   const [activeRegion, setActiveRegion] = useState<ThreatRegionStats | null>(null);
-  const [selectedFlowId, setSelectedFlowId] = useState<string>("flow_east_asia");
+  const [selectedFlowId, setSelectedFlowId] = useState<string>("");
   const actorCarouselRef = useRef<HTMLDivElement>(null);
 
   function scrollActors(direction: "left" | "right") {
@@ -275,11 +165,11 @@ function Home() {
                   </h2>
                 </div>
                 <Badge tone="neutral" className="font-mono text-[10px]">
-                  Real-time Telemetry
+                  {threatRegions.length > 0 ? "From Reports" : "Not Available Yet"}
                 </Badge>
               </div>
               <p className="mt-1 text-xs text-muted">
-                Observed adversary infrastructure and nation-state threat actor origin clusters derived from acquired intelligence papers.
+                Threat origin and targeting clusters, plotted only when geography is extracted from acquired reports.
               </p>
             </div>
 
@@ -409,6 +299,20 @@ function Home() {
                 })}
               </svg>
 
+              {threatRegions.length === 0 && (
+                <div className="absolute inset-0 flex items-center justify-center bg-bg/60 backdrop-blur-[1px]">
+                  <EmptyState
+                    icon={MapPin}
+                    title={analyticsLoading ? "Loading report analytics…" : "No geography is extracted from reports yet"}
+                    detail={
+                      analyticsLoading
+                        ? undefined
+                        : "Reports do not currently carry origin or target-country fields, so no regions are plotted."
+                    }
+                  />
+                </div>
+              )}
+
               {/* Active Region Threat Telemetry HUD Overlay */}
               {activeRegion && (
                 <div className="absolute bottom-2 left-2 right-2 sm:right-auto sm:max-w-md rounded-lg border border-border bg-bg-elevated/95 p-3.5 shadow-xl backdrop-blur-md text-xs font-mono animate-in fade-in zoom-in-95 duration-100 z-10">
@@ -438,7 +342,7 @@ function Home() {
                       }
                       className="text-[9px] uppercase font-bold px-1.5 py-0.5"
                     >
-                      {activeRegion.threatLevel} · {activeRegion.count ?? 0} campaigns
+                      {activeRegion.threatLevel} · {activeRegion.count ?? 0} reports
                     </Badge>
                   </div>
                   <div className="space-y-1.5 text-[11px] text-muted">
@@ -491,7 +395,7 @@ function Home() {
               )}
             </div>
 
-            <div className="mt-3 flex items-center justify-between text-xs text-subtle">
+            <div className={cn("mt-3 flex items-center justify-between text-xs text-subtle", threatRegions.length === 0 && "invisible")}>
               <span>Threat Levels: <span className="text-danger font-mono font-bold">● Critical</span> · <span className="text-warn font-mono font-bold">● High</span> · <span className="text-sage font-mono font-bold">● Medium</span></span>
               <span className="font-mono text-[11px]">Click nodes to inspect clusters</span>
             </div>
@@ -513,17 +417,26 @@ function Home() {
                 </Link>
               </div>
               <p className="mt-1 text-xs text-muted">
-                Adversary emulation technique coverage across the 15 enterprise attack phases.
+                Attack-chain steps mapped to each ATT&CK tactic across acquired reports, relative to the busiest tactic.
               </p>
             </div>
 
             {/* Tactical Phase Bars */}
             <div className="mt-4 space-y-2.5">
+              {tacticDistribution.length === 0 && (
+                <EmptyState
+                  icon={Layers}
+                  title={analyticsLoading ? "Loading report analytics…" : "No ATT&CK tactics mapped yet"}
+                  detail={analyticsLoading ? undefined : "Bars appear once acquired reports include an analyzed attack chain."}
+                />
+              )}
               {tacticDistribution.slice(0, 7).map((phase) => (
                 <div key={phase.id} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-fg">{phase.name}</span>
-                    <span className="font-mono text-[11px] text-muted">{phase.count ?? 0} techniques ({phase.pct ?? 0}%)</span>
+                    <span className="font-mono text-[11px] text-muted">
+                      {phase.count ?? 0} steps · {phase.reportCount ?? 0} {(phase.reportCount ?? 0) === 1 ? "report" : "reports"} ({phase.pct ?? 0}%)
+                    </span>
                   </div>
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg">
                     <div
@@ -536,9 +449,13 @@ function Home() {
             </div>
 
             <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs">
-              <span className="text-muted">High-density areas: Credential Access & Execution</span>
+              <span className="text-muted">
+                {topTacticNames.length > 0
+                  ? `Most observed: ${topTacticNames.join(" & ")}`
+                  : "No tactic data from reports yet"}
+              </span>
               <Link to="/matrix" className="font-mono text-muted hover:text-fg hover:underline text-[11px]">
-                View All 15 Tactics →
+                Open Full Matrix →
               </Link>
             </div>
           </div>
@@ -560,7 +477,7 @@ function Home() {
             </div>
             <div className="flex items-center gap-3">
               <span className="font-mono text-[11px] text-muted">
-                {topThreatActors.length} active profiles · Categorized by Sovereign Attribution & CTI Frequency
+                {topThreatActors.length} {topThreatActors.length === 1 ? "actor" : "actors"} named in acquired reports · Ranked by report count
               </span>
               <div className="flex items-center gap-1">
                 <button
@@ -587,6 +504,19 @@ function Home() {
             ref={actorCarouselRef}
             className="flex gap-3 overflow-x-auto pb-2 pt-1 scroll-smooth scrollbar-none"
           >
+            {topThreatActors.length === 0 && (
+              <div className="w-full rounded-lg border border-dashed border-border bg-bg">
+                <EmptyState
+                  icon={Flame}
+                  title={analyticsLoading ? "Loading report analytics…" : "No threat actors named in reports yet"}
+                  detail={
+                    analyticsLoading
+                      ? undefined
+                      : "Actors appear here once acquired reports attribute activity to a named group or tool."
+                  }
+                />
+              </div>
+            )}
             {topThreatActors.map((actor) => (
               <Link
                 key={actor.name}
@@ -597,7 +527,11 @@ function Home() {
                 <div>
                   <div className="flex items-center justify-between gap-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-sm" title={actor.originCountry}>{actor.flag}</span>
+                      {actor.reference?.flag && (
+                        <span className="text-sm" title={`${actor.reference.originCountry} (reference profile)`}>
+                          {actor.reference.flag}
+                        </span>
+                      )}
                       <Badge
                         tone={
                           actor.badge === "APT"
@@ -614,7 +548,7 @@ function Home() {
                       </Badge>
                     </div>
                     <span className="font-mono text-[10px] text-muted font-semibold">
-                      {actor.reportCount} verified papers
+                      {actor.reportCount} {actor.reportCount === 1 ? "report" : "reports"}
                     </span>
                   </div>
 
@@ -624,25 +558,35 @@ function Home() {
                     </div>
                   </div>
 
-                  <div className="mt-1 text-[11px] text-subtle truncate" title={actor.originCountry}>
-                    {actor.originCountry} · {actor.type}
-                  </div>
-
-                  <div className="mt-2 text-[10px] font-mono text-muted line-clamp-2 leading-relaxed bg-bg-subtle/50 p-1.5 rounded border border-border/40">
-                    <span className="text-subtle font-semibold">TTP Focus:</span> {actor.focus}
-                  </div>
+                  {actor.reference ? (
+                    <>
+                      <div className="mt-1 text-[11px] text-subtle truncate" title={actor.reference.originCountry}>
+                        {actor.reference.originCountry} · {actor.reference.type}
+                      </div>
+                      <div className="mt-2 text-[10px] font-mono text-muted line-clamp-3 leading-relaxed bg-bg-subtle/50 p-1.5 rounded border border-border/40">
+                        <span className="uppercase tracking-wider text-[9px] text-subtle font-semibold">Reference profile · </span>
+                        {actor.reference.focus}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-1 text-[11px] text-subtle truncate">
+                      No reference profile in catalog
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-3 pt-2 border-t border-border space-y-1.5 text-[10px] font-mono">
                   <div className="flex items-center justify-between text-subtle">
-                    <span className="truncate max-w-[190px]">
-                      🎯 {actor.targetSectors.slice(0, 2).join(", ")}
+                    <span className="truncate max-w-[190px]" title="Reference profile, not observed in reports">
+                      {actor.reference && actor.reference.targetSectors.length > 0
+                        ? `Ref. sectors: ${actor.reference.targetSectors.slice(0, 2).join(", ")}`
+                        : "Open matching reports"}
                     </span>
                     <ArrowUpRight className="size-3 text-subtle group-hover:text-fg group-hover:translate-x-0.5 transition-transform shrink-0" />
                   </div>
                   {actor.associatedTools && actor.associatedTools.length > 0 && (
-                    <div className="truncate text-muted">
-                      🛠️ {actor.associatedTools.join(", ")}
+                    <div className="truncate text-muted" title="Malware/tools named in the same reports">
+                      Co-observed: {actor.associatedTools.join(", ")}
                     </div>
                   )}
                 </div>
@@ -664,7 +608,7 @@ function Home() {
                 </h2>
               </div>
               <p className="mt-0.5 text-xs text-muted">
-                Empirical technique execution density and observed procedure volume across primary tactical phases.
+                Attack-chain steps and technique IDs per tactic, extracted from acquired reports. Intensity is relative to the busiest tactic.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -682,6 +626,15 @@ function Home() {
             </div>
           </div>
 
+          {attackHeatmap.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border bg-bg">
+              <EmptyState
+                icon={Layers}
+                title={analyticsLoading ? "Loading report analytics…" : "No techniques mapped from reports yet"}
+                detail={analyticsLoading ? undefined : "The heatmap fills in as reports with analyzed attack chains are acquired."}
+              />
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8">
             {attackHeatmap.map((cell) => {
               const isHigh = cell.intensity >= 80;
@@ -711,7 +664,7 @@ function Home() {
                       {cell.tacticName}
                     </div>
                     <div className="mt-1 font-mono text-[10px] text-muted">
-                      {cell.hitCount} procedures · {cell.techniqueCount} techs
+                      {cell.hitCount} steps · {cell.techniqueCount} techs
                     </div>
 
                     <div className="mt-2 h-1 w-full rounded-full bg-bg-subtle overflow-hidden">
@@ -729,6 +682,9 @@ function Home() {
                     <span className="text-[9px] font-mono uppercase tracking-wider text-subtle block">
                       Top Techniques
                     </span>
+                    {cell.topTechniques.length === 0 && (
+                      <span className="block text-[10px] font-mono text-subtle">No technique IDs</span>
+                    )}
                     {cell.topTechniques.map((tech) => (
                       <Link
                         key={tech.id}
@@ -777,14 +733,25 @@ function Home() {
                       : "border-border bg-bg text-muted hover:text-fg hover:border-border-strong",
                   )}
                 >
-                  {flow.id === "flow_east_asia" && "🇨🇳 East Asia APT"}
-                  {flow.id === "flow_eastern_europe" && "🇷🇺 Eastern Europe"}
-                  {flow.id === "flow_raas_syndicates" && "🏴‍☠️ RaaS Cartels"}
-                  {flow.id === "flow_identity_broker" && "🌐 Identity Brokers"}
+                  {flow.origin}
                 </button>
               ))}
             </div>
           </div>
+
+          {!activeFlow && (
+            <div className="rounded-lg border border-dashed border-border bg-bg">
+              <EmptyState
+                icon={Network}
+                title={analyticsLoading ? "Loading report analytics…" : "No campaign flows correlated from reports yet"}
+                detail={
+                  analyticsLoading
+                    ? undefined
+                    : "Reports do not yet carry the origin, ingress vector and target-sector fields needed to build these flows."
+                }
+              />
+            </div>
+          )}
 
           {/* Active Flow Graph Visualizer */}
           {activeFlow && (
@@ -911,19 +878,18 @@ function Home() {
                 </div>
               </div>
 
-              <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center justify-between text-xs text-muted">
-                <span className="font-mono text-[11px]">
-                  Correlated with {data?.acquiredCount ?? 0} acquired threat reports in store
-                </span>
-                <Link
-                  to="/library"
-                  search={{ q: activeFlow.actors[0] }}
-                  className="font-mono text-accent hover:underline flex items-center gap-1 text-[11px]"
-                >
-                  <span>Query {activeFlow.actors[0]} Reports in Library</span>
-                  <ArrowRight className="size-3" />
-                </Link>
-              </div>
+              {activeFlow.actors.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center justify-end text-xs text-muted">
+                  <Link
+                    to="/library"
+                    search={{ q: activeFlow.actors[0] }}
+                    className="font-mono text-accent hover:underline flex items-center gap-1 text-[11px]"
+                  >
+                    <span>Query {activeFlow.actors[0]} Reports in Library</span>
+                    <ArrowRight className="size-3" />
+                  </Link>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -937,11 +903,11 @@ function Home() {
               <div className="flex items-center gap-2">
                 <Bug className="size-4 text-danger" />
                 <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                  Exploited CVEs & Vulnerability Velocity Gauge
+                  CVEs Referenced in Acquired Reports
                 </h2>
               </div>
               <p className="mt-0.5 text-xs text-muted">
-                Known exploited vulnerabilities actively observed across ingested adversary campaign intelligence.
+                Ranked by number of reports citing each CVE. CVSS and exploitation status, where shown, are reference values from a built-in catalog, not observed.
               </p>
             </div>
             <Link to="/library" className="text-xs text-muted hover:text-fg hover:underline font-mono inline-flex items-center gap-1">
@@ -950,9 +916,19 @@ function Home() {
             </Link>
           </div>
 
+          {cveVelocity.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border bg-bg">
+              <EmptyState
+                icon={Bug}
+                title={analyticsLoading ? "Loading report analytics…" : "No CVEs referenced in reports yet"}
+                detail={analyticsLoading ? undefined : "CVE identifiers extracted from acquired reports will be listed here."}
+              />
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {cveVelocity.slice(0, 8).map((cve) => {
-              const isCrit = cve.cvss >= 9.0;
+              const ref = cve.reference;
+              const isCrit = (ref?.cvss ?? 0) >= 9.0;
               return (
                 <Link
                   key={cve.cveId}
@@ -965,42 +941,51 @@ function Home() {
                       <span className="font-mono text-xs font-bold text-fg group-hover:text-accent transition-colors">
                         {cve.cveId}
                       </span>
-                      <div className="flex items-center gap-1">
-                        <Badge
-                          tone={isCrit ? "danger" : "warn"}
-                          className="font-mono text-[9px] font-bold px-1.5 py-0.5"
-                        >
-                          CVSS {cve.cvss}
-                        </Badge>
-                      </div>
+                      {ref && (
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            tone={isCrit ? "danger" : "warn"}
+                            className="font-mono text-[9px] font-bold px-1.5 py-0.5"
+                            title="Reference CVSS from built-in catalog"
+                          >
+                            Ref CVSS {ref.cvss}
+                          </Badge>
+                        </div>
+                      )}
                     </div>
 
                     <div className="text-xs font-medium text-fg leading-snug line-clamp-2">
-                      {cve.vendorProduct}
+                      {ref?.vendorProduct ?? cve.sampleReportTitle ?? "Referenced in acquired reports"}
                     </div>
 
                     <div className="mt-2 flex items-center gap-2 font-mono text-[10px]">
-                      <span className="flex items-center gap-1">
-                        <span
-                          className={cn(
-                            "size-1.5 rounded-full",
-                            cve.exploitStatus === "In the Wild"
-                              ? "bg-danger animate-pulse"
-                              : cve.exploitStatus === "Weaponized"
-                                ? "bg-warn"
-                                : "bg-sage",
-                          )}
-                        />
-                        <span className="text-muted">{cve.exploitStatus}</span>
+                      {ref && (
+                        <>
+                          <span className="flex items-center gap-1" title="Reference status from built-in catalog, not observed">
+                            <span
+                              className={cn(
+                                "size-1.5 rounded-full",
+                                ref.exploitStatus === "In the Wild"
+                                  ? "bg-danger"
+                                  : ref.exploitStatus === "Weaponized"
+                                    ? "bg-warn"
+                                    : "bg-sage",
+                              )}
+                            />
+                            <span className="text-muted">Ref: {ref.exploitStatus}</span>
+                          </span>
+                          <span className="text-subtle">·</span>
+                        </>
+                      )}
+                      <span className="text-muted">
+                        {cve.reportCount} {cve.reportCount === 1 ? "report" : "reports"}
                       </span>
-                      <span className="text-subtle">·</span>
-                      <span className="text-muted">{cve.reportCount} papers</span>
                     </div>
                   </div>
 
                   <div className="mt-3 pt-2 border-t border-border flex items-center justify-between text-[10px] font-mono text-subtle">
                     <span className="truncate max-w-[170px]">
-                      {cve.actors?.slice(0, 2).join(", ") || "General APT"}
+                      {cve.actors?.slice(0, 2).join(", ") || "No actor attributed"}
                     </span>
                     <ArrowUpRight className="size-3 text-subtle group-hover:text-fg group-hover:translate-x-0.5 transition-transform shrink-0" />
                   </div>
@@ -1147,6 +1132,24 @@ function Stat({
         {Icon && <Icon className="size-5 text-subtle/50" />}
       </div>
       <div className="mt-1 text-xs text-muted">{sub}</div>
+    </div>
+  );
+}
+
+function EmptyState({
+  icon: Icon,
+  title,
+  detail,
+}: {
+  icon: typeof Hash;
+  title: string;
+  detail?: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-center">
+      <Icon className="size-5 text-subtle/60" strokeWidth={1.75} />
+      <p className="text-xs font-semibold text-fg">{title}</p>
+      {detail && <p className="max-w-sm text-[11px] leading-relaxed text-muted">{detail}</p>}
     </div>
   );
 }
