@@ -27,7 +27,7 @@ import type {
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
 import { computeDashboardAnalytics } from "../aie/dashboard-analytics";
-import { excerptOf } from "../aie/extract";
+import { computeReportSimHash, excerptOf } from "../aie/extract";
 import { logger } from "../aie/logger";
 import { SOURCE_SEED } from "../aie/catalog";
 import type { IntegrationItem, MarketplaceState } from "../aie/marketplace-types";
@@ -40,6 +40,7 @@ import {
 import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
 import { isCandidateResourceUrl } from "../aie/qualification";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "../aie/agent-framework/types";
+import { excerptAround, extractExactIds, queryTerms, selectPassages } from "../aie/retrieval";
 
 let indexesEnsured = false;
 let indexesPromise: Promise<void> | null = null;
@@ -227,8 +228,7 @@ export async function ensureMongoIndexes() {
             "analysis.malware": "text",
             "extractedEntities.cves": "text",
             "extractedEntities.techniques": "text",
-            "analysis.attackChain.description": "text",
-            "analysis.attackChain.techniqueName": "text",
+            "analysis.attackChain.summary": "text",
           },
           {
             weights: {
@@ -237,8 +237,7 @@ export async function ensureMongoIndexes() {
               "analysis.malware": 8,
               "extractedEntities.cves": 8,
               "extractedEntities.techniques": 7,
-              "analysis.attackChain.description": 6,
-              "analysis.attackChain.techniqueName": 6,
+              "analysis.attackChain.summary": 6,
               extractedText: 2,
             },
             name: "threat_intel_fulltext_search_index",
@@ -246,8 +245,19 @@ export async function ensureMongoIndexes() {
           }
         );
       } catch (textIdxErr) {
-        // May already exist with compatible or existing schema
+        // May already exist with compatible or existing schema (an older
+        // definition keeps working; search queries do not depend on its name).
         console.debug("[mongodb] Full-text index check:", (textIdxErr as Error).message);
+      }
+
+      // Per-user chat history lookups (sessions are scoped by userId).
+      try {
+        await col.createIndex(
+          { docType: 1, userId: 1, sessionId: 1, createdAt: -1 },
+          { name: "agent_chat_user_session", background: true, partialFilterExpression: { docType: "agent_chat_message" } },
+        );
+      } catch (chatIdxErr) {
+        console.debug("[mongodb] Chat index check:", (chatIdxErr as Error).message);
       }
 
       indexesEnsured = true;
@@ -271,18 +281,25 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
   let doc = await col.findOne({ docType: "report", id: id.trim() });
 
   if (!doc) {
+    // Normalised exact match first (case / "report-" prefix variants), then a
+    // strictly anchored prefix match. Never an unanchored regex: that let a
+    // short or crafted id resolve to an arbitrary report via a collection scan.
     const cleanId = id.trim().toLowerCase();
-    const hexPart = cleanId.replace(/^(rpt[-_]|report[-_])/i, "").replace(/[^a-z0-9]/g, "");
-    if (hexPart.length >= 4) {
+    const hexPart = cleanId.replace(/^(rpt[-_]|report[-_])/i, "").replace(/[^a-f0-9]/g, "");
+    if (hexPart.length > 0) {
       doc = await col.findOne({
         docType: "report",
-        $or: [
-          { id: cleanId },
-          { id: `rpt_${hexPart}` },
-          { id: { $regex: `^rpt_${hexPart}`, $options: "i" } },
-          { id: { $regex: hexPart, $options: "i" } },
-        ],
+        id: { $in: [cleanId, `rpt_${hexPart}`] },
       });
+    }
+    if (!doc && hexPart.length >= 8) {
+      // hexPart only contains [a-f0-9], so it is regex-safe; escape anyway.
+      const escaped = hexPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const candidates = await col
+        .find({ docType: "report", id: { $regex: `^rpt_${escaped}` } })
+        .limit(2)
+        .toArray();
+      doc = candidates.length === 1 ? candidates[0] : null;
     }
   }
 
@@ -394,6 +411,66 @@ export function deriveReportTags(report: any): string[] {
   return Array.from(tagsSet).slice(0, 15);
 }
 
+// ---------------------------------------------------------------------------
+// Search helpers (weighted $text index + exact identifier matches)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `$text: { $search }` string from free text. Quotes and leading
+ * hyphens are stripped so user input cannot form phrase or negation operators.
+ */
+function toMongoTextSearch(query: string): string {
+  const terms = queryTerms(query)
+    .map((t) => t.replace(/["\\]/g, "").replace(/^-+/, ""))
+    .filter(Boolean)
+    .slice(0, 24);
+  return terms.length > 0 ? terms.join(" ") : query.replace(/["\\]/g, " ").replace(/(^|\s)-+/g, "$1").slice(0, 200);
+}
+
+function exactIdClauses(query: string): Filter<Document>[] {
+  const { cves, techniques } = extractExactIds(query);
+  const clauses: Filter<Document>[] = [];
+  if (cves.length > 0) {
+    clauses.push({ "extractedEntities.cves": { $in: cves } }, { "analysis.vulnerabilities": { $in: cves } });
+  }
+  if (techniques.length > 0) {
+    clauses.push(
+      { "extractedEntities.techniques.id": { $in: techniques } },
+      { "extractedEntities.techniques": { $in: techniques } },
+      { "analysis.ttps": { $in: techniques } },
+    );
+  }
+  return clauses;
+}
+
+async function findReportsByExactIds(
+  col: Awaited<ReturnType<typeof getThreatIntelCollection>>,
+  baseFilter: Filter<Document>,
+  query: string,
+  projection: Record<string, unknown>,
+  limit: number,
+): Promise<Document[]> {
+  const clauses = exactIdClauses(query);
+  if (clauses.length === 0) return [];
+  const filter: Filter<Document> = {
+    ...baseFilter,
+    $and: [...((baseFilter.$and as Filter<Document>[]) ?? []), { $or: clauses }],
+  };
+  return col.find(filter).project(projection).sort({ ingestedAt: -1 }).limit(limit).toArray();
+}
+
+function dedupeDocs(docs: Document[]): Document[] {
+  const seen = new Set<string>();
+  const out: Document[] = [];
+  for (const d of docs) {
+    const key = String(d.id ?? d._id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(d);
+  }
+  return out;
+}
+
 export async function mongoListReports(params?: {
   q?: string;
   classification?: string;
@@ -406,10 +483,19 @@ export async function mongoListReports(params?: {
   minScore?: number;
   hasIocs?: boolean;
   limit?: number;
+  offset?: number;
 }): Promise<ReportListItem[]> {
+  // Paging params do not change which documents match; the default (unfiltered)
+  // list is cached in full and sliced per request.
   const isDefaultQuery =
     !params ||
-    Object.values(params).every((v) => v === undefined || v === "" || v === "ALL" || v === false);
+    Object.entries(params).every(
+      ([k, v]) => k === "limit" || k === "offset" || v === undefined || v === "" || v === "ALL" || v === false,
+    );
+  const pageLimit = typeof params?.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : undefined;
+  const pageOffset = typeof params?.offset === "number" && params.offset > 0 ? Math.floor(params.offset) : 0;
+  const slicePage = (rows: ReportListItem[]) =>
+    pageLimit !== undefined ? rows.slice(pageOffset, pageOffset + pageLimit) : rows.slice(pageOffset);
 
   if (isDefaultQuery && cachedReportsList && Date.now() - cachedReportsList.timestamp < CACHE_TTL_MS) {
     logger.mongo(
@@ -419,9 +505,7 @@ export async function mongoListReports(params?: {
       `Returned ${cachedReportsList.data.length} cached intelligence reports`,
       true,
     );
-    return typeof params?.limit === "number" && params.limit > 0
-      ? cachedReportsList.data.slice(0, params.limit)
-      : cachedReportsList.data;
+    return slicePage(cachedReportsList.data);
   }
 
   await ensureMongoIndexes();
@@ -550,13 +634,16 @@ export async function mongoListReports(params?: {
   }
 
   const hasQuery = Boolean(params?.q?.trim());
+  const rawQuery = hasQuery ? params!.q!.trim().slice(0, 300) : "";
   let searchTokens: string[] = [];
+  // Regex condition used only when the weighted $text index is unavailable or
+  // finds nothing (e.g. partial words, which $text does not match).
+  let regexQueryCondition: Filter<Document> | null = null;
 
   if (hasQuery) {
-    const rawQ = params!.q!.trim();
-    const cleanEscaped = rawQ.slice(0, 150).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const cleanEscaped = rawQuery.slice(0, 150).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(cleanEscaped, "i");
-    searchTokens = rawQ.split(/\s+/).filter((w) => w.length >= 2).slice(0, 6);
+    searchTokens = rawQuery.split(/\s+/).filter((w) => w.length >= 2).slice(0, 6);
     const tokenRegexes = searchTokens.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
 
     const orConditions: Filter<Document>[] = [
@@ -571,10 +658,10 @@ export async function mongoListReports(params?: {
       { "analysis.threatActors": { $regex: regex } },
       { "analysis.malware": { $regex: regex } },
       { "extractedEntities.cves": { $regex: regex } },
-      { "extractedEntities.techniques": { $regex: regex } },
+      { "extractedEntities.techniques.id": { $regex: regex } },
+      { "extractedEntities.techniques.name": { $regex: regex } },
       { "extractedEntities.tactics": { $regex: regex } },
-      { "analysis.attackChain.description": { $regex: regex } },
-      { "analysis.attackChain.techniqueName": { $regex: regex } },
+      { "analysis.attackChain.summary": { $regex: regex } },
       { "iocs.value": { $regex: regex } },
     ];
 
@@ -588,13 +675,13 @@ export async function mongoListReports(params?: {
             { extractedText: { $regex: tr } },
             { "analysis.threatActors": { $regex: tr } },
             { "analysis.malware": { $regex: tr } },
-            { "analysis.attackChain.description": { $regex: tr } },
+            { "analysis.attackChain.summary": { $regex: tr } },
           ],
         })),
       });
     }
 
-    andConditions.push({ $or: orConditions });
+    regexQueryCondition = { $or: orConditions };
   }
 
   if (andConditions.length > 0) {
@@ -646,17 +733,49 @@ export async function mongoListReports(params?: {
     projection.extractedText = 1;
   }
 
-  const cursor = col.find(filter).sort({ ingestedAt: -1 }).project(projection);
-  if (typeof params?.limit === "number" && params.limit > 0) {
-    cursor.limit(params.limit);
+  let docs: Document[] = [];
+  let searchMode: "list" | "text" | "regex" = "list";
+  if (hasQuery) {
+    // Relevance path: weighted $text index ranked by textScore, plus exact
+    // CVE / ATT&CK id matches pinned to the top of the first page.
+    try {
+      const textDocs = await col
+        .find({ ...filter, $text: { $search: toMongoTextSearch(rawQuery) } })
+        .project({ ...projection, _textScore: { $meta: "textScore" } })
+        .sort({ _textScore: { $meta: "textScore" } })
+        .skip(pageOffset)
+        .limit(pageLimit ?? 500)
+        .toArray();
+      const idDocs =
+        pageOffset === 0 ? await findReportsByExactIds(col, filter, rawQuery, projection, pageLimit ?? 500) : [];
+      const merged = dedupeDocs([...idDocs, ...textDocs]);
+      if (merged.length > 0 || pageOffset > 0) {
+        docs = pageLimit !== undefined ? merged.slice(0, pageLimit) : merged;
+        searchMode = "text";
+      }
+    } catch (err) {
+      logger.warn("MONGO", `$text search unavailable, using regex fallback: ${(err as Error).message}`);
+    }
   }
 
-  const docs = await cursor.toArray();
+  if (searchMode !== "text") {
+    const regexFilter: Filter<Document> = regexQueryCondition
+      ? { ...filter, $and: [...((filter.$and as Filter<Document>[]) ?? []), regexQueryCondition] }
+      : filter;
+    const cursor = col.find(regexFilter).sort({ ingestedAt: -1 }).project(projection);
+    // The unfiltered list is cached in full; anything else is paged in Mongo.
+    if (!isDefaultQuery) {
+      if (pageOffset > 0) cursor.skip(pageOffset);
+      if (pageLimit !== undefined) cursor.limit(pageLimit);
+    }
+    docs = await cursor.toArray();
+    searchMode = hasQuery ? "regex" : "list";
+  }
   logger.mongo(
     "listReports",
     "threat-intel",
     Date.now() - startTime,
-    `Fetched ${docs.length} documents from cluster`,
+    `Fetched ${docs.length} documents from cluster (${searchMode})`,
   );
 
   const mapped = docs.map((doc) => {
@@ -689,21 +808,19 @@ export async function mongoListReports(params?: {
 
     let matchedSnippet: string | undefined = undefined;
     if (hasQuery && doc.extractedText) {
-      const fullText = (doc.extractedText as string) || "";
-      const queryLower = params!.q!.trim().toLowerCase();
-      let matchIdx = fullText.toLowerCase().indexOf(queryLower);
-      if (matchIdx < 0 && searchTokens.length > 0) {
-        for (const token of searchTokens) {
-          matchIdx = fullText.toLowerCase().indexOf(token.toLowerCase());
-          if (matchIdx >= 0) break;
-        }
-      }
-      if (matchIdx >= 0) {
-        const start = Math.max(0, matchIdx - 60);
-        const end = Math.min(fullText.length, matchIdx + 160);
-        const prefix = start > 0 ? "..." : "";
-        const suffix = end < fullText.length ? "..." : "";
-        matchedSnippet = `${prefix}${fullText.slice(start, end).replace(/\s+/g, " ").trim()}${suffix}`;
+      // Snippet from the best-scoring passage of this report (BM25 over its chunks).
+      const fullText = String(doc.extractedText || "");
+      const [best] = selectPassages(
+        [{ id: String(doc.id), title: String(doc.title || ""), text: fullText }],
+        rawQuery,
+        { k: 1, perDoc: 1, minScore: 0, maxDocChars: 300_000 },
+      );
+      if (best) {
+        matchedSnippet = excerptAround(best.text, rawQuery, 240);
+      } else {
+        const lower = fullText.toLowerCase();
+        const token = [rawQuery, ...searchTokens].find((t) => lower.includes(t.toLowerCase()));
+        if (token) matchedSnippet = excerptAround(fullText.slice(0, 300_000), token, 240);
       }
     }
 
@@ -754,9 +871,146 @@ export async function mongoListReports(params?: {
 
   if (isDefaultQuery) {
     cachedReportsList = { timestamp: Date.now(), data: mapped };
+    return slicePage(mapped);
   }
 
   return mapped;
+}
+
+export interface ReportSearchCandidate {
+  id: string;
+  title: string;
+  publisher: string;
+  sourceName: string;
+  url: string;
+  canonicalUrl: string;
+  publishedAt: string | null;
+  extractedText: string;
+  /** Mongo textScore, 1000 for an exact-id match, or fallback token-hit count. */
+  score: number;
+  matchedBy: "text" | "exact_id" | "regex";
+}
+
+const CANDIDATE_TEXT_MAX_CHARS = 300_000;
+const CANDIDATE_PROJECTION = {
+  id: 1,
+  title: 1,
+  publisher: 1,
+  sourceName: 1,
+  url: 1,
+  canonicalUrl: 1,
+  publishedAt: 1,
+  extractedText: 1,
+  "analysis.threatActors": 1,
+  "analysis.malware": 1,
+  "extractedEntities.cves": 1,
+  "extractedEntities.techniques": 1,
+} as const;
+
+function toCandidate(doc: Document, score: number, matchedBy: ReportSearchCandidate["matchedBy"]): ReportSearchCandidate {
+  return {
+    id: String(doc.id),
+    title: String(doc.title || "Untitled report"),
+    publisher: String(doc.publisher || doc.sourceName || ""),
+    sourceName: String(doc.sourceName || doc.publisher || ""),
+    url: String(doc.url || ""),
+    canonicalUrl: String(doc.canonicalUrl || doc.url || ""),
+    publishedAt: doc.publishedAt ? String(doc.publishedAt) : null,
+    extractedText: String(doc.extractedText || "").slice(0, CANDIDATE_TEXT_MAX_CHARS),
+    score,
+    matchedBy,
+  };
+}
+
+/**
+ * Candidate reports for grounded retrieval. Primary: weighted `$text` index
+ * ranked by textScore. Exact CVE / ATT&CK ids in the query are also matched on
+ * their entity fields and merged in first. If `$text` is unavailable (index
+ * missing) a bounded regex search is ranked by token hits in title/entities.
+ */
+export async function mongoSearchReportCandidates(
+  query: string,
+  opts: { limit?: number } = {},
+): Promise<ReportSearchCandidate[]> {
+  if (!isMongoConfigured()) return [];
+  const limit = Math.max(1, Math.min(100, opts.limit ?? 25));
+  const q = String(query ?? "").trim().slice(0, 500);
+  if (!q) return [];
+  await ensureMongoIndexes();
+  const col = await getThreatIntelCollection();
+  const base: Filter<Document> = { docType: "report" };
+  const startTime = Date.now();
+
+  const idDocs = (await findReportsByExactIds(col, base, q, CANDIDATE_PROJECTION, limit).catch(() => [])).map((d) =>
+    toCandidate(d, 1000, "exact_id"),
+  );
+
+  let ranked: ReportSearchCandidate[] = [];
+  let mode: "text" | "regex" = "text";
+  try {
+    const docs = await col
+      .find({ ...base, $text: { $search: toMongoTextSearch(q) } })
+      .project({ ...CANDIDATE_PROJECTION, _textScore: { $meta: "textScore" } })
+      .sort({ _textScore: { $meta: "textScore" } })
+      .limit(limit)
+      .toArray();
+    ranked = docs.map((d) => toCandidate(d, Number(d._textScore ?? 0), "text"));
+  } catch (err) {
+    mode = "regex";
+    logger.warn("MONGO", `$text candidate search failed, using regex fallback: ${(err as Error).message}`);
+    const tokens = queryTerms(q).filter((t) => t.length >= 3).slice(0, 8);
+    if (tokens.length > 0) {
+      const regexes = tokens.map((t) => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+      const docs = await col
+        .find({
+          ...base,
+          $or: regexes.flatMap((r) => [
+            { title: { $regex: r } },
+            { "analysis.threatActors": { $regex: r } },
+            { "analysis.malware": { $regex: r } },
+            { "extractedEntities.cves": { $regex: r } },
+            { "extractedEntities.techniques.id": { $regex: r } },
+            { extractedText: { $regex: r } },
+          ]),
+        })
+        .project(CANDIDATE_PROJECTION)
+        .limit(limit * 3)
+        .toArray();
+      ranked = docs
+        .map((d) => {
+          const head = [
+            d.title,
+            ...((d.analysis?.threatActors as string[]) ?? []),
+            ...((d.analysis?.malware as string[]) ?? []),
+            ...((d.extractedEntities?.cves as string[]) ?? []),
+            ...(((d.extractedEntities?.techniques as Array<{ id?: string } | string>) ?? []).map((t) =>
+              typeof t === "string" ? t : t?.id ?? "",
+            )),
+          ]
+            .join(" ")
+            .toLowerCase();
+          const hits = tokens.reduce((n, t) => n + (head.includes(t) ? 1 : 0), 0);
+          return toCandidate(d, hits, "regex");
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+    }
+  }
+
+  const seen = new Set<string>();
+  const merged: ReportSearchCandidate[] = [];
+  for (const c of [...idDocs, ...ranked]) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    merged.push(c);
+  }
+  logger.mongo(
+    "searchReportCandidates",
+    "threat-intel",
+    Date.now() - startTime,
+    `${merged.length} candidates (${idDocs.length} exact-id, ${ranked.length} ${mode})`,
+  );
+  return merged.slice(0, Math.max(limit, idDocs.length));
 }
 
 export async function mongoInsertReport(report: ReportRecord): Promise<void> {
@@ -782,6 +1036,8 @@ export async function mongoInsertReport(report: ReportRecord): Promise<void> {
         aiQualityScore: report.aiQualityScore,
         aiAuditReason,
         excerpt,
+        // Near-duplicate fingerprint over the same extractedText window the crawler compares against.
+        ...(report.extractedText ? { simhash: computeReportSimHash(report.extractedText) } : {}),
         updatedAt: new Date().toISOString(),
       },
     },
@@ -867,7 +1123,9 @@ export async function mongoListSources(): Promise<SourceRecord[]> {
       let domain = "";
       try {
         domain = new URL(doc.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
-      } catch {}
+      } catch {
+        // Invalid homepage URL: source shown without a domain.
+      }
       const count =
         reportCountBySourceId.get(doc.id) ||
         (doc.slug ? reportCountBySourceId.get(doc.slug) : 0) ||
@@ -1577,7 +1835,9 @@ function getCuratedDomainsSet(): Set<string> {
     try {
       const u = new URL(s.homepageUrl);
       set.add(u.hostname.toLowerCase().replace(/^www\./, ""));
-    } catch {}
+    } catch {
+      // Seed with an invalid homepage URL contributes no domain.
+    }
   }
   for (const d of PRIMARY_SEED_DOMAINS) {
     set.add(d.toLowerCase().replace(/^www\./, ""));
@@ -2481,15 +2741,85 @@ export async function mongoGetIngestedCanonicalUrls(): Promise<Set<string>> {
 }
 
 export async function mongoGetExistingReportsDedupIndex(): Promise<
-  Array<{ id: string; canonicalUrl: string; textHash: string; title: string; excerpt: string; wordCount?: number }>
+  Array<{
+    id: string;
+    canonicalUrl: string;
+    textHash: string;
+    title: string;
+    excerpt: string;
+    wordCount?: number;
+    /** computeReportSimHash(extractedText), stored at insert; absent on older records. */
+    simhash?: string;
+  }>
 > {
   if (!isMongoConfigured()) return [];
   const col = await getThreatIntelCollection();
   const docs = await col
     .find({ docType: "report" })
-    .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, wordCount: 1, _id: 0 })
+    .project({ id: 1, canonicalUrl: 1, textHash: 1, title: 1, excerpt: 1, wordCount: 1, simhash: 1, _id: 0 })
     .toArray();
   return docs as any[];
+}
+
+// ---------------------------------------------------------------------------
+// Original fetched content (as received, before any extraction/regeneration).
+// Stored once per report as gzip+base64; rawHtml stays the display rendition.
+// ---------------------------------------------------------------------------
+
+/** Originals above this size are not stored (rawHash still identifies them). */
+export const MAX_ORIGINAL_CONTENT_BYTES = 1_500_000;
+
+type ReportOriginalFields = {
+  originalContent: string; // gzip, base64
+  originalContentType: string;
+  originalBytes: number; // uncompressed length
+  originalStoredAt: string;
+};
+
+/**
+ * Save the original fetched bytes for a report. Write-once: an existing
+ * original is never overwritten. Returns false when skipped (too large,
+ * empty, already stored, or Mongo not configured).
+ */
+export async function mongoSaveReportOriginal(
+  id: string,
+  content: string | Uint8Array,
+  contentType: string,
+): Promise<boolean> {
+  if (!isMongoConfigured() || !id) return false;
+  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_ORIGINAL_CONTENT_BYTES) return false;
+  const { gzipSync } = await import("node:zlib");
+  const fields: ReportOriginalFields = {
+    originalContent: gzipSync(bytes).toString("base64"),
+    originalContentType: contentType || "application/octet-stream",
+    originalBytes: bytes.byteLength,
+    originalStoredAt: new Date().toISOString(),
+  };
+  const col = await getThreatIntelCollection();
+  const res = await col.updateOne(
+    { docType: "report", id, originalContent: { $exists: false } },
+    { $set: fields },
+  );
+  return res.modifiedCount > 0;
+}
+
+/** Original content of a report: `bytes` is base64 of the gzip stream; `length` is the uncompressed size. */
+export async function mongoGetReportOriginal(
+  id: string,
+): Promise<{ contentType: string; bytes: string; length: number } | null> {
+  if (!isMongoConfigured()) return null;
+  const col = await getThreatIntelCollection();
+  const doc = await col.findOne(
+    { docType: "report", id },
+    { projection: { originalContent: 1, originalContentType: 1, originalBytes: 1, _id: 0 } },
+  );
+  if (!doc || typeof doc.originalContent !== "string" || !doc.originalContent) return null;
+  return {
+    contentType: String(doc.originalContentType || "application/octet-stream"),
+    bytes: doc.originalContent,
+    length: Number(doc.originalBytes ?? 0),
+  };
 }
 
 /**
@@ -2524,7 +2854,7 @@ export async function mongoAuditLibraryWithAi(options?: {
     shouldPrune = Boolean(cfg.agentAutoPruneJunkEnabled);
   }
 
-  const reports = await col.find({ docType: "report" }).toArray();
+  const reports = await col.find({ docType: "report" }, { projection: { originalContent: 0 } }).toArray();
   let verifiedCount = 0;
   let prunedCount = 0;
   let aiEvaluatedCount = 0;
@@ -2744,7 +3074,9 @@ export async function mongoAuditLibraryWithAi(options?: {
         if (!evalDomain && url) {
           try {
             evalDomain = new URL(url).hostname.replace(/^www\./, "");
-          } catch {}
+          } catch {
+            // Invalid URL: evaluate without a domain.
+          }
         }
         const evalRes = await runUnifiedResourceEvaluation({
           title,
@@ -3068,14 +3400,38 @@ export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
   };
 }
 
+/** Retrieval trace persisted on agent chat messages (no prompt text, no secrets). */
+export interface ChatRetrievalTrace {
+  query: string;
+  tokens: string[];
+  conversational: boolean;
+  candidates: Array<{ reportId: string; score: number; matchedBy: "text" | "exact_id" | "regex" }>;
+  passages: Array<{ sid: string; reportId: string; start: number; end: number; score: number }>;
+  cited: string[];
+  unknownCitations: string[];
+  evidenceGap: boolean;
+  promptSha256: string | null;
+  model: string;
+  at: string;
+}
+
 export interface AgentChatMessageRecord {
   id: string;
   sessionId: string;
+  /** Owner (verified analyst user id). Reads, lists and clears filter on it. */
+  userId: string;
   sender: "user" | "agent";
   text: string;
   model?: string;
   latencyMs?: number;
   sources?: any[];
+  /** Reply contains factual sentences without an [S#] citation. */
+  uncitedClaims?: boolean;
+  /** Reply is the evidence-gap message (no passage met the threshold). */
+  evidenceGap?: boolean;
+  retrievedCount?: number;
+  /** Retrieval trace for reproducing the answer (no prompt text, no secrets). */
+  retrieval?: ChatRetrievalTrace;
   timestamp: string;
 }
 
@@ -3093,24 +3449,34 @@ export async function mongoSaveChatMessage(message: AgentChatMessageRecord): Pro
   }
 }
 
-export async function mongoGetChatSessionMessages(sessionId: string): Promise<AgentChatMessageRecord[]> {
+/** Most recent `limit` messages of a user's session, oldest first. */
+export async function mongoGetChatSessionMessages(
+  sessionId: string,
+  userId: string,
+  opts: { limit?: number } = {},
+): Promise<AgentChatMessageRecord[]> {
   if (!isMongoConfigured()) return [];
   try {
     const col = await getThreatIntelCollection();
     const docs = await col
-      .find({ docType: "agent_chat_message", sessionId })
-      .sort({ createdAt: 1 })
-      .limit(100)
+      .find({ docType: "agent_chat_message", userId, sessionId })
+      .project({ retrieval: 0 })
+      .sort({ createdAt: -1 })
+      .limit(Math.max(1, Math.min(200, opts.limit ?? 100)))
       .toArray();
 
-    return docs.map((d: any) => ({
+    return docs.reverse().map((d: any) => ({
       id: d.id || String(d._id),
       sessionId: d.sessionId,
+      userId: d.userId,
       sender: d.sender,
       text: d.text,
       model: d.model,
       latencyMs: d.latencyMs,
       sources: d.sources,
+      uncitedClaims: d.uncitedClaims,
+      evidenceGap: d.evidenceGap,
+      retrievedCount: d.retrievedCount,
       timestamp: d.timestamp || d.createdAt?.toISOString?.() || new Date().toISOString(),
     }));
   } catch (err) {
@@ -3119,24 +3485,24 @@ export async function mongoGetChatSessionMessages(sessionId: string): Promise<Ag
   }
 }
 
-export async function mongoClearChatSession(sessionId: string): Promise<void> {
+export async function mongoClearChatSession(sessionId: string, userId: string): Promise<void> {
   if (!isMongoConfigured()) return;
   try {
     const col = await getThreatIntelCollection();
-    await col.deleteMany({ docType: "agent_chat_message", sessionId });
+    await col.deleteMany({ docType: "agent_chat_message", userId, sessionId });
   } catch (err) {
     console.warn("[chat-repo] Failed to clear session:", err);
   }
 }
 
-export async function mongoListChatSessions(): Promise<
+export async function mongoListChatSessions(userId: string): Promise<
   Array<{ sessionId: string; lastMessage: string; messageCount: number; updatedAt: string }>
 > {
   if (!isMongoConfigured()) return [];
   try {
     const col = await getThreatIntelCollection();
     const pipeline = [
-      { $match: { docType: "agent_chat_message" } },
+      { $match: { docType: "agent_chat_message", userId } },
       { $sort: { createdAt: -1 } },
       {
         $group: {

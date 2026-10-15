@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   Bot,
   Send,
@@ -17,6 +18,8 @@ import {
   Database,
   Maximize2,
   Minimize2,
+  AlertTriangle,
+  SearchX,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -34,15 +37,34 @@ import {
   sanitizeAgyModel,
 } from "@/lib/aie/agent-framework/types";
 
+/**
+ * A cited passage ("S1") returned by the grounded copilot. Messages saved
+ * before grounded retrieval carry whole-report sources (`snippet`, no
+ * `reportId` / `quote`), which still render.
+ */
 interface ChatSource {
   id: string;
+  reportId?: string;
   formattedId: string;
   title: string;
   publisher: string;
   url: string;
-  classification: string;
-  resourceKind: string;
+  publishedAt?: string | null;
+  quote?: string;
+  start?: number;
+  end?: number;
+  score?: number;
+  classification?: string;
+  resourceKind?: string;
   snippet?: string;
+}
+
+function formatSourceDate(value?: string | null): string {
+  if (!value) return "Undated";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime())
+    ? value.slice(0, 10)
+    : d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 }
 
 interface ChatMessage {
@@ -56,6 +78,10 @@ interface ChatMessage {
   isError?: boolean;
   sources?: ChatSource[];
   groundedCount?: number;
+  /** Reply has factual sentences without an [S#] citation. */
+  uncitedClaims?: boolean;
+  /** Reply is the evidence-gap message: nothing in the library matched. */
+  evidenceGap?: boolean;
 }
 
 const DEFAULT_PROMPTS = [
@@ -199,6 +225,8 @@ export function AieAgentChatDrawer({
         model: m.model,
         latencyMs: m.latencyMs,
         sources: m.sources,
+        uncitedClaims: m.uncitedClaims,
+        evidenceGap: m.evidenceGap,
         timestamp: new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       }));
       setMessages(mapped);
@@ -290,6 +318,8 @@ export function AieAgentChatDrawer({
         isError: !res?.success,
         sources: res?.sources,
         groundedCount: res?.groundedReportCount,
+        uncitedClaims: res?.uncitedClaims,
+        evidenceGap: res?.evidenceGap,
       };
 
       setMessages((prev) => [...prev, agentMsg]);
@@ -468,7 +498,21 @@ export function AieAgentChatDrawer({
                 </div>
               )}
 
-              {/* Grounded Local Intelligence Sources Accordion (Always Expanded by Default) */}
+              {/* Grounding notices */}
+              {msg.sender === "agent" && msg.evidenceGap && (
+                <div className="mt-2 w-full flex items-start gap-2 px-2.5 py-2 rounded-xl border border-sky-500/30 bg-sky-500/[0.07] text-[10.5px] text-sky-700 dark:text-sky-300">
+                  <SearchX className="size-3.5 shrink-0 mt-px" />
+                  <span>No library passage matched this question closely enough to cite, so no answer was generated from model knowledge.</span>
+                </div>
+              )}
+              {msg.sender === "agent" && msg.uncitedClaims && (
+                <div className="mt-2 w-full flex items-start gap-2 px-2.5 py-2 rounded-xl border border-amber-500/35 bg-amber-500/[0.08] text-[10.5px] text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="size-3.5 shrink-0 mt-px" />
+                  <span>Some statements are not backed by a cited passage. Treat uncited sentences as unverified.</span>
+                </div>
+              )}
+
+              {/* Cited evidence (only passages the reply actually cites) */}
               {hasSources && (
                 <div className="mt-2 w-full space-y-1.5">
                   <button
@@ -479,7 +523,7 @@ export function AieAgentChatDrawer({
                     <div className="flex items-center gap-1.5">
                       <FileText className="size-3 text-accent" />
                       <span>
-                        Reports retrieved for this answer ({msg.sources?.length} Report{msg.sources?.length === 1 ? "" : "s"})
+                        Cited evidence ({msg.sources?.length} passage{msg.sources?.length === 1 ? "" : "s"})
                       </span>
                     </div>
                     <div className="flex items-center gap-1 text-[9px] text-accent/80 font-sans">
@@ -495,36 +539,62 @@ export function AieAgentChatDrawer({
 
                   {isSourceOpen && (
                     <div className="space-y-1.5 pt-0.5">
-                      {msg.sources?.map((s) => (
-                        <a
-                          key={s.id}
-                          href={`/library?selected=${encodeURIComponent(s.id)}&pdf=${encodeURIComponent(s.id)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="group block p-2.5 rounded-xl card-liquid-glass hover:border-accent/50 transition-all space-y-1 shadow-xs cursor-pointer"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <span className="font-semibold text-fg text-xs group-hover:text-accent transition-colors line-clamp-1">
-                              {s.title}
-                            </span>
-                            <Badge className="text-[9px] bg-accent/10 text-accent border border-accent/20 shrink-0 font-mono">
-                              {s.formattedId || s.id.slice(0, 10)}
-                            </Badge>
+                      {msg.sources?.map((s) => {
+                        const reportId = s.reportId || s.id;
+                        const quote = s.quote || s.snippet;
+                        const isPassage = Boolean(s.reportId);
+                        return (
+                          <div
+                            key={`${s.id}-${reportId}`}
+                            className="p-2.5 rounded-xl card-liquid-glass transition-all space-y-1.5 shadow-xs"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <Link
+                                to="/library/$reportId"
+                                params={{ reportId }}
+                                className="font-semibold text-fg text-xs hover:text-accent transition-colors line-clamp-2 min-w-0"
+                              >
+                                {s.title}
+                              </Link>
+                              <Badge className="text-[9px] bg-accent/10 text-accent border border-accent/20 shrink-0 font-mono">
+                                {isPassage ? s.id : s.formattedId || reportId.slice(0, 10)}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center justify-between gap-2 text-[10px] text-subtle">
+                              <span className="truncate min-w-0">
+                                {s.publisher}
+                                {isPassage ? ` · ${formatSourceDate(s.publishedAt)}` : s.classification ? ` · ${s.classification}` : ""}
+                                {s.formattedId ? ` · ${s.formattedId}` : ""}
+                              </span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Link
+                                  to="/library/$reportId"
+                                  params={{ reportId }}
+                                  className="text-accent flex items-center gap-1 hover:underline font-medium"
+                                >
+                                  <span>Open report</span>
+                                </Link>
+                                {s.url && (
+                                  <a
+                                    href={s.url}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    title="Original publication"
+                                    className="text-subtle hover:text-accent"
+                                  >
+                                    <ExternalLink className="size-2.5" />
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                            {quote && (
+                              <blockquote className="text-[10.5px] text-muted leading-relaxed border-l-2 border-accent/40 pl-2 whitespace-pre-line break-words">
+                                {quote}
+                              </blockquote>
+                            )}
                           </div>
-                          <div className="flex items-center justify-between gap-2 text-[10px] text-subtle">
-                            <span className="truncate">{s.publisher} · {s.classification}</span>
-                            <span className="text-accent flex items-center gap-1 group-hover:underline shrink-0 font-medium">
-                              <span>Open Report</span>
-                              <ExternalLink className="size-2.5" />
-                            </span>
-                          </div>
-                          {s.snippet && (
-                            <p className="text-[10.5px] text-muted leading-relaxed line-clamp-2 italic border-l-2 border-accent/40 pl-2">
-                              "{s.snippet}"
-                            </p>
-                          )}
-                        </a>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

@@ -521,7 +521,9 @@ class WarmAgentService {
     if (this.rl) {
       try {
         this.rl.close();
-      } catch {}
+      } catch {
+        // readline already closed; safe during teardown.
+      }
       this.rl = null;
     }
     const proc = this.proc;
@@ -530,7 +532,9 @@ class WarmAgentService {
       console.log(`[warm-agent] Destroying process (reason: ${reason})`);
       try {
         proc.kill("SIGKILL");
-      } catch {}
+      } catch {
+        // Process already exited; nothing to kill.
+      }
     }
 
     const turn = this.activeTurn;

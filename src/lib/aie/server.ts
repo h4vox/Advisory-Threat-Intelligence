@@ -14,12 +14,14 @@ import {
   cancelJob,
   checkAndTriggerScheduledCrawl,
   createAndRunCrawlJob,
+  CrawlAlreadyRunningError,
   getOrCreateCrawlConfig,
 } from "./crawler";
 import {
   canonicalizeUrl,
   excerptOf,
   harvestIocs,
+  computeReportSimHash,
   htmlToText,
   extractHtmlMetadata,
   MAX_BYTES,
@@ -75,6 +77,7 @@ import {
   mongoGetReportById,
   mongoFindReportByCanonical,
   mongoInsertReport,
+  mongoSaveReportOriginal,
   mongoDeleteReport,
   mongoListSources,
   mongoToggleSource,
@@ -115,8 +118,23 @@ import {
   mongoGetChatSessionMessages,
   mongoClearChatSession,
   mongoListChatSessions,
+  mongoSearchReportCandidates,
   type AgentChatMessageRecord,
+  type ReportSearchCandidate,
+  type ChatRetrievalTrace,
 } from "../mongodb/repository.server";
+import {
+  buildEvidenceGapReply,
+  buildGroundedPrompt,
+  hasUncitedClaims,
+  isConversationalTurn,
+  isLowSignal,
+  parseCitations,
+  queryTerms,
+  selectPassages,
+  sourceId,
+  type Passage,
+} from "./retrieval";
 import {
   getAvailableAgentModels,
   chatWithUnifiedAgent,
@@ -843,7 +861,9 @@ export const evaluateReportWithAi = createServerFn({ method: "POST" }).middlewar
     if (!evalDomain && url) {
       try {
         evalDomain = new URL(url).hostname.replace(/^www\./, "");
-      } catch {}
+      } catch {
+        // Invalid URL: evaluate without a domain.
+      }
     }
 
     const evalRes = await runUnifiedResourceEvaluation({
@@ -944,16 +964,20 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
         publisher: z.string().optional(),
         minScore: z.number().optional(),
         hasIocs: z.boolean().optional(),
+        limit: z.number().int().min(1).max(500).default(200),
+        offset: z.number().int().min(0).max(100_000).default(0),
       })
       .optional(),
   )
   .handler(async ({ data }): Promise<ReportListItem[]> => {
+    const limit = data?.limit ?? 200;
+    const offset = data?.offset ?? 0;
     const startTime = Date.now();
     logger.serverFn("listReports", "START", undefined, data ? JSON.stringify(data) : "all");
 
     if (isMongoConfigured()) {
       try {
-        const reports = await mongoListReports(data);
+        const reports = await mongoListReports({ ...data, limit, offset });
         logger.serverFn(
           "listReports",
           "DONE",
@@ -998,10 +1022,10 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
       items = items.filter((r) => r.iocCount > 0);
     }
 
-    if (!q) return items;
-    return items.filter((r) =>
-      `${r.title} ${r.sourceName} ${r.url} ${r.excerpt} ${r.classification}`.toLowerCase().includes(q),
-    );
+    if (!q) return items.slice(offset, offset + limit);
+    return items
+      .filter((r) => `${r.title} ${r.sourceName} ${r.url} ${r.excerpt} ${r.classification}`.toLowerCase().includes(q))
+      .slice(offset, offset + limit);
   });
 
 export const getReport = createServerFn({ method: "GET" }).middleware([analystMiddleware])
@@ -1486,7 +1510,7 @@ async function persistReport(input: {
   const { score, reasons, wordCount } = scoreQuality(input.text, input.title);
   const qual = qualifyContent(input.text, input.title, input.url);
   const status = wordCount < 80 ? "rejected" : "acquired";
-  const iocs = harvestIocs(input.text);
+  const iocs = harvestIocs(input.text, { sourceDomain: domain });
   const rawHash = sha256Hex(input.raw);
   const textHash = sha256Hex(input.text);
   const id = targetId || newId("rpt");
@@ -1531,8 +1555,9 @@ async function persistReport(input: {
   // Store in MongoDB Atlas
   if (isMongoConfigured()) {
     try {
-      await mongoInsertReport({
+      const reportDoc: ReportRecord & { simhash: string } = {
         id,
+        simhash: computeReportSimHash(input.text),
         sourceId: effectiveSourceId,
         sourceName: effectiveSourceName,
         title: input.title,
@@ -1561,7 +1586,15 @@ async function persistReport(input: {
         rawHtml: sanitizedHtml,
         pdfUrl: "",
         analysis,
-      });
+      };
+      await mongoInsertReport(reportDoc);
+
+      // Keep the original fetched/pasted bytes (write-once; rawHtml above is the display rendition).
+      try {
+        await mongoSaveReportOriginal(id, input.raw, input.contentType);
+      } catch (origErr) {
+        console.warn("[mongodb] original content not stored:", origErr);
+      }
 
       await mongoUpdateSourceLastIngest(effectiveSourceId);
       await mongoInsertIngestEvent({
@@ -1687,6 +1720,34 @@ export const ingestUrl = createServerFn({ method: "POST" }).middleware([analystM
       });
       if (fetched.contentType.includes("pdf") || canonical.toLowerCase().endsWith(".pdf")) {
         const pdfRes = await extractTextFromPdfBuffer(fetched.bytes);
+        if (pdfRes.noText || pdfRes.text.trim().length < 50) {
+          // Never store placeholder text as a report: scanned/image-only PDFs need OCR.
+          const reason = `PDF needs OCR: ${pdfRes.failureReason || "no extractable text layer"}`;
+          if (isMongoConfigured()) {
+            try {
+              await mongoInsertIngestEvent({
+                id: newId("evt"),
+                reportId: null,
+                url: canonical,
+                outcome: "failed",
+                detail: reason,
+                createdAt: new Date().toISOString(),
+              });
+            } catch {
+              /* best effort */
+            }
+          }
+          try {
+            const sql = await getSql();
+            await sql`
+              insert into ingest_events (id, report_id, url, outcome, detail)
+              values (${newId("evt")}, ${null}, ${canonical}, 'failed', ${reason})
+            `;
+          } catch {
+            /* best effort */
+          }
+          return { ok: false, error: reason };
+        }
         const pdfFileName = canonical.split("/").pop()?.replace(/\.pdf$/i, "") || "PDF document";
         const pdfTitle = pdfRes.title || pdfFileName.replace(/[-_]/g, " ");
         return persistReport({
@@ -2267,8 +2328,15 @@ export const triggerCrawlJob = createServerFn({ method: "POST" }).middleware([an
   .handler(async ({ data }) => {
     await ensureSeeded();
     invalidateCrawlerStateCache();
-    const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
-    return { ok: true as const, job };
+    try {
+      const job = await createAndRunCrawlJob(data?.triggerType ?? "MANUAL", data?.customQuery);
+      return { ok: true as const, job };
+    } catch (err) {
+      if (err instanceof CrawlAlreadyRunningError) {
+        return { ok: false as const, error: err.message };
+      }
+      throw err;
+    }
   });
 
 export const checkCrawlerSchedule = createServerFn({ method: "POST" }).middleware([analystMiddleware])
@@ -2806,7 +2874,9 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
           try {
             const probe = execSync(`docker exec ${sandboxInfo.containerName} which claude`, { encoding: "utf-8", timeout: 3000 }).trim();
             if (probe) alreadyInstalled = true;
-          } catch {}
+          } catch {
+            // `which` exits non-zero when the CLI is not installed.
+          }
 
           if (alreadyInstalled && !data.reconfig) {
             addLog("INFO", "install", `Claude Code CLI is already installed inside container sandbox at /usr/local/bin/claude. Ready state verified!`);
@@ -2842,7 +2912,9 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
           try {
             const probe = execSync(`docker exec ${sandboxInfo.containerName} which codex`, { encoding: "utf-8", timeout: 3000 }).trim();
             if (probe) alreadyInstalled = true;
-          } catch {}
+          } catch {
+            // `which` exits non-zero when the CLI is not installed.
+          }
 
           if (alreadyInstalled && !data.reconfig) {
             addLog("INFO", "install", `Codex CLI is already installed inside container sandbox at /usr/local/bin/codex. Ready state verified!`);
@@ -3273,16 +3345,26 @@ export const detectLocalAgentSession = createServerFn({ method: "GET" }).middlew
   }
 );
 
+/** A cited passage returned with a grounded chat reply. */
 export interface GroundedChatSource {
+  /** Citation id used in the reply, e.g. "S1". */
   id: string;
+  reportId: string;
   formattedId: string;
   title: string;
   publisher: string;
   url: string;
-  classification: string;
-  resourceKind: string;
-  snippet?: string;
+  publishedAt: string | null;
+  /** Exact passage text (trimmed to ≤600 chars for display). */
+  quote: string;
+  /** Character offsets of the passage in the report's extracted text. */
+  start: number;
+  end: number;
+  score: number;
 }
+
+/** Per-user default thread; sessions are always scoped by the caller's userId. */
+const DEFAULT_CHAT_SESSION_ID = "active-investigation";
 
 export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(
@@ -3292,150 +3374,182 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
       sessionId: z.string().max(100).optional(),
     })
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const userId = context.userId;
     const model = sanitizeAgyModel(data.model);
     const userMsg = data.message.trim();
-    const sessionId = data.sessionId || "active-investigation";
+    const sessionId = data.sessionId || DEFAULT_CHAT_SESSION_ID;
+    const startedAt = Date.now();
 
-    // Persist user prompt to session history
-    const userMsgId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    // Prior turns are read BEFORE the new message is stored so the current
+    // question is not duplicated in the prompt. The server owns history.
+    let priorHistory: Array<{ sender: "user" | "agent"; text: string }> = [];
+    try {
+      const prior = await mongoGetChatSessionMessages(sessionId, userId, { limit: 12 });
+      priorHistory = prior.map((m) => ({ sender: m.sender, text: m.text }));
+    } catch {
+      // History is best-effort; answer without it.
+    }
+
     await mongoSaveChatMessage({
-      id: userMsgId,
+      id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       sessionId,
+      userId,
       sender: "user",
       text: userMsg,
       timestamp: new Date().toISOString(),
     });
 
-    // 1. Strict CTI Intent Gate: Only retrieve library evidence if query actually warrants CTI data
-    let matchedReports: ReportListItem[] = [];
-    const lowerMsg = userMsg.toLowerCase();
+    // 1. Greetings / thanks / questions about the assistant skip retrieval.
+    //    Every substantive question retrieves.
+    const conversational = isConversationalTurn(userMsg);
 
-    // Check for conversational pleasantries, greetings, or meta questions
-    const conversationalTokens = /^(hi|hello|hey|yo|howdy|sup|greetings|good\s+(morning|afternoon|evening|day)|thanks|thank\s+you|ok|okay|cool|bye|goodbye)[\s,!.?]*$/i;
-    const startsWithGreeting = /^(hi|hello|hey|yo|howdy|sup|greetings|good\s+(morning|afternoon|evening|day))[\s,!.?]/i.test(userMsg);
-    const metaQuestionPatterns = /\b(who\s+are\s+you|what\s+can\s+you\s+do|what\s+is\s+your\s+name|how\s+are\s+you|how\s+does\s+this\s+work|what\s+are\s+your\s+capabilities|help\s+me|tell\s+me\s+about\s+yourself|what\s+is\s+this\s+platform|what\s+is\s+this\s+app|how\s+do\s+i\s+use|can\s+you\s+help)\b/i;
-    const isConversational =
-      conversationalTokens.test(userMsg.trim()) ||
-      startsWithGreeting ||
-      metaQuestionPatterns.test(lowerMsg) ||
-      userMsg.trim().length <= 4;
+    // Short follow-ups ("what about its persistence?") borrow the previous
+    // question's terms for retrieval; the model still sees the original text.
+    let retrievalQuery = userMsg;
+    if (!conversational && queryTerms(userMsg).filter((t) => !isLowSignal(t)).length < 2) {
+      const lastUser = [...priorHistory].reverse().find((h) => h.sender === "user");
+      if (lastUser) retrievalQuery = `${userMsg}\n${lastUser.text}`.slice(0, 1000);
+    }
+    const queryTokens = conversational ? [] : queryTerms(retrievalQuery);
 
-    // High-confidence CTI entity/advisory patterns
-    const hasCve = /\bCVE-\d{4}-\d{4,7}\b/i.test(userMsg);
-    const hasTechnique = /\bT\d{4}(?:\.\d{3})?\b/i.test(userMsg);
-    const hasThreatActor = /\b(apt\d+|unc\d+|fin\d+|ta\d+|lazarus|sandworm|volt\s+typhoon|blackcat|lockbit|alphv|qakbot|emotet|cobalt\s+strike|mimikatz|fancy\s+bear|cozy\s+bear|redline|darkside|conti|revil|scattered\s+spider|midnight\s+blizzard|forest\s+blizzard|charming\s+kitten|oilrig)\b/i.test(lowerMsg);
-    const isExplicitReportQuery = /\b(search|find|retrieve|show|list|get|fetch|lookup)\b.*?\b(reports?|advisories|documents?|intel|evidence|papers?|files?)\b/i.test(lowerMsg);
+    // 2. Candidate reports ($text + exact ids) → BM25 passages.
+    const libraryAvailable = isMongoConfigured();
+    let candidates: ReportSearchCandidate[] = [];
+    let passages: Passage[] = [];
+    if (!conversational && libraryAvailable) {
+      try {
+        candidates = await mongoSearchReportCandidates(retrievalQuery, { limit: 25 });
+      } catch (err) {
+        logger.warn("RETRIEVAL", `Candidate search failed: ${(err as Error)?.message}`);
+      }
+      passages = selectPassages(
+        candidates.map((c) => ({
+          id: c.id,
+          title: c.title,
+          text: c.extractedText,
+          meta: { publisher: c.publisher || c.sourceName, publishedAt: c.publishedAt ?? "" },
+        })),
+        retrievalQuery,
+        { k: 8, perDoc: 2 },
+      );
+    }
 
-    // Stop words specific to generic CTI domain terms that match every report
-    const domainStopWords = new Set([
-      "threat", "threats", "intel", "intelligence", "report", "reports", "advisory", "advisories",
-      "security", "cyber", "cybersecurity", "system", "systems", "data", "platform", "info", "information",
-      "help", "please", "today", "latest", "recent", "show", "find", "search", "view", "read", "tell",
-      "about", "what", "where", "when", "which", "give", "list", "they", "them", "their", "this", "that",
-      "with", "from", "have", "does", "will", "were", "some", "more", "like", "look", "there", "here"
-    ]);
-
-    // Extract high-value specific technical tokens (excluding domain stop words)
-    const searchTerms = userMsg.replace(/[^\w\s-]/g, " ").slice(0, 120).trim();
-    const meaningfulTokens = searchTerms
-      .split(/\s+/)
-      .map((t) => t.toLowerCase())
-      .filter((t) => t.length >= 3 && !domainStopWords.has(t));
-
-    // Strictly gate CTI query: NEVER trigger on conversational greetings or non-advisory prompts
-    const hasSpecificEntity = hasCve || hasTechnique || hasThreatActor || meaningfulTokens.length >= 2;
-    const isCtiQuery = !isConversational && (hasCve || hasTechnique || hasThreatActor || isExplicitReportQuery || (hasSpecificEntity && userMsg.length > 12));
-
-    if (isCtiQuery && isMongoConfigured()) {
-      if (isExplicitReportQuery && meaningfulTokens.length === 0) {
-        // User explicitly asked for latest/recent reports in general
-        const numMatch = userMsg.match(/\b([1-9]|10)\b/);
-        const limit = numMatch ? parseInt(numMatch[1], 10) : 4;
-        try {
-          matchedReports = await mongoListReports({ limit });
-        } catch (err) {
-          console.warn("[chat-rag] Explicit reports retrieval error:", err);
-        }
-      } else {
-        try {
-          // Priority 1: Direct CVE query
-          const cveMatch = userMsg.match(/\bCVE-\d{4}-\d{4,7}\b/i);
-          if (cveMatch) {
-            matchedReports = await mongoListReports({ q: cveMatch[0], limit: 4 });
-          }
-
-          // Priority 2: Direct Technique query
-          const techMatch = userMsg.match(/\bT\d{4}(?:\.\d{3})?\b/i);
-          if (matchedReports.length === 0 && techMatch) {
-            matchedReports = await mongoListReports({ q: techMatch[0], limit: 4 });
-          }
-
-          // Priority 3: Combined meaningful search tokens with relevance threshold
-          if (matchedReports.length === 0 && meaningfulTokens.length > 0) {
-            const hits = await mongoListReports({ q: meaningfulTokens.join(" "), limit: 6 });
-            // Strict relevance gate: only keep documents that actually contain the matched search terms
-            matchedReports = hits.filter((r) => {
-              const fullSearchable = `${r.title} ${r.publisher || ""} ${r.analysis?.threatActors?.join(" ") || ""} ${r.analysis?.malware?.join(" ") || ""} ${r.extractedEntities?.cves?.join(" ") || ""}`.toLowerCase();
-              return meaningfulTokens.some((tok) => tok.length >= 3 && fullSearchable.includes(tok));
-            });
-          }
-        } catch (err) {
-          console.warn("[chat-rag] Targeted retrieval error:", err);
-        }
+    // 3. Answer: grounded prompt, conversational reply, or explicit evidence gap.
+    let evidenceGap = false;
+    let chatRes: Awaited<ReturnType<typeof chatWithUnifiedAgent>>;
+    if (!conversational && passages.length === 0) {
+      evidenceGap = true;
+      chatRes = {
+        success: true,
+        reply: buildEvidenceGapReply(userMsg, {
+          terms: queryTokens,
+          candidateCount: candidates.length,
+          libraryAvailable,
+        }),
+        model: "retrieval-only",
+        providerId: "retrieval",
+        latencyMs: Date.now() - startedAt,
+      };
+    } else {
+      try {
+        chatRes = await chatWithUnifiedAgent({
+          userMessage: userMsg,
+          history: priorHistory,
+          groundedPrompt:
+            passages.length > 0 ? buildGroundedPrompt(userMsg, passages, { history: priorHistory }) : undefined,
+          model,
+          timeoutSeconds: 65,
+        });
+      } catch (err: any) {
+        console.error("[chatWithAgyAgent] Unified agent error:", err);
+        chatRes = {
+          success: false,
+          reply: `Autonomous agent analysis encountered an issue: ${err?.message || "Execution error"}. Please retry.`,
+          model,
+          providerId: "agy_agent",
+          latencyMs: 0,
+          error: err?.message,
+        };
       }
     }
 
-    const topReports = matchedReports.slice(0, 4);
-    const sources: GroundedChatSource[] = topReports.map((r) => ({
-      id: r.id,
-      formattedId: formatReportId(r.id),
-      title: r.title,
-      publisher: r.publisher || r.sourceName || "Threat Intel Hub",
-      url: r.canonicalUrl || r.url,
-      classification: r.classification || "THREAT_REPORT",
-      resourceKind: r.resourceKind || "CAMPAIGN_INTEL",
-      snippet: r.matchedSnippet || r.excerpt,
-    }));
-
-    // Fetch prior messages to provide continuous conversational history
-    let priorHistory: Array<{ sender: "user" | "agent"; text: string }> = [];
-    try {
-      const prior = await mongoGetChatSessionMessages(sessionId);
-      priorHistory = prior.map((m) => ({ sender: m.sender, text: m.text }));
-    } catch {}
-
-    let chatRes: any;
-    try {
-      chatRes = await chatWithUnifiedAgent({
-        userMessage: userMsg,
-        history: priorHistory,
-        groundedReports: topReports,
-        model,
-        timeoutSeconds: 65,
-      });
-    } catch (err: any) {
-      console.error("[chatWithAgyAgent] Unified agent error:", err);
-      chatRes = {
-        success: false,
-        reply: `Autonomous agent analysis encountered an issue: ${err?.message || "Execution error"}. Please retry.`,
-        model,
-        providerId: "agy_agent",
-        latencyMs: 0,
-        error: err?.message,
+    // 4. Citations: only passages the reply actually cites are returned.
+    const sids = passages.map((_, i) => sourceId(i));
+    const citations =
+      passages.length > 0 && chatRes.success ? parseCitations(chatRes.reply, sids) : { used: [], unknown: [] };
+    const candidateById = new Map(candidates.map((c) => [c.id, c]));
+    const sources: GroundedChatSource[] = citations.used.map((sid) => {
+      const p = passages[Number(sid.slice(1)) - 1];
+      const c = candidateById.get(p.docId);
+      const quote = p.text.replace(/\s+/g, " ").trim();
+      return {
+        id: sid,
+        reportId: p.docId,
+        formattedId: formatReportId(p.docId),
+        title: p.title,
+        publisher: c?.publisher || c?.sourceName || "Unknown publisher",
+        url: c?.canonicalUrl || c?.url || "",
+        publishedAt: c?.publishedAt ?? null,
+        quote: quote.length > 600 ? `${quote.slice(0, 597)}…` : quote,
+        start: p.start,
+        end: p.end,
+        score: p.score,
       };
-    }
+    });
+    const uncitedClaims =
+      !evidenceGap && passages.length > 0 && chatRes.success ? hasUncitedClaims(chatRes.reply) : false;
 
-    // Persist agent response to session history
-    const agentMsgId = `agent-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const retrievalTrace: ChatRetrievalTrace = {
+      query: retrievalQuery,
+      tokens: queryTokens,
+      conversational,
+      candidates: candidates.map((c) => ({
+        reportId: c.id,
+        score: Math.round(c.score * 1000) / 1000,
+        matchedBy: c.matchedBy,
+      })),
+      passages: passages.map((p, i) => ({
+        sid: sids[i],
+        reportId: p.docId,
+        start: p.start,
+        end: p.end,
+        score: p.score,
+      })),
+      cited: citations.used,
+      unknownCitations: citations.unknown,
+      evidenceGap,
+      promptSha256: chatRes.promptSha256 ?? null,
+      model: chatRes.model,
+      at: new Date().toISOString(),
+    };
+    logger.agent("RETRIEVAL", `chat retrieval for session ${sessionId}`, {
+      query: retrievalQuery.slice(0, 200),
+      tokens: queryTokens.slice(0, 20).join(" "),
+      conversational,
+      candidates: candidates.length,
+      passages: retrievalTrace.passages.map((p) => `${p.sid}:${p.reportId}@${p.start}-${p.end}`).join(","),
+      cited: citations.used.join(","),
+      unknownCitations: citations.unknown.join(","),
+      uncitedClaims,
+      evidenceGap,
+      promptSha256: retrievalTrace.promptSha256,
+      model: chatRes.model,
+    });
+
     await mongoSaveChatMessage({
-      id: agentMsgId,
+      id: `agent-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       sessionId,
+      userId,
       sender: "agent",
       text: chatRes.reply,
       model: chatRes.model,
       latencyMs: chatRes.latencyMs,
       sources,
+      uncitedClaims,
+      evidenceGap,
+      retrievedCount: passages.length,
+      retrieval: retrievalTrace,
       timestamp: new Date().toISOString(),
     });
 
@@ -3448,30 +3562,33 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
       sessionId,
       timestamp: new Date().toISOString(),
       error: chatRes.error,
-      trace: chatRes.trace,
+      trace: { ...(chatRes.trace ?? {}), retrieval: retrievalTrace },
       tokens: chatRes.tokens,
       sources,
-      groundedReportCount: topReports.length,
+      uncitedClaims,
+      evidenceGap,
+      retrievedCount: passages.length,
+      groundedReportCount: new Set(sources.map((s) => s.reportId)).size,
     };
   });
 
 export const getAgentChatSessionMessages = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(z.object({ sessionId: z.string().min(1) }))
-  .handler(async ({ data }) => {
-    const messages = await mongoGetChatSessionMessages(data.sessionId);
+  .validator(z.object({ sessionId: z.string().min(1).max(100) }))
+  .handler(async ({ data, context }) => {
+    const messages = await mongoGetChatSessionMessages(data.sessionId, context.userId);
     return { success: true, messages };
   });
 
 export const clearAgentChatSession = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(z.object({ sessionId: z.string().min(1) }))
-  .handler(async ({ data }) => {
-    await mongoClearChatSession(data.sessionId);
+  .validator(z.object({ sessionId: z.string().min(1).max(100) }))
+  .handler(async ({ data, context }) => {
+    await mongoClearChatSession(data.sessionId, context.userId);
     return { success: true };
   });
 
 export const listAgentChatSessions = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .handler(async () => {
-    const sessions = await mongoListChatSessions();
+  .handler(async ({ context }) => {
+    const sessions = await mongoListChatSessions(context.userId);
     return { success: true, sessions };
   });
 
@@ -3526,7 +3643,9 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).mid
           status = state.Status || (containerRunning ? "running" : "stopped");
           startedAt = state.StartedAt;
         }
-      } catch {}
+      } catch {
+        // docker unavailable or container absent: report defaults (not running).
+      }
 
       // 2. Fetch live stats if running
       if (containerRunning) {
@@ -3544,14 +3663,20 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).mid
             blockIO = parsedStats.BlockIO || "0 B / 0 B";
             pids = parseInt(parsedStats.PIDs, 10) || 1;
           }
-        } catch {}
+        } catch {
+          // Stats are best-effort telemetry; keep zeroed defaults.
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.debug("[sandbox-status] child_process unavailable:", err);
+    }
 
     let tokenDetected = false;
     try {
       tokenDetected = checkContainerOAuthToken().exists;
-    } catch {}
+    } catch {
+      // Token probe failure means no token detected.
+    }
 
     const mem = process.memoryUsage();
     const logs = getRecentSandboxLogs({ limit: 1 });

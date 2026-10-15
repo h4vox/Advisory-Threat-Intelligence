@@ -26,7 +26,9 @@ try {
   if (typeof dns.setDefaultResultOrder === "function") {
     dns.setDefaultResultOrder("ipv4first");
   }
-} catch {}
+} catch {
+  // Older Node without setDefaultResultOrder: keep default DNS ordering.
+}
 
 const MONGO_URI = process.env.MONGODB_URI;
 if (!MONGO_URI) {

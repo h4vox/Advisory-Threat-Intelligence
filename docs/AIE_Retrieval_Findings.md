@@ -243,3 +243,38 @@ Priorities follow brief §13.
 | `warm-agent-service.ts`: error path | Resolves the wrong turn and runs two turns at once |
 
 **Checks:** lint has 60 errors (49 empty `catch {}`). Tests: 9 of 195 fail, all in the share-card injector and migration-plan tests. Because of `&&`, the second test suite never runs.
+
+---
+
+## Status after fixes (branch `claude/amazing-wright-jpxhtz`)
+
+Re-checked with `npm run eval` (26/26 checks pass on the five public reports), unit tests (all new suites pass) and code review. Live MongoDB and live LLM providers were **not** reachable from the review environment, so the database search, chat and AI paths are verified by tests and type checks only.
+
+| Gap | Status | What changed |
+|---|---|---|
+| G1 invented data | **Fixed** | Dashboard counts come only from stored reports, with empty states. "AI Verified" is set only by a model. Fake install logs are gone. Unused settings are marked "Not active yet". `scripts/repair-fabricated-fields.mjs` cleans existing records. |
+| G2 wrong publication date | **Fixed** | The feed or page date is stored, or `null`. The repair script can clear crawl-day dates already stored. |
+| G3 originals overwritten | **Fixed** | Opening a report never writes back. The original fetched content is stored once (gzip) and never overwritten. |
+| G4 Microsoft text loss | **Fixed** | 92.8% / 95.7% of prose kept, up from about 1%. |
+| G5 per-fact evidence | **Fixed** | Every technique, actor, malware, target, relationship and IOC carries exact quotes and offsets. A "View Evidence" UI highlights each quote in the full text. |
+| G6 defensive/negated text as TTPs | **Fixed** | Sentences are labelled observed / inferred / defensive / negated / hypothetical / reference. Non-adversary statements are listed as "not counted". The UNC3944 hardening guide now yields 0 observed techniques. |
+| G7 invented chronology | **Fixed** | Chain steps follow source order (`orderBasis: reported`). With fewer than 2 steps the order is "unknown". |
+| G8 co-occurrence attribution | **Fixed** | Relationships are created only from the same observed sentence. APT29 is no longer attributed for BRICKSTORM; UNC5221 is. |
+| G9 weak chat grounding | **Fixed (untested live)** | BM25 passage retrieval over the full text, with required `[S#]` citations. Only cited passages are shown, uncited claims are flagged, and the reply states an evidence gap instead of guessing. |
+| G10 AI sees first 4.8k chars | **Partly** | Chat retrieval reads the whole document. AI qualification and AI attack-chain synthesis still read only the opening section; the deterministic evidence is attached to their output. |
+| G11 IOC context | **Fixed** | Indicators are re-fanged with the original text kept, domain/url/email/sha1 types are added, private IPs are dropped, and roles are recorded only when stated (BREEZE COMET: 33 defanged captured). |
+| G12 targeting context | **Partly** | Sector, geography, platform and objective are extracted with status (targeted / compromised / at risk / mentioned) and quotes. Coverage depends on the keyword lists. |
+| G13 ATT&CK pages as reports | **Open** | Still not tagged as reference material. |
+| G14 relevance ranking | **Fixed (untested live)** | `$text` relevance ranking with best-passage snippets and paging. |
+| G15 reproducibility | **Fixed** | Each chat answer stores its query, candidates, passages and prompt hash. `npm run eval` gives a repeatable evaluation set. |
+| G16 regex bugs | **Fixed** | Unit tests cover the reported sentences. |
+
+Security items from the code review (sign-in plus allowlist, secret handling, agent sandbox, SSRF, CLI injection, script-free previews, migrations, crawl locking) are fixed in the same branch. See the PR description.
+
+### Still open / next steps
+1. **Rotate the MongoDB password.** The old one is in git history.
+2. **Re-analyse existing reports** so stored records gain `analysis.evidence`. Records analysed before this change show an "analysed before evidence tracking" notice.
+3. **Cross-source corroboration and conflicts:** not built yet (scenario 7).
+4. **ATT&CK reference-page tagging (G13)** and **footer leakage:** related-post text can still be read as observed.
+5. **AI qualification and synthesis** on chunked or retrieved passages instead of the first 4.8k chars.
+6. **Live verification:** run search and chat against the real library with a configured provider.

@@ -16,7 +16,9 @@ for (const s of SOURCE_SEED) {
   try {
     const u = new URL(s.homepageUrl);
     CURATED_DOMAINS.add(u.hostname.toLowerCase().replace(/^www\./, ""));
-  } catch {}
+  } catch {
+    // Seed with an invalid homepage URL contributes no domain.
+  }
 }
 // Add variations
 [

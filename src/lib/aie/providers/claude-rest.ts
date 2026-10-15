@@ -106,7 +106,9 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
         let parsedErr: any;
         try {
           parsedErr = JSON.parse(errorBody);
-        } catch {}
+        } catch {
+          // Non-JSON error body: the raw text is reported below.
+        }
 
         const errMsg = parsedErr?.error?.message || errorBody || `HTTP ${response.status}`;
         addLog("ERROR", `Anthropic API returned HTTP ${response.status}: ${errMsg}`);

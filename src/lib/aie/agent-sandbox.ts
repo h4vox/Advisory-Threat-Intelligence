@@ -191,7 +191,9 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
         `docker exec ${CONTAINER_NAME} agy --version`, // constant command, no user input
         { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();
-    } catch {}
+    } catch {
+      // Version probe is informational; empty string when agy is unavailable.
+    }
 
     const result: SandboxStatus = {
       runtime: "docker",
@@ -561,7 +563,9 @@ export function executeInAgentSandbox(
     const timer = setTimeout(() => {
       try {
         proc.kill("SIGKILL");
-      } catch {}
+      } catch {
+        // Process already exited; nothing to kill.
+      }
       addStepLog("ERROR", `Agent sandbox execution timed out after ${Math.round(timeoutMs / 1000)}s`);
       settle({
         success: false,
@@ -592,7 +596,9 @@ export function executeInAgentSandbox(
       try {
         if (options?.input) proc.stdin.write(options.input);
         proc.stdin.end();
-      } catch {}
+      } catch (err) {
+        console.warn("[agent-sandbox] failed writing prompt to sandbox stdin:", err);
+      }
     }
 
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -736,12 +742,16 @@ export function runAgentPromptInSandbox(
       if (proc) {
         try {
           proc.stdin?.end();
-        } catch {}
+        } catch {
+          // stdin already closed; safe to ignore during shutdown.
+        }
         const p = proc;
         setTimeout(() => {
           try {
             if (p.exitCode === null) p.kill("SIGKILL");
-          } catch {}
+          } catch {
+            // Process already exited; nothing to kill.
+          }
         }, 2000).unref?.();
       }
       resolve({
@@ -775,7 +785,9 @@ export function runAgentPromptInSandbox(
     timer = setTimeout(() => {
       try {
         proc?.kill("SIGKILL");
-      } catch {}
+      } catch {
+        // Process already exited; nothing to kill.
+      }
       finish(
         {
           success: false,

@@ -32,7 +32,9 @@ try {
   if (typeof dns.setDefaultResultOrder === "function") {
     dns.setDefaultResultOrder("ipv4first");
   }
-} catch {}
+} catch {
+  // Older Node without setDefaultResultOrder: keep default DNS ordering.
+}
 
 const MONGO_URI = process.env.MONGODB_URI;
 if (!MONGO_URI) {
@@ -93,7 +95,9 @@ function runAgyCli(args, timeoutMs = 60000) {
     const timer = setTimeout(() => {
       try {
         proc.kill("SIGKILL");
-      } catch {}
+      } catch {
+        // Process already exited; nothing to kill.
+      }
       reject(new Error(`AGY CLI process timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
 

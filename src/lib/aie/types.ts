@@ -400,7 +400,7 @@ export type DashboardStats = {
 
 export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION";
 
-export type CrawlJobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type CrawlJobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export type CrawlConfig = {
   id: string;

@@ -128,7 +128,9 @@ function loadState() {
     if (existsSync(STATE_FILE)) {
       return JSON.parse(readFileSync(STATE_FILE, "utf8"));
     }
-  } catch {}
+  } catch {
+    // Missing or corrupt state file: fall back to defaults below.
+  }
   return {
     activeProvider: "agy_agent",
     activeModel: "AGY: gemini-3.8-flash-low",
@@ -414,7 +416,9 @@ function cmdAgentTest(prompt = "Hello! Verify agent sandbox connection.", verbos
   try {
     const inspect = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", "aie-agent-sandbox"], { encoding: "utf8" }).trim();
     dockerRunning = inspect === "true";
-  } catch {}
+  } catch {
+    // docker unavailable or container absent: treated as not running.
+  }
 
   if (verbose) {
     console.log(`${c.dim}[DEBUG] Docker daemon status: reachable${c.reset}`);
@@ -492,7 +496,9 @@ function cmdDiagnostics() {
     try {
       execFileSync("docker", ["exec", "aie-agent-sandbox", "test", "-s", tokenPath], { timeout: 5000 });
       tokenExists = true;
-    } catch {}
+    } catch {
+      // `test -s` exits non-zero when the token file is missing/empty.
+    }
   }
   console.log(`[4/6] OAuth Vault Token:   ${tokenExists ? `${c.green}✓ DETECTED${c.reset} (${tokenPath})` : `${c.yellow}⚠ UNCONFIGURED${c.reset}`}`);
 

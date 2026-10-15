@@ -1,44 +1,23 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { createFileRoute } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
-import {
-  AlertTriangle,
-  ArrowUpRight,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-  Download,
-  Eye,
-  FileText,
-  Filter,
-  Flame,
-  Printer,
-  RefreshCw,
-  Search,
-  Shield,
-  ShieldAlert,
-  SlidersHorizontal,
-  Sparkles,
-  Tag,
-  X,
-  XCircle,
-} from "lucide-react";
+import { ArrowUpRight, FileText, Search, SearchX, Shield, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { IdBadge } from "@/components/id-badge";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { EmptyState } from "@/components/ui/primitives";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports, auditLibraryWithAi, evaluateReportWithAi } from "@/lib/aie/server";
-import { formatDateTime } from "@/lib/aie/format";
+import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
 import { cn } from "@/lib/cn";
-import type { ReportListItem, ResourceKind } from "@/lib/aie/types";
-import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
+import type { ReportListItem } from "@/lib/aie/types";
+import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
+import { ActionButton, SegmentedTabs, Toolbar } from "@/components/layout/page";
+import { ListPageTemplate, Pagination } from "@/components/templates/page-templates";
+import { ReportTable } from "@/components/library/report-table";
+import { ReportPdfDialog } from "@/components/library/report-pdf-dialog";
+import { AiReviewDialog } from "@/components/library/ai-review-dialog";
+import { compareReports, downloadHtml, type ReportSort, type ReportSortKey } from "@/components/library/report-utils";
 
 const librarySearchSchema = z.object({
   q: z.string().optional(),
@@ -55,156 +34,72 @@ export const Route = createFileRoute("/library")({
 });
 
 const RESOURCE_KINDS: { id: string; label: string }[] = [
-  { id: "ALL", label: "All Intelligence" },
-  { id: "FULL_ATTACK_CHAIN", label: "Attack Chains" },
+  { id: "ALL", label: "All" },
+  { id: "FULL_ATTACK_CHAIN", label: "Attack chains" },
   { id: "CAMPAIGN_INTEL", label: "Campaigns" },
-  { id: "PROCEDURE_DEEPDIVE", label: "Procedures & TTPs" },
-  { id: "MALWARE_ANALYSIS", label: "Malware Analysis" },
-  { id: "DETECTION_GUIDANCE", label: "Detections & Sigma" },
-  { id: "VULNERABILITY_ADVISORY", label: "Vulnerability Advisories" },
-  { id: "THREAT_ACTOR_DOSSIER", label: "Threat Actor Dossiers" },
+  { id: "PROCEDURE_DEEPDIVE", label: "Procedures" },
+  { id: "MALWARE_ANALYSIS", label: "Malware" },
+  { id: "DETECTION_GUIDANCE", label: "Detections" },
+  { id: "VULNERABILITY_ADVISORY", label: "Vulnerabilities" },
+  { id: "THREAT_ACTOR_DOSSIER", label: "Actor dossiers" },
 ];
 
-function paginateList<T>(list: T[], page: number, pageSize: number | "all"): T[] {
-  if (pageSize === "all") return list;
-  const start = (page - 1) * pageSize;
-  return list.slice(start, start + pageSize);
+const PAGE_SIZES = [20, 40, 60, 100, "all"] as const;
+type PageSize = (typeof PAGE_SIZES)[number];
+
+const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
+
+const selectCls =
+  "h-9 w-full rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent";
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  allLabel,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  allLabel: string;
+  options: string[];
+}) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="text-xs text-muted">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={selectCls}>
+        <option value="ALL">
+          {allLabel} ({options.length})
+        </option>
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
-function PaginationControls({
-  currentPage,
-  pageSize,
-  totalItems,
-  onPageChange,
-  onPageSizeChange,
-  itemLabel = "intelligence records",
-}: {
-  currentPage: number;
-  pageSize: number | "all";
-  totalItems: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number | "all") => void;
-  itemLabel?: string;
-}) {
-  const numericSize = pageSize === "all" ? Math.max(1, totalItems) : pageSize;
-  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / numericSize));
-  const safePage = Math.min(Math.max(1, currentPage), totalPages);
-
-  const startItem = totalItems === 0 ? 0 : (safePage - 1) * numericSize + 1;
-  const endItem = pageSize === "all" ? totalItems : Math.min(totalItems, safePage * numericSize);
-
-  const pages: (number | "...")[] = [];
-  if (totalPages <= 7) {
-    for (let i = 1; i <= totalPages; i++) pages.push(i);
-  } else {
-    pages.push(1);
-    if (safePage > 3) pages.push("...");
-    const start = Math.max(2, safePage - 1);
-    const end = Math.min(totalPages - 1, safePage + 1);
-    for (let i = start; i <= end; i++) pages.push(i);
-    if (safePage < totalPages - 2) pages.push("...");
-    pages.push(totalPages);
-  }
-
+function FilterChip({ children, onRemove }: { children: React.ReactNode; onRemove: () => void }) {
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-t border-border/60 pt-4 text-xs">
-      <div className="flex flex-wrap items-center gap-3 text-muted">
-        <span>
-          Showing <span className="font-mono text-fg font-medium">{startItem}–{endItem}</span> of{" "}
-          <span className="font-mono text-fg font-medium">{totalItems}</span> {itemLabel}
-        </span>
-        <div className="flex items-center gap-1.5 pl-2 border-l border-border/80">
-          <span className="text-[11px] text-subtle">Per page:</span>
-          <div className="flex rounded-md border border-border bg-bg-elevated p-0.5">
-            {([20, 40, 60, 100, "all"] as const).map((sz) => (
-              <button
-                key={sz}
-                type="button"
-                onClick={() => {
-                  onPageSizeChange(sz);
-                  onPageChange(1);
-                }}
-                className={cn(
-                  "rounded px-2 py-0.5 text-[11px] font-mono transition-colors cursor-pointer",
-                  pageSize === sz ? "bg-accent/20 text-accent font-semibold" : "text-subtle hover:text-fg",
-                )}
-              >
-                {sz === "all" ? "All" : sz}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            disabled={safePage <= 1}
-            onClick={() => onPageChange(1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
-            title="First page"
-          >
-            <ChevronsLeft className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            disabled={safePage <= 1}
-            onClick={() => onPageChange(safePage - 1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
-            title="Previous page"
-          >
-            <ChevronLeft className="size-3.5" />
-          </button>
-
-          <div className="flex items-center gap-1 px-1">
-            {pages.map((p, idx) =>
-              p === "..." ? (
-                <span key={`ellipsis-${idx}`} className="px-1 text-muted text-xs">…</span>
-              ) : (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => onPageChange(p)}
-                  className={cn(
-                    "flex h-7 min-w-[28px] items-center justify-center rounded px-1.5 text-xs font-mono transition-colors cursor-pointer",
-                    safePage === p
-                      ? "bg-accent text-bg font-semibold shadow-xs"
-                      : "border border-border/60 bg-bg-elevated text-muted hover:text-fg hover:bg-bg-subtle",
-                  )}
-                >
-                  {p}
-                </button>
-              )
-            )}
-          </div>
-
-          <button
-            type="button"
-            disabled={safePage >= totalPages}
-            onClick={() => onPageChange(safePage + 1)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
-            title="Next page"
-          >
-            <ChevronRight className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            disabled={safePage >= totalPages}
-            onClick={() => onPageChange(totalPages)}
-            className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-bg-elevated text-subtle hover:text-fg hover:bg-bg-subtle disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
-            title="Last page"
-          >
-            <ChevronsRight className="size-3.5" />
-          </button>
-        </div>
-      )}
-    </div>
+    <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-elevated py-0.5 pl-2 pr-1 text-xs text-fg">
+      <span className="truncate">{children}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Remove filter"
+        className="flex size-4 items-center justify-center rounded text-muted hover:bg-bg-subtle hover:text-fg"
+      >
+        <X className="size-3" />
+      </button>
+    </span>
   );
 }
 
 function LibraryPage() {
-  const qc = useQueryClient();
+  const queryClient = useQueryClient();
   const searchParams = Route.useSearch();
   const navigate = Route.useNavigate();
 
@@ -220,23 +115,30 @@ function LibraryPage() {
   const [sortBy, setSortBy] = useState<"newest" | "quality" | "iocs" | "words" | "rejected">(
     searchParams.sort || "newest",
   );
+  const [colSort, setColSort] = useState<ReportSort>(null);
   const [showFilters, setShowFilters] = useState(Boolean(searchParams.tag || searchParams.sort));
   const [previewReportId, setPreviewReportId] = useState<string | null>(searchParams.pdf || null);
   const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
+  const [evidenceReport, setEvidenceReport] = useState<ReportListItem | null>(null);
+  const [isAuditing, setIsAuditing] = useState(false);
 
-  // High-performance client-side pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number | "all">(20);
+  const [pageSize, setPageSize] = useState<PageSize>(20);
 
   const targetHighlightId = searchParams.selected || searchParams.highlight;
 
-  const openPdfModal = (id: string) => {
-    setPreviewReportId(id);
-    void navigate({
-      search: (prev) => ({ ...prev, pdf: id }),
-      replace: true,
-    });
-  };
+  const openReport = useCallback(
+    (id: string) => void navigate({ to: "/library/$reportId", params: { reportId: id } }),
+    [navigate],
+  );
+
+  const openPdfModal = useCallback(
+    (id: string) => {
+      setPreviewReportId(id);
+      void navigate({ search: (prev) => ({ ...prev, pdf: id }), replace: true });
+    },
+    [navigate],
+  );
 
   const closePdfModal = () => {
     setPreviewReportId(null);
@@ -250,24 +152,32 @@ function LibraryPage() {
     });
   };
 
-  const queryClient = useQueryClient();
-  const [isAuditing, setIsAuditing] = useState(false);
+  const clearSelection = () => {
+    void navigate({
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.selected;
+        delete next.highlight;
+        delete next.pdf;
+        return next;
+      },
+      replace: true,
+    });
+  };
 
   // Debounce search query to trigger server-side full content search
   const [debouncedQ, setDebouncedQ] = useState(q);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedQ(q.trim());
-    }, 280);
+    const timer = setTimeout(() => setDebouncedQ(q.trim()), 280);
     return () => clearTimeout(timer);
   }, [q]);
 
   const isDeepSearchActive = debouncedQ.length >= 2;
 
-  // Server-side deep content search: searches full 5,000-word extractedText in MongoDB!
+  // Server-side deep content search over the full extracted text
   const { data: searchResults, isLoading: isSearchLoading } = useQuery({
     queryKey: ["reports-search", debouncedQ],
-    queryFn: () => listReports({ data: { q: debouncedQ } }),
+    queryFn: () => listReports({ data: { q: debouncedQ, limit: 200 } }),
     enabled: isDeepSearchActive,
     staleTime: 30_000,
   });
@@ -275,7 +185,7 @@ function LibraryPage() {
   // Fetch all reports to enable rich interactive filtering and instant counts
   const { data: rawReports, isLoading: isBaseLoading } = useQuery({
     queryKey: ["reports-all"],
-    queryFn: () => listReports({ data: {} }),
+    queryFn: () => listReports({ data: { limit: 500 } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
@@ -284,64 +194,25 @@ function LibraryPage() {
 
   const allReports = useMemo(() => rawReports || [], [rawReports]);
   const activeReportsPool = useMemo(() => {
-    if (isDeepSearchActive && searchResults) {
-      return searchResults;
-    }
+    if (isDeepSearchActive && searchResults) return searchResults;
     return allReports;
   }, [isDeepSearchActive, searchResults, allReports]);
 
-  const [isEvaluatingSingle, setIsEvaluatingSingle] = useState(false);
-
   const handleRunAiAudit = async () => {
     setIsAuditing(true);
-    toast.info("AI Quality Gate active. Auditing reports with Antigravity Agent...");
+    toast.info("AI quality gate running across the library…");
     try {
       const res = await auditLibraryWithAi({ data: { limit: 10 } });
-      toast.success(res.message || `AI Audit Complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged/pruned (${res.aiEvaluatedCount ?? 0} deep AI evaluations).`);
+      toast.success(
+        res.message ||
+          `AI audit complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged (${res.aiEvaluatedCount ?? 0} deep evaluations).`,
+      );
       void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
       void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
     } catch (err: any) {
-      toast.error(`AI Audit failed: ${err?.message || "Unknown error"}`);
+      toast.error(`AI audit failed: ${err?.message || "Unknown error"}`);
     } finally {
       setIsAuditing(false);
-    }
-  };
-
-  const handleEvaluateSingle = async (reportId: string) => {
-    setIsEvaluatingSingle(true);
-    toast.info("Running authentic 5-dimensional rubric evaluation via containerized AGY agent...");
-    try {
-      const res = await evaluateReportWithAi({ data: { id: reportId } });
-      if (res.success && res.result) {
-        if (res.isApproved) {
-          toast.success(`Report Approved by AI Agent (${res.result.passScore}/100)!`);
-        } else {
-          toast.warning(`Report Rejected by AI Agent (${res.result.passScore}/100): ${res.result.rationale}`);
-        }
-        setAuditModalReport((prev) => {
-          if (!prev || prev.id !== reportId) return prev;
-          return {
-            ...prev,
-            aiVerified: res.isApproved,
-            aiQualityScore: res.result.passScore,
-            aiAuditReason: res.isApproved
-              ? `AI Cognitive Approval (${res.result.passScore}/100): ${res.result.rationale}`
-              : `Rejected by AI Cognitive Gate (${res.result.passScore}/100): ${res.result.rationale}`,
-            scoreBreakdown: res.result.scoreBreakdown,
-            status: res.isApproved ? "acquired" : "rejected",
-            classification: res.result.classification || prev.classification,
-            resourceKind: res.result.resourceKind || prev.resourceKind,
-          };
-        });
-        void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
-        void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
-      } else {
-        toast.error(`Evaluation failed: ${res.error || "Unknown error"}`);
-      }
-    } catch (err: any) {
-      toast.error(`Agent evaluation failed: ${err?.message || "Unknown error"}`);
-    } finally {
-      setIsEvaluatingSingle(false);
     }
   };
 
@@ -486,71 +357,35 @@ function LibraryPage() {
     return null;
   }, [targetHighlightId, allReports]);
 
-  // Sync URL if pdf parameter arrives or changes, or if selected report is specified
+  // Open the document preview once per ?pdf= / ?selected= value (not again after the user closes it).
+  const pdfOpenedRef = useRef<string | null>(null);
+  const selOpenedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (searchParams.pdf && searchParams.pdf !== previewReportId) {
-      setPreviewReportId(searchParams.pdf);
-    } else if (searchParams.selected && !previewReportId && targetReport) {
-      setPreviewReportId(targetReport.id);
-    }
-  }, [searchParams.pdf, searchParams.selected, targetReport, previewReportId]);
-
-  // Jump and highlight tracking effect with retry polling until rendered in DOM
-  useEffect(() => {
-    if (!targetHighlightId) return;
-
-    let cancelled = false;
-    let attempts = 0;
-    const maxAttempts = 40;
-
-    const tryScroll = () => {
-      if (cancelled) return;
-      attempts++;
-
-      const matchedId = targetReport?.id || targetHighlightId;
-      const cleanTarget = targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
-
-      const el =
-        (targetReport ? document.getElementById(`report-${targetReport.id}`) : null) ||
-        document.getElementById(`report-${matchedId}`) ||
-        document.getElementById(`report-${targetHighlightId}`) ||
-        document.querySelector(`[data-report-id="${matchedId}"]`) ||
-        document.querySelector(`[data-report-id="${targetHighlightId}"]`) ||
-        document.querySelector(`[data-clean-id="${cleanTarget}"]`);
-
-      if (el) {
-        const scrollToElement = () => {
-          const mainContainer = el.closest("main");
-          if (mainContainer) {
-            const containerRect = mainContainer.getBoundingClientRect();
-            const elRect = el.getBoundingClientRect();
-            const relativeTop = elRect.top - containerRect.top + mainContainer.scrollTop;
-            const targetScrollTop = relativeTop - mainContainer.clientHeight / 2 + elRect.height / 2;
-            mainContainer.scrollTo({
-              top: Math.max(0, targetScrollTop),
-              behavior: "smooth",
-            });
-          }
-          try {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
-          } catch {
-            // ignore
-          }
-        };
-
-        scrollToElement();
-        setTimeout(scrollToElement, 300);
-      } else if (attempts < maxAttempts) {
-        setTimeout(tryScroll, 80);
+    if (searchParams.selected) {
+      // A ?selected= link auto-opens the preview at most once; an explicit ?pdf= also counts.
+      if (selOpenedRef.current !== searchParams.selected && (searchParams.pdf || targetReport)) {
+        selOpenedRef.current = searchParams.selected;
+        if (!searchParams.pdf && targetReport) setPreviewReportId(targetReport.id);
       }
-    };
+    }
+    if (searchParams.pdf && pdfOpenedRef.current !== searchParams.pdf) {
+      pdfOpenedRef.current = searchParams.pdf;
+      setPreviewReportId(searchParams.pdf);
+    }
+    if (!searchParams.pdf) pdfOpenedRef.current = null;
+  }, [searchParams.pdf, searchParams.selected, targetReport]);
 
-    const timer = setTimeout(tryScroll, 100);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [targetHighlightId, targetReport]);
+  const isHighlighted = useCallback(
+    (r: ReportListItem) => {
+      if (!targetHighlightId) return false;
+      if (targetReport) return targetReport.id === r.id;
+      const t = targetHighlightId.toLowerCase();
+      const cleanT = t.replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+      const cleanR = r.id.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
+      return r.id.toLowerCase() === t || formatReportId(r.id).toLowerCase() === t || (cleanT.length >= 8 && cleanR.includes(cleanT));
+    },
+    [targetHighlightId, targetReport],
+  );
 
   // Filter and sort reports
   const filteredReports = useMemo(() => {
@@ -655,9 +490,9 @@ function LibraryPage() {
     return list;
   }, [
     activeReportsPool,
+    searchParams.selected,
     isDeepSearchActive,
     targetReport,
-    targetHighlightId,
     q,
     sortBy,
     selectedKind,
@@ -670,58 +505,74 @@ function LibraryPage() {
     onlyWithIocs,
   ]);
 
-  const activeFiltersCount = useMemo(() => {
-    let count = 0;
-    if (searchParams.selected) count++;
-    if (selectedTag !== "ALL") count++;
-    if (selectedActor !== "ALL") count++;
-    if (selectedMalware !== "ALL") count++;
-    if (selectedTactic !== "ALL") count++;
-    if (selectedPublisher !== "ALL") count++;
-    if (minQuality > 0) count++;
-    if (onlyWithIocs) count++;
-    return count;
-  }, [searchParams.selected, selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs]);
+  const sortedReports = useMemo(() => {
+    if (!colSort) return filteredReports;
+    const cmp = compareReports(colSort.key);
+    const list = [...filteredReports].sort(cmp);
+    return colSort.desc ? list.reverse() : list;
+  }, [filteredReports, colSort]);
+
+  const onSort = useCallback((key: ReportSortKey) => {
+    setColSort((prev) =>
+      prev?.key === key ? { key, desc: !prev.desc } : { key, desc: !TEXT_SORTS.includes(key) },
+    );
+  }, []);
+
+  const activeFiltersCount =
+    (selectedTag !== "ALL" ? 1 : 0) +
+    (selectedActor !== "ALL" ? 1 : 0) +
+    (selectedMalware !== "ALL" ? 1 : 0) +
+    (selectedTactic !== "ALL" ? 1 : 0) +
+    (selectedPublisher !== "ALL" ? 1 : 0) +
+    (minQuality > 0 ? 1 : 0) +
+    (onlyWithIocs ? 1 : 0) +
+    (sortBy === "rejected" ? 1 : 0);
 
   // Reset pagination to page 1 on filter changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [
-    q,
-    selectedKind,
-    selectedTag,
-    selectedActor,
-    selectedMalware,
-    selectedTactic,
-    selectedPublisher,
-    minQuality,
-    onlyWithIocs,
-    sortBy,
-  ]);
+  }, [q, selectedKind, selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs, sortBy, colSort]);
 
-  // Automatically navigate to page containing targetReport or targetHighlightId
+  const numericPageSize = pageSize === "all" ? Math.max(1, sortedReports.length) : pageSize;
+  const pageCount = Math.max(1, Math.ceil(sortedReports.length / numericPageSize));
+
+  // Jump to the page containing the highlighted report, then scroll it into view.
   useEffect(() => {
-    if (!targetHighlightId || filteredReports.length === 0 || pageSize === "all") return;
-    const cleanTarget = targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
-    const targetIdx = filteredReports.findIndex(
-      (r) =>
-        r.id === targetHighlightId ||
-        r.id.toLowerCase() === targetHighlightId.toLowerCase() ||
-        formatReportId(r.id).toLowerCase() === targetHighlightId.toLowerCase() ||
-        (cleanTarget.length >= 8 && r.id.toLowerCase().includes(cleanTarget)) ||
-        (targetReport && r.id === targetReport.id),
-    );
-    if (targetIdx !== -1) {
-      const targetPage = Math.floor(targetIdx / pageSize) + 1;
-      if (currentPage !== targetPage) {
-        setCurrentPage(targetPage);
+    if (!targetHighlightId || sortedReports.length === 0) return;
+    const idx = sortedReports.findIndex(isHighlighted);
+    if (idx === -1) return;
+    const targetPage = Math.floor(idx / numericPageSize) + 1;
+    if (targetPage !== currentPage) setCurrentPage(targetPage);
+    // only re-run when the target or list changes, not on manual paging
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetHighlightId, targetReport, sortedReports, numericPageSize, isHighlighted]);
+
+  useEffect(() => {
+    if (!targetHighlightId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryScroll = () => {
+      if (cancelled) return;
+      attempts++;
+      const id = targetReport?.id || targetHighlightId;
+      const el =
+        document.getElementById(`report-${id}`) || document.querySelector(`[data-report-id="${CSS.escape(id)}"]`);
+      if (el) {
+        el.closest("tr")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (attempts < 40) {
+        setTimeout(tryScroll, 80);
       }
-    }
-  }, [targetHighlightId, targetReport, filteredReports, pageSize, currentPage]);
+    };
+    const timer = setTimeout(tryScroll, 120);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [targetHighlightId, targetReport, currentPage]);
 
   const pagedReports = useMemo(
-    () => paginateList(filteredReports, currentPage, pageSize),
-    [filteredReports, currentPage, pageSize],
+    () => sortedReports.slice((currentPage - 1) * numericPageSize, currentPage * numericPageSize),
+    [sortedReports, currentPage, numericPageSize],
   );
 
   const handlePageChange = (newPage: number) => {
@@ -737,1229 +588,320 @@ function LibraryPage() {
     setSelectedPublisher("ALL");
     setMinQuality(0);
     setOnlyWithIocs(false);
+    if (sortBy === "rejected") setSortBy("newest");
     setQ("");
-    if (searchParams.selected || searchParams.highlight) {
-      void navigate({
-        search: (prev) => {
-          const next = { ...prev };
-          delete (next as any).selected;
-          delete (next as any).highlight;
-          return next;
-        },
-      });
-    }
+    if (searchParams.selected || searchParams.highlight) clearSelection();
   };
 
-  const { data: previewData, isLoading: isPreviewLoading, isError: isPreviewError, refetch: refetchPreview } = useQuery({
-    queryKey: ["report-pdf", previewReportId],
-    queryFn: () => (previewReportId ? getReportPdf({ data: { id: previewReportId } }) : null),
-    enabled: Boolean(previewReportId),
-    staleTime: 60_000,
-  });
-
-  const handleDownloadPdf = (r: ReportListItem, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-
-    // Fetch full report if not in previewData
+  const handleDownload = useCallback((r: ReportListItem) => {
     void (async () => {
       try {
-        toast.info("Preparing PDF Document for download...");
+        toast.info("Preparing the document for download…");
         const rep = await getReportPdf({ data: { id: r.id } });
         if (!rep.ok || !rep.rawHtml) {
-          toast.error("PDF representation not available for this report");
+          toast.error("No document representation is available for this report");
           return;
         }
-
-        const blob = new Blob([rep.rawHtml], { type: "text/html;charset=utf-8" });
-        const dlUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = dlUrl;
-        const slug = (rep.title || "threat_report")
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]/g, "_")
-          .slice(0, 50);
-        a.download = `${slug}_intel_report.html`;
-        a.click();
-        URL.revokeObjectURL(dlUrl);
-        toast.success("Document Downloaded", {
-          description: "High-fidelity PDF document saved. Open and select Print → Save as PDF for vector rendering.",
+        downloadHtml(rep.rawHtml, rep.title || r.title);
+        toast.success("Document downloaded", {
+          description: "Open it and choose Print → Save as PDF for a vector PDF.",
         });
-      } catch (err) {
-        toast.error("Failed downloading document");
+      } catch {
+        toast.error("Failed to download the document");
       }
     })();
-  };
+  }, []);
 
-  const handlePrintDocument = (html: string) => {
-    const printWindow = window.open("", "_blank");
-    if (printWindow) {
-      printWindow.document.write(html);
-      printWindow.document.close();
-      printWindow.focus();
-      setTimeout(() => {
-        printWindow.print();
-      }, 400);
-    } else {
-      toast.info("Pop-up blocked. Please allow pop-ups to print to PDF directly.");
-    }
-  };
+  const rowActions = useMemo(
+    () => ({
+      open: (r: ReportListItem) => openReport(r.id),
+      viewPdf: (r: ReportListItem) => openPdfModal(r.id),
+      download: handleDownload,
+      evidence: (r: ReportListItem) => setEvidenceReport(r),
+      aiReview: (r: ReportListItem) => setAuditModalReport(r),
+    }),
+    [openReport, openPdfModal, handleDownload],
+  );
 
-  const getKindTone = (kind?: ResourceKind): "accent" | "warn" | "sage" | "neutral" => {
-    switch (kind) {
-      case "FULL_ATTACK_CHAIN":
-        return "accent";
-      case "MALWARE_ANALYSIS":
-        return "warn";
-      case "DETECTION_GUIDANCE":
-        return "sage";
-      case "VULNERABILITY_ADVISORY":
-        return "warn";
-      case "PROCEDURE_DEEPDIVE":
-        return "accent";
-      default:
-        return "neutral";
-    }
-  };
+  const filterChips: Array<{ label: string; clear: () => void }> = [
+    selectedTag !== "ALL" && { label: `Tag: ${selectedTag}`, clear: () => setSelectedTag("ALL") },
+    selectedActor !== "ALL" && { label: `Actor: ${selectedActor}`, clear: () => setSelectedActor("ALL") },
+    selectedMalware !== "ALL" && { label: `Malware: ${selectedMalware}`, clear: () => setSelectedMalware("ALL") },
+    selectedTactic !== "ALL" && { label: `Tactic: ${selectedTactic}`, clear: () => setSelectedTactic("ALL") },
+    selectedPublisher !== "ALL" && { label: `Publisher: ${selectedPublisher}`, clear: () => setSelectedPublisher("ALL") },
+    minQuality > 0 && { label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) },
+    onlyWithIocs && { label: "Has IOCs", clear: () => setOnlyWithIocs(false) },
+    sortBy === "rejected" && { label: `Rejected by AI (${rejectedCount})`, clear: () => setSortBy("newest") },
+  ].filter(Boolean) as Array<{ label: string; clear: () => void }>;
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">Central Intelligence Store</p>
-          <h1 className="mt-1 text-3xl font-medium tracking-tight">Intelligence Library</h1>
-          <p className="mt-1 text-xs text-muted">
-            Acquired adversary intelligence, normalized evidence, IOCs, and reconstructed attack chains.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative w-full sm:w-80">
-            <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search CVE, actor, malware, procedure, or hash…"
-              className="w-full pl-8 pr-8 text-xs"
+      <ListPageTemplate
+        header={{
+          title: "Library",
+          description: "Acquired threat intelligence with normalized evidence, IOCs and reconstructed attack chains.",
+          actions: (
+            <ActionButton
+              variant="primary"
+              icon={Sparkles}
+              disabled={isAuditing}
+              onClick={handleRunAiAudit}
+              title="Run the AI quality gate across acquired reports"
+            >
+              {isAuditing ? "Auditing…" : "Audit with AI"}
+            </ActionButton>
+          ),
+          tabs: (
+            <SegmentedTabs
+              ariaLabel="Report category"
+              items={RESOURCE_KINDS.map((c) => ({ value: c.id, label: c.label, count: categoryCounts[c.id] ?? 0 }))}
+              value={selectedKind}
+              onChange={setSelectedKind}
             />
-            {q && (
-              <button
-                type="button"
-                onClick={() => setQ("")}
-                className="absolute right-2.5 top-2.5 text-muted hover:text-fg"
-              >
-                <X className="size-3.5" />
-              </button>
-            )}
-          </div>
-          <Button
-            size="sm"
-            variant={showFilters || activeFiltersCount > 0 ? "secondary" : "ghost"}
-            className={cn("h-9 gap-1.5 text-xs", activeFiltersCount > 0 && "border-accent text-accent")}
-            onClick={() => setShowFilters(!showFilters)}
-          >
-            <SlidersHorizontal className="size-3.5" />
-            <span>Filters</span>
-            {activeFiltersCount > 0 && (
-              <span className="rounded-full bg-accent px-1.5 py-0.2 font-mono text-[10px] text-white">
-                {activeFiltersCount}
-              </span>
-            )}
-          </Button>
-
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={isAuditing}
-            onClick={handleRunAiAudit}
-            className="h-9 gap-1.5 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-            title="Trigger intelligent AGY evaluation & verification across acquired intelligence reports"
-          >
-            <Sparkles className={cn("size-3.5", isAuditing && "animate-spin text-emerald-400")} />
-            <span>{isAuditing ? "Auditing with AI..." : "Audit with AI"}</span>
-          </Button>
-        </div>
-      </div>
-
-      {/* Category Pills with Active Counts */}
-      <div className="mt-6 flex flex-wrap gap-1.5 border-b border-border pb-3">
-        {RESOURCE_KINDS.map((c) => {
-          const count = categoryCounts[c.id] ?? 0;
-          return (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setSelectedKind(c.id)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
-                selectedKind === c.id
-                  ? "bg-fg text-bg font-semibold shadow-sm"
-                  : "bg-bg-elevated text-muted hover:text-fg border border-border",
-              )}
-            >
-              <span>{c.label}</span>
-              <span
-                className={cn(
-                  "rounded-full px-1.5 py-0.2 font-mono text-[10px]",
-                  selectedKind === c.id ? "bg-bg text-fg font-bold" : "bg-bg-subtle text-subtle",
-                )}
-              >
-                {count}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Advanced Tag Filter Drawer / Controls */}
-      {showFilters && (
-        <div className="mt-4 rounded-xl border border-border bg-bg-elevated p-4 animate-in fade-in slide-in-from-top-2 duration-150">
-          <div className="flex items-center justify-between border-b border-border pb-3">
-            <div className="flex items-center gap-2">
-              <Filter className="size-4 text-accent" />
-              <span className="text-xs font-semibold uppercase tracking-wider text-fg">
-                Advanced Intelligence Filters
-              </span>
-            </div>
-            {activeFiltersCount > 0 && (
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="text-xs text-accent hover:underline font-mono"
-              >
-                Reset All Filters
-              </button>
-            )}
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            {/* Filter 0: Intelligence Tag */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted">Intelligence Tag</label>
-              <select
-                value={selectedTag}
-                onChange={(e) => setSelectedTag(e.target.value)}
-                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="ALL">All Tags ({filterOptions.tags.length})</option>
-                {filterOptions.tags.map((tag) => (
-                  <option key={tag} value={tag}>
-                    {tag}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter 1: Threat Actor */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted">Threat Actor / Adversary</label>
-              <select
-                value={selectedActor}
-                onChange={(e) => setSelectedActor(e.target.value)}
-                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="ALL">All Adversary Groups ({filterOptions.actors.length})</option>
-                {filterOptions.actors.map((actor) => (
-                  <option key={actor} value={actor}>
-                    {actor}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter 2: Malware Family */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted">Malware Family & Toolset</label>
-              <select
-                value={selectedMalware}
-                onChange={(e) => setSelectedMalware(e.target.value)}
-                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="ALL">All Malware Families ({filterOptions.malware.length})</option>
-                {filterOptions.malware.map((mal) => (
-                  <option key={mal} value={mal}>
-                    {mal}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter 3: ATT&CK Tactic */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted">MITRE ATT&CK Tactic</label>
-              <select
-                value={selectedTactic}
-                onChange={(e) => setSelectedTactic(e.target.value)}
-                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="ALL">All Tactics ({filterOptions.tactics.length})</option>
-                {filterOptions.tactics.map((tactic) => (
-                  <option key={tactic} value={tactic}>
-                    {tactic}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter 4: Publisher */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted">Publisher / Threat Origin</label>
-              <select
-                value={selectedPublisher}
-                onChange={(e) => setSelectedPublisher(e.target.value)}
-                className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="ALL">All Publishers ({filterOptions.publishers.length})</option>
-                {filterOptions.publishers.map((pub) => (
-                  <option key={pub} value={pub}>
-                    {pub}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-4 text-xs">
-              {/* Quality Score threshold */}
-              <div className="flex items-center gap-2">
-                <span className="text-muted text-[11px]">Quality Threshold:</span>
-                <select
-                  value={minQuality}
-                  onChange={(e) => setMinQuality(parseFloat(e.target.value))}
-                  className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
-                >
-                  <option value={0}>Any Score</option>
-                  <option value={0.6}>≥ 60% Verified</option>
-                  <option value={0.8}>≥ 80% Pristine</option>
-                </select>
-              </div>
-
-              {/* Only with IOCs */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={onlyWithIocs}
-                  onChange={(e) => setOnlyWithIocs(e.target.checked)}
-                  className="size-3.5 accent-accent"
-                />
-                <span className="text-muted text-[11px]">Only reports with verified IOCs</span>
-              </label>
-            </div>
-
-            {/* Sort Dropdown */}
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-muted text-[11px]">Sort:</span>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as any)}
-                className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
-              >
-                <option value="newest">Newest Ingested</option>
-                <option value="quality">Quality Score (High to Low)</option>
-                <option value="iocs">Most IOCs</option>
-                <option value="words">Longest Analysis</option>
-                <option value="rejected">AI Rejected / Pruned ({rejectedCount})</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Active Filter Badges Bar */}
-      {activeFiltersCount > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] font-mono text-muted mr-1">Active filters:</span>
-          {searchParams.selected && (
-            <span className="inline-flex items-center gap-1.5 rounded-md bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 text-xs font-mono font-medium shadow-xs">
-              <span className="truncate max-w-[280px]">
-                Selected: {targetReport ? targetReport.title : searchParams.selected}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  void navigate({
-                    search: (prev) => {
-                      const next = { ...prev };
-                      delete (next as any).selected;
-                      delete (next as any).highlight;
-                      delete (next as any).pdf;
-                      return next;
-                    },
-                  });
-                }}
-                className="hover:opacity-75 cursor-pointer"
-                title="Remove selection filter"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {selectedTag !== "ALL" && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent border border-accent/20 px-2 py-0.5 text-xs font-mono">
-              Tag: {selectedTag}
-              <button type="button" onClick={() => setSelectedTag("ALL")} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {selectedActor !== "ALL" && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-danger/10 text-danger border border-danger/20 px-2 py-0.5 text-xs font-mono">
-              Actor: {selectedActor}
-              <button type="button" onClick={() => setSelectedActor("ALL")} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {selectedMalware !== "ALL" && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-warn/10 text-warn border border-warn/20 px-2 py-0.5 text-xs font-mono">
-              Malware: {selectedMalware}
-              <button type="button" onClick={() => setSelectedMalware("ALL")} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {selectedTactic !== "ALL" && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent border border-accent/20 px-2 py-0.5 text-xs font-mono">
-              Tactic: {selectedTactic}
-              <button type="button" onClick={() => setSelectedTactic("ALL")} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {selectedPublisher !== "ALL" && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-bg-subtle text-fg border border-border px-2 py-0.5 text-xs font-mono">
-              Publisher: {selectedPublisher}
-              <button type="button" onClick={() => setSelectedPublisher("ALL")} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {minQuality > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-sage/10 text-sage border border-sage/20 px-2 py-0.5 text-xs font-mono">
-              Score ≥ {Math.round(minQuality * 100)}%
-              <button type="button" onClick={() => setMinQuality(0)} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          {onlyWithIocs && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-sage/10 text-sage border border-sage/20 px-2 py-0.5 text-xs font-mono">
-              Has IOCs
-              <button type="button" onClick={() => setOnlyWithIocs(false)} className="hover:opacity-75">
-                <X className="size-3" />
-              </button>
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={resetFilters}
-            className="text-[11px] text-subtle hover:text-fg underline ml-2 cursor-pointer"
-          >
-            Clear all
-          </button>
-        </div>
-      )}
-
-      {/* Selected Resource Isolation Banner */}
-      {searchParams.selected && (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-accent/10 border border-accent/30 text-xs text-accent shadow-xs">
-          <div className="flex items-center gap-2">
-            <FileText className="size-4 shrink-0 text-accent" />
-            <span>
-              Showing isolated report:{" "}
-              <strong className="text-fg font-semibold">
-                {targetReport ? targetReport.title : searchParams.selected}
-              </strong>
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              void navigate({
-                search: (prev) => {
-                  const next = { ...prev };
-                  delete (next as any).selected;
-                  delete (next as any).highlight;
-                  delete (next as any).pdf;
-                  return next;
-                },
-              });
-            }}
-            className="text-xs font-mono font-medium underline hover:text-accent/80 cursor-pointer"
-          >
-            Show All Reports (Exit Isolation) →
-          </button>
-        </div>
-      )}
-
-      {/* Result Counter */}
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
-        <div className="flex items-center gap-2">
-          <span>
-            Showing{" "}
-            <strong className="text-fg">
-              {filteredReports.length === 0
-                ? 0
-                : `${(currentPage - 1) * (pageSize === "all" ? filteredReports.length : pageSize) + 1}–${pageSize === "all" ? filteredReports.length : Math.min(filteredReports.length, currentPage * pageSize)}`}
-            </strong>{" "}
-            of <strong className="text-fg">{filteredReports.length}</strong> filtered records
-            {filteredReports.length !== allReports.length && (
-              <span className="text-subtle"> ({allReports.length} total in store)</span>
-            )}
-          </span>
-          {pageSize !== "all" && filteredReports.length > pageSize && (
-            <span className="rounded bg-bg-elevated border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
-              Page {currentPage} of {Math.max(1, Math.ceil(filteredReports.length / pageSize))}
-            </span>
-          )}
-        </div>
-        {selectedKind !== "ALL" && (
-          <span className="font-mono text-[11px] text-subtle">
-            Category: {RESOURCE_KINDS.find((k) => k.id === selectedKind)?.label}
-          </span>
-        )}
-      </div>
-
-      {/* Direct Item Selector Banner */}
-      {targetReport && (
-        <div className="mt-4 p-3.5 rounded-xl border border-accent/40 bg-accent/10 card-liquid-glass flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in-0 duration-150">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="p-1.5 rounded-lg bg-accent/20 text-accent shrink-0">
-              <CheckCircle2 className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono uppercase text-accent font-semibold tracking-wider">
-                  Direct Resource Selector Active
-                </span>
-                <Badge className="bg-accent/20 text-accent border border-accent/30 text-[9px] font-mono">
-                  {formatReportId(targetReport.id)}
-                </Badge>
-              </div>
-              <p className="text-xs text-fg font-medium truncate">{targetReport.title}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => openPdfModal(targetReport.id)}
-              className="px-2.5 py-1 text-xs rounded-lg bg-accent text-accent-fg font-medium hover:scale-[1.02] transition-all cursor-pointer shadow-xs"
-            >
-              Open Document Preview
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void navigate({
-                  search: (prev) => {
-                    const next = { ...prev };
-                    delete next.selected;
-                    delete next.highlight;
-                    return next;
-                  },
-                  replace: true,
-                });
-              }}
-              className="px-2.5 py-1 text-xs rounded-lg border border-border bg-bg-elevated hover:bg-bg-subtle text-muted hover:text-fg transition-all cursor-pointer"
-            >
-              Clear Selection (View All {allReports.length})
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Reports Grid */}
-      <div className="mt-4 grid gap-3">
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-16 text-muted">
-            <ActivitySpinner size="lg" className="text-accent mb-2" />
-            <p className="text-sm">Querying Central Intelligence Store…</p>
-          </div>
-        ) : null}
-
-        {!isLoading && filteredReports.length === 0 ? (
-          <div className="rounded-xl border border-border bg-bg-elevated py-16 text-center text-sm text-muted">
-            <ShieldAlert className="size-8 mx-auto text-muted mb-2 opacity-50" />
-            <p className="font-medium text-fg">No threat intelligence reports match your filter.</p>
-            <p className="mt-1 text-xs text-muted">Try relaxing search terms or click "Reset All Filters".</p>
-            {activeFiltersCount > 0 && (
-              <Button size="sm" variant="secondary" onClick={resetFilters} className="mt-4 text-xs">
-                Reset All Filters
-              </Button>
-            )}
-          </div>
-        ) : null}
-
-        {pagedReports.map((r) => {
-          const actors = r.analysis?.threatActors || r.extractedEntities?.threatActors || [];
-          const malware = r.analysis?.malware || r.extractedEntities?.malwareFamilies || [];
-          const cves = r.extractedEntities?.cves || [];
-          const cleanId = r.id.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "");
-          const isHighlighted = Boolean(
-            (targetReport && targetReport.id === r.id) ||
-            (targetHighlightId && (
-              r.id === targetHighlightId ||
-              r.id.toLowerCase() === targetHighlightId.toLowerCase() ||
-              formatReportId(r.id).toLowerCase() === targetHighlightId.toLowerCase() ||
-              (targetHighlightId.length >= 8 && cleanId.includes(targetHighlightId.toLowerCase().replace(/^(rpt_|rst[-_]|report[-_])/i, "")))
-            ))
-          );
-
-          return (
-            <div
-              key={r.id}
-              id={`report-${r.id}`}
-              data-report-id={r.id}
-              data-clean-id={cleanId}
-              className={cn(
-                "group relative rounded-xl border bg-bg-elevated p-5",
-                isHighlighted
-                  ? "target-card-blink border-accent bg-accent/[0.03]"
-                  : "border-border hover:border-border/80 hover:bg-bg-subtle/40 transition-all duration-300",
-                r.status === "rejected" && "border-danger/40 bg-danger/[0.03]",
-              )}
-            >
-              {/* AI Pruned / Rejected Banner */}
-              {r.status === "rejected" && (
-                <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger/10 p-2.5 text-xs text-danger">
-                  <AlertTriangle className="size-4 shrink-0 mt-0.5 text-danger" />
-                  <div>
-                    <div className="font-semibold uppercase tracking-wider font-mono text-[10px]">
-                      Pruned / Rejected by AI Quality Gate
-                    </div>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-danger/90">
-                      {r.aiAuditReason || "Identified as sub-threshold stub, generic index query, or non-threat marketing."}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Standardized AIE ID Bar: RST and DOM with AI Verification Badge on Very Top Right */}
-              <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2.5 pb-2 border-b border-border/50">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <IdBadge id={formatReportId(r.id)} category="report" size="xs" />
-                  {(r.sourceDomain || r.url) && (
-                    <IdBadge id={formatDomainId(r.sourceDomain || r.url)} category="domain" size="xs" />
-                  )}
-                </div>
-
-                {/* AI Verification status badge on very top right */}
-                {r.aiVerified ? (
-                  <button
-                    type="button"
-                    onClick={() => setAuditModalReport(r)}
-                    className="inline-flex items-center gap-1 rounded-full bg-sage/15 hover:bg-sage/25 text-sage border border-sage/30 px-2 py-0.5 text-[10px] font-mono font-medium transition-colors cursor-pointer"
-                    title="Click to view AI Quality Gate Audit Details"
-                  >
-                    <CheckCircle2 className="size-2.5 text-sage" />
-                    AI Verified {r.aiQualityScore ? `· ${r.aiQualityScore}%` : ""}
-                  </button>
-                ) : r.status === "rejected" ? (
-                  <button
-                    type="button"
-                    onClick={() => setAuditModalReport(r)}
-                    className="inline-flex items-center gap-1 rounded-full bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 px-2 py-0.5 text-[10px] font-mono font-medium transition-colors cursor-pointer"
-                    title="Click to view AI Rejection Details"
-                  >
-                    <XCircle className="size-2.5 text-red-400" />
-                    Rejected by AI
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setAuditModalReport(r)}
-                    className="inline-flex items-center gap-1 rounded-full bg-muted/10 hover:bg-muted/20 text-muted border border-border px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer"
-                    title="Click to view Crawler & AI Audit Details"
-                  >
-                    Pending AI Audit
-                  </button>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="neutral">{r.sourceName || r.publisher}</Badge>
-                  {r.resourceKind && (
-                    <Badge tone={getKindTone(r.resourceKind)} className="font-semibold">
-                      {r.resourceKind.replace(/_/g, " ")}
-                    </Badge>
-                  )}
-                  <Badge tone="neutral">{r.classification}</Badge>
-                  <Badge tone={r.status === "acquired" ? "sage" : "warn"}>{r.status}</Badge>
-                  {r.simulationScore !== undefined && r.simulationScore > 0 && (
-                    <Badge tone="accent" className="font-mono font-semibold">
-                      SIM {Math.round(r.simulationScore * 100)}%
-                    </Badge>
-                  )}
-                  {r.isEmergingTechnique && (
-                    <Badge tone="danger" className="font-semibold" title={r.noveltyRationale || "Novel unmapped adversary procedure"}>
-                      NOVEL TTP
-                    </Badge>
-                  )}
-                  <Badge tone="sage" className="gap-1">
-                    <FileText className="size-2.5" /> High-Fidelity PDF
-                  </Badge>
-                </div>
-
-                <span className="font-mono text-[11px] text-subtle tabular-nums">
-                  {Math.round(r.qualityScore * 100)}% quality · {r.wordCount} words · {r.iocCount} IOCs
-                </span>
-              </div>
-
-              <div className="mt-3 flex items-start justify-between gap-4">
-                <button
-                  type="button"
-                  onClick={() => openPdfModal(r.id)}
-                  className="flex-1 text-left cursor-pointer group/title"
-                  title="Open high-fidelity document representation"
-                >
-                  <h2 className="text-base font-medium leading-snug group-hover/title:text-accent transition-colors">
-                    {r.title}
-                  </h2>
-                  <p className="mt-1.5 line-clamp-2 text-xs text-muted leading-relaxed">{r.excerpt}</p>
-                  {r.matchedSnippet && (
-                    <div className="mt-2.5 p-2 rounded-lg bg-black/40 border border-accent/40 text-[11px] font-mono">
-                      <div className="flex items-center gap-1.5 text-[9.5px] uppercase font-semibold text-accent mb-1">
-                        <Sparkles className="size-3 text-accent" />
-                        <span>Deep Content Match:</span>
-                      </div>
-                      <div className="text-fg/90 select-text whitespace-pre-wrap leading-relaxed">
-                        "{r.matchedSnippet}"
-                      </div>
-                    </div>
-                  )}
-                </button>
-
-                <div className="flex shrink-0 items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-8 gap-1.5 text-xs"
-                    onClick={() => openPdfModal(r.id)}
-                    title="View PDF Document Representation"
-                  >
-                    <Eye className="size-3.5" />
-                    <span className="hidden sm:inline">View PDF</span>
-                  </Button>
-
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 gap-1.5 text-xs text-muted hover:text-fg"
-                    onClick={(e) => handleDownloadPdf(r, e)}
-                    title="Download Document"
-                  >
-                    <Download className="size-3.5" />
-                    <span className="hidden sm:inline">Download</span>
-                  </Button>
-
-                  <a
-                    href={r.canonicalUrl || r.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-1 text-subtle hover:text-accent transition-colors"
-                    title={`Open source article: ${r.canonicalUrl || r.url}`}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ArrowUpRight className="size-4" />
-                  </a>
-                </div>
-              </div>
-
-              {/* Tag Highlights on Report Card */}
-              {(actors.length > 0 || malware.length > 0 || cves.length > 0) && (
-                <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                  {actors.slice(0, 3).map((a) => (
-                    <button
-                      key={a}
-                      type="button"
-                      onClick={() => {
-                        setSelectedActor(a);
-                        setShowFilters(true);
-                      }}
-                      className="inline-flex items-center gap-1 rounded bg-danger/10 hover:bg-danger/20 text-danger border border-danger/20 px-1.5 py-0.2 font-mono text-[10px]"
-                    >
-                      <ShieldAlert className="size-2.5" />
-                      {a}
-                    </button>
-                  ))}
-                  {malware.slice(0, 3).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => {
-                        setSelectedMalware(m);
-                        setShowFilters(true);
-                      }}
-                      className="inline-flex items-center gap-1 rounded bg-warn/10 hover:bg-warn/20 text-warn border border-warn/20 px-1.5 py-0.2 font-mono text-[10px]"
-                    >
-                      <Flame className="size-2.5" />
-                      {m}
-                    </button>
-                  ))}
-                  {cves.slice(0, 3).map((cve) => (
-                    <span
-                      key={cve}
-                      className="rounded bg-bg-subtle text-muted border border-border px-1.5 py-0.2 font-mono text-[10px]"
-                    >
-                      {cve}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* High-Value Intelligence Tags (e.g. FULL ATTACK CHAIN, INTRUSION_REPORT, Publisher, Techniques) */}
-              {r.tags && r.tags.length > 0 && (
-                <div className="mt-2.5 flex flex-wrap items-center gap-1">
-                  <span className="text-[10px] font-mono text-muted mr-1 flex items-center gap-1">
-                    <Tag className="size-2.5" /> Tags:
-                  </span>
-                  {r.tags.slice(0, 8).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => {
-                        setSelectedTag(t);
-                        setShowFilters(true);
-                      }}
-                      className="inline-flex items-center rounded bg-bg-subtle hover:bg-bg border border-border px-1.5 py-0.5 text-[10px] font-mono text-fg hover:text-accent hover:border-accent/40 transition-colors"
-                      title={`Filter by tag: ${t}`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                  {r.tags.length > 8 && (
-                    <span className="text-[10px] font-mono text-muted">+{r.tags.length - 8} more</span>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5 font-mono text-[10px] text-subtle">
-                <span>Domain: {r.sourceDomain || "Verified source"}</span>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => openPdfModal(r.id)}
-                    className="text-accent hover:underline flex items-center gap-1"
-                  >
-                    <FileText className="size-3" /> Preview Document & Evidence
-                  </button>
-                  <span>Ingested: {formatDateTime(r.ingestedAt)}</span>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* High-Performance Pagination Toolbar */}
-      {filteredReports.length > 0 && (
-        <div className="mt-4 mb-2">
-          <PaginationControls
-            currentPage={currentPage}
-            pageSize={pageSize}
-            totalItems={filteredReports.length}
-            onPageChange={handlePageChange}
-            onPageSizeChange={(sz) => {
-              setPageSize(sz);
-              setCurrentPage(1);
-            }}
-            itemLabel="intelligence records"
-          />
-        </div>
-      )}
-
-      {/* PDF / DOCUMENT VIEW MODAL */}
-      {previewReportId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="flex h-[90vh] w-full max-w-5xl flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-border bg-bg px-6 py-4">
-              <div className="flex items-center gap-3 overflow-hidden">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-elevated">
-                  <FileText className="size-4 text-accent" />
-                </div>
-                <div className="overflow-hidden">
-                  <div className="flex items-center gap-2 mb-1">
-                    {previewReportId && (
-                      <IdBadge id={formatReportId(previewReportId)} category="report" size="xs" />
-                    )}
-                    {previewData?.url && (
-                      <IdBadge id={formatDomainId(previewData.url)} category="domain" size="xs" />
-                    )}
-                  </div>
-                  <h3 className="truncate text-sm font-medium">
-                    {previewData?.title || "High-Fidelity PDF Representation"}
-                  </h3>
-                  <p className="truncate text-xs text-muted font-mono">
-                    {previewData?.canonicalUrl || previewData?.url}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {previewData?.rawHtml && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-8 gap-1.5 text-xs"
-                      onClick={() => handlePrintDocument(previewData.rawHtml)}
-                    >
-                      <Printer className="size-3.5" />
-                      <span>Print to PDF</span>
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-8 gap-1.5 text-xs"
-                      onClick={() => {
-                        const blob = new Blob([previewData.rawHtml], { type: "text/html;charset=utf-8" });
-                        const dlUrl = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = dlUrl;
-                        a.download = `${previewData.title.slice(0, 40).replace(/[^a-z0-9_-]/gi, "_")}_report.html`;
-                        a.click();
-                        URL.revokeObjectURL(dlUrl);
-                        toast.success("Document downloaded");
-                      }}
-                    >
-                      <Download className="size-3.5" />
-                      <span>Download File</span>
-                    </Button>
-                  </>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const id = previewReportId;
-                    closePdfModal();
-                    if (id) {
-                      void navigate({
-                        search: (prev) => ({ ...prev, selected: id }),
-                        replace: true,
-                      });
-                    }
-                  }}
-                  className="rounded-lg border border-border bg-bg-elevated px-3 py-1.5 text-xs text-muted hover:text-fg transition-colors"
-                >
-                  View in Gallery
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => closePdfModal()}
-                  className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Body / Document Preview */}
-            <div className="flex-1 overflow-hidden bg-neutral-900">
-              {isPreviewLoading ? (
-                <div className="flex h-full flex-col items-center justify-center text-muted text-sm gap-2">
-                  <ActivitySpinner size="lg" className="text-accent" />
-                  <span>Loading high-fidelity PDF document representation...</span>
-                </div>
-              ) : isPreviewError || (previewData && !previewData.ok) ? (
-                <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">
-                  <AlertTriangle className="size-8 text-warn mb-2.5" />
-                  <p className="text-sm font-medium text-fg">Unable to load document representation</p>
-                  <p className="mt-1 text-xs text-muted max-w-sm">
-                    {previewData && !previewData.ok && previewData.error
-                      ? previewData.error
-                      : "A network error occurred or the server connection was interrupted."}
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="mt-4 text-xs gap-1.5"
-                    onClick={() => refetchPreview()}
-                  >
-                    <RefreshCw className="size-3" />
-                    <span>Retry Loading</span>
-                  </Button>
-                </div>
-              ) : previewData?.rawHtml ? (
-                <iframe
-                  title="Document PDF Preview"
-                  srcDoc={toSafeSrcDoc(previewData.rawHtml)}
-                  className="size-full border-0 bg-white"
-                  sandbox=""
-                />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">
-                  <p className="text-sm">Raw document HTML not available for this record.</p>
-                  <p className="mt-1 text-xs">You can re-ingest or crawl to regenerate pristine document layouts.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* AI QUALITY GATE AUDIT DETAILS MODAL */}
-      {auditModalReport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div className="flex w-full max-w-lg flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-border bg-bg px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <Sparkles className="size-4 text-accent" />
-                <h3 className="text-sm font-semibold text-fg">AI Threat Intel Audit Verification</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAuditModalReport(null)}
-                className="text-muted hover:text-fg p-1 rounded-md"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-muted">Verification Status:</span>
-                {auditModalReport.aiVerified ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-sage/15 text-sage border border-sage/30 px-2.5 py-0.5 font-mono font-medium">
-                    <CheckCircle2 className="size-3 text-sage" /> AI Quality Gate Verified
-                  </span>
-                ) : auditModalReport.status === "rejected" ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 px-2.5 py-0.5 font-mono font-medium">
-                    <XCircle className="size-3 text-red-400" /> Rejected by Cognitive Gate
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/15 text-muted border border-border px-2.5 py-0.5 font-mono">
-                    Pending Cognitive AI Turn
-                  </span>
-                )}
-              </div>
-
-              <div className="rounded-lg border border-border bg-bg p-3 space-y-2">
-                <div className="flex justify-between items-center text-[11px] font-mono">
-                  <span className="text-muted">Quality Score:</span>
-                  <span className="text-fg font-semibold">{Math.round(auditModalReport.qualityScore * 100)}%</span>
-                </div>
-                <div className="flex justify-between items-center text-[11px] font-mono">
-                  <span className="text-muted">IOC Count:</span>
-                  <span className="text-fg font-semibold">{auditModalReport.iocCount || 0} indicators</span>
-                </div>
-                <div className="flex justify-between items-center text-[11px] font-mono">
-                  <span className="text-muted">Word Count:</span>
-                  <span className="text-fg font-semibold">{auditModalReport.wordCount || 0} words</span>
-                </div>
-                <div className="flex justify-between items-center text-[11px] font-mono">
-                  <span className="text-muted">Category:</span>
-                  <span className="text-accent font-semibold">
-                    {auditModalReport.resourceKind?.replace(/_/g, " ") || "CAMPAIGN INTEL"}
-                  </span>
-                </div>
-              </div>
-
-              {/* 5-DIMENSIONAL VALIDATION SCORECARD */}
-              <div className="rounded-lg border border-border bg-bg p-3.5 space-y-2.5">
-                <div className="flex justify-between items-center text-[11px] font-mono">
-                  <span className="text-muted font-semibold uppercase tracking-wider">5D Validation Scorecard:</span>
-                  <span className="text-accent font-bold text-xs">
-                    {auditModalReport.scoreBreakdown?.totalScore ?? Math.round(auditModalReport.qualityScore * 100)} / 100
-                  </span>
-                </div>
-
-                {/* Dimension 1: Procedural Depth (0-30) */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-mono text-muted">
-                    <span>Procedural Depth (Commands/LOLBins)</span>
-                    <span className="text-fg font-semibold">
-                      {auditModalReport.scoreBreakdown?.proceduralDepth ?? Math.round(auditModalReport.qualityScore * 30)} / 30
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-blue-500 transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            8,
-                            (((auditModalReport.scoreBreakdown?.proceduralDepth ?? Math.round(auditModalReport.qualityScore * 30))) / 30) * 100,
-                          ),
-                        )}%`,
-                      }}
+          ),
+        }}
+        toolbar={
+          <div className="mb-4 flex flex-col gap-3">
+            <Toolbar
+              className="mb-0"
+              left={
+                <>
+                  <div className="relative w-full sm:w-80">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" />
+                    <input
+                      value={q}
+                      onChange={(e) => setQ(e.target.value)}
+                      placeholder="Search title, CVE, actor, malware, hash…"
+                      aria-label="Search library"
+                      className="h-9 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-8 text-sm text-fg placeholder:text-subtle focus:outline-none focus:ring-1 focus:ring-accent"
                     />
-                  </div>
-                </div>
-
-                {/* Dimension 2: Attack Progression (0-25) */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-mono text-muted">
-                    <span>Attack Progression (Multi-Stage Flow)</span>
-                    <span className="text-fg font-semibold">
-                      {auditModalReport.scoreBreakdown?.attackProgression ?? Math.round(auditModalReport.qualityScore * 25)} / 25
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-indigo-500 transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            8,
-                            (((auditModalReport.scoreBreakdown?.attackProgression ?? Math.round(auditModalReport.qualityScore * 25))) / 25) * 100,
-                          ),
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Dimension 3: Attribution & Context (0-15) */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-mono text-muted">
-                    <span>Attribution & Threat Context</span>
-                    <span className="text-fg font-semibold">
-                      {auditModalReport.scoreBreakdown?.attributionContext ?? Math.round(auditModalReport.qualityScore * 15)} / 15
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-amber-500 transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            8,
-                            (((auditModalReport.scoreBreakdown?.attributionContext ?? Math.round(auditModalReport.qualityScore * 15))) / 15) * 100,
-                          ),
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Dimension 4: Emulation Utility (0-20) */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-mono text-muted">
-                    <span>Emulation & Detection Utility</span>
-                    <span className="text-fg font-semibold">
-                      {auditModalReport.scoreBreakdown?.emulationUtility ?? Math.round(auditModalReport.qualityScore * 20)} / 20
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-emerald-500 transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            8,
-                            (((auditModalReport.scoreBreakdown?.emulationUtility ?? Math.round(auditModalReport.qualityScore * 20))) / 20) * 100,
-                          ),
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Dimension 5: IOC Verifiability (0-10) */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-mono text-muted">
-                    <span>IOC & Telemetry Verifiability</span>
-                    <span className="text-fg font-semibold">
-                      {auditModalReport.scoreBreakdown?.iocVerifiability ?? Math.round(auditModalReport.qualityScore * 10)} / 10
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-cyan-500 transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            8,
-                            (((auditModalReport.scoreBreakdown?.iocVerifiability ?? Math.round(auditModalReport.qualityScore * 10))) / 10) * 100,
-                          ),
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <span className="text-[11px] font-medium text-muted uppercase tracking-wider block mb-1">
-                  AI Audit Assessment
-                </span>
-                <p className="rounded-lg border border-border bg-bg-subtle p-3 text-fg text-xs leading-relaxed font-sans">
-                  {auditModalReport.aiAuditReason ||
-                    "Report verified through automated threat intelligence pipeline. Contains substantive technical adversary indicators, procedures, or vulnerability disclosures."}
-                </p>
-              </div>
-
-              {auditModalReport.tags && auditModalReport.tags.length > 0 && (
-                <div>
-                  <span className="text-[11px] font-medium text-muted uppercase tracking-wider block mb-1.5">
-                    Extracted Intelligence Tags ({auditModalReport.tags.length})
-                  </span>
-                  <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1">
-                    {auditModalReport.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="rounded bg-bg border border-border px-2 py-0.5 text-[10px] font-mono text-fg"
+                    {q && (
+                      <button
+                        type="button"
+                        onClick={() => setQ("")}
+                        aria-label="Clear search"
+                        className="absolute right-2 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-fg"
                       >
-                        {t}
-                      </span>
-                    ))}
+                        <X className="size-3.5" />
+                      </button>
+                    )}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFilters(!showFilters)}
+                    aria-expanded={showFilters}
+                    className={cn(
+                      "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle",
+                      showFilters && "bg-bg-subtle",
+                    )}
+                  >
+                    <SlidersHorizontal className="size-4" strokeWidth={1.75} />
+                    Filters
+                    {activeFiltersCount > 0 && (
+                      <span className="rounded bg-accent px-1.5 text-[11px] font-medium text-accent-fg tabular-nums">
+                        {activeFiltersCount}
+                      </span>
+                    )}
+                  </button>
+                </>
+              }
+              right={
+                <span className="text-sm text-muted">
+                  <span className="tabular-nums text-fg">{sortedReports.length}</span>{" "}
+                  {sortedReports.length === 1 ? "report" : "reports"}
+                  {sortedReports.length !== allReports.length && (
+                    <span className="text-subtle"> of {allReports.length}</span>
+                  )}
+                  {isDeepSearchActive && <span className="text-subtle"> · full-text search</span>}
+                </span>
+              }
+            />
+
+            {showFilters && (
+              <div className="rounded-xl border border-border bg-bg-card p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h2 className="text-base font-medium text-fg">Filters</h2>
+                  {activeFiltersCount > 0 && (
+                    <button type="button" onClick={resetFilters} className="text-sm text-muted hover:text-fg">
+                      Reset all
+                    </button>
+                  )}
                 </div>
-              )}
-
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={isEvaluatingSingle}
-                  onClick={() => handleEvaluateSingle(auditModalReport.id)}
-                  className="text-xs border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 gap-1.5"
-                >
-                  <Sparkles className={cn("size-3.5", isEvaluatingSingle && "animate-spin text-emerald-400")} />
-                  <span>
-                    {isEvaluatingSingle
-                      ? "Evaluating with Agent..."
-                      : auditModalReport.aiVerified
-                        ? "Re-evaluate with AI Agent"
-                        : "Evaluate with AI Agent"}
-                  </span>
-                </Button>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      const r = auditModalReport;
-                      setAuditModalReport(null);
-                      openPdfModal(r.id);
-                    }}
-                    className="text-xs"
-                  >
-                    <Eye className="size-3.5 mr-1" /> View High-Fidelity PDF
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setAuditModalReport(null)}
-                    className="text-xs"
-                  >
-                    Close
-                  </Button>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                  <FilterSelect label="Tag" value={selectedTag} onChange={setSelectedTag} allLabel="All tags" options={filterOptions.tags} />
+                  <FilterSelect label="Threat actor" value={selectedActor} onChange={setSelectedActor} allLabel="All actors" options={filterOptions.actors} />
+                  <FilterSelect label="Malware family" value={selectedMalware} onChange={setSelectedMalware} allLabel="All malware" options={filterOptions.malware} />
+                  <FilterSelect label="ATT&CK tactic" value={selectedTactic} onChange={setSelectedTactic} allLabel="All tactics" options={filterOptions.tactics} />
+                  <FilterSelect label="Publisher" value={selectedPublisher} onChange={setSelectedPublisher} allLabel="All publishers" options={filterOptions.publishers} />
+                </div>
+                <div className="mt-4 flex flex-wrap items-end gap-4 border-t border-border pt-4">
+                  <label className="block w-full space-y-1.5 sm:w-48">
+                    <span className="text-xs text-muted">Minimum quality</span>
+                    <select value={minQuality} onChange={(e) => setMinQuality(parseFloat(e.target.value))} className={selectCls}>
+                      <option value={0}>Any score</option>
+                      <option value={0.6}>60% or higher</option>
+                      <option value={0.8}>80% or higher</option>
+                    </select>
+                  </label>
+                  <label className="block w-full space-y-1.5 sm:w-56">
+                    <span className="text-xs text-muted">Order</span>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => {
+                        setSortBy(e.target.value as typeof sortBy);
+                        setColSort(null);
+                      }}
+                      className={selectCls}
+                    >
+                      <option value="newest">Newest ingested</option>
+                      <option value="quality">Quality score</option>
+                      <option value="iocs">Most IOCs</option>
+                      <option value="words">Longest analysis</option>
+                      <option value="rejected">Rejected by AI only ({rejectedCount})</option>
+                    </select>
+                  </label>
+                  <label className="flex h-9 cursor-pointer items-center gap-2 text-sm text-muted">
+                    <input
+                      type="checkbox"
+                      checked={onlyWithIocs}
+                      onChange={(e) => setOnlyWithIocs(e.target.checked)}
+                      className="size-4 accent-[var(--color-accent)]"
+                    />
+                    Only reports with IOCs
+                  </label>
                 </div>
               </div>
-            </div>
+            )}
+
+            {filterChips.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted">Filtered by</span>
+                {filterChips.map((c) => (
+                  <FilterChip key={c.label} onRemove={c.clear}>
+                    {c.label}
+                  </FilterChip>
+                ))}
+                <button type="button" onClick={resetFilters} className="text-xs text-muted underline-offset-2 hover:text-fg hover:underline">
+                  Clear all
+                </button>
+              </div>
+            )}
+
+            {searchParams.selected && (
+              <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <FileText className="size-4 shrink-0 text-accent" strokeWidth={1.75} />
+                  <p className="min-w-0 truncate text-sm text-muted">
+                    Showing one report:{" "}
+                    <span className="text-fg">{targetReport ? targetReport.title : searchParams.selected}</span>
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {targetReport && (
+                    <>
+                      <ActionButton icon={ArrowUpRight} onClick={() => openReport(targetReport.id)}>
+                        Open report
+                      </ActionButton>
+                      <ActionButton icon={Shield} onClick={() => setEvidenceReport(targetReport)}>
+                        Evidence
+                      </ActionButton>
+                    </>
+                  )}
+                  <ActionButton variant="ghost" icon={X} onClick={clearSelection}>
+                    Show all {allReports.length}
+                  </ActionButton>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
+        }
+        footer={
+          sortedReports.length > 0 ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                Rows per page
+                <select
+                  value={String(pageSize)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPageSize(v === "all" ? "all" : (Number(v) as PageSize));
+                    setCurrentPage(1);
+                  }}
+                  className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-sm text-fg"
+                >
+                  {PAGE_SIZES.map((s) => (
+                    <option key={s} value={String(s)}>
+                      {s === "all" ? "All" : s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="sm:min-w-[320px]">
+                <Pagination
+                  page={Math.min(currentPage, pageCount)}
+                  pageCount={pageCount}
+                  total={sortedReports.length}
+                  pageSize={numericPageSize}
+                  onPage={handlePageChange}
+                />
+              </div>
+            </div>
+          ) : undefined
+        }
+      >
+        {isLoading && allReports.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-bg-card py-16 text-muted">
+            <ActivitySpinner size="lg" className="mb-2 text-accent" />
+            <p className="text-sm">Loading the library…</p>
+          </div>
+        ) : (
+          <ReportTable
+            rows={pagedReports}
+            sort={colSort}
+            onSort={onSort}
+            actions={rowActions}
+            isHighlighted={isHighlighted}
+            showSnippets={isDeepSearchActive}
+            empty={
+              isLoading ? (
+                <div className="flex justify-center">
+                  <ActivitySpinner size="lg" className="text-accent" />
+                </div>
+              ) : (
+                <EmptyState
+                  icon={SearchX}
+                  title="No reports match these filters"
+                  description="Try a broader search or remove some filters."
+                  action={
+                    activeFiltersCount > 0 || q || searchParams.selected ? (
+                      <ActionButton onClick={resetFilters}>Reset filters</ActionButton>
+                    ) : undefined
+                  }
+                />
+              )
+            }
+          />
+        )}
+      </ListPageTemplate>
+
+      <ReportPdfDialog
+        reportId={previewReportId}
+        onClose={closePdfModal}
+        onOpenReport={(id) => {
+          setPreviewReportId(null);
+          openReport(id);
+        }}
+      />
+
+      <AiReviewDialog report={auditModalReport} onClose={() => setAuditModalReport(null)} onOpenPdf={openPdfModal} />
+
+      {evidenceReport && (
+        <ReportEvidenceDialog
+          reportId={evidenceReport.id}
+          title={evidenceReport.title}
+          open={Boolean(evidenceReport)}
+          onOpenChange={(o) => !o && setEvidenceReport(null)}
+        />
       )}
     </AppShell>
   );

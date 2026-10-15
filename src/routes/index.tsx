@@ -21,10 +21,10 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, type ReactNode } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ActionButton, PageHeader, SectionCard, StatCard } from "@/components/layout/page";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
@@ -78,97 +78,79 @@ function Home() {
 
   return (
     <AppShell>
-      <div className="space-y-8">
-        {/* ========================================================================= */}
-        {/* DASHBOARD HERO HEADER & QUICK ACTIONS                                     */}
-        {/* ========================================================================= */}
-        <div className="flex flex-col justify-between gap-4 border-b border-border pb-6 md:flex-row md:items-center">
-          <div>
-            <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
-              <span className="size-2 rounded-full bg-sage animate-pulse" />
-              <span>Continuous Autonomous Threat Acquisition · SOC Node</span>
-            </div>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight text-fg md:text-4xl">
-              Adversary Intelligence Engine
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">
-              Autonomous CTI crawler, heuristic TTP qualification gate, cryptographic evidence hashing,
-              and MITRE ATT&CK® adversary emulation mapping for red teams, blue teams, and detection engineers.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Link to="/matrix">
-              <Button variant="secondary" className="gap-2 text-xs font-mono">
-                <Layers className="size-4 text-accent" />
-                <span>ATT&CK Matrix</span>
-              </Button>
-            </Link>
-            <Link to="/ingest">
-              <Button className="gap-2 text-xs font-mono">
-                <Zap className="size-4" />
-                <span>Launch Crawler</span>
-              </Button>
-            </Link>
-          </div>
-        </div>
-
-        {/* ========================================================================= */}
-        {/* TOP LEVEL KEY PERFORMANCE METRICS                                         */}
-        {/* ========================================================================= */}
+      <PageHeader
+        title="Overview"
+        eyebrow={
+          <span className="inline-flex items-center gap-2">
+            <span className="size-1.5 rounded-full bg-sage animate-pulse" />
+            Continuous Autonomous Threat Acquisition · SOC Node
+          </span>
+        }
+        description="Autonomous CTI crawler, heuristic TTP quality gate, evidence hashing and MITRE ATT&CK® mapping across acquired reports."
+        actions={
+          <>
+            <ActionButton to="/matrix" icon={Layers} variant="outline">
+              ATT&CK Matrix
+            </ActionButton>
+            <ActionButton to="/ingest" icon={Zap} variant="primary">
+              Launch Crawler
+            </ActionButton>
+          </>
+        }
+      />
+      <div className="space-y-6">
+        {/* KPI row */}
         {error ? (
           <p className="text-sm text-danger">{error.message}</p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat
-              label="Threat Sources"
-              value={data?.sourceCount}
-              sub={`${data?.enabledSources ?? "—"} active RSS / research feeds`}
-              badge="Monitored"
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
               icon={Globe2}
+              label="Threat sources"
+              value={data?.sourceCount ?? "—"}
+              hint={`${data?.enabledSources ?? "—"} active RSS / research feeds`}
+              to="/sources"
             />
-            <Stat
-              label="Reports Stored"
-              value={data?.acquiredCount}
-              sub={`${data?.reportCount ?? "—"} total acquired in store`}
-              badge="SHA-256 Verified"
+            <StatCard
               icon={Database}
+              label="Reports stored"
+              value={data?.acquiredCount ?? "—"}
+              hint={`${data?.reportCount ?? "—"} total acquired in store`}
+              to="/library"
             />
-            <Stat
-              label="Avg Quality Gate"
-              value={data ? Math.round(data.avgQuality * 100) + "%" : undefined}
-              sub="Heuristic TTP & simulation density"
-              badge="Qualified"
+            <StatCard
               icon={Shield}
+              label="Avg quality gate"
+              value={data ? Math.round(data.avgQuality * 100) + "%" : "—"}
+              hint="Heuristic TTP & simulation density"
+              to="/library"
             />
-            <Stat
-              label="IOCs Harvested"
-              value={data?.iocCount}
-              sub="IPs, Domains, CVEs, Hashes"
-              badge="De-duplicated"
+            <StatCard
               icon={Fingerprint}
+              label="IOCs harvested"
+              value={data?.iocCount ?? "—"}
+              hint="IPs, domains, CVEs, hashes (de-duplicated)"
+              to="/library"
             />
           </div>
         )}
-
         {/* ========================================================================= */}
         {/* INTERACTIVE THREAT ACTOR GEOLOCATION ACTIVITY MAP & TACTIC DISTRIBUTION   */}
         {/* ========================================================================= */}
-        <div className="grid gap-6 lg:grid-cols-12">
+        <div className="grid gap-6 xl:grid-cols-12">
           {/* Global Threat Activity Map (7 cols) */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs lg:col-span-7 flex flex-col justify-between">
+          <SectionCard
+            className="flex flex-col xl:col-span-7"
+            bodyClassName={cardBody}
+            title={<CardTitle icon={Globe2}>Global threat origin & targeting activity</CardTitle>}
+            actions={
+              <Badge tone="neutral" className="font-mono text-[10px]">
+                {threatRegions.length > 0 ? "From Reports" : "Not Available Yet"}
+              </Badge>
+            }
+          >
             <div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Globe2 className="size-4 text-subtle" />
-                  <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                    Global Threat Origin & Targeting Activity
-                  </h2>
-                </div>
-                <Badge tone="neutral" className="font-mono text-[10px]">
-                  {threatRegions.length > 0 ? "From Reports" : "Not Available Yet"}
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted">
+              <p className="text-xs text-muted">
                 Threat origin and targeting clusters, plotted only when geography is extracted from acquired reports.
               </p>
             </div>
@@ -399,24 +381,22 @@ function Home() {
               <span>Threat Levels: <span className="text-danger font-mono font-bold">● Critical</span> · <span className="text-warn font-mono font-bold">● High</span> · <span className="text-sage font-mono font-bold">● Medium</span></span>
               <span className="font-mono text-[11px]">Click nodes to inspect clusters</span>
             </div>
-          </div>
+          </SectionCard>
 
           {/* Tactical Phase Coverage Bar Chart (5 cols) */}
-          <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs lg:col-span-5 flex flex-col justify-between">
+          <SectionCard
+            className="flex flex-col xl:col-span-5"
+            bodyClassName={cardBody}
+            title={<CardTitle icon={Layers}>MITRE ATT&CK phase density</CardTitle>}
+            actions={
+              <Link to="/matrix" className={cardLink}>
+                <span>Open Matrix</span>
+                <ArrowRight className="size-3" />
+              </Link>
+            }
+          >
             <div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Layers className="size-4 text-subtle" />
-                  <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                    MITRE ATT&CK Phase Density
-                  </h2>
-                </div>
-                <Link to="/matrix" className="text-xs text-muted hover:text-fg hover:underline flex items-center gap-1 font-mono">
-                  <span>Open Matrix</span>
-                  <ArrowRight className="size-3" />
-                </Link>
-              </div>
-              <p className="mt-1 text-xs text-muted">
+              <p className="text-xs text-muted">
                 Attack-chain steps mapped to each ATT&CK tactic across acquired reports, relative to the busiest tactic.
               </p>
             </div>
@@ -458,7 +438,7 @@ function Home() {
                 Open Full Matrix →
               </Link>
             </div>
-          </div>
+          </SectionCard>
         </div>
 
         {/* ========================================================================= */}
@@ -467,15 +447,11 @@ function Home() {
         {/* ========================================================================= */}
         {/* MONITORED THREAT ACTORS & OFFENSIVE TOOLSETS - HORIZONTAL SCROLL CAROUSEL */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
-            <div className="flex items-center gap-2">
-              <Flame className="size-4 text-warn" />
-              <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                Monitored Threat Actors & Offensive Toolsets
-              </h2>
-            </div>
-            <div className="flex items-center gap-3">
+        <SectionCard
+          bodyClassName="pt-3"
+          title={<CardTitle icon={Flame} iconClassName="text-warn">Monitored threat actors & offensive toolsets</CardTitle>}
+          actions={
+            <div className="flex flex-wrap items-center gap-3">
               <span className="font-mono text-[11px] text-muted">
                 {topThreatActors.length} {topThreatActors.length === 1 ? "actor" : "actors"} named in acquired reports · Ranked by report count
               </span>
@@ -498,7 +474,8 @@ function Home() {
                 </button>
               </div>
             </div>
-          </div>
+          }
+        >
 
           <div
             ref={actorCarouselRef}
@@ -593,25 +570,16 @@ function Home() {
               </Link>
             ))}
           </div>
-        </div>
+        </SectionCard>
 
         {/* ========================================================================= */}
         {/* WIDGET 1: MITRE ATT&CK EXECUTION INTENSITY HEATMAP                         */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Layers className="size-4 text-accent" />
-                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                  MITRE ATT&CK Execution Intensity Heatmap
-                </h2>
-              </div>
-              <p className="mt-0.5 text-xs text-muted">
-                Attack-chain steps and technique IDs per tactic, extracted from acquired reports. Intensity is relative to the busiest tactic.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
+        <SectionCard
+          bodyClassName="pt-3"
+          title={<CardTitle icon={Layers}>MITRE ATT&CK execution intensity heatmap</CardTitle>}
+          actions={
+            <div className="flex flex-wrap items-center gap-3">
               <span className="font-mono text-[11px] text-muted flex items-center gap-1.5">
                 <span className="size-2 rounded-full bg-danger animate-pulse" />
                 <span>Heavy (&gt;80%)</span>
@@ -620,11 +588,16 @@ function Home() {
                 <span className="size-2 rounded-full bg-sage ml-2" />
                 <span>Standard</span>
               </span>
-              <Link to="/matrix" className="text-xs text-accent hover:underline font-mono inline-flex items-center gap-1">
-                Full Matrix →
+              <Link to="/matrix" className={cardLink}>
+                <span>Full Matrix</span>
+                <ArrowRight className="size-3" />
               </Link>
             </div>
-          </div>
+          }
+        >
+          <p className="mb-4 text-xs text-muted">
+            Attack-chain steps and technique IDs per tactic, extracted from acquired reports. Intensity is relative to the busiest tactic.
+          </p>
 
           {attackHeatmap.length === 0 && (
             <div className="rounded-lg border border-dashed border-border bg-bg">
@@ -701,25 +674,17 @@ function Home() {
               );
             })}
           </div>
-        </div>
+        </SectionCard>
 
         {/* ========================================================================= */}
         {/* WIDGET 2: ADVERSARY THREAT FLOW & ATTACK PATH GRAPH MAP                   */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Network className="size-4 text-accent" />
-                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                  Adversary Campaign & Infrastructure Relational Flow
-                </h2>
-              </div>
-              <p className="mt-0.5 text-xs text-muted">
-                Multi-stage operational flow: Threat Origin & Actors ➔ Ingress Vectors ➔ Weaponized Tools ➔ Targeted Sectors.
-              </p>
-            </div>
-            {/* Flow Selector Tabs */}
+        <SectionCard
+          bodyClassName="pt-3"
+          title={<CardTitle icon={Network}>Adversary campaign & infrastructure relational flow</CardTitle>}
+          actions={
+            threatFlows.length > 0 ? (
+            /* Flow Selector Tabs */
             <div className="flex flex-wrap items-center gap-1.5">
               {threatFlows.map((flow) => (
                 <button
@@ -737,7 +702,12 @@ function Home() {
                 </button>
               ))}
             </div>
-          </div>
+            ) : undefined
+          }
+        >
+          <p className="mb-4 text-xs text-muted">
+            Multi-stage operational flow: Threat Origin & Actors ➔ Ingress Vectors ➔ Weaponized Tools ➔ Targeted Sectors.
+          </p>
 
           {!activeFlow && (
             <div className="rounded-lg border border-dashed border-border bg-bg">
@@ -892,29 +862,24 @@ function Home() {
               )}
             </div>
           )}
-        </div>
+        </SectionCard>
 
         {/* ========================================================================= */}
         {/* WIDGET 3: EXPLOITED CVES & VULNERABILITY VELOCITY GAUGE                   */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated p-5 shadow-xs">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Bug className="size-4 text-danger" />
-                <h2 className="text-sm font-bold uppercase tracking-wider text-fg">
-                  CVEs Referenced in Acquired Reports
-                </h2>
-              </div>
-              <p className="mt-0.5 text-xs text-muted">
-                Ranked by number of reports citing each CVE. CVSS and exploitation status, where shown, are reference values from a built-in catalog, not observed.
-              </p>
-            </div>
-            <Link to="/library" className="text-xs text-muted hover:text-fg hover:underline font-mono inline-flex items-center gap-1">
+        <SectionCard
+          bodyClassName="pt-3"
+          title={<CardTitle icon={Bug} iconClassName="text-danger">CVEs referenced in acquired reports</CardTitle>}
+          actions={
+            <Link to="/library" className={cardLink}>
               <span>Inspect All CVEs in Library</span>
               <ArrowRight className="size-3" />
             </Link>
-          </div>
+          }
+        >
+          <p className="mb-4 text-xs text-muted">
+            Ranked by number of reports citing each CVE. CVSS and exploitation status, where shown, are reference values from a built-in catalog, not observed.
+          </p>
 
           {cveVelocity.length === 0 && (
             <div className="rounded-lg border border-dashed border-border bg-bg">
@@ -993,26 +958,25 @@ function Home() {
               );
             })}
           </div>
-        </div>
+        </SectionCard>
 
         {/* ========================================================================= */}
         {/* RECENTLY ACQUIRED INTELLIGENCE & INGEST AUDIT LOG                         */}
         {/* ========================================================================= */}
-        <div className="grid gap-8 lg:grid-cols-5">
+        <div className="grid gap-6 lg:grid-cols-5">
           {/* Recently Acquired Reports (3 cols) */}
-          <section className="lg:col-span-3">
-            <div className="mb-3 flex items-baseline justify-between">
-              <div className="flex items-center gap-2">
-                <FileText className="size-4 text-subtle" />
-                <h2 className="text-base font-bold tracking-tight text-fg">
-                  Recently Acquired Intelligence
-                </h2>
-              </div>
-              <Link to="/library" className="text-xs text-muted hover:text-fg hover:underline font-mono">
-                Open Library ({data?.acquiredCount ?? "—"}) →
+          <SectionCard
+            className="min-w-0 overflow-hidden lg:col-span-3"
+            bodyClassName="px-0 pb-0 pt-4"
+            title={<CardTitle icon={FileText}>Recently acquired intelligence</CardTitle>}
+            actions={
+              <Link to="/library" className={cardLink}>
+                <span>Open Library ({data?.acquiredCount ?? "—"})</span>
+                <ArrowRight className="size-3" />
               </Link>
-            </div>
-            <div className="divide-y divide-border rounded-xl border border-border bg-bg-elevated shadow-xs">
+            }
+          >
+            <div className="divide-y divide-border border-t border-border">
               {isLoading && (
                 <div className="flex flex-col items-center justify-center py-10 text-muted">
                   <ActivitySpinner size="md" className="text-accent mb-2" />
@@ -1046,24 +1010,20 @@ function Home() {
                 </Link>
               ))}
             </div>
-          </section>
+          </SectionCard>
 
           {/* Ingest Audit Log & Pipeline Hints (2 cols) */}
-          <section className="lg:col-span-2">
-            <div className="mb-3 flex items-baseline justify-between">
-              <div className="flex items-center gap-2">
-                <Activity className="size-4 text-subtle" />
-                <h2 className="text-base font-bold tracking-tight text-fg">
-                  Crawl & Ingest Audit
-                </h2>
-              </div>
-              <span className="font-mono text-xs text-subtle">Live Pipeline</span>
-            </div>
+          <SectionCard
+            className="min-w-0 lg:col-span-2"
+            bodyClassName="pt-4"
+            title={<CardTitle icon={Activity}>Crawl & ingest audit</CardTitle>}
+            actions={<span className="font-mono text-xs text-subtle">Live Pipeline</span>}
+          >
             <ul className="space-y-2">
               {data?.events.map((e) => {
                 const outcomeMeta = formatOutcomeId(e.outcome, e.reportId || e.id, e.url);
                 return (
-                  <li key={e.id} className="rounded-lg border border-border bg-bg-elevated px-4 py-3 shadow-xs">
+                  <li key={e.id} className="rounded-lg border border-border bg-bg px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5">
                         <IdBadge id={formatAuditId(e.id)} category="audit" size="xs" prefixLabel="AUD" />
@@ -1086,7 +1046,7 @@ function Home() {
               })}
             </ul>
 
-            <div className="mt-6 space-y-2 rounded-xl border border-border bg-bg-elevated p-4">
+            <div className="mt-5 space-y-2 border-t border-border pt-4">
               <span className="font-mono text-[10px] uppercase font-bold text-subtle tracking-wider block mb-2">
                 Pipeline Security & Integrity Gates
               </span>
@@ -1095,44 +1055,30 @@ function Home() {
               <Hint icon={Fingerprint} text="Regex IOC harvest with MITRE ATT&CK technique extraction." />
               <Hint icon={Shield} text="All external content is sanitized and isolated as untrusted CTI." />
             </div>
-          </section>
+          </SectionCard>
         </div>
       </div>
     </AppShell>
   );
 }
 
-function Stat({
-  label,
-  value,
-  sub,
-  badge,
+const cardBody = "flex flex-1 flex-col justify-between pt-3";
+const cardLink = "inline-flex items-center gap-1 font-mono text-xs text-muted hover:text-fg hover:underline";
+
+function CardTitle({
   icon: Icon,
+  iconClassName,
+  children,
 }: {
-  label: string;
-  value?: number | string;
-  sub: string;
-  badge?: string;
-  icon?: typeof Globe2;
+  icon: typeof Hash;
+  iconClassName?: string;
+  children: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-bg-elevated p-4 shadow-xs">
-      <div className="flex items-center justify-between">
-        <span className="text-xs uppercase font-medium tracking-wider text-subtle">{label}</span>
-        {badge && (
-          <Badge tone="neutral" className="font-mono text-[9px]">
-            {badge}
-          </Badge>
-        )}
-      </div>
-      <div className="mt-2 flex items-baseline justify-between">
-        <div className="font-mono text-3xl font-bold tabular-nums tracking-tight text-fg">
-          {value ?? "—"}
-        </div>
-        {Icon && <Icon className="size-5 text-subtle/50" />}
-      </div>
-      <div className="mt-1 text-xs text-muted">{sub}</div>
-    </div>
+    <span className="flex items-center gap-2">
+      <Icon className={cn("size-4 shrink-0 text-subtle", iconClassName)} strokeWidth={1.75} />
+      <span>{children}</span>
+    </span>
   );
 }
 

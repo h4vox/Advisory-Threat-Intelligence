@@ -30,6 +30,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -361,127 +362,131 @@ function SettingsPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6 max-w-6xl mx-auto pb-12">
-        {/* ========================================================================= */}
-        {/* SETTINGS HEADER & PERSISTENCE BANNER                                      */}
-        {/* ========================================================================= */}
-        <div className="flex flex-col justify-between gap-4 border-b border-border pb-6 sm:flex-row sm:items-center">
-          <div>
-            <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
-              <span className="size-2 rounded-full bg-accent animate-pulse" />
-              <span>System Administration · Configuration Hub</span>
-            </div>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-fg sm:text-3xl">
-              Centralized Settings
-            </h1>
-            <p className="mt-1.5 text-xs text-muted max-w-2xl leading-relaxed">
-              Configure autonomous acquisition pipelines, heuristic qualification thresholds, intelligence retention policies, and database telemetry.
-            </p>
-          </div>
-
-          {/* PERSISTENCE BACKBONE BADGE */}
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg border border-border bg-bg-elevated px-3 py-2 text-right hidden md:block">
-              <div className="font-mono text-[10px] uppercase text-subtle">Primary Storage</div>
-              <div className="font-mono text-xs text-accent font-medium flex items-center gap-1.5 justify-end">
-                <span className="size-1.5 rounded-full bg-emerald-500" />
-                Cloud Database Cluster
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ========================================================================= */}
-        {/* TOP ACTION BAR: UNSAVED STATUS, SAVE, DISCARD, PURGE CACHE                */}
-        {/* ========================================================================= */}
-        <div className={cn(
-          "sticky top-14 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3 transition-all",
-          uiStyle === "liquid-glass"
-            ? "sticky-liquid-glass"
-            : "border border-border bg-bg/95 backdrop-blur-md shadow-xs"
-        )}>
-          <div className="flex items-center gap-2.5">
-            {isDirty ? (
-              <span className="flex items-center gap-1.5 font-mono text-xs text-warn">
-                <span className="size-2 rounded-full bg-warn animate-pulse" />
-                Unsaved modifications pending
+      <div className="mx-auto max-w-6xl pb-12">
+        <PageHeader
+          title="Settings"
+          description={
+            <span className="flex flex-col gap-1.5">
+              <span>
+                Configure acquisition pipelines, qualification thresholds, retention policies, and database telemetry.
               </span>
-            ) : (
-              <span className="flex items-center gap-1.5 font-mono text-xs text-subtle">
-                <CheckCircle2 className="size-3.5 text-emerald-500" />
-                All configurations synced to Database
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={purgeMutation.isPending}
-              onClick={() => purgeMutation.mutate()}
-              className="gap-1.5 text-xs font-mono"
-              title="Flush in-memory caches to force fresh retrieval from Database"
-            >
-              <RefreshCw className={cn("size-3.5", purgeMutation.isPending && "animate-spin")} />
-              <span>Purge Cache</span>
-            </Button>
-
-            {isDirty && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleReset}
-                className="gap-1.5 text-xs font-mono text-muted hover:text-fg"
-              >
-                <RotateCcw className="size-3.5" />
-                <span>Discard</span>
-              </Button>
-            )}
-
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={!isDirty || saveMutation.isPending}
-              onClick={() => saveMutation.mutate()}
-              className={cn(
-                "gap-1.5 text-xs font-mono",
-                isDirty ? "bg-accent text-bg hover:opacity-90" : "opacity-60",
-              )}
-            >
-              <Save className="size-3.5" />
-              <span>{saveMutation.isPending ? "Saving to DB..." : "Save Changes"}</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* ========================================================================= */}
-        {/* TAB NAVIGATION: CRAWLER, POLICY, STORAGE, DISPLAY                         */}
-        {/* ========================================================================= */}
-        <div className="flex flex-wrap gap-2 border-b border-border pb-3">
-          {SETTINGS_SECTIONS.map((sec) => {
-            const active = activeSection === sec.id;
-            return (
-              <button
-                key={sec.id}
-                type="button"
-                onClick={() => setActiveSection(sec.id)}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-medium transition-colors select-none",
-                  active
-                    ? "bg-bg-subtle text-fg border border-border"
-                    : "text-muted hover:bg-bg-elevated hover:text-fg border border-transparent",
+              <span className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px]">
+                {isDirty ? (
+                  <span className="flex items-center gap-1.5 text-warn">
+                    <span className="size-2 rounded-full bg-warn animate-pulse" />
+                    Unsaved modifications pending
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-subtle">
+                    <CheckCircle2 className="size-3.5 text-emerald-500" />
+                    All configurations synced to Database
+                  </span>
                 )}
-              >
-                <sec.icon className={cn("size-4", active ? "text-accent" : "text-muted")} />
-                <span>{sec.label}</span>
-                <span className="rounded bg-bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-subtle">
-                  {sec.badge}
+                <span className="flex items-center gap-1.5 text-subtle">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  Primary Storage: <span className="text-accent">Cloud Database Cluster</span>
                 </span>
-              </button>
-            );
-          })}
+              </span>
+            </span>
+          }
+          actions={
+            <>
+              <ActionButton
+                icon={RefreshCw}
+                disabled={purgeMutation.isPending}
+                onClick={() => purgeMutation.mutate()}
+                title="Flush in-memory caches to force fresh retrieval from Database"
+              >
+                {purgeMutation.isPending ? "Purging..." : "Purge Cache"}
+              </ActionButton>
+              {isDirty && (
+                <ActionButton icon={RotateCcw} onClick={handleReset}>
+                  Discard
+                </ActionButton>
+              )}
+              <ActionButton
+                variant="primary"
+                icon={Save}
+                disabled={!isDirty || saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                {saveMutation.isPending ? "Saving to DB..." : "Save Changes"}
+              </ActionButton>
+            </>
+          }
+        />
+
+        {/* Sticky unsaved-changes bar: keeps Save/Discard reachable while scrolling long forms */}
+        {isDirty && (
+          <div
+            className={cn(
+              "sticky top-2 z-20 mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3 transition-all",
+              uiStyle === "liquid-glass"
+                ? "sticky-liquid-glass"
+                : "border border-border bg-bg/95 backdrop-blur-md shadow-xs",
+            )}
+          >
+            <span className="flex items-center gap-1.5 font-mono text-xs text-warn">
+              <span className="size-2 rounded-full bg-warn animate-pulse" />
+              Unsaved modifications pending
+            </span>
+            <div className="flex items-center gap-2">
+              <ActionButton icon={RotateCcw} onClick={handleReset}>
+                Discard
+              </ActionButton>
+              <ActionButton
+                variant="primary"
+                icon={Save}
+                disabled={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                {saveMutation.isPending ? "Saving to DB..." : "Save Changes"}
+              </ActionButton>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[256px_minmax(0,1fr)] lg:items-start">
+        {/* ========================================================================= */}
+        {/* SECTION NAVIGATION: tabs on mobile, left rail on desktop                  */}
+        {/* ========================================================================= */}
+        <div className="lg:hidden">
+          <SegmentedTabs
+            ariaLabel="Settings sections"
+            value={activeSection}
+            onChange={setActiveSection}
+            items={SETTINGS_SECTIONS.map((sec) => ({ value: sec.id, label: sec.label, icon: sec.icon }))}
+          />
         </div>
+        <nav aria-label="Settings sections" className="hidden lg:sticky lg:top-2 lg:block">
+          <ul className="space-y-0.5">
+            {SETTINGS_SECTIONS.map((sec) => {
+              const active = activeSection === sec.id;
+              return (
+                <li key={sec.id}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection(sec.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "relative flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors select-none",
+                      active ? "bg-bg-subtle text-fg" : "text-muted hover:bg-bg-elevated hover:text-fg",
+                    )}
+                  >
+                    {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent" />}
+                    <sec.icon className={cn("size-4 shrink-0", active ? "text-accent" : "text-muted")} />
+                    <span className="min-w-0 flex-1 truncate">{sec.label}</span>
+                    <span className="rounded bg-bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-subtle">
+                      {sec.badge}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+
+        <div className="min-w-0 space-y-6">
 
         {/* ========================================================================= */}
         {/* TAB 1: CRAWLER & INGESTION ENGINE CONTROLS                                */}
@@ -2172,6 +2177,8 @@ function SettingsPage() {
             </div>
           </div>
         )}
+        </div>
+        </div>
       </div>
     </AppShell>
   );

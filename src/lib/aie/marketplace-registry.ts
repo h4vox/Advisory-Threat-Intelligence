@@ -188,13 +188,17 @@ export async function exchangeOAuthCodeForToken(
       try {
         const u = new URL(authCode.startsWith("http") ? authCode : `https://dummy.com/${authCode}`);
         authCode = u.searchParams.get("code") || authCode;
-      } catch {}
+      } catch {
+        // Not a parseable URL: use the raw code as entered.
+      }
     }
 
     if (authCode.includes("%2F") || authCode.includes("%2f")) {
       try {
         authCode = decodeURIComponent(authCode);
-      } catch {}
+      } catch {
+        // Malformed percent-encoding: keep the code as entered.
+      }
     }
 
     const verifier = codeVerifier;
