@@ -267,7 +267,7 @@ function LibraryPage() {
   // Server-side deep content search: searches full 5,000-word extractedText in MongoDB!
   const { data: searchResults, isLoading: isSearchLoading } = useQuery({
     queryKey: ["reports-search", debouncedQ],
-    queryFn: () => listReports({ data: { q: debouncedQ } }),
+    queryFn: () => listReports({ data: { q: debouncedQ, limit: 200 } }),
     enabled: isDeepSearchActive,
     staleTime: 30_000,
   });
@@ -275,7 +275,7 @@ function LibraryPage() {
   // Fetch all reports to enable rich interactive filtering and instant counts
   const { data: rawReports, isLoading: isBaseLoading } = useQuery({
     queryKey: ["reports-all"],
-    queryFn: () => listReports({ data: {} }),
+    queryFn: () => listReports({ data: { limit: 500 } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });

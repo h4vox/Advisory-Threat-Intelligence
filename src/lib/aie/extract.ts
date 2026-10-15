@@ -1,5 +1,5 @@
-import type { IocHit, QualityReason } from "./types";
-export { formatDateTime, toIsoString } from "./format";
+import type { Evidence, IocHit, QualityReason } from "./types.ts";
+export { formatDateTime, toIsoString } from "./format.ts";
 
 export const MAX_BYTES = 1_500_000;
 
@@ -79,14 +79,220 @@ export function sha256Hex(input: string | Uint8Array): string {
     .join("");
 }
 
+// Query parameters that only track the visitor and never change the document.
+// NOTE: discovery.ts keeps its own (older) tracking-param stripper; keep the two in sync.
+const TRACKING_PARAMS = new Set(["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "_hsenc", "_hsmi"]);
+
+function isTrackingParam(rawKey: string): boolean {
+  let key = rawKey;
+  try {
+    key = decodeURIComponent(rawKey.replace(/\+/g, " "));
+  } catch {
+    /* keep raw key */
+  }
+  key = key.toLowerCase();
+  return key.startsWith("utm_") || TRACKING_PARAMS.has(key);
+}
+
+/**
+ * Canonical form used for de-duplication: lower-case host, no default port,
+ * no fragment, no tracking params, remaining query params sorted by key
+ * (original encoding kept), no trailing slash except on the root path.
+ */
 export function canonicalizeUrl(raw: string): string {
   const u = new URL(raw.trim());
   u.hash = "";
+  u.hostname = u.hostname.toLowerCase();
+  // WHATWG URL already drops a scheme's default port; cover explicit ones too.
+  if ((u.protocol === "http:" && u.port === "80") || (u.protocol === "https:" && u.port === "443")) {
+    u.port = "";
+  }
   if (u.pathname.endsWith("/") && u.pathname.length > 1) {
     u.pathname = u.pathname.slice(0, -1);
   }
-  u.hostname = u.hostname.toLowerCase();
+  if (u.search) {
+    const params = u.search
+      .slice(1)
+      .split("&")
+      .filter((p) => p.length > 0)
+      .filter((p) => !isTrackingParam(p.split("=")[0]));
+    // Stable sort by key only, so repeated keys keep their relative order.
+    const keyOf = (p: string) => p.split("=")[0];
+    params.sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
+    u.search = params.length ? `?${params.join("&")}` : "";
+  }
   return u.toString();
+}
+
+// ---------------------------------------------------------------------------
+// HTML -> text: balanced-tag element finder (no lazy regex that stops at the
+// first nested closing tag), content-block selection by largest stripped text.
+// ---------------------------------------------------------------------------
+
+type ElementRange = { tag: string; attrs: string; start: number; openEnd: number; end: number };
+
+/** Find elements by tag name; `end` is the index just past the matching close tag (or input end if unclosed). */
+function findElements(
+  html: string,
+  tags: readonly string[],
+  attrTest?: (attrs: string, tag: string) => boolean,
+  limit = 2000,
+): ElementRange[] {
+  const out: ElementRange[] = [];
+  const openRe = new RegExp(`<(${tags.join("|")})(?=[\\s>/])([^>]*)>`, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(html)) && out.length < limit) {
+    const tag = m[1].toLowerCase();
+    const attrs = m[2] || "";
+    if (attrTest && !attrTest(attrs, tag)) continue;
+    const start = m.index;
+    const openEnd = m.index + m[0].length;
+    if (/\/\s*$/.test(attrs)) {
+      out.push({ tag, attrs, start, openEnd, end: openEnd });
+      continue;
+    }
+    const tagRe = new RegExp(`<(/?)${tag}(?=[\\s>/])[^>]*>`, "gi");
+    tagRe.lastIndex = openEnd;
+    let depth = 1;
+    let end = html.length;
+    let t: RegExpExecArray | null;
+    while ((t = tagRe.exec(html))) {
+      if (t[1]) depth--;
+      else if (!/\/\s*>$/.test(t[0])) depth++;
+      if (depth === 0) {
+        end = t.index + t[0].length;
+        break;
+      }
+    }
+    out.push({ tag, attrs, start, openEnd, end });
+  }
+  return out;
+}
+
+function removeRanges(html: string, ranges: ElementRange[]): string {
+  if (ranges.length === 0) return html;
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  let out = "";
+  let pos = 0;
+  for (const r of sorted) {
+    if (r.start < pos) continue; // nested inside an already removed range
+    out += html.slice(pos, r.start) + " ";
+    pos = r.end;
+  }
+  return out + html.slice(pos);
+}
+
+function removeElements(html: string, tags: readonly string[], attrTest?: (attrs: string, tag: string) => boolean): string {
+  return removeRanges(html, findElements(html, tags, attrTest));
+}
+
+const BOILERPLATE_TAGS = ["nav", "footer", "header", "aside", "form", "svg", "iframe", "button", "dialog", "select"] as const;
+const RELATED_ATTR_RE =
+  /\b(?:class|id|data-bi-an|aria-label|data-section)\s*=\s*["'][^"']*\b(?:related|share-?(?:bar|buttons|links)|social-share|newsletter|subscribe|breadcrumbs?|cookie-?(?:banner|consent))\b[^"']*["']/i;
+const CONTENT_ATTR_RE =
+  /\b(?:class|id)\s*=\s*["'][^"']*\b(?:entry-content|post-content|article-body|article-content|article__body|post-body|story-body|blog-content|blog-post-content|main-content|content-body|single-content|rich-text)\b[^"']*["']/i;
+const CONTENT_ID_RE = /\bid\s*=\s*["'](?:content|main|main-content|article|primary)["']/i;
+const ROLE_MAIN_RE = /\brole\s*=\s*["']main["']/i;
+
+function preStripHtml(html: string): string {
+  return html
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, " ")
+    .replace(/<template\b[\s\S]*?<\/template\s*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+}
+
+function stripBoilerplate(fragment: string): string {
+  let out = removeElements(fragment, ["div", "section", "aside", "ul", "ol", "article", "nav"], (attrs) =>
+    RELATED_ATTR_RE.test(attrs),
+  );
+  out = removeElements(out, BOILERPLATE_TAGS);
+  return out;
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ensp: " ", emsp: " ", thinsp: " ",
+  lsquo: "‘", rsquo: "’", sbquo: "‚", ldquo: "“", rdquo: "”", bdquo: "„",
+  mdash: "—", ndash: "–", hellip: "…", bull: "•", middot: "·", laquo: "«", raquo: "»",
+  copy: "©", reg: "®", trade: "™", deg: "°", times: "×", divide: "÷", sect: "§", para: "¶",
+  rarr: "→", larr: "←", harr: "↔", uarr: "↑", darr: "↓", zwj: "", zwnj: "", shy: "", lrm: "", rlm: "",
+};
+
+/**
+ * Single-pass entity decoder for PLAIN TEXT output (decodes &lt; / &gt; too,
+ * so it must never be applied to markup that is rendered as HTML).
+ */
+export function decodeHtmlText(s: string): string {
+  if (!s) return "";
+  return s.replace(/&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[a-zA-Z][a-zA-Z0-9]{1,31});/g, (whole, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return "";
+      return code === 0xa0 ? " " : String.fromCodePoint(code);
+    }
+    const named = NAMED_ENTITIES[body] ?? NAMED_ENTITIES[body.toLowerCase()];
+    return named ?? whole;
+  });
+}
+
+function fragmentToText(fragment: string): string {
+  const text = fragment
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|h[1-6]|li|tr|section|article|main|pre|blockquote|table|thead|tbody|ul|ol|dl|dt|dd|figure|figcaption|header|details|summary)\s*>/gi, "\n")
+    .replace(/<(?:p|h[1-6]|pre|blockquote|table|tr)(?=[\s>/])[^>]*>/gi, "\n")
+    .replace(/<li(?=[\s>/])[^>]*>/gi, "• ")
+    .replace(/<\/(?:td|th)\s*>/gi, " \t")
+    .replace(/<[^>]+>/g, " ");
+  return decodeHtmlText(text)
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Pick the main content block: among <article>, <main>, [role=main] and common
+ * content containers, take the one with the most text after boilerplate
+ * stripping; prefer a tighter block holding >= 85% of that text. Falls back to
+ * <body> when no candidate has substantial text.
+ */
+function selectContentText(html: string): string {
+  const pre = preStripHtml(html);
+  const bodyRange = findElements(pre, ["body"], undefined, 1)[0];
+  const scope = bodyRange ? pre.slice(bodyRange.openEnd, bodyRange.end) : pre;
+
+  const candidates = findElements(
+    scope,
+    ["article", "main", "div", "section"],
+    (attrs, tag) => {
+      if (RELATED_ATTR_RE.test(attrs)) return false;
+      if (tag === "article" || tag === "main") return true;
+      return ROLE_MAIN_RE.test(attrs) || CONTENT_ATTR_RE.test(attrs) || CONTENT_ID_RE.test(attrs);
+    },
+    80,
+  );
+
+  const scored = candidates.map((c) => {
+    const text = fragmentToText(stripBoilerplate(scope.slice(c.openEnd, c.end)));
+    return { span: c.end - c.start, text };
+  });
+  const bestLen = scored.reduce((max, s) => Math.max(max, s.text.length), 0);
+
+  if (bestLen < 400) {
+    const bodyText = fragmentToText(stripBoilerplate(scope));
+    if (bodyText.length > bestLen) return bodyText;
+  }
+  if (scored.length === 0) return "";
+
+  let chosen = scored[0];
+  for (const s of scored) {
+    if (s.text.length < bestLen * 0.85) continue;
+    if (chosen.text.length < bestLen * 0.85 || s.span < chosen.span) chosen = s;
+  }
+  return chosen.text;
 }
 
 export function htmlToText(html: string): { title: string; text: string } {
@@ -94,19 +300,19 @@ export function htmlToText(html: string): { title: string; text: string } {
     html.match(/<meta\s+[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
     html.match(/<meta\s+[^>]*name=["']twitter:title["'][^>]*content=["']([^"']+)["']/i)?.[1];
 
-  const articleH1 = html.match(/<(?:article|main)[^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  const firstH1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  const pageTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const articleH1 = html.match(/<(?:article|main)\b[^>]*>[\s\S]*?<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const firstH1 = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const pageTitle = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1];
 
-  const cleanHeader = (s?: string) => (s ? s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() : "");
+  const cleanHeader = (s?: string) => (s ? decodeHtmlText(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : "");
   const isGenericHeading = (s?: string) =>
     !s || s.length < 4 || /social media|social mediach|newsletter|subscribe|menu|navigation|footer|search|kontakt|baza wiedzy/i.test(s);
 
   let rawTitle = "";
   if (articleH1 && !isGenericHeading(cleanHeader(articleH1))) {
     rawTitle = cleanHeader(articleH1);
-  } else if (ogTitle && !isGenericHeading(ogTitle)) {
-    rawTitle = ogTitle.trim();
+  } else if (ogTitle && !isGenericHeading(cleanHeader(ogTitle))) {
+    rawTitle = cleanHeader(ogTitle);
   } else if (pageTitle && !isGenericHeading(cleanHeader(pageTitle))) {
     rawTitle = cleanHeader(pageTitle);
   } else if (firstH1 && !isGenericHeading(cleanHeader(firstH1))) {
@@ -120,40 +326,7 @@ export function htmlToText(html: string): { title: string; text: string } {
     .replace(/\s*[|–—]\s*(Google Cloud Blog|The DFIR Report|Microsoft Security Blog|Unit 42|SentinelOne|Cisco Talos|Huntress|BleepingComputer|Mandiant|CERT Polska).*$/i, "")
     .trim();
 
-  // If page contains an <article> or <main> container with substantial content, prioritize it
-  let contentHtml = html;
-  const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-  if (articleMatch && articleMatch[1].length > 400) {
-    contentHtml = articleMatch[1];
-  } else {
-    const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
-    if (mainMatch && mainMatch[1].length > 400) {
-      contentHtml = mainMatch[1];
-    }
-  }
-
-  const stripped = contentHtml
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(nav|footer|header|aside|form|svg|iframe)[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|h1|h2|h3|h4|li|tr|section|article)>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "• ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/"/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-
-  return { title: decodeEntities(rawTitle).slice(0, 240), text: decodeEntities(stripped) };
+  return { title: rawTitle.slice(0, 240), text: selectContentText(html) };
 }
 
 export function extractHtmlMetadata(html: string): {
@@ -195,9 +368,13 @@ export function extractHtmlMetadata(html: string): {
             publishedAt = (item.datePublished || item.dateCreated).slice(0, 10);
           }
         }
-      } catch {}
+      } catch {
+        /* malformed JSON-LD block */
+      }
     }
-  } catch {}
+  } catch {
+    /* ignore */
+  }
 
   // 3. Meta tags
   if (!author) {
@@ -261,36 +438,362 @@ export function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
+// ---------------------------------------------------------------------------
+// IOC harvesting: defang-aware, with exact evidence offsets into `text`.
+// ---------------------------------------------------------------------------
+
 const TECH_RE = /\bT1[0-9]{3}(?:\.[0-9]{3})?\b/g;
 const CVE_RE = /\bCVE-\d{4}-\d{4,7}\b/gi;
-const SHA256_RE = /\b[a-fA-F0-9]{64}\b/g;
-const MD5_RE = /\b[a-fA-F0-9]{32}\b/g;
-const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
+const HEX_RE = /(?<![A-Za-z0-9])[A-Fa-f0-9]{32,128}(?![A-Za-z0-9])/g;
 
-export function harvestIocs(text: string): IocHit[] {
-  const seen = new Set<string>();
-  const out: IocHit[] = [];
-  const push = (kind: IocHit["kind"], value: string) => {
-    const key = `${kind}:${value.toLowerCase()}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ kind, value });
-  };
+// Separators as they appear in defanged indicators.
+const DOT_SRC = String.raw`(?:\.|\[\s*\.\s*\]|\(\s*\.\s*\)|\{\s*\.\s*\}|\s?\[\s*dot\s*\]\s?|\s?\(\s*dot\s*\)\s?|\s?\{\s*dot\s*\}\s?)`;
+const AT_SRC = String.raw`(?:@|\[\s*@\s*\]|\(\s*@\s*\)|\s?\[\s*at\s*\]\s?|\s?\(\s*at\s*\)\s?|\s?\{\s*at\s*\}\s?)`;
+const LABEL_SRC = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?`;
+const TLD_SRC = String.raw`(?:[A-Za-z]{2,24}|xn--[A-Za-z0-9-]{2,59})`;
+const HOST_SRC = String.raw`(?:${LABEL_SRC}${DOT_SRC})+${TLD_SRC}`;
+const IP_SRC = String.raw`(?:\d{1,3}${DOT_SRC}){3}\d{1,3}`;
+const SCHEME_SRC = String.raw`(?:h[tx]{2}ps?|f[tx]p|s?f[tx]p)(?:\[\s*:\s*\]\/\/|\[\s*:\/\/\s*\]|:\/\/|\[:\]\[\/\/\])`;
+const PATH_CHAR_SRC = String.raw`(?:[A-Za-z0-9\-._~:/?#@!$&*+,;=%]|\[\s*\.\s*\]|\[\s*:\s*\])`;
 
-  for (const m of text.match(CVE_RE) ?? []) push("cve", m.toUpperCase());
-  for (const m of text.match(TECH_RE) ?? []) push("technique", m.toUpperCase());
-  for (const m of text.match(SHA256_RE) ?? []) {
-    if (!/^[0]+$/.test(m) && !/^[fF]+$/.test(m)) push("sha256", m.toLowerCase());
+const URL_RE = new RegExp(
+  String.raw`(?<![A-Za-z0-9])${SCHEME_SRC}(?:${HOST_SRC}|${IP_SRC}|\[[0-9a-fA-F:]+\])(?:(?::|\[\s*:\s*\])\d{1,5})?(?:[/?#]${PATH_CHAR_SRC}*)?`,
+  "gi",
+);
+const EMAIL_RE = new RegExp(String.raw`(?<![A-Za-z0-9._%+-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}${AT_SRC}${HOST_SRC}(?![A-Za-z0-9-])`, "g");
+const DOMAIN_RE = new RegExp(String.raw`(?<![A-Za-z0-9_@.$\-])${HOST_SRC}(?![A-Za-z0-9_\-]|\.[A-Za-z0-9])`, "g");
+const IPV4_RE = new RegExp(String.raw`(?<![\d.\]])${IP_SRC}(?![\d]|\.\d|\[\s*\.)`, "g");
+
+const DEFANG_MARK_RE = /\[\s*(?:\.|dot|:|:\/\/|@|at)\s*\]|\(\s*(?:\.|dot|@|at)\s*\)|\{\s*(?:\.|dot|at)\s*\}|\bh[x]{2}ps?|\bf[x]p/i;
+
+/** Re-fang a defanged indicator: hxxp→http, [.]/(.)/{.}/[dot]→., [:]→:, [at]/[@]→@ */
+export function refang(s: string): string {
+  return s
+    .replace(/\bh[tx]{2}p(s?)(?=\[|:)/gi, "http$1")
+    .replace(/\bf[tx]p(?=\[|:)/gi, "ftp")
+    .replace(/\[\s*:\/\/\s*\]/g, "://")
+    .replace(/\[:\]\[\/\/\]/g, "://")
+    .replace(/\[\s*:\s*\]/g, ":")
+    .replace(/\s?[[({]\s*dot\s*[\])}]\s?/gi, ".")
+    .replace(/[[({]\s*\.\s*[\])}]/g, ".")
+    .replace(/\s?[[({]\s*at\s*[\])}]\s?/gi, "@")
+    .replace(/[[({]\s*@\s*[\])}]/g, "@");
+}
+
+// Executable / document / script extensions that look like TLDs in prose
+// ("payload.zip", "loader.ps1", "config.json"): excluded unless defanged.
+const FILE_EXTENSIONS = new Set(
+  (
+    "exe dll sys drv ocx cpl scr bat cmd ps1 psm1 psd1 vbs vbe js jse wsf wsh hta lnk msi msp msc reg inf " +
+    "zip rar 7z gz tgz tar bz2 xz cab iso img vhd vhdx dmg pkg deb rpm apk ipa jar war ear class " +
+    "doc docx docm dot dotm xls xlsx xlsm xlsb ppt pptx pptm pdf rtf odt txt log csv tsv json xml yaml yml ini " +
+    "cfg conf config dat bin tmp bak old py pyc sh bash zsh pl pm rb php phtml asp aspx ashx asmx jsp jspx cgi " +
+    "html htm xhtml css scss md rst mov mp4 mp3 wav avi mkv jpg jpeg png gif bmp ico svg webp tif tiff " +
+    "db sqlite sql mdb dmp evtx etl pcap pcapng pf lck key pem crt cer der csr pfx p12 p7b ps go rs c cpp cc h hpp " +
+    "cs vb java kt swift ts tsx jsx mjs cjs vue lua so ko elf o a lib dylib ova ovf vmdk vmx yar yara rules sigma nse"
+  ).split(" "),
+);
+
+const COMMON_GTLDS = new Set(
+  (
+    "com net org info biz io co me tv cc us uk ru cn su top xyz online site club store app dev cloud live tech space " +
+    "website fun icu vip pw ws la tk ml ga cf gq buzz shop link click work life world today news email host services " +
+    "support digital solutions network systems center agency global group company zone one pro name mobi asia tel " +
+    "jobs travel gov edu mil int xxx win bid loan date download racing review stream trade party science men cricket " +
+    "accountant faith webcam kim ink rest bar best cyou monster quest sbs cfd lol beauty hair skin makeup homes autos " +
+    "motorcycles boats yachts mom ltd llc inc biz page blog art design studio media social chat run fyi wiki cam " +
+    "gdn ooo rocks ninja guru expert tips tools domains business finance money cash bank capital fund investments"
+  ).split(" "),
+);
+
+// ISO 3166 country-code TLDs (plus eu/ac/uk); any other two-letter "TLD" (e.g. ".ip" in "e.target.ip") is not a host.
+const CC_TLDS = new Set(
+  (
+    "ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz " +
+    "ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm " +
+    "fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it " +
+    "je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn " +
+    "mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps " +
+    "pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj " +
+    "tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw"
+  ).split(" "),
+);
+
+// Reference / schema infrastructure that shows up in reports but is never an IOC (unless defanged).
+const BENIGN_DOMAINS = [
+  "w3.org", "schema.org", "purl.org", "xmlsoap.org", "ogp.me", "example.com", "example.net", "example.org",
+  "mitre.org", "nist.gov", "first.org", "iana.org", "ietf.org", "rfc-editor.org",
+  // "Follow us" / share links and vendor short-links in report footers.
+  "twitter.com", "x.com", "linkedin.com", "facebook.com", "youtube.com", "aka.ms",
+];
+
+function registrableDomain(host: string): string {
+  const parts = host.toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
+  if (parts.length <= 2) return parts.join(".");
+  const sld = parts[parts.length - 2];
+  const secondLevelCc = parts[parts.length - 1].length === 2 && /^(?:co|com|net|org|gov|edu|ac|or|ne|go)$/.test(sld);
+  return parts.slice(secondLevelCc ? -3 : -2).join(".");
+}
+
+function domainMatches(host: string, base: string): boolean {
+  return host === base || host.endsWith(`.${base}`);
+}
+
+const PRIVATE_V4: Array<[number, number]> = [
+  // [network as uint32, prefix length]
+  [0x00000000, 8], // 0.0.0.0/8
+  [0x0a000000, 8], // 10/8
+  [0x64400000, 10], // 100.64/10 CGNAT
+  [0x7f000000, 8], // loopback
+  [0xa9fe0000, 16], // link-local
+  [0xac100000, 12], // 172.16/12
+  [0xc0000000, 24], // 192.0.0/24
+  [0xc0000200, 24], // TEST-NET-1
+  [0xc0a80000, 16], // 192.168/16
+  [0xc6120000, 15], // 198.18/15 benchmarking
+  [0xc6336400, 24], // TEST-NET-2
+  [0xcb007100, 24], // TEST-NET-3
+  [0xe0000000, 4], // multicast 224/4
+  [0xf0000000, 4], // reserved 240/4 (incl. broadcast)
+];
+
+function parseIpv4(value: string): number | null {
+  const parts = value.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p) || (p.length > 1 && p[0] === "0")) return null;
+    const o = Number(p);
+    if (o > 255) return null;
+    n = n * 256 + o;
   }
-  for (const m of text.match(MD5_RE) ?? []) {
-    if (m.length === 32) push("md5", m.toLowerCase());
+  return n >>> 0;
+}
+
+export function isNonPublicIpv4(value: string): boolean {
+  const n = parseIpv4(value);
+  if (n === null) return true;
+  return PRIVATE_V4.some(([net, bits]) => {
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return ((n & mask) >>> 0) === net;
+  });
+}
+
+// Strong roles name what the indicator was used for; weak ones (staging/hosting) only
+// count when no strong role is stated ("file-hosting services ... for exfiltration").
+const ROLE_RULES: Array<{ role: string; re: RegExp; strong: boolean }> = [
+  { role: "C2", re: /\b(?:c2|c&c|cnc|command[\s-]+(?:and|&)[\s-]+control|beacon(?:s|ed|ing)?)\b/i, strong: true },
+  { role: "exfiltration", re: /\bexfiltrat\w*/i, strong: true },
+  { role: "payload delivery", re: /\b(?:payloads?|download(?:s|ed|ing|er)?|deliver(?:y|ed|s|ing)?|dropper)\b/i, strong: true },
+  { role: "phishing", re: /\bphish\w*/i, strong: true },
+  { role: "staging", re: /\bstag(?:ing|ed)\b/i, strong: false },
+  { role: "hosting", re: /\bhost(?:ing|ed)\b/i, strong: false },
+];
+const ROLE_NEGATION_RE = /\b(?:not|never|no evidence|benign|legitimate|false positive)\b/i;
+
+/** Conservative: a role only when exactly one role family (strong first) appears in the passage and it is not negated. */
+function roleFromPassage(passage: string): string | undefined {
+  if (ROLE_NEGATION_RE.test(passage)) return undefined;
+  const hits = ROLE_RULES.filter((r) => r.re.test(passage));
+  const strong = hits.filter((r) => r.strong);
+  if (strong.length > 0) return strong.length === 1 ? strong[0].role : undefined;
+  return hits.length === 1 ? hits[0].role : undefined;
+}
+
+/** Containing sentence (or table row / line) for [start, end), as exact offsets into text. */
+function passageAround(text: string, start: number, end: number): Evidence {
+  let lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  let lineEnd = text.indexOf("\n", end);
+  if (lineEnd === -1) lineEnd = text.length;
+
+  // Sentence boundaries inside the line: ". " / "! " / "? " followed by a capital/digit/quote.
+  let s = lineStart;
+  const before = text.slice(lineStart, start);
+  const boundaryRe = /[.!?]["'”’)]?\s+(?=["'“‘(]?[A-Z0-9])/g;
+  let b: RegExpExecArray | null;
+  while ((b = boundaryRe.exec(before))) s = lineStart + b.index + b[0].length;
+  let e = lineEnd;
+  const after = text.slice(end, lineEnd);
+  const fwd = /[.!?]["'”’)]?(?=\s+["'“‘(]?[A-Z0-9])|[.!?]["'”’)]?$/.exec(after);
+  if (fwd) e = end + fwd.index + fwd[0].length;
+
+  // Keep very long passages (minified tables, code) bounded around the hit.
+  if (e - s > 600) {
+    s = Math.max(s, start - 250);
+    e = Math.min(e, end + 250);
   }
-  for (const m of text.match(IPV4_RE) ?? []) {
-    if (!m.startsWith("0.") && !m.startsWith("127.") && !m.startsWith("255.")) {
-      push("ipv4", m);
+  lineStart = s;
+  lineEnd = e;
+  while (lineStart < start && /\s/.test(text[lineStart])) lineStart++;
+  while (lineEnd > end && /\s/.test(text[lineEnd - 1])) lineEnd--;
+  return { quote: text.slice(lineStart, lineEnd), start: lineStart, end: lineEnd };
+}
+
+export type HarvestIocsOptions = {
+  /** Host (or URL) of the report itself; its domain is never reported unless defanged. */
+  sourceDomain?: string;
+  /** Maximum hits returned (default 500). */
+  limit?: number;
+};
+
+const KIND_ORDER: IocHit["kind"][] = ["cve", "technique", "sha256", "sha1", "md5", "ipv4", "domain", "url", "email"];
+
+export function harvestIocs(text: string, options: HarvestIocsOptions = {}): IocHit[] {
+  const limit = options.limit ?? 500;
+  let ownDomain = "";
+  if (options.sourceDomain) {
+    try {
+      const host = /^[a-z]+:\/\//i.test(options.sourceDomain) ? new URL(options.sourceDomain).hostname : options.sourceDomain;
+      ownDomain = registrableDomain(host);
+    } catch {
+      ownDomain = "";
     }
   }
-  return out.slice(0, 80);
+
+  const byKey = new Map<string, IocHit & { order: number }>();
+  let order = 0;
+  const push = (kind: IocHit["kind"], value: string, start: number, end: number, original: string, defanged: boolean) => {
+    const key = `${kind}:${value.toLowerCase()}`;
+    const evidence = passageAround(text, start, end);
+    // Role words inside the indicator itself ("staging-files[.]xyz") do not count.
+    const role = kind === "cve" || kind === "technique" ? undefined : roleFromPassage(evidence.quote.split(original).join(" "));
+    const existing = byKey.get(key);
+    if (existing) {
+      if (!existing.role && role) {
+        existing.role = role;
+        existing.evidence = evidence;
+      }
+      if (defanged && !existing.defanged) {
+        existing.defanged = true;
+        existing.original = original;
+      }
+      return;
+    }
+    const hit: IocHit & { order: number } = { kind, value, evidence, order: order++ };
+    if (original !== value) hit.original = original;
+    if (defanged) hit.defanged = true;
+    if (role) hit.role = role;
+    byKey.set(key, hit);
+  };
+
+  const isExcludedHost = (host: string) =>
+    (ownDomain !== "" && domainMatches(host, ownDomain)) || BENIGN_DOMAINS.some((d) => domainMatches(host, d));
+
+  /** Validate a refanged host; returns null when it should not be reported. */
+  const acceptHost = (host: string, original: string, defanged: boolean): string | null => {
+    const h = host.toLowerCase().replace(/\.$/, "");
+    const labels = h.split(".");
+    if (labels.length < 2 || labels.some((l) => l.length === 0 || l.length > 63)) return null;
+    const tld = labels[labels.length - 1];
+    if (/^\d+$/.test(tld)) return null;
+    if (defanged) return h;
+    if (FILE_EXTENSIONS.has(tld)) return null;
+    if (!(CC_TLDS.has(tld) || COMMON_GTLDS.has(tld) || tld.startsWith("xn--"))) return null;
+    // Code identifiers (System.IO, Microsoft.Graph) capitalise the last segment; hosts in prose
+    // may be brand-cased ("GoFile.io") but keep a lower-case TLD.
+    const origTld = original.split(/[.\])}]/).filter(Boolean).pop() ?? "";
+    if (origTld !== origTld.toLowerCase()) return null;
+    if (isExcludedHost(h)) return null;
+    return h;
+  };
+
+  // Spans already claimed by URLs / emails (their hosts are not re-reported as bare domains).
+  const claimed: Array<[number, number]> = [];
+  const isClaimed = (s: number, e: number) => claimed.some(([a, b]) => s >= a && e <= b);
+
+  for (const m of text.matchAll(CVE_RE)) push("cve", m[0].toUpperCase(), m.index ?? 0, (m.index ?? 0) + m[0].length, m[0].toUpperCase(), false);
+  for (const m of text.matchAll(TECH_RE)) push("technique", m[0].toUpperCase(), m.index ?? 0, (m.index ?? 0) + m[0].length, m[0].toUpperCase(), false);
+
+  for (const m of text.matchAll(HEX_RE)) {
+    const v = m[0].toLowerCase();
+    const kind = v.length === 64 ? "sha256" : v.length === 40 ? "sha1" : v.length === 32 ? "md5" : null;
+    if (!kind) continue; // sha512 or other lengths: never split into shorter hashes
+    if (/^(.)\1+$/.test(v) || !/[a-f]/.test(v) || !/\d/.test(v)) continue;
+    push(kind, v, m.index ?? 0, (m.index ?? 0) + m[0].length, m[0], false);
+  }
+
+  for (const m of text.matchAll(URL_RE)) {
+    let original = m[0];
+    // Trim trailing punctuation and unbalanced closing brackets.
+    while (/[.,;:!?'"*]$/.test(original) || (/\)$/.test(original) && (original.match(/\(/g)?.length ?? 0) < (original.match(/\)/g)?.length ?? 0))) {
+      original = original.slice(0, -1);
+    }
+    const start = m.index ?? 0;
+    const end = start + original.length;
+    const defanged = DEFANG_MARK_RE.test(original);
+    let parsed: URL;
+    try {
+      parsed = new URL(refang(original));
+    } catch {
+      continue;
+    }
+    const host = parsed.hostname.replace(/^\[|\]$/g, "");
+    claimed.push([start, end]);
+    const isIp = parseIpv4(host) !== null;
+    if (!defanged) {
+      if (isIp ? isNonPublicIpv4(host) : isExcludedHost(host)) continue;
+      if (!isIp && !acceptHost(host, host, false)) continue;
+    }
+    let value = parsed.toString();
+    if (parsed.pathname === "/" && !parsed.search && value.endsWith("/") && !refang(original).endsWith("/")) value = value.slice(0, -1);
+    push("url", value, start, end, original, defanged);
+    if (isIp) {
+      if (defanged || !isNonPublicIpv4(host)) push("ipv4", host, start, end, original, defanged);
+    } else {
+      const hostIdx = original.indexOf("//") + 2;
+      const hostOrig = original.slice(hostIdx).split(/[/?#]|(?::|\[\s*:\s*\])\d/)[0];
+      const accepted = acceptHost(host, defanged ? hostOrig : host, defanged);
+      if (accepted) push("domain", accepted, start + hostIdx, start + hostIdx + hostOrig.length, hostOrig, DEFANG_MARK_RE.test(hostOrig));
+    }
+  }
+
+  for (const m of text.matchAll(EMAIL_RE)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (isClaimed(start, end)) continue;
+    const original = m[0];
+    const defanged = DEFANG_MARK_RE.test(original);
+    const value = refang(original).replace(/\s+/g, "").toLowerCase();
+    const at = value.lastIndexOf("@");
+    if (at <= 0) continue;
+    claimed.push([start, end]);
+    const host = value.slice(at + 1);
+    if (!acceptHost(host, host, defanged)) continue;
+    push("email", value, start, end, original, defanged);
+  }
+
+  for (const m of text.matchAll(DOMAIN_RE)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (isClaimed(start, end)) continue;
+    const original = m[0];
+    const defanged = DEFANG_MARK_RE.test(original);
+    // A bare dotted quad is an IP, handled below.
+    const refanged = refang(original).replace(/\s+/g, "");
+    if (/^[\d.]+$/.test(refanged)) continue;
+    const host = acceptHost(refanged, original, defanged);
+    if (host) push("domain", host, start, end, original, defanged);
+  }
+
+  for (const m of text.matchAll(IPV4_RE)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const original = m[0];
+    const defanged = DEFANG_MARK_RE.test(original);
+    const value = refang(original).replace(/\s+/g, "");
+    if (parseIpv4(value) === null) continue;
+    if (!defanged) {
+      if (isNonPublicIpv4(value)) continue;
+      // Version strings ("version 2.0.0.1", "v1.2.3.4") are not addresses.
+      if (/\b(?:v|ver\.?|version|build|release)\s*$/i.test(text.slice(Math.max(0, start - 12), start))) continue;
+    }
+    push("ipv4", value, start, end, original, defanged);
+  }
+
+  return [...byKey.values()]
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.order - b.order)
+    .slice(0, limit)
+    .map(({ order: _order, ...hit }) => hit);
 }
 
 const SIGNAL_WORDS = [
@@ -449,3 +952,16 @@ export function computeHammingDistance(hashA: string, hashB: string): number {
   }
 }
 
+
+/** Length of the extracted-text window used for near-duplicate SimHash. */
+export const SIMHASH_WINDOW_CHARS = 3000;
+
+/**
+ * Near-duplicate fingerprint of a report. Both stored reports and crawl
+ * candidates must use this (same normalized window of extractedText, title
+ * excluded) so their Hamming distances are comparable.
+ */
+export function computeReportSimHash(extractedText: string): string {
+  const window = (extractedText || "").replace(/\s+/g, " ").trim().slice(0, SIMHASH_WINDOW_CHARS);
+  return computeSimHash64(window);
+}

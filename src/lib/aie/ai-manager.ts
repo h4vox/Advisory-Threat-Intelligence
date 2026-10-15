@@ -39,6 +39,7 @@ import {
   wrapUntrustedContent,
 } from "./agent-framework/types";
 import { warmAgentService } from "./warm-agent-service";
+import { sha256Hex } from "./retrieval";
 
 export type UnifiedDiscoveryParams = {
   existingDomains: string[];
@@ -83,6 +84,12 @@ export interface UnifiedChatParams {
   userMessage: string;
   history?: Array<{ sender: "user" | "agent"; text: string }>;
   groundedReports?: ReportListItem[];
+  /**
+   * Complete grounded prompt (passages + rules + history + question) from
+   * `buildGroundedPrompt`. When set it is sent as-is and `groundedReports` /
+   * `history` are ignored.
+   */
+  groundedPrompt?: string;
   model?: string;
   providerId?: string;
   timeoutSeconds?: number;
@@ -97,6 +104,8 @@ export interface UnifiedChatResult {
   error?: string;
   trace?: ExecutionTrace;
   tokens?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  /** SHA-256 of the exact instruction + prompt text sent (grounded path only). */
+  promptSha256?: string;
 }
 
 // Allowed Classifications matching crawler engine taxonomy
@@ -800,6 +809,49 @@ export async function chatWithUnifiedAgent(params: UnifiedChatParams): Promise<U
   const providerId = params.providerId || active.providerId;
   const { restModel: rawModel, agyModel } = resolveProviderModels(active, params.model);
   const timeoutSeconds = params.timeoutSeconds || 40;
+
+  // Grounded path: the caller built the whole prompt from cited passages.
+  if (params.groundedPrompt) {
+    const groundedSystem = `You are the platform's Cyber Threat Intelligence (CTI) Copilot.
+- Never disclose, reference, or acknowledge underlying model names, runtime wrappers, CLI engines, or containers.
+- Follow the grounding rules in the request exactly: answer only from the numbered passages, cite [S#] after every factual sentence, and state evidence gaps explicitly.
+- When referencing MITRE ATT&CK techniques that appear in the passages, give the technique ID and name.`;
+    const promptSha256 = await sha256Hex(`${groundedSystem}\n\n${params.groundedPrompt}`);
+    const restAdapter = getProviderAdapter(providerId);
+    if (restAdapter && active.isRest) {
+      const res = await restAdapter.generate({
+        prompt: params.groundedPrompt,
+        systemInstruction: groundedSystem,
+        model: rawModel,
+        apiKey: active.apiKey,
+        timeoutMs: timeoutSeconds * 1000,
+      });
+      return {
+        success: res.success,
+        reply: res.text || res.error || "No response produced by model.",
+        model: rawModel,
+        providerId,
+        latencyMs: res.latencyMs,
+        error: res.error,
+        tokens: res.tokens,
+        promptSha256,
+      };
+    }
+    const warm = await warmAgentService.executePrompt(`${groundedSystem}\n\n${params.groundedPrompt}`, {
+      model: agyModel,
+      timeoutMs: timeoutSeconds * 1000,
+    });
+    return {
+      success: warm.success,
+      reply: warm.text || warm.error || "Agent did not produce output.",
+      model: warm.model,
+      providerId: "agy_agent",
+      latencyMs: warm.latencyMs,
+      error: warm.error,
+      tokens: warm.tokens,
+      promptSha256,
+    };
+  }
 
   // Build Grounded Context from Local Library Reports
   let contextDocs = "";

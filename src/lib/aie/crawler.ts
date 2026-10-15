@@ -9,7 +9,8 @@ import {
 import {
   canonicalizeUrl,
   computeHammingDistance,
-  computeSimHash64,
+  computeReportSimHash,
+  excerptOf,
   harvestIocs,
   htmlToText,
   extractHtmlMetadata,
@@ -31,6 +32,7 @@ import type {
   CrawlPipelineStage,
   CrawlTrigger,
   DiscoveredResource,
+  ReportRecord,
   SourceRecord,
 } from "./types";
 import { getSql, type Sql } from "@/lib/db";
@@ -47,6 +49,7 @@ import {
   mongoInsertGraphEdgesBatch,
   mongoInsertIngestEvent,
   mongoInsertReport,
+  mongoSaveReportOriginal,
   mongoListReports,
   mongoGetExistingReportsDedupIndex,
   mongoListSources,
@@ -530,7 +533,10 @@ export async function executeCrawlJob(
     // 2. Query existing storage for smart deduplication
     const storedCanonicalUrls = new Set<string>();
     const storedHashes = new Set<string>();
-    const storedSimhashes: Array<{ id: string; simhash: string; title: string }> = [];
+    // Near-duplicate index. `simhash` is computeReportSimHash(extractedText) stored at insert;
+    // older records without it fall back to a hash of their stored excerpt (`fromExcerpt`),
+    // which is compared against the candidate's excerpt computed the same way.
+    const storedSimhashes: Array<{ id: string; simhash: string; title: string; fromExcerpt: boolean }> = [];
 
     if (isMongoConfigured()) {
       try {
@@ -542,11 +548,14 @@ export async function executeCrawlJob(
           if (r.textHash && (r.wordCount === undefined || r.wordCount >= 500)) {
             storedHashes.add(r.textHash);
           }
-          if (r.title || r.excerpt) {
+          if (r.simhash && /^[0-9a-f]{16}$/.test(r.simhash)) {
+            storedSimhashes.push({ id: r.id, simhash: r.simhash, title: r.title || "", fromExcerpt: false });
+          } else if (r.excerpt && r.excerpt.length >= 80) {
             storedSimhashes.push({
               id: r.id,
-              simhash: computeSimHash64(`${r.title} ${r.excerpt || ""}`),
-              title: r.title,
+              simhash: computeReportSimHash(r.excerpt),
+              title: r.title || "",
+              fromExcerpt: true,
             });
           }
         }
@@ -1171,6 +1180,8 @@ export async function executeCrawlJob(
         let contentType = "text/html";
         let rawBytes: Uint8Array | string = current.preloadedText || "";
         let fetchedHtmlBody = "";
+        // Bytes exactly as fetched (null when the text came preloaded from a feed).
+        let fetchedOriginal: Uint8Array | null = null;
 
         const currentWordCount = textContent.split(/\s+/).filter(Boolean).length;
         const needsFullArticleFetch = currentWordCount < 300;
@@ -1194,12 +1205,14 @@ export async function executeCrawlJob(
             });
 
             rawBytes = fetched.bytes;
+            fetchedOriginal = fetched.bytes;
             contentType = fetched.contentType;
 
             if (contentType.includes("pdf")) {
+              let pdfFailure = "";
               try {
                 const pdfResult = await extractTextFromPdfBuffer(Buffer.from(fetched.bytes));
-                if (pdfResult.text && pdfResult.text.length > 50) {
+                if (!pdfResult.noText && pdfResult.text && pdfResult.text.length > 50) {
                   textContent = pdfResult.text;
                   if (pdfResult.title && pdfResult.title !== "Untitled report") {
                     docTitle = pdfResult.title;
@@ -1209,11 +1222,38 @@ export async function executeCrawlJob(
                   }
                   console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
                 } else {
-                  textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+                  pdfFailure = pdfResult.failureReason || "PDF has no extractable text layer";
                 }
               } catch (pdfErr) {
-                console.warn("[crawler] PDF extraction failed, using placeholder:", pdfErr);
-                textContent = `PDF Document Evidence: ${current.title || current.canonicalUrl}. Raw cryptographic evidence and technical content preserved.`;
+                pdfFailure = `PDF extraction error: ${pdfErr instanceof Error ? pdfErr.message : String(pdfErr)}`;
+              }
+              if (pdfFailure) {
+                // Never create a report from placeholder text: record the item as failed / needs OCR.
+                failedCount++;
+                console.warn(`[crawler] PDF needs OCR, not ingested: ${current.canonicalUrl} (${pdfFailure})`);
+                const jobItem: CrawlJobItem = {
+                  id: newId("itm"),
+                  jobId,
+                  sourceId: current.sourceId || null,
+                  url: current.url,
+                  canonicalUrl: current.canonicalUrl,
+                  title: current.title || docTitle,
+                  classification: "OTHER",
+                  decision: "FAILED",
+                  reason: `Needs OCR: ${pdfFailure} (${fetched.bytes.byteLength} bytes)`,
+                  stage: "failed",
+                  discoveryMethod: current.discoveryMethod,
+                  discoveryQuery: "",
+                  parentUrl: current.parentUrl,
+                  depth: current.depth,
+                  publisher: current.publisher || current.domain,
+                  discoveryPath: current.discoveryPath,
+                  createdAt: new Date().toISOString(),
+                };
+                if (isMongoConfigured()) {
+                  await mongoInsertCrawlJobItem(jobItem);
+                }
+                return;
               }
             } else {
               const body = fetched.body;
@@ -1286,9 +1326,10 @@ export async function executeCrawlJob(
 
         // Check Near-Duplicate & Syndication with SimHash
         if (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both") {
-          const candidateSimhash = computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`);
+          const candidateSimhash = computeReportSimHash(textContent);
+          const candidateExcerptSimhash = computeReportSimHash(excerptOf(textContent));
           const nearDuplicate = storedSimhashes.find(
-            (s) => computeHammingDistance(s.simhash, candidateSimhash) <= 3,
+            (s) => computeHammingDistance(s.simhash, s.fromExcerpt ? candidateExcerptSimhash : candidateSimhash) <= 3,
           );
           if (nearDuplicate) {
             duplicateCount++;
@@ -1598,8 +1639,9 @@ export async function executeCrawlJob(
 
         // 4.5 Structured Entity Extraction, ATT&CK Analysis & PDF Generation
         const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
-        const iocs = harvestIocs(textContent);
+        const iocs = harvestIocs(textContent, { sourceDomain: current.domain });
         const rawHash = sha256Hex(rawBytes || textContent);
+        const reportSimhash = computeReportSimHash(textContent);
         const reportId = newId("rpt");
 
         let intelAnalysis = null;
@@ -1710,8 +1752,9 @@ export async function executeCrawlJob(
                 }
               }
 
-              await mongoInsertReport({
+              const reportDoc: ReportRecord & { simhash: string } = {
                 id: reportId,
+                simhash: reportSimhash,
                 sourceId: effectiveSourceId,
                 sourceName: effectiveSourceName,
                 title: docTitle,
@@ -1752,13 +1795,18 @@ export async function executeCrawlJob(
                 scoreBreakdown: agentResult?.scoreBreakdown,
                 aiTokensUsed: agentResult?.tokensUsed,
                 aiProvider: agentResult?.providerName,
-              });
+              };
+              await mongoInsertReport(reportDoc);
 
-              storedSimhashes.push({
-                id: reportId,
-                simhash: computeSimHash64(`${docTitle} ${textContent.slice(0, 3000)}`),
-                title: docTitle,
-              });
+              if (fetchedOriginal) {
+                try {
+                  await mongoSaveReportOriginal(reportId, fetchedOriginal, contentType);
+                } catch (origErr) {
+                  console.warn("[mongodb] original content not stored:", origErr);
+                }
+              }
+
+              storedSimhashes.push({ id: reportId, simhash: reportSimhash, title: docTitle, fromExcerpt: false });
 
               if (current.sourceId) {
                 await mongoUpdateSourceLastIngest(current.sourceId);
