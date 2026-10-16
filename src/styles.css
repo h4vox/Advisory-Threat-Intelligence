@@ -20,6 +20,20 @@
   --color-bg-card: #111114;
   --color-ring: #c5d0c8;
 
+  /* Category colours: one hue per entity/document family (balanced, like the reference UI). */
+  --color-primary: #8b7cf6;
+  --color-primary-fg: #ffffff;
+  --color-cat-actor: #f0616d;
+  --color-cat-malware: #f59e5b;
+  --color-cat-technique: #6aa7ff;
+  --color-cat-cve: #e879b9;
+  --color-cat-ioc: #3cc9b4;
+  --color-cat-source: #7ea48a;
+  --color-cat-advisory: #f2c14e;
+  --color-cat-emulation: #a78bfa;
+  --color-cat-flow: #38bdf8;
+  --color-info: #6aa7ff;
+
   /* Flat, professional radius scale (cards 12px, controls 6–8px). */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -45,6 +59,20 @@
   --color-warn: #c4a574;
   --color-danger: #c56b5a;
   --color-ring: #c5d0c8;
+
+  /* Category colours: one hue per entity/document family (balanced, like the reference UI). */
+  --color-primary: #8b7cf6;
+  --color-primary-fg: #ffffff;
+  --color-cat-actor: #f0616d;
+  --color-cat-malware: #f59e5b;
+  --color-cat-technique: #6aa7ff;
+  --color-cat-cve: #e879b9;
+  --color-cat-ioc: #3cc9b4;
+  --color-cat-source: #7ea48a;
+  --color-cat-advisory: #f2c14e;
+  --color-cat-emulation: #a78bfa;
+  --color-cat-flow: #38bdf8;
+  --color-info: #6aa7ff;
 
   /* Native controls (checkboxes, selects, scrollbars) follow the theme. */
   color-scheme: dark;
@@ -83,6 +111,19 @@
   --color-warn: #96703b;
   --color-danger: #9c3f2e;
   --color-ring: #2e3831;
+
+  --color-primary: #5b4bd6;
+  --color-primary-fg: #ffffff;
+  --color-cat-actor: #d63c4b;
+  --color-cat-malware: #d26a1f;
+  --color-cat-technique: #2f6fd8;
+  --color-cat-cve: #c23d8f;
+  --color-cat-ioc: #0f9a86;
+  --color-cat-source: #3f7a52;
+  --color-cat-advisory: #a77b06;
+  --color-cat-emulation: #6d4fd8;
+  --color-cat-flow: #0f86c4;
+  --color-info: #2f6fd8;
 
   /* Liquid Glass Dynamic Tokens (Light) */
   --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, var(--glass-opacity-light, 0.78)) 0%, rgba(240, 246, 255, 0.58) 50%, rgba(225, 238, 255, 0.42) 100%);
