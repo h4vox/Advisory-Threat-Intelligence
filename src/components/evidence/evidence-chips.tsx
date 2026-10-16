@@ -11,7 +11,7 @@ import {
 } from "./evidence-utils";
 
 const chipBase =
-  "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide";
+  "inline-flex shrink-0 items-center whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-medium";
 
 export function LabelChip({ label, className }: { label: EvidenceLabel; className?: string }) {
   return (
@@ -19,9 +19,9 @@ export function LabelChip({ label, className }: { label: EvidenceLabel; classNam
       title={LABEL_HINT[label]}
       className={cn(
         chipBase,
-        label === "observed" && "border-sage/40 bg-sage/10 text-sage",
+        label === "observed" && "border-sage/40 text-sage",
         label === "inferred" && "border-dashed border-warn/50 bg-transparent text-warn",
-        label !== "observed" && label !== "inferred" && "border-border bg-bg-subtle text-muted",
+        label !== "observed" && label !== "inferred" && "border-border text-muted",
         className,
       )}
     >
@@ -35,9 +35,9 @@ export function StatusChip({ status }: { status: TargetingFact["status"] }) {
     <span
       className={cn(
         chipBase,
-        (status === "targeted" || status === "compromised") && "border-danger/40 bg-danger/10 text-danger",
-        status === "at_risk" && "border-warn/40 bg-warn/10 text-warn",
-        status === "mentioned" && "border-border bg-bg-subtle text-muted",
+        (status === "targeted" || status === "compromised") && "border-danger/50 text-danger",
+        status === "at_risk" && "border-warn/40 text-warn",
+        status === "mentioned" && "border-border text-muted",
       )}
     >
       {TARGET_STATUS_TEXT[status]}
@@ -49,15 +49,15 @@ export function ConfidenceText({ value }: { value: number | undefined }) {
   const text = formatConfidence(value);
   if (!text) return null;
   return (
-    <span className="font-mono text-[10px] text-subtle" title="Extraction confidence">
-      conf {text}
+    <span className="text-[11px] text-subtle tabular-nums" title="Extraction confidence">
+      Confidence {text}
     </span>
   );
 }
 
 export function MethodBadge({ analysis }: { analysis: IntelAnalysis | null | undefined }) {
   if (!analysis) {
-    return <span className={cn(chipBase, "border-border bg-bg-subtle text-muted")}>Not analysed</span>;
+    return <span className={cn(chipBase, "border-border text-muted")}>Not analysed</span>;
   }
   const { method, fieldOrigins } = analysis;
   const heuristicFields = Object.entries(fieldOrigins ?? {})
@@ -70,9 +70,9 @@ export function MethodBadge({ analysis }: { analysis: IntelAnalysis | null | und
         <span
           className={cn(
             chipBase,
-            method === "heuristic" && "border-border-strong bg-bg-subtle text-fg",
-            method === "llm" && "border-accent/40 bg-accent/10 text-accent",
-            method === "mixed" && "border-warn/40 bg-warn/10 text-warn",
+            method === "heuristic" && "border-border text-fg",
+            method === "llm" && "border-accent/40 text-accent",
+            method === "mixed" && "border-warn/40 text-warn",
           )}
         >
           {method === "heuristic" ? "Heuristic" : method === "llm" ? "AI" : "Mixed"}
@@ -98,7 +98,7 @@ export function EvidenceQuote({ evidence }: { evidence: Evidence }) {
   const body = (
     <>
       {evidence.section ? (
-        <span className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-subtle">
+        <span className="mb-1 block text-[11px] text-subtle">
           § {evidence.section}
         </span>
       ) : null}

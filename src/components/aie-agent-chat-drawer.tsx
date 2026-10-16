@@ -22,7 +22,6 @@ import {
   SearchX,
 } from "lucide-react";
 import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
 import { MarkdownView } from "./ui/markdown-view";
 import { ActivitySpinner } from "./ui/activity-spinner";
 import { cn } from "@/lib/cn";
@@ -345,17 +344,14 @@ export function AieAgentChatDrawer({
       {/* Copilot Header */}
       <div className="p-3.5 flex items-center justify-between shrink-0 drawer-section-header">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="relative p-2 rounded-xl bg-accent/15 border border-accent/30 text-accent shrink-0 shadow-inner backdrop-blur-xs">
-            <Bot className="size-4.5" />
-            <span className="absolute -top-0.5 -right-0.5 flex size-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
-            </span>
+          <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg">
+            <Bot className="size-[18px]" strokeWidth={1.75} />
+            <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-sage ring-2 ring-bg-card" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-fg tracking-tight">CTI Analyst Copilot</h3>
-            <div className="flex items-center gap-1.5 text-[11px] text-subtle font-mono truncate max-w-[260px]">
-              <Database className="size-3 text-accent shrink-0" />
+            <h3 className="text-sm font-medium text-fg">CTI analyst copilot</h3>
+            <div className="flex max-w-[260px] items-center gap-1.5 truncate font-mono text-[11px] text-subtle">
+              <Database className="size-3 shrink-0" />
               <span className="truncate">{cleanModel}</span>
             </div>
           </div>
@@ -366,8 +362,9 @@ export function AieAgentChatDrawer({
           <button
             type="button"
             onClick={handleStartNewSession}
-            title="Start New Investigation Thread"
-            className="p-1.5 rounded-xl text-subtle hover:text-accent hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer"
+            title="Start new investigation thread"
+            aria-label="Start new investigation thread"
+            className={iconBtn}
           >
             <PlusCircle className="size-3.5" />
           </button>
@@ -376,12 +373,11 @@ export function AieAgentChatDrawer({
           <button
             type="button"
             onClick={() => setIsSessionDropdownOpen((p) => !p)}
-            title="Active Investigation Threads"
+            title="Active investigation threads"
+            aria-label="Active investigation threads"
             className={cn(
-              "p-1.5 rounded-xl border transition-all cursor-pointer",
-              isSessionDropdownOpen
-                ? "bg-accent text-accent-fg border-accent shadow-xs"
-                : "text-subtle hover:text-fg hover:bg-bg-subtle border-transparent hover:border-border"
+              iconBtn,
+              isSessionDropdownOpen && "bg-bg-subtle text-fg"
             )}
           >
             <Clock className="size-3.5" />
@@ -392,7 +388,7 @@ export function AieAgentChatDrawer({
             type="button"
             onClick={toggleExpand}
             title={isExpanded ? "Restore default width (28vw)" : "Expand to 50% viewport width"}
-            className="p-1.5 rounded-xl text-subtle hover:text-fg hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer"
+            className={iconBtn}
           >
             {isExpanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
           </button>
@@ -401,8 +397,9 @@ export function AieAgentChatDrawer({
           <button
             type="button"
             onClick={handleClearSession}
-            title="Clear Current Thread"
-            className="p-1.5 rounded-xl text-subtle hover:text-fg hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer"
+            title="Clear current thread"
+            aria-label="Clear current thread"
+            className={iconBtn}
           >
             <Trash2 className="size-3.5" />
           </button>
@@ -411,7 +408,8 @@ export function AieAgentChatDrawer({
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-xl text-subtle hover:text-fg hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer"
+              aria-label="Close copilot"
+              className={iconBtn}
             >
               <X className="size-4" />
             </button>
@@ -421,9 +419,9 @@ export function AieAgentChatDrawer({
 
       {/* Suggested Threat Hunting Queries (Frosted Pill Chips) */}
       <div className="px-3 py-2 drawer-section-subbar overflow-x-auto shrink-0 flex items-center gap-1.5 no-scrollbar">
-        <span className="text-[10px] uppercase font-mono text-subtle shrink-0 flex items-center gap-1">
-          <Zap className="size-2.5 text-accent" />
-          Hunting:
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
+          <Zap className="size-3.5" strokeWidth={1.75} />
+          Try
         </span>
         {DEFAULT_PROMPTS.map((prompt, i) => (
           <button
@@ -431,7 +429,7 @@ export function AieAgentChatDrawer({
             type="button"
             disabled={isLoading}
             onClick={() => handleSend(prompt)}
-            className="pill-liquid-glass text-[10px] font-mono px-2.5 py-1 rounded-xl whitespace-nowrap cursor-pointer shrink-0 disabled:opacity-50"
+            className="pill-liquid-glass shrink-0 cursor-pointer whitespace-nowrap rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-xs text-muted transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
           >
             {prompt}
           </button>
@@ -454,20 +452,20 @@ export function AieAgentChatDrawer({
             >
               {/* Message Header */}
               <div className="flex items-center gap-1.5 mb-1 px-1">
-                <span className="text-[10px] font-mono text-subtle font-medium">
-                  {msg.sender === "user" ? "Analyst" : "CTI Copilot"}
+                <span className="text-[11px] font-medium text-muted">
+                  {msg.sender === "user" ? "Analyst" : "Copilot"}
                 </span>
                 {msg.model && msg.sender !== "user" && (
-                  <span className="text-[9px] font-mono text-subtle/80 max-w-[140px] truncate" title={msg.model}>
+                  <span className="max-w-[140px] truncate font-mono text-[10px] text-subtle" title={msg.model}>
                     ({msg.model})
                   </span>
                 )}
-                <span className="text-[9px] text-subtle/80">·</span>
-                <span className="text-[9px] text-subtle/80">{msg.timestamp}</span>
+                <span className="text-[10px] text-subtle">·</span>
+                <span className="text-[10px] text-subtle">{msg.timestamp}</span>
                 {msg.latencyMs && (
-                  <Badge className="text-[9px] font-mono border border-emerald-500/30 text-emerald-500 dark:text-emerald-400 px-1 py-0 ml-1">
-                    {msg.latencyMs < 1000 ? `${msg.latencyMs}ms` : `${(msg.latencyMs / 1000).toFixed(1)}s`}
-                  </Badge>
+                  <span className="text-[10px] text-subtle tabular-nums">
+                    · {msg.latencyMs < 1000 ? `${msg.latencyMs} ms` : `${(msg.latencyMs / 1000).toFixed(1)} s`}
+                  </span>
                 )}
                 <button
                   type="button"
@@ -476,37 +474,37 @@ export function AieAgentChatDrawer({
                   title="Copy response"
                 >
                   {copiedMsgId === msg.id ? (
-                    <Check className="size-2.5 text-emerald-500 dark:text-emerald-400" />
+                    <Check className="size-3 text-sage" />
                   ) : (
-                    <Copy className="size-2.5" />
+                    <Copy className="size-3" />
                   )}
                 </button>
               </div>
 
               {/* Message Bubble */}
               {msg.sender === "user" ? (
-                <div className="p-3 rounded-2xl text-xs leading-relaxed transition-all shadow-md select-text max-w-full break-words overflow-hidden bg-accent text-accent-fg font-medium rounded-br-xs font-sans shadow-sm">
+                <div className="max-w-full select-text overflow-hidden break-words rounded-xl rounded-br-sm bg-accent p-3 text-xs leading-relaxed text-accent-fg">
                   {msg.text}
                 </div>
               ) : msg.isError ? (
-                <div className="p-3.5 rounded-2xl text-xs leading-relaxed select-text max-w-full break-words overflow-hidden bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 backdrop-blur-md rounded-bl-xs font-mono">
+                <div className="max-w-full select-text overflow-hidden break-words rounded-xl rounded-bl-sm border border-danger/50 bg-danger/10 p-3.5 text-xs leading-relaxed text-danger">
                   {msg.text}
                 </div>
               ) : (
-                <div className="p-3.5 rounded-2xl text-xs leading-relaxed transition-all shadow-md select-text w-full max-w-full break-words overflow-hidden card-liquid-glass text-fg rounded-bl-xs">
+                <div className="card-liquid-glass w-full max-w-full select-text overflow-hidden break-words rounded-xl rounded-bl-sm border border-border bg-bg-card p-3.5 text-xs leading-relaxed text-fg">
                   <MarkdownView content={msg.text} />
                 </div>
               )}
 
               {/* Grounding notices */}
               {msg.sender === "agent" && msg.evidenceGap && (
-                <div className="mt-2 w-full flex items-start gap-2 px-2.5 py-2 rounded-xl border border-sky-500/30 bg-sky-500/[0.07] text-[10.5px] text-sky-700 dark:text-sky-300">
+                <div className="mt-2 flex w-full items-start gap-2 rounded-lg border border-border bg-bg-subtle px-2.5 py-2 text-[11px] text-muted">
                   <SearchX className="size-3.5 shrink-0 mt-px" />
                   <span>No library passage matched this question closely enough to cite, so no answer was generated from model knowledge.</span>
                 </div>
               )}
               {msg.sender === "agent" && msg.uncitedClaims && (
-                <div className="mt-2 w-full flex items-start gap-2 px-2.5 py-2 rounded-xl border border-amber-500/35 bg-amber-500/[0.08] text-[10.5px] text-amber-700 dark:text-amber-300">
+                <div className="mt-2 flex w-full items-start gap-2 rounded-lg border border-warn/40 bg-warn/10 px-2.5 py-2 text-[11px] text-warn">
                   <AlertTriangle className="size-3.5 shrink-0 mt-px" />
                   <span>Some statements are not backed by a cited passage. Treat uncited sentences as unverified.</span>
                 </div>
@@ -518,15 +516,15 @@ export function AieAgentChatDrawer({
                   <button
                     type="button"
                     onClick={() => toggleSource(msg.id)}
-                    className="w-full flex items-center justify-between text-[10.5px] font-mono font-medium text-accent hover:text-accent/90 cursor-pointer px-2.5 py-1.5 rounded-xl bg-accent/[0.07] border border-accent/25 backdrop-blur-sm transition-all"
+                    className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-border bg-bg-elevated px-2.5 py-1.5 text-[11px] font-medium text-fg transition-colors hover:bg-bg-subtle"
                   >
                     <div className="flex items-center gap-1.5">
-                      <FileText className="size-3 text-accent" />
+                      <FileText className="size-3.5 text-muted" strokeWidth={1.75} />
                       <span>
                         Cited evidence ({msg.sources?.length} passage{msg.sources?.length === 1 ? "" : "s"})
                       </span>
                     </div>
-                    <div className="flex items-center gap-1 text-[9px] text-accent/80 font-sans">
+                    <div className="flex items-center gap-1 text-[11px] text-muted">
                       <span>{isSourceOpen ? "Collapse" : "Expand"}</span>
                       <ChevronDown
                         className={cn(
@@ -546,19 +544,19 @@ export function AieAgentChatDrawer({
                         return (
                           <div
                             key={`${s.id}-${reportId}`}
-                            className="p-2.5 rounded-xl card-liquid-glass transition-all space-y-1.5 shadow-xs"
+                            className="card-liquid-glass space-y-1.5 rounded-lg border border-border bg-bg-card p-2.5"
                           >
                             <div className="flex items-start justify-between gap-2">
                               <Link
                                 to="/library/$reportId"
                                 params={{ reportId }}
-                                className="font-semibold text-fg text-xs hover:text-accent transition-colors line-clamp-2 min-w-0"
+                                className="line-clamp-2 min-w-0 text-xs font-medium text-fg transition-colors hover:text-accent"
                               >
                                 {s.title}
                               </Link>
-                              <Badge className="text-[9px] bg-accent/10 text-accent border border-accent/20 shrink-0 font-mono">
+                              <span className="shrink-0 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">
                                 {isPassage ? s.id : s.formattedId || reportId.slice(0, 10)}
-                              </Badge>
+                              </span>
                             </div>
                             <div className="flex items-center justify-between gap-2 text-[10px] text-subtle">
                               <span className="truncate min-w-0">
@@ -582,13 +580,13 @@ export function AieAgentChatDrawer({
                                     title="Original publication"
                                     className="text-subtle hover:text-accent"
                                   >
-                                    <ExternalLink className="size-2.5" />
+                                    <ExternalLink className="size-3" />
                                   </a>
                                 )}
                               </div>
                             </div>
                             {quote && (
-                              <blockquote className="text-[10.5px] text-muted leading-relaxed border-l-2 border-accent/40 pl-2 whitespace-pre-line break-words">
+                              <blockquote className="whitespace-pre-line break-words border-l-2 border-border pl-2 text-[11px] leading-relaxed text-muted">
                                 {quote}
                               </blockquote>
                             )}
@@ -604,9 +602,9 @@ export function AieAgentChatDrawer({
         })}
 
         {isLoading && (
-          <div className="flex items-center gap-2.5 p-3 rounded-2xl card-liquid-glass text-subtle text-xs animate-pulse mr-auto max-w-[85%] shadow-sm">
+          <div className="card-liquid-glass mr-auto flex max-w-[85%] items-center gap-2.5 rounded-xl border border-border bg-bg-card p-3 text-xs text-muted">
             <ActivitySpinner size="sm" className="text-accent shrink-0" />
-            <span>Analyzing threat data & formulating adversary intelligence response...</span>
+            <span>Analyzing threat data & formulating a response…</span>
           </div>
         )}
 
@@ -627,14 +625,15 @@ export function AieAgentChatDrawer({
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Copilot about threats, TTPs, CVEs, or campaigns..."
+              placeholder="Ask about threats, TTPs, CVEs, or campaigns…"
               disabled={isLoading}
-              className="w-full rounded-xl border border-border bg-bg-subtle px-3.5 py-2.5 text-xs text-fg placeholder:text-subtle focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none pr-10 transition-all shadow-xs"
+              className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 pr-9 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
             />
             {input && (
               <button
                 type="button"
                 onClick={() => setInput("")}
+                aria-label="Clear input"
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-subtle hover:text-fg p-0.5 cursor-pointer"
               >
                 <X className="size-3" />
@@ -647,7 +646,7 @@ export function AieAgentChatDrawer({
             size="sm"
             variant="primary"
             disabled={!input.trim() || isLoading}
-            className="h-9 px-3.5 bg-accent text-accent-fg font-medium text-xs rounded-xl gap-1.5 cursor-pointer shrink-0 shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+            className="h-9 shrink-0 cursor-pointer gap-1.5 rounded-lg px-3.5 text-sm font-medium"
           >
             {isLoading ? (
               <ActivitySpinner size="xs" />
@@ -661,19 +660,16 @@ export function AieAgentChatDrawer({
         </form>
 
         {/* Structured Session & Sandbox Status Footer */}
-        <div className="mt-2.5 pt-2 border-t border-border/40 flex items-center justify-between text-[10px] font-mono select-none gap-2">
+        <div className="mt-2.5 flex select-none items-center justify-between gap-2 border-t border-border pt-2 text-[11px]">
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
-            <span className="shrink-0 text-subtle uppercase text-[9px] font-semibold tracking-wider">Session:</span>
-            <span className="truncate text-fg font-medium tracking-tight" title={sessionId}>
-              {sessionId ? (sessionId.length > 20 ? `${sessionId.slice(0, 10)}…${sessionId.slice(-6)}` : sessionId) : "New Thread"}
+            <span className="shrink-0 text-subtle">Session</span>
+            <span className="truncate font-mono text-muted" title={sessionId}>
+              {sessionId ? (sessionId.length > 20 ? `${sessionId.slice(0, 10)}…${sessionId.slice(-6)}` : sessionId) : "New thread"}
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0 pl-1.5">
-            <span className="relative flex size-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex rounded-full size-2 bg-emerald-500" />
-            </span>
-            <span className="text-[9.5px] text-muted whitespace-nowrap">Daemon Active</span>
+            <span className="size-1.5 shrink-0 rounded-full bg-sage" />
+            <span className="whitespace-nowrap text-muted">Daemon active</span>
           </div>
         </div>
       </div>
@@ -681,7 +677,7 @@ export function AieAgentChatDrawer({
   );
 
   if (embedded) {
-    return <div className="h-96 border border-border rounded-2xl overflow-hidden flex flex-col shadow-lg card-liquid-glass">{content}</div>;
+    return <div className="card-liquid-glass flex h-96 flex-col overflow-hidden rounded-xl border border-border">{content}</div>;
   }
 
   return (
@@ -720,18 +716,14 @@ export function AieAgentChatDrawer({
 
         {/* Session Switcher Pop-out Panel (Anchored to Left of Drawer) */}
         {isSessionDropdownOpen && (
-          <div className="absolute right-full top-3 mr-2 w-80 rounded-2xl dropdown-liquid-glass p-3.5 z-40 space-y-2.5 shadow-2xl animate-in fade-in-0 slide-in-from-right-2 duration-150 border border-border/80">
+          <div className="dropdown-liquid-glass absolute right-full top-3 z-40 mr-2 w-80 space-y-2.5 rounded-xl border border-border bg-bg-card p-3.5 shadow-2xl animate-in fade-in-0 slide-in-from-right-2 duration-150">
             <div className="flex items-center justify-between px-1 pb-2 border-b border-border/60">
               <div className="flex items-center gap-1.5">
-                <Clock className="size-3.5 text-accent" />
-                <span className="text-[11px] font-semibold text-fg uppercase tracking-wider">
-                  Active Investigations
-                </span>
+                <Clock className="size-4 text-muted" strokeWidth={1.75} />
+                <span className="text-sm font-medium text-fg">Active investigations</span>
               </div>
               <div className="flex items-center gap-2">
-                <Badge className="bg-accent/15 text-accent border border-accent/30 text-[9px] font-mono px-1.5 py-0.2">
-                  {sessionsList?.sessions?.length || 0} Threads
-                </Badge>
+                <span className="text-xs text-muted tabular-nums">{sessionsList?.sessions?.length || 0} threads</span>
                 <button
                   type="button"
                   onClick={() => setIsSessionDropdownOpen(false)}
@@ -746,10 +738,10 @@ export function AieAgentChatDrawer({
             <button
               type="button"
               onClick={handleStartNewSession}
-              className="w-full py-2 px-3 rounded-xl border border-dashed border-accent/40 bg-accent/5 hover:bg-accent/10 text-accent text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              className="flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
             >
               <PlusCircle className="size-3.5" />
-              <span>Start New Investigation Thread</span>
+              <span>Start new investigation thread</span>
             </button>
 
             {/* Threads List */}
@@ -760,16 +752,14 @@ export function AieAgentChatDrawer({
                   type="button"
                   onClick={() => switchSession(s.sessionId)}
                   className={cn(
-                    "w-full text-left p-2.5 rounded-xl text-xs transition-all flex flex-col gap-1 cursor-pointer border",
-                    s.sessionId === sessionId
-                      ? "bg-accent/15 border-accent/40 text-accent font-medium shadow-xs"
-                      : "border-transparent hover:border-border hover:bg-bg-subtle text-muted hover:text-fg"
+                    "flex w-full cursor-pointer flex-col gap-1 rounded-lg p-2.5 text-left text-xs transition-colors",
+                    s.sessionId === sessionId ? "bg-bg-subtle text-fg" : "text-muted hover:bg-bg-subtle hover:text-fg"
                   )}
                 >
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="font-mono truncate">{s.sessionId}</span>
-                    <span className="text-[9px] text-subtle font-mono">
-                      {s.messageCount} msgs
+                    <span className="shrink-0 text-[10px] text-subtle tabular-nums">
+                      {s.messageCount} messages
                     </span>
                   </div>
                   <p className="text-[10px] text-subtle truncate">{s.lastMessage || "Empty thread"}</p>
@@ -787,3 +777,6 @@ export function AieAgentChatDrawer({
     </div>
   );
 }
+
+const iconBtn =
+  "flex size-8 cursor-pointer items-center justify-center rounded-lg text-subtle transition-colors hover:bg-bg-subtle hover:text-fg";

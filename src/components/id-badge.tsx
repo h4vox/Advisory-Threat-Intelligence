@@ -90,33 +90,33 @@ export function IdBadge({
       onClick={handleCopy}
       title={title || `Click to copy ${id}`}
       className={cn(
-        "group inline-flex items-center gap-1 font-mono transition-all select-all font-semibold rounded-md border text-left",
+        "group inline-flex items-center gap-1 rounded-md border font-mono font-medium text-left transition-colors select-all",
         // Sizes
         size === "xs" && "px-1.5 py-0.5 text-[10px] leading-tight",
         size === "sm" && "px-2 py-0.5 text-[11px] leading-snug",
         size === "md" && "px-2.5 py-1 text-xs leading-normal",
         // Interactive state
-        copyable && "cursor-pointer hover:shadow-xs active:scale-95",
+        copyable && "cursor-pointer",
         // Tones
         effectiveTone === "sage" &&
-          "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:border-emerald-500/50 hover:bg-emerald-500/20",
+          "border-sage/30 bg-transparent text-sage hover:bg-sage/10",
         effectiveTone === "warn" &&
-          "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:border-amber-500/50 hover:bg-amber-500/20",
+          "border-warn/30 bg-transparent text-warn hover:bg-warn/10",
         effectiveTone === "danger" &&
-          "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:border-rose-500/50 hover:bg-rose-500/20",
+          "border-danger/40 bg-transparent text-danger hover:bg-danger/10",
         effectiveTone === "accent" &&
-          "border-accent/40 bg-accent/10 text-accent hover:border-accent hover:bg-accent/20",
+          "border-accent/30 bg-transparent text-accent hover:bg-accent/10",
         effectiveTone === "neutral" &&
-          "border-border/70 bg-bg-elevated/70 text-subtle hover:border-border hover:text-fg hover:bg-bg-subtle",
+          "border-border bg-transparent text-muted hover:bg-bg-subtle hover:text-fg",
         className,
       )}
     >
-      {prefixLabel && <span className="opacity-60 text-[9px] uppercase tracking-wider">{prefixLabel}</span>}
+      {prefixLabel && <span className="font-sans text-[10px] font-normal text-subtle">{prefixLabel}</span>}
       <span>{label || id}</span>
       {copyable && showCopyIcon && (
         <span className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5">
           {copied ? (
-            <Check className={cn("text-emerald-400 animate-in zoom-in-50", size === "xs" ? "size-2.5" : "size-3")} />
+            <Check className={cn("text-sage", size === "xs" ? "size-2.5" : "size-3")} />
           ) : (
             <Copy className={size === "xs" ? "size-2.5" : "size-3"} />
           )}

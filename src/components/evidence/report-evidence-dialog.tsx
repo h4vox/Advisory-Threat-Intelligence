@@ -28,10 +28,10 @@ export function ReportEvidenceDialog({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[1px]" />
-        <Dialog.Content className="fixed inset-x-2 top-[4vh] bottom-[4vh] z-40 mx-auto flex max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-bg shadow-xl sm:inset-x-6">
+        <Dialog.Content className="fixed inset-x-2 top-[4vh] bottom-[4vh] z-40 mx-auto flex max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-bg-card shadow-xl sm:inset-x-6">
           <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
             <div className="min-w-0">
-              <Dialog.Title className="text-sm font-semibold text-fg">Evidence</Dialog.Title>
+              <Dialog.Title className="text-base font-medium text-fg">Evidence</Dialog.Title>
               <Dialog.Description className="truncate text-xs text-muted">{title}</Dialog.Description>
             </div>
             <div className="flex shrink-0 items-center gap-2">

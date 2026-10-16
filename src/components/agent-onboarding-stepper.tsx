@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/ui/primitives";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import {
@@ -169,36 +169,30 @@ export function AgentOnboardingStepper({
   return (
     <div className={cn("space-y-4 text-fg", className)}>
       {/* Executive Overview Header Card */}
-      <div className="p-4 rounded-2xl border border-border/80 bg-bg-subtle/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+      <div className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-bg-card p-4 sm:flex-row sm:items-center">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-sm font-semibold text-fg">
+            <h3 className="text-sm font-medium text-fg">
               {status?.agentName || "Autonomous Threat Intelligence Agent"}
             </h3>
             {isCompleted ? (
-              <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] gap-1">
-                <CheckCircle2 className="size-3" />
-                Operational · Vault Synchronized
-              </Badge>
+              <StatusChip tone="success" dot>
+                Operational · vault synchronized
+              </StatusChip>
             ) : isWaitingForAuth ? (
-              <Badge className="bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] gap-1 animate-pulse">
-                <Shield className="size-3" />
-                Authentication Required (Step 7/10)
-              </Badge>
+              <StatusChip tone="warning" dot>
+                Authentication required (step 7 of 10)
+              </StatusChip>
             ) : (
-              <Badge className="bg-accent/10 text-accent border border-accent/20 text-[10px]">
-                Onboarding Step {status?.stepNumber || 1} of 10
-              </Badge>
+              <StatusChip>Onboarding step {status?.stepNumber || 1} of 10</StatusChip>
             )}
 
             {isCompleted && (
-              <Badge className="bg-accent/10 text-accent border border-accent/20 font-mono text-[10px]">
-                {activeModelDisplay}
-              </Badge>
+              <span className="font-mono text-[11px] text-muted">{activeModelDisplay}</span>
             )}
           </div>
           <p className="text-xs text-subtle mt-0.5">
-            Dedicated Container Sandbox · Zero Host Dependencies · PKCE S256 Guarded
+            Dedicated container sandbox · zero host dependencies · PKCE S256 guarded
           </p>
         </div>
 
@@ -208,10 +202,10 @@ export function AgentOnboardingStepper({
             size="sm"
             variant="secondary"
             onClick={() => setIsDropdownOpen((prev) => !prev)}
-            className="text-xs h-8 gap-1.5 border-border hover:bg-bg-subtle text-muted hover:text-fg cursor-pointer"
+            className="h-8 cursor-pointer gap-1.5 rounded-lg text-xs"
           >
-            <Layers className="size-3.5 text-accent" />
-            <span>{isDropdownOpen ? "Collapse Pipeline" : "Inspect Pipeline Steps (10)"}</span>
+            <Layers className="size-3.5" strokeWidth={1.75} />
+            <span>{isDropdownOpen ? "Collapse pipeline" : "Inspect pipeline steps (10)"}</span>
             <ChevronDown
               className={cn("size-3.5 transition-transform duration-200", isDropdownOpen && "rotate-180")}
             />
@@ -226,9 +220,9 @@ export function AgentOnboardingStepper({
               className="text-xs h-8 gap-1.5 cursor-pointer"
             >
               <RefreshCw
-                className={cn("size-3.5 text-accent", testConnectionMutation.isPending && "animate-spin")}
+                className={cn("size-3.5", testConnectionMutation.isPending && "animate-spin")}
               />
-              <span>{testConnectionMutation.isPending ? "Probing..." : "Test Connection"}</span>
+              <span>{testConnectionMutation.isPending ? "Probing…" : "Test connection"}</span>
             </Button>
           )}
 
@@ -248,11 +242,11 @@ export function AgentOnboardingStepper({
 
       {/* Collapsible 10-Step Pipeline Dropdown Accordion */}
       {isDropdownOpen && (
-        <div className="p-4 rounded-2xl border border-border/80 bg-bg-card shadow-xs space-y-4 animate-in fade-in-50 duration-200">
+        <div className="space-y-4 rounded-xl border border-border bg-bg-card p-4 animate-in fade-in-50 duration-200">
           <div className="flex items-center justify-between text-xs">
-            <span className="font-medium text-subtle">Pipeline Diagnostic Verification</span>
-            <span className="font-mono text-accent font-semibold">
-              {isCompleted ? "10/10 Verified (100%)" : `Step ${status?.stepNumber || 1}/10`}
+            <span className="text-sm font-medium text-fg">Pipeline diagnostic verification</span>
+            <span className="text-muted tabular-nums">
+              {isCompleted ? "10 of 10 verified" : `Step ${status?.stepNumber || 1} of 10`}
             </span>
           </div>
 
@@ -261,7 +255,7 @@ export function AgentOnboardingStepper({
             <div
               className={cn(
                 "h-full transition-all duration-500",
-                isCompleted ? "bg-emerald-500" : isError ? "bg-rose-500" : "bg-accent"
+                isCompleted ? "bg-sage" : isError ? "bg-danger" : "bg-accent"
               )}
               style={{ width: `${isCompleted ? 100 : ((status?.stepNumber || 1) / 10) * 100}%` }}
             />
@@ -277,21 +271,21 @@ export function AgentOnboardingStepper({
                 <div
                   key={step.id}
                   className={cn(
-                    "flex items-center gap-2.5 p-2 rounded-xl border text-xs transition-colors",
-                    isCurrent && "border-accent/40 bg-accent/5",
-                    stepState === "completed" && "border-emerald-500/20 bg-emerald-500/5 text-fg",
-                    stepState === "pending" && "border-transparent bg-transparent text-subtle/70",
-                    stepState === "error" && "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                    "flex items-center gap-2.5 rounded-lg p-2 text-xs transition-colors",
+                    isCurrent && "bg-bg-subtle",
+                    stepState === "completed" && "text-fg",
+                    stepState === "pending" && "text-subtle",
+                    stepState === "error" && "bg-danger/10 text-danger"
                   )}
                 >
                   {/* Status Indicator Icon */}
                   <div
                     className={cn(
-                      "size-5 rounded-full flex items-center justify-center text-[10px] shrink-0 font-medium",
-                      stepState === "completed" && "bg-emerald-500 text-white shadow-xs",
-                      stepState === "in_progress" && "bg-accent text-white animate-pulse shadow-xs",
-                      stepState === "pending" && "bg-bg-subtle text-subtle border border-border",
-                      stepState === "error" && "bg-rose-500 text-white"
+                      "flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium tabular-nums",
+                      stepState === "completed" && "bg-sage/20 text-sage",
+                      stepState === "in_progress" && "bg-accent/20 text-accent",
+                      stepState === "pending" && "border border-border bg-bg-subtle text-subtle",
+                      stepState === "error" && "bg-danger/20 text-danger"
                     )}
                   >
                     {stepState === "completed" ? (
@@ -308,7 +302,7 @@ export function AgentOnboardingStepper({
                     <div
                       className={cn(
                         "truncate font-medium",
-                        isCurrent && "text-accent font-semibold",
+                        isCurrent && "text-fg",
                         stepState === "completed" && "text-fg",
                         stepState === "pending" && "text-subtle"
                       )}
@@ -318,9 +312,7 @@ export function AgentOnboardingStepper({
                   </div>
 
                   {isCurrent && (
-                    <Badge className="text-[9px] px-1.5 py-0 bg-accent text-white shrink-0">
-                      Active
-                    </Badge>
+                    <StatusChip tone="info">Active</StatusChip>
                   )}
                 </div>
               );
@@ -330,13 +322,13 @@ export function AgentOnboardingStepper({
       )}
 
       {/* Active Interactive Action Area */}
-      <div className="p-4 rounded-2xl border border-border/90 bg-bg-card shadow-sm space-y-4">
+      <div className="space-y-4 rounded-xl border border-border bg-bg-card p-4">
         {/* Error Alert */}
         {isError && (
-          <div className="p-3.5 rounded-xl border border-rose-500/30 bg-rose-500/10 flex items-start gap-3 text-xs text-rose-300">
-            <AlertCircle className="size-4 shrink-0 text-rose-400 mt-0.5" />
+          <div className="flex items-start gap-3 rounded-lg border border-danger/50 bg-danger/10 p-3.5 text-xs text-danger">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
             <div className="grow space-y-1">
-              <div className="font-semibold text-rose-200">Onboarding Step Interrupted</div>
+              <div className="font-medium">Onboarding step interrupted</div>
               <p className="leading-relaxed">{status?.error || status?.message}</p>
             </div>
             <Button
@@ -344,9 +336,9 @@ export function AgentOnboardingStepper({
               variant="secondary"
               disabled={advanceMutation.isPending}
               onClick={() => advanceMutation.mutate(selectedMethodId)}
-              className="text-xs h-7 border-rose-500/30 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
+              className="h-7 cursor-pointer text-xs"
             >
-              Retry Step
+              Retry step
             </Button>
           </div>
         )}
@@ -354,7 +346,7 @@ export function AgentOnboardingStepper({
         {/* Step 5: Choose Auth Method */}
         {status?.stepNumber === 5 && (
           <div className="space-y-3">
-            <div className="font-medium text-xs text-subtle">Choose Authentication Option:</div>
+            <div className="text-sm font-medium text-fg">Choose an authentication option</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {status.supportedAuthMethods.map((m) => (
                 <button
@@ -362,18 +354,14 @@ export function AgentOnboardingStepper({
                   type="button"
                   onClick={() => setSelectedMethodId(m.id)}
                   className={cn(
-                    "p-3 rounded-xl border text-left space-y-1 transition-all cursor-pointer",
-                    selectedMethodId === m.id
-                      ? "border-accent bg-accent/10 shadow-xs"
-                      : "border-border hover:border-border/80 bg-bg-subtle/50"
+                    "cursor-pointer space-y-1 rounded-lg border p-3 text-left transition-colors",
+                    selectedMethodId === m.id ? "border-accent bg-bg-subtle" : "border-border bg-bg-elevated hover:bg-bg-subtle"
                   )}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-xs text-fg">{m.name}</span>
+                    <span className="text-sm font-medium text-fg">{m.name}</span>
                     {m.isRecommended && (
-                      <Badge className="text-[9px] bg-accent/20 text-accent border border-accent/30">
-                        Recommended
-                      </Badge>
+                      <StatusChip tone="info">Recommended</StatusChip>
                     )}
                   </div>
                   <p className="text-[11px] text-subtle leading-relaxed">{m.description}</p>
@@ -386,16 +374,16 @@ export function AgentOnboardingStepper({
               variant="primary"
               disabled={advanceMutation.isPending}
               onClick={() => advanceMutation.mutate(selectedMethodId)}
-              className="text-xs h-8 gap-1.5 bg-accent text-white font-medium cursor-pointer"
+              className="h-8 cursor-pointer gap-1.5 text-xs font-medium"
             >
               {advanceMutation.isPending ? (
                 <>
                   <ActivitySpinner size="xs" />
-                  <span>Generating Session...</span>
+                  <span>Generating session…</span>
                 </>
               ) : (
                 <>
-                  <span>Continue with {selectedMethodId === "google_oauth" ? "Google OAuth" : "API Key"}</span>
+                  <span>Continue with {selectedMethodId === "google_oauth" ? "Google OAuth" : "API key"}</span>
                 </>
               )}
             </Button>
@@ -405,15 +393,15 @@ export function AgentOnboardingStepper({
         {/* Step 7: Waiting for Authentication */}
         {isWaitingForAuth && (
           <div className="space-y-4">
-            <div className="p-4 rounded-xl border border-accent/20 bg-accent/5 space-y-3">
+            <div className="space-y-3 rounded-lg border border-border bg-bg-subtle/50 p-4">
               <div className="flex items-center justify-between">
-                <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                  <Shield className="size-4 text-accent" />
-                  <span>Google Account Single Sign-On (PKCE Flow)</span>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+                  <Shield className="size-4 text-muted" strokeWidth={1.75} />
+                  <span>Google account single sign-on (PKCE flow)</span>
                 </div>
-                <Badge className="text-[10px] border border-accent/30 text-accent font-mono">
-                  PKCE Challenge Active
-                </Badge>
+                <StatusChip tone="info" dot>
+                  PKCE challenge active
+                </StatusChip>
               </div>
 
               <p className="text-xs text-muted leading-relaxed">
@@ -425,10 +413,10 @@ export function AgentOnboardingStepper({
                   href={status.authUrl || "#"}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-accent text-white font-medium text-xs hover:bg-accent/90 transition-all shadow-xs cursor-pointer"
+                  className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg bg-accent px-3.5 text-sm font-medium text-accent-fg transition-opacity hover:opacity-90"
                 >
                   <ExternalLink className="size-3.5" />
-                  <span>Open Google OAuth Authorization Portal</span>
+                  <span>Open Google authorization portal</span>
                 </a>
               </div>
             </div>
@@ -436,37 +424,37 @@ export function AgentOnboardingStepper({
             {/* Code Input Field */}
             <div className="space-y-2">
               <label className="block text-xs font-medium text-subtle">
-                Paste Google Authorization Code:
+                Paste Google authorization code
               </label>
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <Input
                   placeholder="Paste authorization code (starts with 4/0...) or callback URL..."
                   value={authCodeInput}
                   onChange={(e) => setAuthCodeInput(e.target.value)}
-                  className="font-mono text-xs bg-bg-subtle grow"
+                  className="h-9 grow rounded-lg border-border bg-bg-elevated font-mono text-xs"
                 />
                 <Button
                   size="sm"
                   variant="primary"
                   disabled={!authCodeInput.trim() || submitCodeMutation.isPending}
                   onClick={() => submitCodeMutation.mutate(authCodeInput)}
-                  className="text-xs h-9 px-4 bg-accent text-white font-medium shrink-0 cursor-pointer"
+                  className="h-9 shrink-0 cursor-pointer px-4 text-xs font-medium"
                 >
                   {submitCodeMutation.isPending ? (
                     <>
                       <ActivitySpinner size="xs" />
-                      <span>Verifying Token...</span>
+                      <span>Verifying token…</span>
                     </>
                   ) : (
                     <>
                       <Check className="size-3.5" />
-                      <span>Submit Code & Connect</span>
+                      <span>Submit code & connect</span>
                     </>
                   )}
                 </Button>
               </div>
               <p className="text-[11px] text-subtle">
-                Once submitted, credentials are encrypted directly into the containerized vault volume (<code className="text-accent font-mono">aie-agent-vault</code>).
+                Once submitted, credentials are encrypted directly into the containerized vault volume (<code className="font-mono text-muted">aie-agent-vault</code>).
               </p>
             </div>
           </div>
@@ -474,16 +462,14 @@ export function AgentOnboardingStepper({
 
         {/* Step 10: Onboarding Completed State with Enterprise Model Switcher */}
         {isCompleted && (
-          <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 space-y-3">
+          <div className="space-y-3 rounded-lg border border-sage/40 bg-sage/5 p-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
+              <div className="flex items-center gap-2 text-sm font-medium text-sage">
                 <CheckCircle2 className="size-4" />
-                <span>Agent Engine Active & Warm-Initialized</span>
+                <span>Agent engine active & warm-initialized</span>
               </div>
               {status.latencyMs && (
-                <Badge className="text-[10px] font-mono border border-emerald-500/30 text-emerald-400 bg-emerald-500/10">
-                  {status.latencyMs}ms roundtrip
-                </Badge>
+                <span className="text-xs text-muted tabular-nums">{status.latencyMs} ms roundtrip</span>
               )}
             </div>
 
@@ -494,14 +480,14 @@ export function AgentOnboardingStepper({
             {/* Model Selector listing only verified AGY models */}
             <div className="pt-2 flex flex-col sm:flex-row sm:items-center gap-3">
               <label className="text-xs font-medium text-subtle shrink-0 flex items-center gap-1.5">
-                <Sparkles className="size-3 text-accent" />
-                <span>Active Model:</span>
+                <Sparkles className="size-3.5" strokeWidth={1.75} />
+                <span>Active model</span>
               </label>
               <select
                 value={activeModelDisplay}
                 onChange={(e) => setModelMutation.mutate(e.target.value)}
                 disabled={setModelMutation.isPending}
-                className="rounded-lg border border-border bg-bg-subtle px-3 py-1.5 text-xs text-fg focus:border-accent focus:outline-none max-w-sm"
+                className="h-9 max-w-sm rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none"
               >
                 {AGY_AVAILABLE_MODELS.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -510,9 +496,9 @@ export function AgentOnboardingStepper({
                 ))}
               </select>
               {setModelMutation.isPending && (
-                <span className="text-[11px] text-accent flex items-center gap-1">
+                <span className="flex items-center gap-1 text-[11px] text-muted">
                   <ActivitySpinner size="xs" />
-                  Updating model...
+                  Updating model…
                 </span>
               )}
             </div>
@@ -530,17 +516,17 @@ export function AgentOnboardingStepper({
               variant="primary"
               disabled={advanceMutation.isPending}
               onClick={() => advanceMutation.mutate(selectedMethodId)}
-              className="text-xs h-8 gap-1.5 bg-accent text-white font-medium cursor-pointer"
+              className="h-8 cursor-pointer gap-1.5 text-xs font-medium"
             >
               {advanceMutation.isPending ? (
                 <>
                   <ActivitySpinner size="xs" />
-                  <span>Starting Sandbox...</span>
+                  <span>Starting sandbox…</span>
                 </>
               ) : (
                 <>
                   <Sparkles className="size-3.5" />
-                  <span>Start Agent Onboarding</span>
+                  <span>Start agent onboarding</span>
                 </>
               )}
             </Button>

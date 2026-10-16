@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
-import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
@@ -61,11 +61,11 @@ export const Route = createFileRoute("/settings")({
 });
 
 const SETTINGS_SECTIONS = [
-  { id: "crawler", label: "Crawler & Ingestion", icon: Bot, badge: "Engine" },
-  { id: "policy", label: "Intelligence Policies", icon: Shield, badge: "SOC" },
-  { id: "storage", label: "Database & Storage", icon: Database, badge: "Storage" },
-  { id: "display", label: "Display & Preferences", icon: Sliders, badge: "UI" },
-  { id: "agent", label: "AI Agent", icon: Sparkles, badge: "AGY" },
+  { id: "crawler", label: "Crawler & ingestion", icon: Bot, badge: "Engine" },
+  { id: "policy", label: "Intelligence policies", icon: Shield, badge: "SOC" },
+  { id: "storage", label: "Database & storage", icon: Database, badge: "Storage" },
+  { id: "display", label: "Display & preferences", icon: Sliders, badge: "UI" },
+  { id: "agent", label: "AI agent", icon: Sparkles, badge: "AGY" },
 ] as const;
 
 const INTERVAL_PRESETS = [
@@ -259,8 +259,8 @@ function SettingsPage() {
     window.dispatchEvent(new Event("aie-theme-changed"));
     toast.success(
       nextTheme === "dark"
-        ? "Dark Mode (OLED / Midnight) enabled"
-        : "Light Mode enabled"
+        ? "Dark mode enabled"
+        : "Light mode enabled"
     );
   };
 
@@ -334,11 +334,11 @@ function SettingsPage() {
       void qc.invalidateQueries({ queryKey: ["crawlerState"] });
       void qc.invalidateQueries({ queryKey: ["dashboard"] });
       if (res.triggered) {
-        toast.success(`Autonomous Scheduled Scan Dispatched!`, {
+        toast.success(`Autonomous scheduled scan dispatched`, {
           description: `Job ID: ${res.jobId?.slice(0, 16)} · Next run at ${res.nextRunAt ? new Date(res.nextRunAt).toLocaleTimeString() : "scheduled interval"}`,
         });
       } else {
-        toast.info(`Scheduler Status: ${res.reason}`, {
+        toast.info(`Scheduler status: ${res.reason}`, {
           description: res.nextRunAt
             ? `Next autonomous scan scheduled for: ${new Date(res.nextRunAt).toLocaleTimeString()}`
             : undefined,
@@ -370,21 +370,21 @@ function SettingsPage() {
               <span>
                 Configure acquisition pipelines, qualification thresholds, retention policies, and database telemetry.
               </span>
-              <span className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px]">
+              <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                 {isDirty ? (
                   <span className="flex items-center gap-1.5 text-warn">
-                    <span className="size-2 rounded-full bg-warn animate-pulse" />
-                    Unsaved modifications pending
+                    <span className="size-2 rounded-full bg-warn " />
+                    Unsaved changes
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 text-subtle">
-                    <CheckCircle2 className="size-3.5 text-emerald-500" />
-                    All configurations synced to Database
+                    <CheckCircle2 className="size-3.5 text-sage" />
+                    All configurations synced to database
                   </span>
                 )}
                 <span className="flex items-center gap-1.5 text-subtle">
-                  <span className="size-1.5 rounded-full bg-emerald-500" />
-                  Primary Storage: <span className="text-accent">Cloud Database Cluster</span>
+                  <span className="size-1.5 rounded-full bg-sage" />
+                  Primary storage: <span className="text-fg">Cloud database cluster</span>
                 </span>
               </span>
             </span>
@@ -397,7 +397,7 @@ function SettingsPage() {
                 onClick={() => purgeMutation.mutate()}
                 title="Flush in-memory caches to force fresh retrieval from Database"
               >
-                {purgeMutation.isPending ? "Purging..." : "Purge Cache"}
+                {purgeMutation.isPending ? "Purging…" : "Purge cache"}
               </ActionButton>
               {isDirty && (
                 <ActionButton icon={RotateCcw} onClick={handleReset}>
@@ -410,7 +410,7 @@ function SettingsPage() {
                 disabled={!isDirty || saveMutation.isPending}
                 onClick={() => saveMutation.mutate()}
               >
-                {saveMutation.isPending ? "Saving to DB..." : "Save Changes"}
+                {saveMutation.isPending ? "Saving to DB…" : "Save changes"}
               </ActionButton>
             </>
           }
@@ -423,12 +423,12 @@ function SettingsPage() {
               "sticky top-2 z-20 mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3 transition-all",
               uiStyle === "liquid-glass"
                 ? "sticky-liquid-glass"
-                : "border border-border bg-bg/95 backdrop-blur-md shadow-xs",
+                : "border border-border bg-bg/95 backdrop-blur-md ",
             )}
           >
-            <span className="flex items-center gap-1.5 font-mono text-xs text-warn">
-              <span className="size-2 rounded-full bg-warn animate-pulse" />
-              Unsaved modifications pending
+            <span className="flex items-center gap-1.5 text-sm text-warn">
+              <span className="size-2 rounded-full bg-warn " />
+              Unsaved changes
             </span>
             <div className="flex items-center gap-2">
               <ActionButton icon={RotateCcw} onClick={handleReset}>
@@ -440,7 +440,7 @@ function SettingsPage() {
                 disabled={saveMutation.isPending}
                 onClick={() => saveMutation.mutate()}
               >
-                {saveMutation.isPending ? "Saving to DB..." : "Save Changes"}
+                {saveMutation.isPending ? "Saving to DB…" : "Save changes"}
               </ActionButton>
             </div>
           </div>
@@ -476,7 +476,7 @@ function SettingsPage() {
                     {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent" />}
                     <sec.icon className={cn("size-4 shrink-0", active ? "text-accent" : "text-muted")} />
                     <span className="min-w-0 flex-1 truncate">{sec.label}</span>
-                    <span className="rounded bg-bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-subtle">
+                    <span className="text-[11px] text-subtle">
                       {sec.badge}
                     </span>
                   </button>
@@ -494,67 +494,67 @@ function SettingsPage() {
         {activeSection === "crawler" && (
           <div className="space-y-6">
             {/* Section 1.1: Autonomous Schedule & Execution Limits */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-3">
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-sm font-medium flex items-center gap-2">
-                    <Activity className="size-4 text-accent" />
-                    Autonomous Acquisition & Schedule Engine
+                  <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                    <Activity className="size-4 text-muted" strokeWidth={1.75} />
+                    Autonomous acquisition & schedule engine
                   </h3>
                   <p className="text-xs text-muted">
                     Control the autonomous crawler scheduler, concurrency limit, and traversal depth.
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs font-mono cursor-pointer">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       checked={currentCrawl.enabled ?? true}
                       onChange={(e) => updateCrawlField("enabled", e.target.checked)}
-                      className="size-4 accent-accent"
+                      className={switchCls}
                     />
-                    <span>Master Scheduler Enabled</span>
+                    <span>Master scheduler enabled</span>
                   </label>
-                  <label className="flex items-center gap-2 text-xs font-mono cursor-pointer">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       checked={currentCrawl.paused ?? false}
                       onChange={(e) => updateCrawlField("paused", e.target.checked)}
-                      className="size-4 accent-warn"
+                      className={switchCls}
                     />
-                    <span className={currentCrawl.paused ? "text-warn" : "text-muted"}>Pause Jobs</span>
+                    <span className={currentCrawl.paused ? "text-warn" : "text-muted"}>Pause jobs</span>
                   </label>
                 </div>
               </div>
 
               {/* Live Autonomous Scheduler Telemetry & Trigger Card */}
-              <div className="p-3.5 rounded-lg border border-border bg-bg-subtle/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex flex-col justify-between gap-3 rounded-lg bg-bg-subtle/60 p-3.5 md:flex-row md:items-center">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
                         "size-2 rounded-full",
-                        !currentCrawl.enabled ? "bg-muted" : currentCrawl.paused ? "bg-warn" : "bg-sage animate-pulse"
+                        !currentCrawl.enabled ? "bg-muted" : currentCrawl.paused ? "bg-warn" : "bg-sage "
                       )}
                     />
-                    <span className="text-xs font-semibold font-mono">
+                    <span className="text-sm font-medium text-fg">
                       {!currentCrawl.enabled
-                        ? "Autonomous Daemon: DISABLED"
+                        ? "Autonomous daemon: disabled"
                         : currentCrawl.paused
-                          ? "Autonomous Daemon: PAUSED"
-                          : `Autonomous Daemon: ACTIVE (Cadence: every ${formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)})`}
+                          ? "Autonomous daemon: paused"
+                          : `Autonomous daemon: active (every ${formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)})`}
                     </span>
                   </div>
-                  <div className="text-[11px] text-muted flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
                     <span>
-                      Last Run:{" "}
+                      Last run:{" "}
                       <span className="text-fg">
                         {currentCrawl.lastRunAt ? new Date(currentCrawl.lastRunAt).toLocaleString() : "Never run"}
                       </span>
                     </span>
                     <span>
-                      Next Scheduled Run:{" "}
-                      <span className="text-accent font-medium">
+                      Next scheduled run:{" "}
+                      <span className="font-medium text-fg">
                         {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
                       </span>
                     </span>
@@ -569,15 +569,15 @@ function SettingsPage() {
                   className="text-xs shrink-0 gap-1.5"
                 >
                   <Play className="size-3 text-accent" />
-                  <span>{checkScheduleMutation.isPending ? "Evaluating Schedule..." : "Evaluate / Test Schedule"}</span>
+                  <span>{checkScheduleMutation.isPending ? "Evaluating schedule…" : "Evaluate / test schedule"}</span>
                 </Button>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Crawl Interval</label>
-                    <span className="font-mono text-accent font-semibold">
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Crawl interval</label>
+                    <span className="font-medium text-fg tabular-nums">
                       {formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)}
                     </span>
                   </div>
@@ -599,7 +599,7 @@ function SettingsPage() {
                           type="button"
                           onClick={() => updateCrawlField("frequencyMinutes", p.mins)}
                           className={cn(
-                            "px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors cursor-pointer",
+                            "cursor-pointer rounded-md border px-2 py-0.5 text-[11px] transition-colors",
                             isSelected
                               ? "border-accent bg-accent/15 text-accent font-semibold"
                               : "border-border bg-bg-subtle/30 text-muted hover:border-border-hover hover:text-fg"
@@ -614,9 +614,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Parallel Fetch Workers</label>
-                    <span className="font-mono text-accent">{currentCrawl.concurrency ?? 4} workers</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Parallel fetch workers</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.concurrency ?? 4} workers</span>
                   </div>
                   <input
                     type="range"
@@ -627,7 +627,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("concurrency", parseInt(e.target.value, 10))}
                     className="w-full accent-accent cursor-pointer"
                   />
-                  <div className="flex justify-between text-[10px] font-mono text-subtle">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>1 (sequential)</span>
                     <span>4 (recommended)</span>
                     <span>8 (high-throughput)</span>
@@ -635,9 +635,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Polite Per-Domain Delay</label>
-                    <span className="font-mono text-accent">{currentCrawl.rateLimitMs ?? 150}ms</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Polite per-domain delay</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.rateLimitMs ?? 150}ms</span>
                   </div>
                   <input
                     type="range"
@@ -648,7 +648,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("rateLimitMs", parseInt(e.target.value, 10))}
                     className="w-full accent-accent cursor-pointer"
                   />
-                  <div className="flex justify-between text-[10px] font-mono text-subtle">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>50ms (ultra-fast)</span>
                     <span>150ms (optimal)</span>
                     <span>500ms (polite)</span>
@@ -658,9 +658,9 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-3 border-t border-border">
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Max Resources Per Run</label>
-                    <span className="font-mono text-accent">
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Max resources per run</label>
+                    <span className="text-muted tabular-nums">
                       {currentCrawl.maxResourcesPerJob ?? currentCrawl.maxResourcesPerRun ?? 35} URLs
                     </span>
                   </div>
@@ -677,7 +677,7 @@ function SettingsPage() {
                     }}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] text-subtle font-mono">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>15 min</span>
                     <span>35 default</span>
                     <span>150 max</span>
@@ -685,12 +685,12 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between text-sm">
                     <label className="font-medium flex items-center gap-1.5">
                       <Clock className="size-3.5 text-accent" />
-                      <span>Crawl Job Time Limit</span>
+                      <span>Crawl job time limit</span>
                     </label>
-                    <span className="font-mono text-accent">
+                    <span className="text-muted tabular-nums">
                       {currentCrawl.maxRunTimeMinutes ?? 5} min
                     </span>
                   </div>
@@ -703,7 +703,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("maxRunTimeMinutes", parseInt(e.target.value, 10))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] text-subtle font-mono">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>1m (quick)</span>
                     <span>5m (balanced)</span>
                     <span>20m (deep)</span>
@@ -711,9 +711,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Per-Domain Cap</label>
-                    <span className="font-mono text-accent">{currentCrawl.maxResourcesPerDomain ?? 8} max</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Per-domain cap</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.maxResourcesPerDomain ?? 8} max</span>
                   </div>
                   <input
                     type="range"
@@ -724,7 +724,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("maxResourcesPerDomain", parseInt(e.target.value, 10))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] text-subtle font-mono">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>2 min</span>
                     <span>8 default</span>
                     <span>25 max</span>
@@ -732,9 +732,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Max Graph Depth</label>
-                    <span className="font-mono text-accent">{currentCrawl.maxDepth ?? 3} hops</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Max graph depth</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.maxDepth ?? 3} hops</span>
                   </div>
                   <input
                     type="range"
@@ -745,7 +745,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("maxDepth", parseInt(e.target.value, 10))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] text-subtle font-mono">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>1 shallow</span>
                     <span>3 default</span>
                     <span>5 deep</span>
@@ -755,77 +755,77 @@ function SettingsPage() {
             </div>
 
             {/* Section 1.2: Discovery Channels & Spidering Protocols */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <Compass className="size-4 text-accent" />
-                Discovery Channels & Spidering Protocols
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <Compass className="size-4 text-muted" strokeWidth={1.75} />
+                Discovery channels & spidering protocols
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-bg-subtle/20">
+                <div className="flex items-center justify-between rounded-lg bg-bg-subtle/60 p-3">
                   <div>
-                    <label className="text-xs font-medium block">Continuous RSS & Atom Feeds</label>
+                    <label className="text-xs font-medium block">Continuous RSS & Atom feeds</label>
                     <span className="text-[11px] text-muted">Real-time CTI feed polling from monitored sources</span>
                   </div>
                   <input
                     type="checkbox"
                     checked={currentCrawl.rssDiscovery !== false}
                     onChange={(e) => updateCrawlField("rssDiscovery", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-bg-subtle/20">
+                <div className="flex items-center justify-between rounded-lg bg-bg-subtle/60 p-3">
                   <div>
-                    <label className="text-xs font-medium block">Homepage Permalink Scraping</label>
+                    <label className="text-xs font-medium block">Homepage permalink scraping</label>
                     <span className="text-[11px] text-muted">Extract new technical reports from source landing pages</span>
                   </div>
                   <input
                     type="checkbox"
                     checked={currentCrawl.htmlDiscovery !== false}
                     onChange={(e) => updateCrawlField("htmlDiscovery", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-bg-subtle/20">
+                <div className="flex items-center justify-between rounded-lg bg-bg-subtle/60 p-3">
                   <div>
-                    <label className="text-xs font-medium block">Search-Driven Discovery Vectors</label>
+                    <label className="text-xs font-medium block">Search-driven discovery vectors</label>
                     <span className="text-[11px] text-muted">Generate dynamic search queries for emerging campaigns</span>
                   </div>
                   <input
                     type="checkbox"
                     checked={currentCrawl.searchDiscovery !== false}
                     onChange={(e) => updateCrawlField("searchDiscovery", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-bg-subtle/20">
+                <div className="flex items-center justify-between rounded-lg bg-bg-subtle/60 p-3">
                   <div>
-                    <label className="text-xs font-medium block">Recursive Outlink Deep Spidering</label>
+                    <label className="text-xs font-medium block">Recursive outlink deep spidering</label>
                     <span className="text-[11px] text-muted">Traverse technical citations and links referenced in reports</span>
                   </div>
                   <input
                     type="checkbox"
                     checked={currentCrawl.recursiveDiscovery !== false}
                     onChange={(e) => updateCrawlField("recursiveDiscovery", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-border">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Discovery Breadth</label>
+                  <label className="text-xs font-medium block">Discovery breadth</label>
                   <select
                     value={currentCrawl.discoveryBreadth || "balanced"}
                     onChange={(e) => updateCrawlField("discoveryBreadth", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="focused">Focused (Seeds + 1-Hop Citations Only)</option>
-                    <option value="balanced">Balanced (Recommended 2-Hop Graph Expansion)</option>
-                    <option value="wide">Wide (Aggressive Multi-Hop Graph Traversal)</option>
+                    <option value="focused">Focused (seeds + 1-hop citations only)</option>
+                    <option value="balanced">Balanced (recommended 2-hop graph expansion)</option>
+                    <option value="wide">Wide (aggressive multi-hop graph traversal)</option>
                   </select>
                 </div>
 
@@ -835,10 +835,10 @@ function SettingsPage() {
                       type="checkbox"
                       checked={currentCrawl.allowExternalDomains !== false}
                       onChange={(e) => updateCrawlField("allowExternalDomains", e.target.checked)}
-                      className="size-4 accent-accent"
+                      className={switchCls}
                     />
                     <div>
-                      <span className="font-medium block">Allow External Domains</span>
+                      <span className="font-medium block">Allow external domains</span>
                       <span className="text-[10px] text-muted block">
                         Expand outside initial seed list to discover new threat publishers
                       </span>
@@ -849,11 +849,11 @@ function SettingsPage() {
             </div>
 
             {/* Section 1.3: Target Intelligence Resource Types */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-3">
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-3">
               <div className="border-b border-border pb-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <Filter className="size-4 text-accent" />
-                  Target Intelligence Resource Types
+                <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                  <Filter className="size-4 text-muted" strokeWidth={1.75} />
+                  Target intelligence resource types
                 </h3>
                 <p className="text-xs text-muted">
                   Specify the technical artifacts the qualification engine should extract, categorize, and index.
@@ -862,13 +862,13 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
                 {[
-                  { id: "FULL_ATTACK_CHAIN", label: "Full Intrusion Attack Chains", desc: "Multi-stage lifecycle (Initial Access -> Lateral -> Impact)" },
-                  { id: "CAMPAIGN_INTEL", label: "Adversary Campaign Tracking", desc: "Geopolitical threat activity & multi-incident tracking" },
-                  { id: "PROCEDURE_DEEPDIVE", label: "Procedure Execution & TTPs", desc: "Command-line scripts, binary executions, and atomic tests" },
-                  { id: "MALWARE_ANALYSIS", label: "Malware & C2 Analysis", desc: "Reverse-engineering teardowns, beacons, payloads, loaders" },
-                  { id: "DETECTION_GUIDANCE", label: "Detection Engineering & Sigma", desc: "Sigma rules, YARA signatures, hunting queries, mitigations" },
-                  { id: "VULNERABILITY_ADVISORY", label: "CVE Exploits & Zero-Days", desc: "Vulnerability weaponization and technical advisories" },
-                  { id: "THREAT_ACTOR_DOSSIER", label: "Threat Actor Dossiers", desc: "Adversary group profiles, infrastructure, and attribution" },
+                  { id: "FULL_ATTACK_CHAIN", label: "Full intrusion attack chains", desc: "Multi-stage lifecycle (Initial Access -> Lateral -> Impact)" },
+                  { id: "CAMPAIGN_INTEL", label: "Adversary campaign tracking", desc: "Geopolitical threat activity & multi-incident tracking" },
+                  { id: "PROCEDURE_DEEPDIVE", label: "Procedure execution & TTPs", desc: "Command-line scripts, binary executions, and atomic tests" },
+                  { id: "MALWARE_ANALYSIS", label: "Malware & C2 analysis", desc: "Reverse-engineering teardowns, beacons, payloads, loaders" },
+                  { id: "DETECTION_GUIDANCE", label: "Detection engineering & Sigma", desc: "Sigma rules, YARA signatures, hunting queries, mitigations" },
+                  { id: "VULNERABILITY_ADVISORY", label: "CVE exploits & zero-days", desc: "Vulnerability weaponization and technical advisories" },
+                  { id: "THREAT_ACTOR_DOSSIER", label: "Threat actor dossiers", desc: "Adversary group profiles, infrastructure, and attribution" },
                 ].map((item) => {
                   const isChecked = (currentCrawl.targetResourceTypes || []).includes(item.id as ResourceKind);
                   return (
@@ -876,7 +876,7 @@ function SettingsPage() {
                       key={item.id}
                       className={cn(
                         "flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors",
-                        isChecked ? "border-accent/40 bg-accent/5" : "border-border bg-bg-subtle/30 hover:border-border/80",
+                        isChecked ? "border-accent/40 bg-bg-subtle" : "border-transparent bg-bg-subtle/60 hover:bg-bg-subtle",
                       )}
                     >
                       <input
@@ -889,7 +889,7 @@ function SettingsPage() {
                             : curr.filter((k: string) => k !== item.id);
                           updateCrawlField("targetResourceTypes", updated);
                         }}
-                        className="mt-0.5 size-4 accent-accent"
+                        className={cn("mt-0.5", switchCls)}
                       />
                       <div>
                         <span className="text-xs font-medium block">{item.label}</span>
@@ -902,22 +902,22 @@ function SettingsPage() {
             </div>
 
             {/* Section 1.4: Heuristic Qualification & Strictness Gate */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <ShieldAlert className="size-4 text-accent" />
-                Heuristic Qualification & Quality Gate
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <ShieldAlert className="size-4 text-muted" strokeWidth={1.75} />
+                Heuristic qualification & quality gate
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Strictness Mode</label>
-                    <span className="font-mono text-accent capitalize">{currentCrawl.strictnessMode || "balanced"}</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Strictness mode</label>
+                    <span className="capitalize text-muted">{currentCrawl.strictnessMode || "balanced"}</span>
                   </div>
                   <select
                     value={currentCrawl.strictnessMode || "balanced"}
                     onChange={(e) => updateCrawlField("strictnessMode", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
                     <option value="permissive">Permissive (Include brief advisories)</option>
                     <option value="balanced">Balanced (Recommended standard)</option>
@@ -926,9 +926,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Min Quality Score</label>
-                    <span className="font-mono text-accent">
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Min quality score</label>
+                    <span className="text-muted tabular-nums">
                       {Math.round((currentCrawl.minQualityScore ?? 0.35) * 100)}%
                     </span>
                   </div>
@@ -941,7 +941,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("minQualityScore", parseFloat(e.target.value))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] font-mono text-subtle">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>15% (broad)</span>
                     <span>35%</span>
                     <span>80% (strict)</span>
@@ -949,9 +949,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Min Word Count</label>
-                    <span className="font-mono text-accent">{currentCrawl.minWordCount ?? 100} words</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Min word count</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.minWordCount ?? 100} words</span>
                   </div>
                   <input
                     type="range"
@@ -962,7 +962,7 @@ function SettingsPage() {
                     onChange={(e) => updateCrawlField("minWordCount", parseInt(e.target.value, 10))}
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-[10px] font-mono text-subtle">
+                  <div className="flex justify-between text-[11px] text-subtle">
                     <span>50w</span>
                     <span>250w</span>
                     <span>500w</span>
@@ -976,10 +976,10 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentCrawl.requireIocs ?? false}
                     onChange={(e) => updateCrawlField("requireIocs", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
-                    <span className="font-medium block">Require Verified IOCs</span>
+                    <span className="font-medium block">Require verified IOCs</span>
                     <span className="text-[10px] text-muted block">Must have IPs, Hashes, or CVEs</span>
                   </div>
                 </label>
@@ -989,7 +989,7 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentCrawl.requireAttck ?? false}
                     onChange={(e) => updateCrawlField("requireAttck", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
                     <span className="font-medium block">Require MITRE ATT&CK</span>
@@ -1002,53 +1002,53 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentCrawl.rejectMarketingNoise ?? true}
                     onChange={(e) => updateCrawlField("rejectMarketingNoise", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
-                    <span className="font-medium block">Reject Marketing & PR</span>
+                    <span className="font-medium block">Reject marketing & PR</span>
                     <span className="text-[10px] text-muted block">Exclude webinars, pricing, announcements</span>
                   </div>
                 </label>
               </div>
 
               <div className="pt-2 border-t border-border">
-                <label className="text-xs font-medium block">Noise / PR Keyword Blacklist</label>
+                <label className="text-xs font-medium block">Noise / PR keyword blacklist</label>
                 <p className="text-[11px] text-muted">Pages with high density of these terms are filtered as vendor noise.</p>
                 <Input
                   value={currentCrawl.noiseKeywords || ""}
                   onChange={(e) => updateCrawlField("noiseKeywords", e.target.value)}
                   placeholder="webinar, discount, pricing, subscribe..."
-                  className="mt-1.5 text-xs font-mono"
+                  className="mt-1.5 h-9 rounded-lg border-border bg-bg-elevated font-mono text-xs"
                 />
               </div>
             </div>
 
             {/* Section 1.5: Deduplication, PDF & Keywords */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <HardDrive className="size-4 text-accent" />
-                Deduplication Strategy & Document Preservation
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <HardDrive className="size-4 text-muted" strokeWidth={1.75} />
+                Deduplication strategy & document preservation
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Deduplication Method</label>
+                  <label className="text-xs font-medium block">Deduplication method</label>
                   <select
                     value={currentCrawl.dedupMethod || "smart_hybrid"}
                     onChange={(e) => updateCrawlField("dedupMethod", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="smart_hybrid">Smart Hybrid (Normalized URL + 64-bit SimHash)</option>
-                    <option value="both">Both (Strict URL & Exact Content Hash)</option>
+                    <option value="smart_hybrid">Smart hybrid (normalized URL + 64-bit SimHash)</option>
+                    <option value="both">Both (strict URL & exact content hash)</option>
                     <option value="canonical_url">Canonical URL Only</option>
-                    <option value="content_hash">Content Hash Only</option>
+                    <option value="content_hash">Content hash only</option>
                   </select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Max PDF Preservation Cap</label>
-                    <span className="font-mono text-accent">{currentCrawl.maxPdfDownloads ?? 10} PDFs</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Max PDF preservation cap</label>
+                    <span className="text-muted tabular-nums">{currentCrawl.maxPdfDownloads ?? 10} PDFs</span>
                   </div>
                   <input
                     type="range"
@@ -1067,10 +1067,10 @@ function SettingsPage() {
                       type="checkbox"
                       checked={currentCrawl.generatePdf !== false}
                       onChange={(e) => updateCrawlField("generatePdf", e.target.checked)}
-                      className="size-4 accent-accent"
+                      className={switchCls}
                     />
                     <div>
-                      <span className="font-medium block">High-Fidelity PDF Generation</span>
+                      <span className="font-medium block">High-fidelity PDF generation</span>
                       <span className="text-[10px] text-muted block">Preserve visual report layout</span>
                     </div>
                   </label>
@@ -1083,13 +1083,13 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentCrawl.autoIngest ?? true}
                     onChange={(e) => updateCrawlField("autoIngest", e.target.checked)}
-                    className="size-4 accent-accent mt-0.5"
+                    className={cn("mt-0.5", switchCls)}
                   />
                   <div>
-                    <span className="font-medium block">Auto-Ingest Qualified Reports</span>
+                    <span className="font-medium block">Auto-ingest qualified reports</span>
                     <span className="text-[10px] text-muted block">Direct save vs manual review approval queue</span>
                     {!(currentCrawl.autoIngest ?? true) && Boolean(currentCrawl.agentAutoIngestEnabled) && (
-                      <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
+                      <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-warn font-medium bg-warn/10 border border-warn/40 rounded px-1.5 py-0.5">
                         <AlertTriangle className="size-2.5" />
                         Pauses AI Agent autonomous ingestion until enabled
                       </span>
@@ -1102,23 +1102,23 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentCrawl.autoAnalyze ?? true}
                     onChange={(e) => updateCrawlField("autoAnalyze", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
-                    <span className="font-medium block">Auto-ATT&CK & TTP Extraction</span>
+                    <span className="font-medium block">Auto ATT&CK & TTP extraction</span>
                     <span className="text-[10px] text-muted block">Reconstruct multi-stage attack chains</span>
                   </div>
                 </label>
               </div>
 
               <div className="pt-2 border-t border-border">
-                <label className="text-xs font-medium block">Targeted Threat Keywords & Query Patterns</label>
+                <label className="text-xs font-medium block">Targeted threat keywords & query patterns</label>
                 <p className="text-[11px] text-muted">Comma-separated terms used to seed search discovery vectors.</p>
                 <Textarea
                   rows={3}
                   value={currentCrawl.keywords || ""}
                   onChange={(e) => updateCrawlField("keywords", e.target.value)}
-                  className="mt-1.5 text-xs font-mono"
+                  className="mt-1.5 rounded-lg border-border bg-bg-elevated font-mono text-xs"
                 />
               </div>
             </div>
@@ -1130,61 +1130,61 @@ function SettingsPage() {
         {/* ========================================================================= */}
         {activeSection === "policy" && (
           <div className="space-y-6">
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <Shield className="size-4 text-accent" />
-                Organizational Node & Ingestion Identity
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <Shield className="size-4 text-muted" strokeWidth={1.75} />
+                Organizational node & ingestion identity
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium block">SOC Node / Unit Name</label>
+                  <label className="text-xs font-medium block">SOC node / unit name</label>
                   <p className="text-[11px] text-muted">Identifies the reporting entity in exported STIX bundles.</p>
                   <Input
                     value={currentApp.organizationName || ""}
                     onChange={(e) => updateAppField("organizationName", e.target.value)}
-                    className="mt-1.5 text-xs"
+                    className="mt-1.5 h-9 rounded-lg border-border bg-bg-elevated text-sm"
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium block">Sensor / Engine Identifier</label>
+                  <label className="text-xs font-medium block">Sensor / engine identifier</label>
                   <p className="text-[11px] text-muted">Node signature tagged to cryptographic SHA-256 hashes.</p>
                   <Input
                     value={currentApp.nodeId || ""}
                     onChange={(e) => updateAppField("nodeId", e.target.value)}
-                    className="mt-1.5 text-xs font-mono"
+                    className="mt-1.5 h-9 rounded-lg border-border bg-bg-elevated font-mono text-xs"
                   />
                 </div>
               </div>
             </div>
 
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <FileCode className="size-4 text-accent" />
-                CTI Classification & Retention Standards
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <FileCode className="size-4 text-muted" strokeWidth={1.75} />
+                CTI classification & retention standards
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Default Classification</label>
+                  <label className="text-xs font-medium block">Default classification</label>
                   <select
                     value={currentApp.defaultClassification || "INTRUSION_REPORT"}
                     onChange={(e) => updateAppField("defaultClassification", e.target.value)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="INTRUSION_REPORT">Intrusion Report</option>
-                    <option value="CAMPAIGN_INTEL">Campaign Intelligence</option>
-                    <option value="PROCEDURE_DEEPDIVE">Procedure Deep-Dive</option>
-                    <option value="MALWARE_ANALYSIS">Malware Analysis</option>
-                    <option value="THREAT_REPORT">General Threat Report</option>
+                    <option value="INTRUSION_REPORT">Intrusion report</option>
+                    <option value="CAMPAIGN_INTEL">Campaign intelligence</option>
+                    <option value="PROCEDURE_DEEPDIVE">Procedure deep-dive</option>
+                    <option value="MALWARE_ANALYSIS">Malware analysis</option>
+                    <option value="THREAT_REPORT">General threat report</option>
                   </select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between text-sm">
                     <label className="font-medium text-muted">Min IOC Confidence</label>
-                    <span className="font-mono text-subtle">{currentApp.iocConfidenceThreshold ?? 75}%</span>
+                    <span className="text-muted tabular-nums">{currentApp.iocConfidenceThreshold ?? 75}%</span>
                   </div>
                   <input
                     type="range"
@@ -1198,43 +1198,43 @@ function SettingsPage() {
                     onChange={(e) => updateAppField("iocConfidenceThreshold", parseInt(e.target.value, 10))}
                     className="w-full accent-accent opacity-50 cursor-not-allowed"
                   />
-                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
+                  <p className="text-[11px] text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block text-muted">Evidence Retention Period</label>
+                  <label className="text-xs font-medium block text-muted">Evidence retention period</label>
                   <select
                     disabled
                     title="Not active yet: evidence is never purged automatically"
                     value={String(currentApp.evidenceRetentionDays ?? 365)}
                     onChange={(e) => updateAppField("evidenceRetentionDays", parseInt(e.target.value, 10))}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <option value="90">90 Days (Quarterly Audit)</option>
+                    <option value="90">90 days (quarterly audit)</option>
                     <option value="180">180 Days (Semi-Annual)</option>
-                    <option value="365">365 Days (1 Year Standard)</option>
-                    <option value="0">Indefinite (Never Auto-Purge)</option>
+                    <option value="365">365 days (1 year standard)</option>
+                    <option value="0">Indefinite (never auto-purge)</option>
                   </select>
-                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
+                  <p className="text-[11px] text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
 
               <div className="pt-3 border-t border-border">
                 <div className="space-y-1.5 max-w-sm">
-                  <label className="text-xs font-medium block text-muted">Default Export Standard</label>
+                  <label className="text-xs font-medium block text-muted">Default export standard</label>
                   <select
                     disabled
                     title="Not active yet: exports do not read this default"
                     value={currentApp.defaultExportFormat || "stix21"}
                     onChange={(e) => updateAppField("defaultExportFormat", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <option value="stix21">STIX 2.1 JSON Bundle (OASIS Standard)</option>
-                    <option value="json">Raw Engine JSON (Evidence-Preserving)</option>
+                    <option value="json">Raw engine JSON (evidence-preserving)</option>
                     <option value="csv">CSV IOC Table (Firewall / SIEM Ingest)</option>
                     <option value="pdf">Structured PDF Dossier</option>
                   </select>
-                  <p className="text-[10px] font-mono text-subtle">Not active yet · saved, but no pipeline step applies it</p>
+                  <p className="text-[11px] text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
             </div>
@@ -1247,57 +1247,57 @@ function SettingsPage() {
         {activeSection === "storage" && (
           <div className="space-y-6">
             {/* Storage Architecture Overview */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <Database className="size-4 text-accent" />
-                  Cloud Database Cluster Telemetry
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                  <Database className="size-4 text-muted" strokeWidth={1.75} />
+                  Cloud database cluster telemetry
                 </h3>
-                <span className="flex items-center gap-1.5 font-mono text-xs text-emerald-400">
-                  <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Cluster0 Connected
+                <span className="flex items-center gap-1.5 text-xs text-sage">
+                  <span className="size-2 rounded-full bg-sage " />
+                  Cluster0 connected
                 </span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Database</span>
-                  <span className="font-mono text-sm font-semibold text-fg">threat-intel-DB</span>
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Database</span>
+                  <span className="mt-1 block font-mono text-sm text-fg">threat-intel-DB</span>
                 </div>
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Collection</span>
-                  <span className="font-mono text-sm font-semibold text-fg">threat-intel</span>
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Collection</span>
+                  <span className="mt-1 block font-mono text-sm text-fg">threat-intel</span>
                 </div>
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Stored Reports</span>
-                  <span className="font-mono text-sm font-semibold text-accent">
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Stored reports</span>
+                  <span className="mt-1 block text-lg font-semibold text-fg tabular-nums">
                     {storageStatsQuery.data?.totalReports ?? "—"}
                   </span>
                 </div>
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Active Sources</span>
-                  <span className="font-mono text-sm font-semibold text-fg">
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Active sources</span>
+                  <span className="mt-1 block text-lg font-semibold text-fg tabular-nums">
                     {storageStatsQuery.data?.totalSources ?? "—"}
                   </span>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Discovered Candidates</span>
-                  <span className="font-mono text-sm font-semibold text-fg">
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Discovered candidates</span>
+                  <span className="mt-1 block text-lg font-semibold text-fg tabular-nums">
                     {storageStatsQuery.data?.totalDiscovered ?? "—"}
                   </span>
                 </div>
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Executed Crawl Jobs</span>
-                  <span className="font-mono text-sm font-semibold text-fg">
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Executed crawl jobs</span>
+                  <span className="mt-1 block text-lg font-semibold text-fg tabular-nums">
                     {storageStatsQuery.data?.totalJobs ?? "—"}
                   </span>
                 </div>
-                <div className="rounded-lg border border-border bg-bg p-3">
-                  <span className="text-[11px] text-muted block">Pipeline Audit Events</span>
-                  <span className="font-mono text-sm font-semibold text-fg">
+                <div className="rounded-lg bg-bg-subtle/60 p-3">
+                  <span className="block text-xs text-muted">Pipeline audit events</span>
+                  <span className="mt-1 block text-lg font-semibold text-fg tabular-nums">
                     {storageStatsQuery.data?.totalEvents ?? "—"}
                   </span>
                 </div>
@@ -1305,12 +1305,12 @@ function SettingsPage() {
             </div>
 
             {/* In-Memory Cache Acceleration & Invalidation */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-3">
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-sm font-medium flex items-center gap-2">
-                    <Zap className="size-4 text-accent" />
-                    High-Speed In-Memory Cache Acceleration
+                  <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                    <Zap className="size-4 text-muted" strokeWidth={1.75} />
+                    High-speed in-memory cache acceleration
                   </h3>
                   <p className="text-xs text-muted">
                     Serves intelligence library and telemetry in &lt;1ms while maintaining instant invalidation on write.
@@ -1321,18 +1321,18 @@ function SettingsPage() {
                   variant="secondary"
                   onClick={() => purgeMutation.mutate()}
                   disabled={purgeMutation.isPending}
-                  className="text-xs font-mono gap-1.5"
+                  className="gap-1.5 text-xs"
                 >
                   <Trash2 className="size-3.5 text-danger" />
-                  <span>Flush All Caches</span>
+                  <span>Flush all caches</span>
                 </Button>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Library Query Cache TTL</label>
-                    <span className="font-mono text-accent">{currentApp.cacheTtlSeconds ?? 60} seconds</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Library query cache TTL</label>
+                    <span className="text-muted tabular-nums">{currentApp.cacheTtlSeconds ?? 60} seconds</span>
                   </div>
                   <input
                     type="range"
@@ -1349,9 +1349,9 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <label className="font-medium">Dashboard Aggregation TTL</label>
-                    <span className="font-mono text-accent">{currentApp.dashboardCacheTtlSeconds ?? 15} seconds</span>
+                  <div className="flex justify-between text-sm">
+                    <label className="font-medium text-fg">Dashboard aggregation TTL</label>
+                    <span className="text-muted tabular-nums">{currentApp.dashboardCacheTtlSeconds ?? 15} seconds</span>
                   </div>
                   <input
                     type="range"
@@ -1377,23 +1377,23 @@ function SettingsPage() {
         {activeSection === "display" && (
           <div className="space-y-6">
             {/* Visual Interface Theme & Aesthetic Engine */}
-            <div className="rounded-2xl border border-border bg-bg-elevated p-5 space-y-6 shadow-xs">
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-6 ">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-border gap-2">
                 <div>
-                  <h3 className="text-sm font-semibold flex items-center gap-2 text-fg">
-                    <Sparkles className="size-4 text-accent" />
-                    Appearance & Visual Interface Theme
+                  <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                    <Sparkles className="size-4 text-muted" strokeWidth={1.75} />
+                    Appearance & visual interface theme
                   </h3>
                   <p className="text-xs text-subtle mt-0.5">
                     Select your visual presentation aesthetic, glassmorphism translucency, and refined micro-interactions.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge className="bg-accent/10 text-accent border border-accent/25 text-[10px] px-2 py-0.5">
-                    Theme Engine v2.5
-                  </Badge>
+                  <StatusChip>
+                    Theme engine v2.5
+                  </StatusChip>
                   <span className={cn(
-                    "text-[10px] px-2 py-0.5 rounded-full font-mono border",
+                    "rounded-md border px-2 py-0.5 text-[11px]",
                     uiStyle === "liquid-glass"
                       ? "border-accent/40 bg-accent/15 text-accent"
                       : "border-border bg-bg-subtle text-muted"
@@ -1406,7 +1406,7 @@ function SettingsPage() {
               {/* Theme Presets: 2 Rich Cards */}
               <div className="space-y-2.5">
                 <label className="text-xs font-medium text-fg block">
-                  Interface Theme Preset
+                  Interface theme preset
                 </label>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Preset 1: Default (Tactical Slate) */}
@@ -1427,9 +1427,9 @@ function SettingsPage() {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-semibold text-fg">Tactical Slate</span>
-                            <Badge className="text-[9px] bg-border/50 text-subtle border-none">Default</Badge>
+                            <StatusChip>Default</StatusChip>
                           </div>
-                          <span className="text-[11px] text-subtle block">Standard SOC Opaque Architecture</span>
+                          <span className="text-[11px] text-subtle block">Standard SOC opaque architecture</span>
                         </div>
                       </div>
                       <div className={cn(
@@ -1445,11 +1445,11 @@ function SettingsPage() {
                     {/* Mini Specimen Visualizer (Default Slate) */}
                     <div className="p-2.5 rounded-lg border border-border bg-bg-subtle space-y-1.5 pointer-events-none select-none">
                       <div className="flex items-center justify-between text-[10px] text-muted">
-                        <span className="font-mono">RETRIEVAL MATRIX</span>
-                        <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                        <span>Retrieval matrix</span>
+                        <span className="inline-block size-1.5 rounded-full bg-sage" />
                       </div>
                       <div className="h-5 rounded-md bg-bg-card border border-border flex items-center px-2 text-[10px] text-muted font-medium">
-                        Solid High-Contrast Surface
+                        Solid high-contrast surface
                       </div>
                     </div>
 
@@ -1470,15 +1470,15 @@ function SettingsPage() {
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2.5">
-                        <div className="size-9 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shadow-xs backdrop-blur-md">
+                        <div className="size-9 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent  backdrop-blur-md">
                           <Sparkles className="size-4.5" />
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-semibold text-fg">Liquid Glass</span>
-                            <Badge className="text-[9px] bg-accent/15 text-accent border border-accent/30 font-medium">Glassmorphism</Badge>
+                            <StatusChip>Glassmorphism</StatusChip>
                           </div>
-                          <span className="text-[11px] text-subtle block">Refractive Frosted Glassmorphism</span>
+                          <span className="text-[11px] text-subtle block">Refractive frosted glassmorphism</span>
                         </div>
                       </div>
                       <div className={cn(
@@ -1494,12 +1494,12 @@ function SettingsPage() {
                     {/* Mini Specimen Visualizer (Liquid Glass) */}
                     <div className="p-2.5 rounded-lg border border-border/80 card-liquid-glass space-y-1.5 pointer-events-none select-none relative overflow-hidden">
                       <div className="flex items-center justify-between text-[10px] text-accent font-semibold">
-                        <span className="font-mono">FROSTED COGNITIVE CAPSULE</span>
+                        <span>Frosted cognitive capsule</span>
                         <ActivitySpinner size="xs" variant={spinnerVariant} className="text-accent" />
                       </div>
                       <div className="h-6 rounded-lg pill-liquid-glass flex items-center justify-between px-2.5 text-[10px] font-medium text-fg">
-                        <span>{Math.round(8 + (glassRatio / 100) * 32.4)}px Diffusion Blur · Specular Glare</span>
-                        <span className="font-mono text-accent">{glassRatio}% Ratio</span>
+                        <span>{Math.round(8 + (glassRatio / 100) * 32.4)}px diffusion blur · specular glare</span>
+                        <span className="text-muted tabular-nums">{glassRatio}% ratio</span>
                       </div>
                     </div>
 
@@ -1516,16 +1516,16 @@ function SettingsPage() {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-semibold text-fg">
-                              Blur Liquid Ratio & Translucency
+                              Blur liquid ratio & translucency
                             </span>
-                            <Badge className="text-[9px] bg-accent/15 text-accent border border-accent/30 font-mono">
-                              {glassRatio}% · {Math.round(8 + (glassRatio / 100) * 32.4)}px Blur
-                            </Badge>
+                            <StatusChip>
+                              {glassRatio}% · {Math.round(8 + (glassRatio / 100) * 32.4)}px blur
+                            </StatusChip>
                           </div>
                           <button
                             type="button"
                             onClick={() => handleGlassRatioChange(70)}
-                            className="text-[10px] font-mono text-muted hover:text-fg underline cursor-pointer"
+                            className="cursor-pointer text-[11px] text-muted underline hover:text-fg"
                           >
                             Reset (70%)
                           </button>
@@ -1542,7 +1542,7 @@ function SettingsPage() {
                             onChange={(e) => handleGlassRatioChange(Number(e.target.value))}
                             className="w-full accent-accent h-1.5 bg-bg-subtle rounded-lg cursor-pointer"
                           />
-                          <div className="flex justify-between text-[9px] font-mono text-subtle">
+                          <div className="flex justify-between text-[11px] text-subtle">
                             <span>5% (Pure Glass)</span>
                             <span>35% (Crystal)</span>
                             <span>70% (Balanced)</span>
@@ -1567,13 +1567,13 @@ function SettingsPage() {
                                 className={cn(
                                   "p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col gap-0.5",
                                   isSelected
-                                    ? "border-accent bg-accent/20 text-fg shadow-xs"
+                                    ? "border-accent bg-accent/20 text-fg "
                                     : "border-border/60 hover:border-border pill-liquid-glass text-muted hover:text-fg"
                                 )}
                               >
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-medium">{preset.label}</span>
-                                  <span className="text-[9px] font-mono opacity-80">{preset.ratio}%</span>
+                                  <span className="text-[10px] opacity-80 tabular-nums">{preset.ratio}%</span>
                                 </div>
                                 <span className="text-[9px] text-subtle">{preset.desc}</span>
                               </button>
@@ -1591,7 +1591,7 @@ function SettingsPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <label className="text-xs font-medium text-fg block">
-                      Color Mode (OLED Dark / Daylight Light)
+                      Color mode (dark / light)
                     </label>
                     <span className="text-[11px] text-subtle">
                       Adaptive high-contrast color scheme for tactical operations
@@ -1615,7 +1615,7 @@ function SettingsPage() {
                         <Moon className="size-3.5" />
                       </div>
                       <div className="text-left">
-                        <span className="block font-medium">Dark Mode (OLED / Midnight)</span>
+                        <span className="block font-medium">Dark mode (OLED / midnight)</span>
                         <span className="text-[10px] text-subtle block">Low-light SOC tactical monitoring</span>
                       </div>
                     </div>
@@ -1637,7 +1637,7 @@ function SettingsPage() {
                         <Sun className="size-3.5" />
                       </div>
                       <div className="text-left">
-                        <span className="block font-medium">Light Mode (Daylight)</span>
+                        <span className="block font-medium">Light mode (daylight)</span>
                         <span className="text-[10px] text-subtle block">High-key daylight documentation</span>
                       </div>
                     </div>
@@ -1651,23 +1651,23 @@ function SettingsPage() {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                   <div>
                     <label className="text-xs font-medium text-fg block">
-                      Activity Indicator & Progress Animations
+                      Activity indicator & progress animations
                     </label>
                     <span className="text-[11px] text-subtle">
                       Real-time animated indicators for AI generation, sandbox probes, and retrieval streams
                     </span>
                   </div>
                   <div className="flex items-center gap-1 bg-bg-subtle p-1 rounded-lg border border-border">
-                    <span className="text-[10px] text-subtle font-mono px-1.5">Size:</span>
+                    <span className="text-[11px] text-subtle px-1.5">Size:</span>
                     {(["xs", "sm", "md", "lg"] as const).map((sz) => (
                       <button
                         key={sz}
                         type="button"
                         onClick={() => setPreviewSpinnerSize(sz)}
                         className={cn(
-                          "px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors",
+                          "cursor-pointer rounded-md px-2 py-0.5 text-[11px] transition-colors",
                           previewSpinnerSize === sz
-                            ? "bg-accent text-accent-fg font-semibold shadow-xs"
+                            ? "bg-accent text-accent-fg font-semibold "
                             : "text-subtle hover:text-fg"
                         )}
                       >
@@ -1685,7 +1685,7 @@ function SettingsPage() {
                     className={cn(
                       "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
                       spinnerVariant === "radial"
-                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 "
                         : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
                     )}
                   >
@@ -1708,7 +1708,7 @@ function SettingsPage() {
                     className={cn(
                       "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
                       spinnerVariant === "ring"
-                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 "
                         : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
                     )}
                   >
@@ -1731,7 +1731,7 @@ function SettingsPage() {
                     className={cn(
                       "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-3",
                       spinnerVariant === "dots"
-                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 shadow-xs"
+                        ? "border-accent ring-1 ring-accent/30 bg-accent/5 "
                         : "border-border bg-bg-subtle/30 hover:border-border-strong hover:bg-bg-subtle/60"
                     )}
                   >
@@ -1754,10 +1754,10 @@ function SettingsPage() {
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-fg flex items-center gap-1.5">
                     <Eye className="size-3.5 text-accent" />
-                    Live Interface Component Specimen
+                    Live interface component specimen
                   </label>
-                  <span className="text-[10px] font-mono text-subtle">
-                    Real-time CSS Rendering Test
+                  <span className="text-[11px] text-subtle">
+                    Real-time CSS rendering test
                   </span>
                 </div>
 
@@ -1769,19 +1769,14 @@ function SettingsPage() {
                 )}>
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-fg">AI Agent Interaction Capsule</span>
-                      <Badge className={cn(
-                        "text-[10px]",
-                        uiStyle === "liquid-glass"
-                          ? "bg-accent/20 text-accent border border-accent/40 backdrop-blur-md shadow-xs"
-                          : "bg-accent/10 text-accent border border-accent/20"
-                      )}>
-                        Live Specimen
-                      </Badge>
+                      <span className="text-xs font-semibold text-fg">AI agent interaction capsule</span>
+                      <StatusChip>
+                        Live specimen
+                      </StatusChip>
                     </div>
                     <div className="flex items-center gap-2">
                       <ActivitySpinner size="sm" variant={spinnerVariant} className="text-accent" />
-                      <span className="text-[11px] font-mono text-subtle">Streaming active</span>
+                      <span className="text-[11px] text-subtle">Streaming active</span>
                     </div>
                   </div>
 
@@ -1790,7 +1785,7 @@ function SettingsPage() {
                       "p-3 rounded-lg text-xs space-y-1 transition-all",
                       uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
                     )}>
-                      <span className="font-semibold block text-fg">Session Switcher</span>
+                      <span className="font-semibold block text-fg">Session switcher</span>
                       <p className="text-[10px] text-subtle">Frosted glass backdrop with zero transparency leakage.</p>
                     </div>
 
@@ -1798,7 +1793,7 @@ function SettingsPage() {
                       "p-3 rounded-lg text-xs space-y-1 transition-all",
                       uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
                     )}>
-                      <span className="font-semibold block text-fg">Grounded CTI Cards</span>
+                      <span className="font-semibold block text-fg">Grounded CTI cards</span>
                       <p className="text-[10px] text-subtle">Frosted links with hover glow & direct report modal jumps.</p>
                     </div>
 
@@ -1806,7 +1801,7 @@ function SettingsPage() {
                       "p-3 rounded-lg text-xs space-y-1 transition-all",
                       uiStyle === "liquid-glass" ? "pill-liquid-glass" : "bg-bg-subtle border border-border"
                     )}>
-                      <span className="font-semibold block text-fg">Micro-Interactions</span>
+                      <span className="font-semibold block text-fg">Micro-interactions</span>
                       <p className="text-[10px] text-subtle">Specular top edge lighting with graduated blade spinners.</p>
                     </div>
                   </div>
@@ -1814,35 +1809,35 @@ function SettingsPage() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-border bg-bg-elevated p-5 space-y-4">
-              <h3 className="text-sm font-medium border-b border-border pb-3 flex items-center gap-2">
-                <Sliders className="size-4 text-accent" />
-                MITRE ATT&CK Matrix & Telemetry Presentation
+            <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+              <h3 className="flex items-center gap-2 border-b border-border pb-3 text-base font-medium text-fg">
+                <Sliders className="size-4 text-muted" strokeWidth={1.75} />
+                MITRE ATT&CK matrix & telemetry presentation
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Default ATT&CK Matrix Column Width</label>
+                  <label className="text-xs font-medium block">Default ATT&CK matrix column width</label>
                   <select
                     value={currentApp.defaultMatrixLayout || "standard"}
                     onChange={(e) => updateAppField("defaultMatrixLayout", e.target.value as any)}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="standard">Standard (224px Columns — Full Name & Counts)</option>
-                    <option value="compact">Compact (176px Columns — High Viewport Density)</option>
+                    <option value="standard">Standard (224px columns — full name & counts)</option>
+                    <option value="compact">Compact (176px columns — high viewport density)</option>
                   </select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Live Dashboard Refresh Interval</label>
+                  <label className="text-xs font-medium block">Live dashboard refresh interval</label>
                   <select
                     value={String(currentApp.pollingIntervalSeconds ?? 12)}
                     onChange={(e) => updateAppField("pollingIntervalSeconds", parseInt(e.target.value, 10))}
-                    className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="8">8 Seconds (High Frequency SOC Stream)</option>
-                    <option value="12">12 Seconds (Recommended Standard)</option>
-                    <option value="30">30 Seconds (Low Bandwidth)</option>
+                    <option value="8">8 seconds (high frequency SOC stream)</option>
+                    <option value="12">12 seconds (recommended standard)</option>
+                    <option value="30">30 seconds (low bandwidth)</option>
                     <option value="60">60 Seconds (Manual / Background)</option>
                   </select>
                 </div>
@@ -1854,10 +1849,10 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentApp.matrixSubtechniqueAutoExpand ?? false}
                     onChange={(e) => updateAppField("matrixSubtechniqueAutoExpand", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
-                    <span className="font-medium block">Auto-Expand Sub-techniques</span>
+                    <span className="font-medium block">Auto-expand sub-techniques</span>
                     <span className="text-[10px] text-muted block">Show expandable (=) items by default</span>
                   </div>
                 </label>
@@ -1867,10 +1862,10 @@ function SettingsPage() {
                     type="checkbox"
                     checked={currentApp.enableLiveTelemetryStream ?? true}
                     onChange={(e) => updateAppField("enableLiveTelemetryStream", e.target.checked)}
-                    className="size-4 accent-accent"
+                    className={switchCls}
                   />
                   <div>
-                    <span className="font-medium block">Live Terminal Telemetry Log Stream</span>
+                    <span className="font-medium block">Live terminal telemetry log stream</span>
                     <span className="text-[10px] text-muted block">Print HTTP & query metrics to terminal</span>
                   </div>
                 </label>
@@ -1885,17 +1880,17 @@ function SettingsPage() {
         {activeSection === "agent" && (
           <div className="space-y-6">
             {/* Agent Status Banner */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5">
+            <div className="rounded-xl border border-border bg-bg-card p-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className={cn(
                     "flex size-10 items-center justify-center rounded-lg border",
-                    agentStatusQuery.data?.available ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"
+                    agentStatusQuery.data?.available ? "bg-sage/10 border-sage/40" : "bg-danger/10 border-danger/50"
                   )}>
-                    <Bot className={cn("size-5", agentStatusQuery.data?.available ? "text-emerald-500 dark:text-emerald-400" : "text-red-500 dark:text-red-400")} />
+                    <Bot className={cn("size-5", agentStatusQuery.data?.available ? "text-sage" : "text-danger")} />
                   </div>
                   <div>
-                    <h3 className="text-sm font-medium">AGY Agent Status</h3>
+                    <h3 className="text-base font-medium text-fg">AGY agent status</h3>
                     <p className="text-xs text-muted">
                       {agentStatusQuery.data?.available
                         ? `v${agentStatusQuery.data.version} · ${agentStatusQuery.data.platform} · Ready`
@@ -1906,20 +1901,20 @@ function SettingsPage() {
                 <div className={cn(
                   "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border",
                   agentStatusQuery.data?.available
-                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-                    : "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30"
+                    ? "bg-sage/15 text-sage border-sage/40"
+                    : "bg-danger/15 text-danger border-danger/50"
                 )}>
-                  <div className={cn("size-2 rounded-full", agentStatusQuery.data?.available ? "bg-emerald-500" : "bg-red-500")} />
+                  <div className={cn("size-2 rounded-full", agentStatusQuery.data?.available ? "bg-sage" : "bg-danger")} />
                   {agentStatusQuery.data?.available ? "Online" : "Offline"}
                 </div>
               </div>
             </div>
 
             {/* Agent Feature Toggles */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5">
-              <h3 className="flex items-center gap-2 text-sm font-medium">
-                <Sparkles className="size-4 text-accent" />
-                Intelligence Enhancement Layer
+            <div className="rounded-xl border border-border bg-bg-card p-5">
+              <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                <Sparkles className="size-4 text-muted" strokeWidth={1.75} />
+                Intelligence enhancement layer
               </h3>
               <p className="mt-1 text-xs text-muted">
                 Control which AI agent capabilities are active. The crawler engine remains the core system regardless of these settings.
@@ -1928,37 +1923,37 @@ function SettingsPage() {
                 {[
                   {
                     key: "agentDiscoveryEnabled" as const,
-                    label: "Source Discovery",
+                    label: "Source discovery",
                     desc: "Agent autonomously discovers new high-value CTI sources and root domains",
                   },
                   {
                     key: "agentTaggingEnabled" as const,
-                    label: "Intelligent Tagging & Analysis",
+                    label: "Intelligent tagging & analysis",
                     desc: "Agent evaluates resources and enriches classification, threat actors, malware families, and MITRE techniques",
                   },
                   {
                     key: "agentLibraryAuditEnabled" as const,
-                    label: "AI Library Quality Audit",
+                    label: "AI library quality audit",
                     desc: "Continuously audit and evaluate library resources, verify technical threat intelligence, and assign enriched tags",
                   },
                   {
                     key: "agentAutoPruneJunkEnabled" as const,
-                    label: "AI Auto-Prune Non-Threat Intel Pages",
+                    label: "AI auto-prune non-threat intel pages",
                     desc: "Carefully purge confirmed non-threat content (e.g. homepages, contact pages, error pages, zero-IOC marketing) from the library. High-value threat intelligence is protected by strict safety guardrails.",
                   },
                   {
                     key: "agentApprovalEnabled" as const,
-                    label: "Approval Recommendations",
+                    label: "Approval recommendations",
                     desc: "Agent provides pass scores and ingestion recommendations for qualified resources",
                   },
                   {
                     key: "agentAutoIngestEnabled" as const,
-                    label: "Auto-Ingest Agent Approved",
+                    label: "Auto-ingest agent approved",
                     desc: "Automatically ingest resources the agent approves with score ≥ 65 (requires auto-ingest ON)",
                   },
                   {
                     key: "agentCrawlSourcesEnabled" as const,
-                    label: "Crawl Discovered Sources",
+                    label: "Crawl discovered sources",
                     desc: "Include agent-discovered and crawler-discovered sources in crawl jobs",
                   },
                 ].map((toggle) => {
@@ -1983,9 +1978,9 @@ function SettingsPage() {
                             updateAppField(toggle.key as any, next);
                           }}
                           className={cn(
-                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center p-0.5 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500/50 shadow-xs",
+                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center p-0.5 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-accent/50 ",
                             isChecked
-                              ? "bg-emerald-600"
+                              ? "bg-sage"
                               : "bg-neutral-800 border border-neutral-700",
                           )}
                         >
@@ -2000,33 +1995,33 @@ function SettingsPage() {
 
                       {/* Safety Guardrail banner for Auto-Prune */}
                       {toggle.key === "agentAutoPruneJunkEnabled" && isChecked && (
-                        <div className="mt-2.5 flex items-center gap-2 text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-md px-2.5 py-1.5 font-medium">
+                        <div className="mt-2.5 flex items-center gap-2 text-[11px] text-sage bg-sage/10 border border-sage/40 rounded-md px-2.5 py-1.5 font-medium">
                           <CheckCircle2 className="size-3.5 shrink-0" />
-                          <span>Strict Safety Guardrails Active: Legitimate threat reports with IOCs, CVEs, or ATT&CK techniques are strictly protected and will never be pruned.</span>
+                          <span>Strict safety guardrails active: legitimate threat reports with IOCs, CVEs, or ATT&CK techniques are strictly protected and will never be pruned.</span>
                         </div>
                       )}
 
                       {/* Warning Alert when Auto-Ingest Agent Approved is enabled while Auto-Ingest Qualified Reports is disabled */}
                       {toggle.key === "agentAutoIngestEnabled" && isChecked && !(currentCrawl.autoIngest ?? true) && (
-                        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
-                          <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-400" />
+                        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-warn/40 bg-warn/10 p-3 text-xs">
+                          <AlertTriangle className="size-4 shrink-0 mt-0.5 text-warn" />
                           <div className="flex-1 space-y-1">
-                            <div className="font-semibold text-amber-200">
-                              Prerequisite Setting Disabled: "Auto-Ingest Qualified Reports" is OFF
+                            <div className="font-semibold text-warn">
+                              Prerequisite setting disabled: "Auto-ingest qualified reports" is off
                             </div>
-                            <p className="text-[11px] leading-relaxed text-amber-300/90">
-                              Autonomous ingestion requires <strong>BOTH</strong> settings enabled. While <em>Auto-Ingest Qualified Reports</em> (under Crawler & Ingestion) is paused, newly discovered reports approved by the agent will be placed in the manual review approval queue instead of being directly ingested.
+                            <p className="text-[11px] leading-relaxed text-muted">
+                              Autonomous ingestion requires <strong>BOTH</strong> settings enabled. While <em>Auto-ingest qualified reports</em> (under Crawler & ingestion) is paused, newly discovered reports approved by the agent will be placed in the manual review approval queue instead of being directly ingested.
                             </p>
                             <button
                               type="button"
                               onClick={() => {
                                 updateCrawlField("autoIngest", true);
-                                toast.success('Enabled "Auto-Ingest Qualified Reports"');
+                                toast.success('Enabled "Auto-ingest qualified reports"');
                               }}
-                              className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/20 px-2.5 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                              className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-warn/50 bg-warn/15 px-2.5 py-1 text-[11px] font-medium text-warn hover:bg-warn/25 transition-colors cursor-pointer"
                             >
-                              <CheckCircle2 className="size-3.5 text-amber-300" />
-                              Enable "Auto-Ingest Qualified Reports" Now
+                              <CheckCircle2 className="size-3.5 text-warn" />
+                              Enable "Auto-ingest qualified reports" now
                             </button>
                           </div>
                         </div>
@@ -2040,14 +2035,14 @@ function SettingsPage() {
               <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
                 <div className="text-xs text-muted">
                   {isDirty ? (
-                    <span className="flex items-center gap-1.5 text-amber-400">
-                      <span className="size-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span className="flex items-center gap-1.5 text-warn">
+                      <span className="size-2 rounded-full bg-warn " />
                       Unsaved AI Agent settings
                     </span>
                   ) : (
                     <span className="flex items-center gap-1.5 text-sage">
                       <CheckCircle2 className="size-3.5 text-sage" />
-                      All AI Agent settings saved to DB
+                      All AI agent settings saved
                     </span>
                   )}
                 </div>
@@ -2059,17 +2054,17 @@ function SettingsPage() {
                   onClick={() => saveMutation.mutate()}
                 >
                   <Save className="size-3.5" />
-                  <span>{saveMutation.isPending ? "Saving..." : "Save AI Agent Settings"}</span>
+                  <span>{saveMutation.isPending ? "Saving…" : "Save AI agent settings"}</span>
                 </Button>
               </div>
             </div>
 
             {/* Agent Model & Timeout */}
-            <div className="rounded-xl border border-border bg-bg-elevated p-5">
+            <div className="rounded-xl border border-border bg-bg-card p-5">
               <div className="flex items-center justify-between">
-                <h3 className="flex items-center gap-2 text-sm font-medium">
-                  <Zap className="size-4 text-accent" />
-                  Model & Performance
+                <h3 className="flex items-center gap-2 text-base font-medium text-fg">
+                  <Zap className="size-4 text-muted" strokeWidth={1.75} />
+                  Model & performance
                 </h3>
                 <Link
                   to="/marketplace"
@@ -2083,21 +2078,21 @@ function SettingsPage() {
               {/* Active Provider Indicator */}
               <div className="mt-3 p-3 rounded-lg bg-bg-subtle border border-border flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="text-subtle">Active AI Agent:</span>
+                  <span className="text-subtle">Active AI agent:</span>
                   <span className="font-semibold text-fg">
                     {marketplaceQuery.data?.integrations.find(
                       (x) => x.id === (appForm.activeAgentProvider || "agy_agent")
                     )?.name || "Autonomous AI Agent Engine"}
                   </span>
                 </div>
-                <Badge className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
+                <StatusChip tone="success">
                   Configured
-                </Badge>
+                </StatusChip>
               </div>
 
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">Agent Model</label>
+                  <label className="block text-xs font-medium text-muted mb-1.5">Agent model</label>
                   <select
                     value={sanitizeAgyModel(crawlForm.agentModel)}
                     onChange={(e) => {
@@ -2111,13 +2106,13 @@ function SettingsPage() {
                       }
                       setIsDirty(true);
                     }}
-                    className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs font-mono text-fg focus:border-accent focus:outline-none"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none"
                   >
                     {marketplaceQuery.data?.integrations && marketplaceQuery.data.integrations.length > 0 ? (
                       marketplaceQuery.data.integrations.map((integration) => (
                         <optgroup
                           key={integration.id}
-                          label={`${integration.name} (${integration.status === "installed" ? "Installed" : "Not Installed"})`}
+                          label={`${integration.name} (${integration.status === "installed" ? "Installed" : "Not installed"})`}
                         >
                           {integration.supportedModels.map((m) => (
                             <option key={m} value={m}>
@@ -2162,12 +2157,12 @@ function SettingsPage() {
             </div>
 
             {/* Fail-Safe Notice */}
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+            <div className="rounded-lg border border-warn/40 bg-warn/10 p-4">
               <div className="flex items-start gap-3">
-                <ShieldAlert className="size-5 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
+                <ShieldAlert className="size-5 text-warn shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium text-amber-600 dark:text-amber-300">Zero Point of Failure Design</p>
-                  <p className="mt-1 text-xs text-muted dark:text-amber-400/80">
+                  <p className="text-sm font-medium text-warn">Zero point of failure design</p>
+                  <p className="mt-1 text-xs text-muted ">
                     If the AGY agent is unavailable, times out, or returns an error, the crawler automatically
                     falls back to rule-based heuristic qualification and standard ingestion — zero disruption to
                     the core pipeline.
@@ -2183,3 +2178,7 @@ function SettingsPage() {
     </AppShell>
   );
 }
+
+/** Native checkbox styled as a switch (keeps the checkbox semantics and handlers). */
+const switchCls =
+  "peer relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full border border-border bg-bg-subtle transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-3.5 before:rounded-full before:bg-muted before:transition-transform before:content-[''] checked:border-accent checked:bg-accent checked:before:translate-x-4 checked:before:bg-accent-fg disabled:cursor-not-allowed disabled:opacity-50";

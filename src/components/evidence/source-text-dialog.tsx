@@ -21,7 +21,7 @@ export function SourceTextDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-[1px]" />
         <Dialog.Content
-          className="fixed inset-x-3 top-[5vh] z-50 mx-auto flex max-h-[90vh] max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-xl focus:outline-none"
+          className="fixed inset-x-3 top-[5vh] z-50 mx-auto flex max-h-[90vh] max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-bg-card shadow-xl focus:outline-none"
           onOpenAutoFocus={(event) => {
             const mark = markRef.current;
             if (!mark) return;
