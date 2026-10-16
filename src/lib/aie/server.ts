@@ -9,7 +9,8 @@ import {
   generateEmulationPlanWithAI,
   extractStructuredEntities,
 } from "./attack-chain";
-import { REPORT_CATALOG, SOURCE_SEED } from "./catalog";
+import { REPORT_CATALOG, SOURCE_SEED, TIER_LABELS, isStructuredSource, registryEntry } from "./catalog";
+import { annotateReportProvenance, classifyDocument } from "./doc-classifier";
 import {
   cancelJob,
   checkAndTriggerScheduledCrawl,
@@ -122,7 +123,19 @@ import {
   type AgentChatMessageRecord,
   type ReportSearchCandidate,
   type ChatRetrievalTrace,
+  mongoUpsertStructuredReports,
+  mongoReplaceEmulationIndex,
+  mongoReplaceKevIndex,
+  mongoReplaceAttackTechniqueIndex,
+  mongoGetAttackTechniques,
+  mongoGetEmulationOptions,
+  mongoGetKevEntries,
+  mongoRecordSourceSync,
+  mongoGetIntelCoverage,
 } from "../mongodb/repository.server";
+import { runStructuredConnector, parserOf, techniqueLookupFrom } from "./connectors/index";
+import { defaultFetcher } from "./connectors/fetch";
+import { lookupAttackTechnique } from "./mitre-matrix";
 import {
   buildEvidenceGapReply,
   buildGroundedPrompt,
@@ -283,7 +296,7 @@ async function ensureSeeded() {
     if (isMongoConfigured()) {
       try {
         await ensureMongoIndexes();
-        await mongoSeedSources(SOURCE_SEED as SourceRecord[]);
+        await mongoSeedSources(SOURCE_SEED);
         const col = await getThreatIntelCollection();
         const existingCount = await col.countDocuments({ docType: "report" });
         if (existingCount === 0) {
@@ -1519,6 +1532,18 @@ async function persistReport(input: {
   // Run TTP and attack-chain extraction
   const analysis = analyzeThreatIntelligence(input.text, input.title, classification);
 
+  // Document types + source tier/confidence (spec §26, §42, §66).
+  const provenance = annotateReportProvenance({
+    source: registryEntry(effectiveSourceId),
+    title: input.title,
+    url: input.url,
+    text: input.text,
+    qualityScore: score,
+    qualityReasons: reasons,
+    classification,
+    resourceKind: qual.resourceKind,
+  });
+
   // Generate pristine clean document HTML matching original structure & PDF layout
   const isPdfDoc =
     input.contentType?.includes("pdf") ||
@@ -1569,7 +1594,7 @@ async function persistReport(input: {
         rawHash,
         textHash,
         qualityScore: score,
-        qualityReasons: reasons,
+        qualityReasons: provenance.qualityReasons,
         wordCount,
         extractedText: input.text,
         iocs,
@@ -1578,6 +1603,9 @@ async function persistReport(input: {
         publisher: effectivePublisher,
         author: effectiveAuthor,
         classification,
+        docTypes: provenance.docTypes,
+        sourceTier: provenance.sourceTier,
+        sourceConfidence: provenance.sourceConfidence,
         discoveryMethod: input.discoveryMethod ?? "manual",
         discoveryQuery: input.discoveryQuery ?? "",
         parentSource: effectiveSourceName,
@@ -3865,5 +3893,311 @@ export const resetAgentOnboarding = createServerFn({ method: "POST" }).middlewar
     return agentOnboardingOrchestrator.reset(data.agentId);
   });
 
+// ---------------------------------------------------------------------------
+// Structured intelligence: source registry, structured sync, emulation options,
+// coverage (AIE Web Extraction spec §14–15, §32, §42, §66).
+// ---------------------------------------------------------------------------
 
+const MONGO_REQUIRED_MESSAGE =
+  "Structured sync stores ATT&CK, emulation, attack-flow and KEV intelligence in MongoDB. Configure MONGODB_URI for this workspace to enable it.";
 
+export type RegistrySourceView = SourceRecord & {
+  tier: 1 | 2 | 3 | 4;
+  confidenceClass: string;
+  confidence: number;
+  schedule: string;
+  structured: boolean;
+  lastSyncStats?: Record<string, number>;
+  lastSyncWarnings?: string[];
+};
+
+export type SourceRegistryResponse = {
+  persistence: "mongodb" | "local";
+  structuredSyncAvailable: boolean;
+  tiers: typeof TIER_LABELS;
+  sources: RegistrySourceView[];
+};
+
+/** Tiered source registry (seed definitions merged with live enabled / ingest / sync state). */
+export const getSourceRegistry = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
+  async (): Promise<SourceRegistryResponse> => {
+    const { SOURCE_CONFIDENCE } = await import("./types");
+    const live = new Map<string, Partial<SourceRecord> & { lastSyncStats?: Record<string, number>; lastSyncWarnings?: string[] }>();
+    const mongo = isMongoConfigured();
+    if (mongo) {
+      try {
+        await ensureSeeded();
+        for (const s of await mongoListSources()) live.set(s.id, s);
+        const col = await getThreatIntelCollection();
+        const extra = await col
+          .find({ docType: "source", id: { $in: SOURCE_SEED.map((s) => s.id) } })
+          .project({ _id: 0, id: 1, lastSyncStats: 1, lastSyncWarnings: 1 })
+          .toArray();
+        for (const e of extra as any[]) live.set(e.id, { ...(live.get(e.id) ?? {}), lastSyncStats: e.lastSyncStats, lastSyncWarnings: e.lastSyncWarnings });
+      } catch (err) {
+        console.warn("[registry] mongo source state unavailable:", err);
+      }
+    } else {
+      try {
+        await ensureSeeded();
+        const sql = await getSql();
+        const rows = await sql<{ id: string; enabled: boolean; last_ingest_at: string | null }>`
+          select id, enabled, last_ingest_at::text as last_ingest_at from sources
+        `;
+        const counts = await sql<{ source_id: string; c: number }>`
+          select source_id, count(*)::int as c from reports group by source_id
+        `;
+        const countBy = new Map(counts.map((c) => [c.source_id, Number(c.c)]));
+        for (const r of rows) live.set(r.id, { enabled: Boolean(r.enabled), lastIngestAt: r.last_ingest_at, resourceCount: countBy.get(r.id) ?? 0 });
+      } catch (err) {
+        console.warn("[registry] local source state unavailable:", err);
+      }
+    }
+    const sources: RegistrySourceView[] = SOURCE_SEED.map((seed) => {
+      const l = live.get(seed.id) ?? {};
+      return {
+        ...seed,
+        enabled: l.enabled ?? seed.enabled,
+        lastIngestAt: l.lastIngestAt ?? null,
+        resourceCount: l.resourceCount ?? 0,
+        lastSyncAt: l.lastSyncAt ?? null,
+        lastSyncCount: l.lastSyncCount,
+        lastSyncError: l.lastSyncError ?? null,
+        lastSyncStats: l.lastSyncStats,
+        lastSyncWarnings: l.lastSyncWarnings,
+        confidence: SOURCE_CONFIDENCE[seed.confidenceClass],
+        structured: isStructuredSource(seed),
+        isCurated: true,
+        origin: "seed" as const,
+      };
+    });
+    return { persistence: mongo ? "mongodb" : "local", structuredSyncAvailable: mongo, tiers: TIER_LABELS, sources };
+  },
+);
+
+export type StructuredSyncResult = {
+  ok: boolean;
+  sourceId: string;
+  sourceName?: string;
+  requiresMongo?: boolean;
+  message: string;
+  stats?: Record<string, number>;
+  stored?: { documents: number; upserted: number; modified: number; unchanged: number; pruned: number; emulationRows: number; kevEntries: number; techniques: number };
+  warnings?: string[];
+  durationMs?: number;
+};
+
+const runningSyncs = new Set<string>();
+const SYNC_TIMEOUT_MS = 6 * 60_000;
+
+/**
+ * Runs a structured connector for a registry source and stores its documents and
+ * indexes. Idempotent (stable ids, upserts), bounded (per-connector file caps and a
+ * 6-minute deadline) and one-at-a-time per source. Connector config always comes
+ * from the code registry, never from stored or client data.
+ */
+export const syncStructuredSource = createServerFn({ method: "POST" }).middleware([analystMiddleware])
+  .validator(z.object({ sourceId: z.string().min(1).max(80) }))
+  .handler(async ({ data }): Promise<StructuredSyncResult> => {
+    const seed = registryEntry(data.sourceId);
+    if (!seed || !isStructuredSource(seed) || !parserOf(seed)) {
+      return { ok: false, sourceId: data.sourceId, message: "This source is crawled from its feed; it has no structured connector." };
+    }
+    if (!isMongoConfigured()) {
+      return { ok: false, sourceId: seed.id, sourceName: seed.name, requiresMongo: true, message: MONGO_REQUIRED_MESSAGE };
+    }
+    if (runningSyncs.has(seed.id)) {
+      return { ok: false, sourceId: seed.id, sourceName: seed.name, message: `${seed.name} is already syncing.` };
+    }
+    runningSyncs.add(seed.id);
+    const t0 = Date.now();
+    try {
+      await ensureSeeded();
+      // Name techniques with the stored ATT&CK index when present, else the bundled matrix.
+      let lookup = (id: string) => lookupAttackTechnique(id);
+      if (parserOf(seed) !== "attack_stix") {
+        try {
+          const stored = await mongoGetAttackTechniques();
+          if (stored.length > 0) lookup = techniqueLookupFrom(stored) as typeof lookup;
+        } catch {
+          /* bundled matrix fallback */
+        }
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        runStructuredConnector(seed, { fetcher: defaultFetcher, lookup }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Sync exceeded ${SYNC_TIMEOUT_MS / 60_000} minutes`)), SYNC_TIMEOUT_MS);
+        }),
+      ]).finally(() => clearTimeout(timer));
+
+      const complete = result.warnings.length === 0;
+      const stored = await mongoUpsertStructuredReports(seed.id, result.docs, { prune: complete });
+      const emulationRows = result.emulation.length ? await mongoReplaceEmulationIndex(seed.id, result.emulation, { prune: complete }) : 0;
+      const kevEntries = result.kev ? await mongoReplaceKevIndex(seed.id, result.kev) : 0;
+      const techniques = result.techniques ? await mongoReplaceAttackTechniqueIndex(result.techniques) : 0;
+      const warnings = [...result.warnings, ...stored.errors];
+      const count = result.docs.length + kevEntries;
+      await mongoRecordSourceSync(seed.id, { ok: true, count, stats: result.stats, warnings });
+      const summary = Object.entries(result.stats)
+        .map(([k, v]) => `${v.toLocaleString()} ${k.replace(/([A-Z])/g, " $1").toLowerCase()}`)
+        .join(" · ");
+      return {
+        ok: true,
+        sourceId: seed.id,
+        sourceName: seed.name,
+        message: `Synced ${seed.name}: ${summary}`,
+        stats: result.stats,
+        stored: {
+          documents: result.docs.length,
+          upserted: stored.upserted,
+          modified: stored.modified,
+          unchanged: stored.unchanged,
+          pruned: stored.pruned,
+          emulationRows,
+          kevEntries,
+          techniques,
+        },
+        warnings: warnings.slice(0, 20),
+        durationMs: Date.now() - t0,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await mongoRecordSourceSync(seed.id, { ok: false, error: message.slice(0, 500) });
+      } catch {
+        /* recording is best-effort */
+      }
+      return { ok: false, sourceId: seed.id, sourceName: seed.name, message: `${seed.name} sync failed: ${message}`, durationMs: Date.now() - t0 };
+    } finally {
+      runningSyncs.delete(seed.id);
+    }
+  });
+
+/** Emulation options (atomic tests, CALDERA abilities, CTID procedures, attack flows) grouped by technique id. */
+export const getEmulationOptions = createServerFn({ method: "POST" }).middleware([analystMiddleware])
+  .validator(z.object({ techniqueIds: z.array(z.string().max(16)).max(200) }))
+  .handler(async ({ data }): Promise<Record<string, import("./types").EmulationOption[]>> => {
+    if (!isMongoConfigured()) return {};
+    try {
+      return await mongoGetEmulationOptions(data.techniqueIds);
+    } catch (err) {
+      console.warn("[emulation] options lookup failed:", err);
+      return {};
+    }
+  });
+
+/** CISA KEV rows for CVE ids (empty until the KEV source has synced). */
+export const getKevEntries = createServerFn({ method: "POST" }).middleware([analystMiddleware])
+  .validator(z.object({ cveIds: z.array(z.string().max(32)).max(500) }))
+  .handler(async ({ data }) => {
+    if (!isMongoConfigured()) return [];
+    try {
+      return await mongoGetKevEntries(data.cveIds);
+    } catch (err) {
+      console.warn("[kev] lookup failed:", err);
+      return [];
+    }
+  });
+
+export type IntelCoverage = {
+  persistence: "mongodb" | "local";
+  byDocType: Record<string, number>;
+  byTier: Record<string, number>;
+  total: number;
+  /** Reports that carry no docTypes yet (stored before classification existed). */
+  unclassified: number;
+  structured: number;
+  atomicTechniques: number;
+  emulationTechniques: number;
+  emulationByKind: Record<string, number>;
+  kevEntries: number;
+  attackTechniques: number;
+};
+
+/** Library counts by DocType and source tier plus emulation / KEV / ATT&CK index sizes. */
+export const getIntelCoverage = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
+  async (): Promise<IntelCoverage> => {
+    if (isMongoConfigured()) {
+      const c = await mongoGetIntelCoverage();
+      const classified = Object.values(c.byTier).reduce((a, b) => a + b, 0) - (c.byTier.unknown ?? 0);
+      return { persistence: "mongodb", ...c, unclassified: Math.max(0, c.total - classified) };
+    }
+    // Local store: classify the stored reports on the fly (no schema change).
+    await ensureSeeded();
+    const sql = await getSql();
+    const rows = await sql<{ id: string; source_id: string; title: string; url: string; text: string; classification: string | null }>`
+      select id, source_id, title, url, left(coalesce(extracted_text, ''), 60000) as text, classification
+      from reports where status <> 'rejected' order by ingested_at desc limit 1000
+    `;
+    const byDocType: Record<string, number> = {};
+    const byTier: Record<string, number> = {};
+    for (const r of rows) {
+      const src = registryEntry(r.source_id);
+      const { docTypes } = classifyDocument({
+        title: r.title,
+        url: r.url,
+        text: r.text,
+        sourceYields: src?.yields,
+        sourceTier: src?.tier,
+        classification: r.classification ?? undefined,
+      });
+      for (const t of docTypes) byDocType[t] = (byDocType[t] ?? 0) + 1;
+      const tier = String(src?.tier ?? 4);
+      byTier[tier] = (byTier[tier] ?? 0) + 1;
+    }
+    return {
+      persistence: "local",
+      byDocType,
+      byTier,
+      total: rows.length,
+      unclassified: 0,
+      structured: 0,
+      atomicTechniques: 0,
+      emulationTechniques: 0,
+      emulationByKind: {},
+      kevEntries: 0,
+      attackTechniques: 0,
+    };
+  },
+);
+
+/**
+ * Backfills docTypes / sourceTier / sourceConfidence on stored reports that predate
+ * classification (bounded batch; call repeatedly until `remaining` is 0).
+ */
+export const classifyLibraryDocTypes = createServerFn({ method: "POST" }).middleware([analystMiddleware])
+  .validator(z.object({ limit: z.number().int().min(1).max(500).optional() }))
+  .handler(async ({ data }) => {
+    if (!isMongoConfigured()) return { ok: false as const, requiresMongo: true, message: MONGO_REQUIRED_MESSAGE, updated: 0, remaining: 0 };
+    const col = await getThreatIntelCollection();
+    const filter = { docType: "report", "docTypes.0": { $exists: false } };
+    const docs = await col
+      .find(filter)
+      .project({ _id: 0, id: 1, sourceId: 1, title: 1, url: 1, extractedText: 1, qualityScore: 1, qualityReasons: 1, classification: 1, resourceKind: 1 })
+      .limit(data.limit ?? 200)
+      .toArray();
+    const ops = (docs as any[]).map((d) => {
+      const p = annotateReportProvenance({
+        source: registryEntry(d.sourceId),
+        title: d.title ?? "",
+        url: d.url ?? "",
+        text: String(d.extractedText ?? "").slice(0, 200_000),
+        qualityScore: Number(d.qualityScore ?? 0),
+        qualityReasons: Array.isArray(d.qualityReasons) ? d.qualityReasons : [],
+        classification: d.classification,
+        resourceKind: d.resourceKind,
+      });
+      return {
+        updateOne: {
+          filter: { docType: "report", id: d.id },
+          update: { $set: { docTypes: p.docTypes, sourceTier: p.sourceTier, sourceConfidence: p.sourceConfidence, qualityReasons: p.qualityReasons } },
+        },
+      };
+    });
+    if (ops.length) await col.bulkWrite(ops, { ordered: false });
+    invalidateReportsCache();
+    invalidateDashboardCache();
+    const remaining = await col.countDocuments(filter);
+    return { ok: true as const, message: `Classified ${ops.length} reports`, updated: ops.length, remaining };
+  });

@@ -65,7 +65,8 @@ import {
   registerJobActiveChecker,
   registerScheduleChecker,
 } from "../mongodb/repository.server";
-import { SOURCE_SEED } from "./catalog";
+import { SOURCE_SEED, isStructuredSource, registryEntry } from "./catalog";
+import { annotateReportProvenance } from "./doc-classifier";
 
 function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -410,7 +411,8 @@ export async function executeCrawlJob(
       }
     }
 
-    sources = Array.from(seedMap.values()).filter((s) => s.enabled !== false);
+    // Structured connectors (STIX / GitHub / JSON) are synced by syncStructuredSource, not crawled.
+    sources = Array.from(seedMap.values()).filter((s) => s.enabled !== false && !isStructuredSource(s));
     if (isMongoConfigured()) {
       try {
         await mongoSeedSources(sources);
@@ -1869,6 +1871,18 @@ export async function executeCrawlJob(
                 }
               }
 
+              const provenanceSource = registryEntry(effectiveSourceId) ?? sources.find((s) => s.id === effectiveSourceId);
+              const provenance = annotateReportProvenance({
+                source: provenanceSource,
+                title: docTitle,
+                url: current.url,
+                text: textContent,
+                qualityScore: score,
+                qualityReasons: reasons,
+                classification: qual.classification,
+                resourceKind: qual.resourceKind,
+              });
+
               const reportDoc: ReportRecord & { simhash: string } = {
                 id: reportId,
                 simhash: reportSimhash,
@@ -1883,7 +1897,7 @@ export async function executeCrawlJob(
                 rawHash,
                 textHash,
                 qualityScore: score,
-                qualityReasons: reasons,
+                qualityReasons: provenance.qualityReasons,
                 wordCount,
                 extractedText: textContent,
                 iocs,
@@ -1893,6 +1907,9 @@ export async function executeCrawlJob(
                 author: effectiveAuthor,
                 classification: qual.classification,
                 resourceKind: qual.resourceKind,
+                docTypes: provenance.docTypes,
+                sourceTier: provenance.sourceTier,
+                sourceConfidence: provenance.sourceConfidence,
                 extractedEntities,
                 discoveryMethod: current.discoveryMethod,
                 discoveryQuery: "",
