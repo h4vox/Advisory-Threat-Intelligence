@@ -24,7 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
@@ -336,16 +336,7 @@ function MatrixPage() {
   return (
     <AppShell>
       <PageHeader
-        title="ATT&CK Matrix"
-        eyebrow={
-          <span className="flex items-center gap-2">
-            <span>Enterprise Framework</span>
-            <span>/</span>
-            <Badge tone="accent" className="font-mono text-[10px] normal-case tracking-normal">
-              ATT&CK® Enterprise Matrix
-            </Badge>
-          </span>
-        }
+        title="ATT&CK matrix"
         description="Official MITRE ATT&CK® Enterprise Matrix mapping across 15 tactical phases. Techniques with verified intelligence reports in your library are highlighted with direct links to full evidence."
         actions={
           <>
@@ -355,10 +346,10 @@ function MatrixPage() {
               onClick={() => void refetch()}
               disabled={isFetching}
             >
-              Sync Intel ({stats.totalMappedReports})
+              Sync intel ({stats.totalMappedReports})
             </ActionButton>
             <ActionButton variant="primary" icon={Zap} onClick={() => void navigate({ to: "/ingest" })}>
-              Hunt New TTP
+              Hunt new TTP
             </ActionButton>
           </>
         }
@@ -367,18 +358,18 @@ function MatrixPage() {
         {/* ========================================================================= */}
         {/* CONTROLS BAR: SEARCH, TACTIC, ACTOR, TOOL, PLATFORM, COVERAGE, LAYOUT     */}
         {/* ========================================================================= */}
-        <div className="space-y-2.5 rounded-xl border border-border bg-bg-elevated p-3 shadow-xs">
+        <div className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
           {/* Primary Controls Row: Search, Selectors, Toggles */}
           <div className="flex flex-1 flex-wrap items-center gap-2">
             {/* Search Input */}
             <div className="relative min-w-[200px] max-w-xs flex-1">
-              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-subtle" />
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" strokeWidth={1.75} />
               <Input
                 type="text"
                 placeholder="Search ID, name, or report..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-8 pl-8 text-xs font-mono placeholder:text-subtle"
+                className="h-9 rounded-lg border-border bg-bg-elevated pl-9 text-sm placeholder:text-subtle"
               />
               {searchQuery && (
                 <button
@@ -395,7 +386,7 @@ function MatrixPage() {
             <select
               value={selectedTactic}
               onChange={(e) => setSelectedTactic(e.target.value)}
-              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              className={selectCls}
               title="Filter by MITRE ATT&CK Tactic Phase"
             >
               {TACTIC_OPTIONS.map((t) => (
@@ -409,7 +400,7 @@ function MatrixPage() {
             <select
               value={selectedActor}
               onChange={(e) => setSelectedActor(e.target.value)}
-              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              className={selectCls}
               title="Filter by Associated Adversary Group"
             >
               {THREAT_ACTORS.map((a) => (
@@ -423,7 +414,7 @@ function MatrixPage() {
             <select
               value={selectedTool}
               onChange={(e) => setSelectedTool(e.target.value)}
-              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              className={selectCls}
               title="Filter by Associated Tool or Malware"
             >
               {OFFENSIVE_TOOLS.map((m) => (
@@ -437,7 +428,7 @@ function MatrixPage() {
             <select
               value={selectedPlatform}
               onChange={(e) => setSelectedPlatform(e.target.value)}
-              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              className={selectCls}
               title="Filter by Operating System / Platform"
             >
               {PLATFORMS.map((p) => (
@@ -451,7 +442,7 @@ function MatrixPage() {
             <select
               value={coverageStatus}
               onChange={(e) => setCoverageStatus(e.target.value as "all" | "covered" | "uncovered")}
-              className="h-8 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              className={selectCls}
               title="Filter by Library Intelligence Mapping Status"
             >
               <option value="all">Coverage: All ({stats.totalTechniques})</option>
@@ -464,14 +455,14 @@ function MatrixPage() {
               type="button"
               onClick={handleToggleGlobalSubTechs}
               className={cn(
-                "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-mono transition-colors",
+                "flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm transition-colors",
                 showSubTechniques
-                  ? "border-border-strong bg-bg-subtle text-fg font-semibold shadow-xs"
-                  : "border-border bg-bg-subtle text-muted hover:text-fg",
+                  ? "border-border-strong bg-bg-subtle text-fg"
+                  : "border-border bg-bg-elevated text-muted hover:bg-bg-subtle hover:text-fg",
               )}
             >
-              <ChevronDown className={cn("size-3.5 transition-transform", showSubTechniques && "rotate-180")} />
-              <span>{showSubTechniques ? "hide sub-techniques" : "show sub-techniques"}</span>
+              <ChevronDown className={cn("size-4 transition-transform", showSubTechniques && "rotate-180")} strokeWidth={1.75} />
+              <span>{showSubTechniques ? "Hide sub-techniques" : "Show sub-techniques"}</span>
             </button>
 
             {/* Reset All Filters Button */}
@@ -479,42 +470,40 @@ function MatrixPage() {
               <button
                 type="button"
                 onClick={resetAllFilters}
-                className="flex h-8 items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 text-xs font-mono text-muted hover:text-fg hover:border-border-strong transition-colors"
+                className="flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
                 title="Clear all active filters"
               >
-                <X className="size-3" />
-                <span>Reset</span>
+                <X className="size-4" strokeWidth={1.75} />
+                <span>Reset filters</span>
               </button>
             )}
           </div>
 
           {/* Secondary Info & Layout Bar */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-t border-border/70 pt-2 text-xs">
+          <div className="flex flex-col gap-2 border-t border-border pt-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             {/* Filter Status Badge */}
-            <div className="flex items-center gap-2 font-mono text-[11px] text-muted">
+            <div className="flex items-center gap-2 text-sm text-muted">
               <span>
-                Displaying <span className="font-bold text-fg">{totalVisibleTechniques}</span> of{" "}
-                <span className="text-fg">{stats.totalTechniques}</span> techniques
+                Showing <span className="font-medium text-fg tabular-nums">{totalVisibleTechniques}</span> of{" "}
+                <span className="text-fg tabular-nums">{stats.totalTechniques}</span> techniques
               </span>
               {hasActiveFilters && (
-                <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-fg font-medium">
-                  Filtered
-                </span>
+                <StatusChip tone="info">Filtered</StatusChip>
               )}
             </div>
 
             {/* Layout Selector (side / flat / mini) */}
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[11px] text-subtle">layout:</span>
+              <span className="text-sm text-muted">Layout</span>
               <SegmentedTabs<LayoutMode>
                 size="sm"
                 ariaLabel="Matrix layout"
                 value={layoutMode}
                 onChange={setLayoutMode}
                 items={[
-                  { value: "side", label: "side", icon: Columns3 },
-                  { value: "flat", label: "flat", icon: LayoutGrid },
-                  { value: "mini", label: "mini", icon: Grid3X3 },
+                  { value: "side", label: "Side", icon: Columns3 },
+                  { value: "flat", label: "Flat", icon: LayoutGrid },
+                  { value: "mini", label: "Mini", icon: Grid3X3 },
                 ]}
               />
             </div>
@@ -522,17 +511,17 @@ function MatrixPage() {
 
           {/* Active Filter Chips (Removable) */}
           {hasActiveFilters && (
-            <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 pt-2">
-              <span className="text-[10px] font-mono uppercase text-subtle mr-1">Active:</span>
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
+              <span className="mr-1 text-xs text-muted">Active filters</span>
 
               {searchQuery && (
                 <button
                   type="button"
                   onClick={() => setSearchQuery("")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>query: "{searchQuery}"</span>
-                  <X className="size-2.5" />
+                  <span>Query: "{searchQuery}"</span>
+                  <X className="size-3" />
                 </button>
               )}
 
@@ -540,10 +529,10 @@ function MatrixPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedTactic("All 15 Tactics")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>tactic: {selectedTactic}</span>
-                  <X className="size-2.5" />
+                  <span>Tactic: {selectedTactic}</span>
+                  <X className="size-3" />
                 </button>
               )}
 
@@ -551,10 +540,10 @@ function MatrixPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedActor("All Actors")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>actor: {selectedActor}</span>
-                  <X className="size-2.5" />
+                  <span>Actor: {selectedActor}</span>
+                  <X className="size-3" />
                 </button>
               )}
 
@@ -562,10 +551,10 @@ function MatrixPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedTool("All Tools")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>tool: {selectedTool}</span>
-                  <X className="size-2.5" />
+                  <span>Tool: {selectedTool}</span>
+                  <X className="size-3" />
                 </button>
               )}
 
@@ -573,10 +562,10 @@ function MatrixPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedPlatform("All")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>platform: {selectedPlatform}</span>
-                  <X className="size-2.5" />
+                  <span>Platform: {selectedPlatform}</span>
+                  <X className="size-3" />
                 </button>
               )}
 
@@ -584,10 +573,10 @@ function MatrixPage() {
                 <button
                   type="button"
                   onClick={() => setCoverageStatus("all")}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-mono text-muted hover:text-fg hover:border-border-strong"
+                  className={filterChipCls}
                 >
-                  <span>coverage: {coverageStatus}</span>
-                  <X className="size-2.5" />
+                  <span>Coverage: {coverageStatus}</span>
+                  <X className="size-3" />
                 </button>
               )}
             </div>
@@ -598,23 +587,23 @@ function MatrixPage() {
         {/* OFFICIAL MITRE ATT&CK ENTERPRISE MATRIX GRID                              */}
         {/* 15 Tactic Columns with Sticky Headers & Dense Technique Stacking          */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated shadow-xs overflow-hidden">
+        <div className="overflow-hidden rounded-xl border border-border bg-bg-card">
           <div className="relative overflow-x-auto">
             <div className="inline-flex min-w-full divide-x divide-border">
               {filteredTactics.map((tactic) => (
                 <div
                   key={tactic.id}
                   className={cn(
-                    "shrink-0 flex flex-col bg-bg",
+                    "flex shrink-0 flex-col",
                     layoutMode === "mini" ? "w-44 min-w-[176px]" : "w-56 min-w-[224px]",
                   )}
                 >
                   {/* TACTIC COLUMN HEADER (Exact official MITRE layout: Name + technique count) */}
-                  <div className="sticky top-0 z-20 border-b border-border bg-bg-elevated px-3 py-2.5 shadow-xs select-none">
-                    <div className="text-xs font-bold leading-tight text-fg tracking-tight">
+                  <div className="sticky top-0 z-20 select-none border-b border-border bg-bg-card px-3 py-3">
+                    <div className="text-sm font-medium leading-tight text-fg">
                       {tactic.name}
                     </div>
-                    <div className="mt-0.5 text-[11px] font-mono text-muted">
+                    <div className="mt-0.5 text-xs text-muted tabular-nums">
                       {(tactic?.techniques?.length ?? 0)} techniques
                     </div>
                   </div>
@@ -622,7 +611,7 @@ function MatrixPage() {
                   {/* DENSE VERTICAL STACK OF TECHNIQUES */}
                   <div className="flex-1 p-1.5 space-y-1 overflow-y-auto max-h-[800px]">
                     {(!tactic?.techniques || tactic.techniques.length === 0) ? (
-                      <div className="p-3 text-center text-[11px] font-mono text-subtle">
+                      <div className="p-3 text-center text-xs text-subtle">
                         No matches
                       </div>
                     ) : (
@@ -642,7 +631,7 @@ function MatrixPage() {
                                 setSelectedSubTech(null);
                               }}
                               className={cn(
-                                "group relative rounded border px-2 py-1.5 cursor-pointer transition-all duration-100 select-none",
+                                "group relative cursor-pointer select-none rounded-md border px-2 py-1.5 transition-colors duration-100",
                                 isSelected
                                   ? "border-border-strong bg-bg-subtle ring-1 ring-border-strong"
                                   : hasReports
@@ -651,10 +640,10 @@ function MatrixPage() {
                               )}
                               title={`${tech.id} ${tech.name} (${hasReports ? `${tech.coverageCount} reports` : "no reports"})`}
                             >
-                              <div className="flex items-center justify-between text-[10px] font-mono">
-                                <span className="font-semibold text-subtle">{tech.id}</span>
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="font-mono text-subtle">{tech.id}</span>
                                 {hasReports && (
-                                  <span className="text-sage font-bold">● {tech.coverageCount}</span>
+                                  <CoverageDot count={tech.coverageCount} />
                                 )}
                               </div>
                               <div className="truncate text-xs font-medium text-fg mt-0.5">
@@ -700,13 +689,13 @@ function MatrixPage() {
                                   {/* Sub-Technique Count in Parentheses & Official '=' Toggle */}
                                   {subCount > 0 && layoutMode === "side" && (
                                     <div className="flex items-center gap-1 shrink-0">
-                                      <span className="font-mono text-[10px] text-muted">
+                                      <span className="text-[11px] text-muted tabular-nums">
                                         ({subCount})
                                       </span>
                                       <button
                                         type="button"
                                         onClick={(e) => toggleTechniqueExpand(tech.id, e)}
-                                        className="flex size-4 items-center justify-center rounded border border-border bg-bg text-[10px] font-mono font-bold text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
+                                        className="flex size-4 items-center justify-center rounded border border-border bg-bg font-mono text-[10px] text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
                                         title={isExpanded ? "Collapse sub-techniques" : "Expand sub-techniques"}
                                       >
                                         {isExpanded ? "−" : "="}
@@ -717,8 +706,8 @@ function MatrixPage() {
 
                                 {/* Mapped Reports Badge */}
                                 {hasReports && (
-                                  <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-sage">
-                                    <span>●</span>
+                                  <div className="mt-1 flex items-center gap-1.5 text-[11px] text-sage">
+                                    <span className="size-1.5 rounded-full bg-sage" />
                                     <span>{tech.coverageCount} mapped</span>
                                   </div>
                                 )}
@@ -729,20 +718,20 @@ function MatrixPage() {
                             {((layoutMode === "side" && isExpanded) || layoutMode === "flat") &&
                               subCount > 0 && (
                                 <div className="ml-3 pl-2 border-l border-border space-y-1">
-                                  {tech.subTechniques.map((sub) => {
+                                  {tech.subTechniques.map((sub, subIdx) => {
                                     const isSubSelected = selectedSubTech?.id === sub.id;
                                     const hasSubReports = sub.coverageCount > 0;
 
                                     return (
                                       <div
-                                        key={sub.id}
+                                        key={`${sub.id}-${subIdx}`}
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           setSelectedTechnique(tech);
                                           setSelectedSubTech(sub);
                                         }}
                                         className={cn(
-                                          "rounded border px-2 py-1 cursor-pointer transition-colors text-left",
+                                          "cursor-pointer rounded-md border px-2 py-1 text-left transition-colors",
                                           isSubSelected
                                             ? "border-border-strong bg-bg-subtle ring-1 ring-border-strong"
                                             : hasSubReports
@@ -755,9 +744,7 @@ function MatrixPage() {
                                             {sub.name}
                                           </span>
                                           {hasSubReports && (
-                                            <span className="font-mono text-[9px] text-sage font-bold">
-                                              ● {sub.coverageCount}
-                                            </span>
+                                            <CoverageDot count={sub.coverageCount} />
                                           )}
                                         </div>
                                       </div>
@@ -779,14 +766,10 @@ function MatrixPage() {
         {/* ========================================================================= */}
         {/* OFFICIAL MITRE ATT&CK BRANDING & TRADEMARK ATTRIBUTION                     */}
         {/* ========================================================================= */}
-        <div className="rounded-xl border border-border bg-bg-elevated p-3.5 text-xs text-muted leading-relaxed">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-border pb-2 mb-2">
-            <span className="font-mono text-[11px] uppercase font-bold text-fg">
-              MITRE ATT&CK® Enterprise Matrix Notice
-            </span>
-            <span className="font-mono text-[10px] text-subtle">
-              Official ATT&CK Framework Enterprise
-            </span>
+        <div className="rounded-xl border border-border bg-bg-card p-5 text-xs leading-relaxed text-muted">
+          <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-sm font-medium text-fg">MITRE ATT&CK® Enterprise matrix notice</span>
+            <span className="text-xs text-subtle">Official ATT&CK framework, Enterprise</span>
           </div>
           <p>
             © 2026 The MITRE Corporation. This work is reproduced and adapted from the MITRE ATT&CK® matrix.
@@ -802,27 +785,27 @@ function MatrixPage() {
         {/* ========================================================================= */}
         {selectedTechnique && (
           <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/60 backdrop-blur-xs p-0 sm:p-4">
-            <div className="h-full sm:h-[94vh] w-full max-w-2xl flex flex-col rounded-none sm:rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in slide-in-from-right duration-150">
+            <div className="flex h-full w-full max-w-2xl flex-col overflow-hidden rounded-none border border-border bg-bg-card shadow-2xl animate-in slide-in-from-right duration-150 sm:h-[94vh] sm:rounded-xl">
               {/* Drawer Header */}
-              <div className="flex items-start justify-between border-b border-border bg-bg px-6 py-5">
+              <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-base font-bold text-fg">
+                    <span className="font-mono text-sm text-muted">
                       {selectedSubTech ? selectedSubTech.id : selectedTechnique.id}
                     </span>
-                    <Badge tone="neutral">{selectedTechnique.tacticName}</Badge>
+                    <span className="text-sm text-muted">· {selectedTechnique.tacticName}</span>
                     {selectedTechnique.coverageCount > 0 && (
-                      <Badge tone="sage" className="font-mono text-[10px]">
-                        {selectedTechnique.coverageCount} Reports Mapped
-                      </Badge>
+                      <StatusChip tone="success" dot>
+                        {selectedTechnique.coverageCount} reports mapped
+                      </StatusChip>
                     )}
                   </div>
 
-                  <h2 className="mt-1.5 text-xl font-bold text-fg">
+                  <h2 className="mt-1.5 text-xl font-semibold text-fg">
                     {selectedSubTech ? selectedSubTech.name : selectedTechnique.name}
                   </h2>
 
-                  <div className="mt-1 flex flex-wrap items-center gap-3 text-xs font-mono text-muted">
+                  <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted">
                     <a
                       href={`https://attack.mitre.org/techniques/${(selectedSubTech ? selectedSubTech.id : selectedTechnique.id).replace(/\./g, "/")}/`}
                       target="_blank"
@@ -843,7 +826,8 @@ function MatrixPage() {
                     setSelectedTechnique(null);
                     setSelectedSubTech(null);
                   }}
-                  className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-bg-subtle hover:text-fg transition-colors"
+                  aria-label="Close"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
                 >
                   <X className="size-4" />
                 </button>
@@ -853,53 +837,51 @@ function MatrixPage() {
               <div className="flex-1 overflow-y-auto p-6 space-y-6">
                 {/* Description */}
                 <div>
-                  <h3 className="font-mono text-xs uppercase tracking-wider text-subtle">
+                  <h3 className="text-sm font-medium text-fg">
                     Description
                   </h3>
-                  <p className="mt-2 text-sm text-fg leading-relaxed">
+                  <p className="mt-2 text-sm leading-relaxed text-muted">
                     {selectedSubTech ? selectedSubTech.description : selectedTechnique.description}
                   </p>
                 </div>
 
                 {/* Sub-Techniques List (Clickable to switch view) */}
                 {Array.isArray(selectedTechnique?.subTechniques) && selectedTechnique.subTechniques.length > 0 && (
-                  <div className="rounded-xl border border-border bg-bg p-4 space-y-2">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-mono text-xs uppercase tracking-wider text-fg">
-                        Sub-Techniques ({selectedTechnique.subTechniques.length})
+                      <h3 className="text-sm font-medium text-fg">
+                        Sub-techniques ({selectedTechnique.subTechniques.length})
                       </h3>
                       {selectedSubTech && (
                         <button
                           type="button"
                           onClick={() => setSelectedSubTech(null)}
-                          className="font-mono text-xs text-muted hover:text-fg hover:underline"
+                          className="text-xs text-muted hover:text-fg"
                         >
-                          View Parent Technique
+                          View parent technique
                         </button>
                       )}
                     </div>
 
-                    <div className="grid grid-cols-1 gap-1.5 pt-1">
-                      {selectedTechnique.subTechniques.map((st) => (
+                    <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                      {selectedTechnique.subTechniques.map((st, stIdx) => (
                         <button
-                          key={st.id}
+                          key={`${st.id}-${stIdx}`}
                           type="button"
                           onClick={() => setSelectedSubTech(st)}
                           className={cn(
-                            "rounded-lg border p-2.5 text-left transition-colors flex items-center justify-between",
-                            selectedSubTech?.id === st.id
-                              ? "border-border-strong bg-bg-subtle text-fg font-medium"
-                              : "border-border bg-bg-elevated hover:bg-bg-subtle text-muted hover:text-fg",
+                            "flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors",
+                            selectedSubTech?.id === st.id ? "bg-bg-subtle text-fg" : "text-muted hover:bg-bg-subtle hover:text-fg",
                           )}
                         >
                           <div>
-                            <span className="font-mono text-[10px] text-muted font-semibold">{st.id}</span>
-                            <div className="text-xs mt-0.5 text-fg">{st.name}</div>
+                            <span className="font-mono text-[11px] text-subtle">{st.id}</span>
+                            <div className="mt-0.5 text-sm text-fg">{st.name}</div>
                           </div>
                           {st.coverageCount > 0 && (
-                            <Badge tone="sage" className="font-mono text-[9px]">
-                              ● {st.coverageCount}
-                            </Badge>
+                            <StatusChip tone="success" dot>
+                              {st.coverageCount}
+                            </StatusChip>
                           )}
                         </button>
                       ))}
@@ -910,8 +892,8 @@ function MatrixPage() {
                 {/* MAPPED INTELLIGENCE RESOURCES FROM YOUR LIBRARY */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between border-b border-border pb-2">
-                    <h3 className="font-mono text-xs uppercase tracking-wider text-fg">
-                      Mapped Intelligence Reports ({selectedTechnique?.mappedReports?.length ?? 0})
+                    <h3 className="text-sm font-medium text-fg">
+                      Mapped intelligence reports ({selectedTechnique?.mappedReports?.length ?? 0})
                     </h3>
                     {(!selectedTechnique?.mappedReports || selectedTechnique.mappedReports.length === 0) && (
                       <Button
@@ -926,8 +908,8 @@ function MatrixPage() {
                   </div>
 
                   {(!selectedTechnique?.mappedReports || selectedTechnique.mappedReports.length === 0) ? (
-                    <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted space-y-2">
-                      <ShieldAlert className="size-8 mx-auto text-subtle" />
+                    <div className="space-y-2 rounded-xl bg-bg-subtle/50 p-6 text-center text-sm text-muted">
+                      <ShieldAlert className="mx-auto size-6 text-subtle" strokeWidth={1.75} />
                       <p className="font-medium text-fg">
                         No intelligence reports in knowledge base currently exhibiting this TTP.
                       </p>
@@ -940,7 +922,7 @@ function MatrixPage() {
                         onClick={() => navigate({ to: "/ingest" })}
                       >
                         <Zap className="size-3.5" />
-                        <span>Discover TTP Intelligence</span>
+                        <span>Discover TTP intelligence</span>
                       </Button>
                     </div>
                   ) : (
@@ -948,24 +930,23 @@ function MatrixPage() {
                       {selectedTechnique.mappedReports.map((report) => (
                         <div
                           key={report.id}
-                          className="rounded-xl border border-border bg-bg p-4 space-y-2.5 hover:border-border-strong transition-colors"
+                          className="space-y-2.5 rounded-xl bg-bg-subtle/50 p-4 transition-colors hover:bg-bg-subtle"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <Badge tone="neutral">{report.publisher || report.sourceName}</Badge>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                              <span className="text-fg">{report.publisher || report.sourceName}</span>
                               {report.resourceKind && (
-                                <Badge tone="accent" className="text-[10px]">
-                                  {report.resourceKind.replace(/_/g, " ")}
-                                </Badge>
+                                <>
+                                  <span className="text-subtle">·</span>
+                                  <span>{sentence(report.resourceKind.replace(/_/g, " "))}</span>
+                                </>
                               )}
                               {report.simulationScore !== undefined && report.simulationScore > 0 && (
-                                <Badge tone="sage" className="font-mono text-[10px]">
-                                  SIM {Math.round(report.simulationScore * 100)}%
-                                </Badge>
+                                <StatusChip tone="success">Simulation {Math.round(report.simulationScore * 100)}%</StatusChip>
                               )}
                             </div>
 
-                            <span className="font-mono text-[10px] text-subtle">
+                            <span className="text-xs text-subtle tabular-nums">
                               {report.wordCount} words · {report.iocCount} IOCs
                             </span>
                           </div>
@@ -973,7 +954,7 @@ function MatrixPage() {
                           <Link
                             to="/library"
                             search={{ selected: report.id }}
-                            className="block text-sm font-semibold text-fg hover:underline transition-colors leading-snug"
+                            className="block text-sm font-medium leading-snug text-fg hover:underline"
                           >
                             {report.title}
                           </Link>
@@ -987,10 +968,10 @@ function MatrixPage() {
                               href={report.canonicalUrl || report.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-1 font-mono text-[11px] text-subtle hover:text-fg"
+                              className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg"
                               title="Open original vendor source"
                             >
-                              <span>Source Paper</span>
+                              <span>Source paper</span>
                               <ArrowUpRight className="size-3" />
                             </a>
 
@@ -1002,13 +983,13 @@ function MatrixPage() {
                                 onClick={() => setPreviewReportId(report.id)}
                               >
                                 <Eye className="size-3" />
-                                <span>PDF View</span>
+                                <span>PDF view</span>
                               </Button>
 
                               <Link
                                 to="/library"
                                 search={{ selected: report.id }}
-                                className="inline-flex h-7 items-center gap-1 rounded-md bg-accent px-2.5 text-xs font-medium text-accent-fg hover:opacity-90 transition-opacity"
+                                className="inline-flex h-7 items-center gap-1 rounded-lg bg-accent px-2.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90"
                               >
                                 <span>View in Library</span>
                                 <ArrowRight className="size-3" />
@@ -1030,15 +1011,15 @@ function MatrixPage() {
         {/* ========================================================================= */}
         {previewReportId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
-            <div className="flex h-[90vh] w-full max-w-5xl flex-col rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-center justify-between border-b border-border bg-bg px-6 py-4">
+            <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-bg-card shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between gap-3 border-b border-border px-6 py-4">
                 <div className="flex items-center gap-3 overflow-hidden">
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-subtle">
                     <FileText className="size-4 text-accent" />
                   </div>
                   <div className="overflow-hidden">
                     <h3 className="truncate text-sm font-medium text-fg">
-                      {previewData?.title || "Document Representation"}
+                      {previewData?.title || "Document representation"}
                     </h3>
                     <p className="truncate text-xs text-subtle font-mono">
                       {previewData?.canonicalUrl || previewData?.url}
@@ -1050,7 +1031,7 @@ function MatrixPage() {
                   <Link
                     to="/library"
                     search={{ selected: previewReportId }}
-                    className="rounded-lg border border-border bg-bg-subtle px-3 py-1.5 text-xs text-fg hover:bg-bg transition-colors"
+                    className="rounded-lg border border-border bg-bg-elevated px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-subtle"
                   >
                     View in Library
                   </Link>
@@ -1069,7 +1050,7 @@ function MatrixPage() {
                 {isPreviewLoading ? (
                   <div className="flex h-full flex-col items-center justify-center text-muted">
                     <ActivitySpinner size="lg" className="text-accent mb-2" />
-                    <p className="text-sm font-mono">Rendering document view...</p>
+                    <p className="text-sm">Rendering document view…</p>
                   </div>
                 ) : previewData?.rawHtml ? (
                   <iframe
@@ -1089,5 +1070,23 @@ function MatrixPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+const selectCls =
+  "h-9 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent";
+const filterChipCls =
+  "inline-flex items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-0.5 text-xs text-muted hover:bg-bg-subtle hover:text-fg";
+
+function sentence(s: string) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+}
+
+function CoverageDot({ count }: { count: number }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-sage tabular-nums" title={`${count} mapped reports`}>
+      <span className="size-1.5 rounded-full bg-sage" />
+      {count}
+    </span>
   );
 }

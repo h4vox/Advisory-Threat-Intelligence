@@ -5,7 +5,6 @@ import {
   Activity,
   AlertCircle,
   Bot,
-  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -33,10 +32,10 @@ import {
   FileText,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { PageHeader, SegmentedTabs, Toolbar } from "@/components/layout/page";
+import { ActionButton, PageHeader, SegmentedTabs, Toolbar } from "@/components/layout/page";
+import { EmptyState, StatusChip, StatusDot } from "@/components/ui/primitives";
 import { AieAgentChatDrawer } from "@/components/aie-agent-chat-drawer";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
@@ -473,91 +472,62 @@ function MarketplacePage() {
   return (
     <AppShell flush>
       <div className="h-full flex flex-col overflow-hidden bg-bg text-fg">
-        {/* ========================================================================= */}
-        {/* 1. 100% STATIC TOP HEADER & NAVIGATION TABS (NEVER SCROLLS)               */}
-        {/* ========================================================================= */}
-        <header className="shrink-0 border-b border-border bg-bg/85 backdrop-blur-xl px-4 pt-6 pb-4 md:px-10 md:pt-8 z-20">
+        {/* Static header + section tabs (never scrolls) */}
+        <header className="z-20 shrink-0 border-b border-border bg-bg px-4 pb-4 pt-6 md:px-10 md:pt-8">
           <PageHeader
             className="mb-0 md:mb-0"
             title="Marketplace"
             description="Install, configure, and manage external AI agents, API endpoints, curated adversary feeds, and execution blocks."
             actions={
-              <>
-                {/* Agent Sandbox Environment Indicator */}
-                <div className="flex items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs shrink-0">
-                  <div className="relative flex items-center justify-center">
-                    <div
-                      className={cn(
-                        "size-2.5 rounded-full",
-                        sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
-                          ? "bg-cyan-400 animate-pulse"
-                          : sandboxStatus?.isReady
-                            ? "bg-emerald-500"
-                            : "bg-amber-500"
-                      )}
-                    />
-                    <div
-                      className={cn(
-                        "absolute size-4 rounded-full",
-                        sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning
-                          ? "bg-cyan-400/25"
-                          : sandboxStatus?.isReady
-                            ? "bg-emerald-500/20"
-                            : "bg-amber-500/20"
-                      )}
-                    />
-                  </div>
-                  <div className="text-xs">
-                    <div className="text-[10px] uppercase font-mono text-subtle tracking-wider flex items-center gap-1.5">
-                      <span>Execution Sandbox</span>
-                      {sandboxStatus?.runtime === "docker" && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/15 text-cyan-400 font-bold border border-cyan-500/20">
-                          ISOLATED
-                        </span>
-                      )}
-                    </div>
-                    <div className="font-medium text-fg flex items-center gap-1.5">
-                      <span className="font-mono text-[11px] text-accent">
-                        {sandboxStatus?.runtime === "docker"
-                          ? `${sandboxStatus.containerName} (Active)`
-                          : sandboxStatus?.runtime === "wsl"
-                            ? "WSL Linux Bridge"
-                            : sandboxStatus?.runtime === "native"
-                              ? "Host Native Runtime"
-                              : "Sandbox Standby"}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => restartSandboxMutation.mutate()}
-                        disabled={restartSandboxMutation.isPending}
-                        title="Restart Agent Sandbox Container"
-                        className="p-1 rounded hover:bg-bg-subtle text-subtle hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {restartSandboxMutation.isPending ? (
-                          <ActivitySpinner size="xs" className="text-accent" />
-                        ) : (
-                          <RefreshCw className="size-3 text-subtle" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
+              <div className="flex min-w-0 max-w-full flex-col gap-1.5 rounded-lg border border-border bg-bg-card px-3 py-2 text-xs">
+                {/* Agent sandbox environment indicator */}
+                <div className="flex items-center gap-2">
+                  <StatusDot
+                    tone={
+                      (sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning) || sandboxStatus?.isReady
+                        ? "success"
+                        : "warning"
+                    }
+                  >
+                    <span className="text-muted">Sandbox</span>
+                  </StatusDot>
+                  <span className="font-medium text-fg">
+                    {sandboxStatus?.runtime === "docker"
+                      ? `${sandboxStatus.containerName} (active)`
+                      : sandboxStatus?.runtime === "wsl"
+                        ? "WSL Linux bridge"
+                        : sandboxStatus?.runtime === "native"
+                          ? "Host native runtime"
+                          : "Standby"}
+                  </span>
+                  {sandboxStatus?.runtime === "docker" && <span className="text-subtle">· Isolated</span>}
+                  <button
+                    type="button"
+                    onClick={() => restartSandboxMutation.mutate()}
+                    disabled={restartSandboxMutation.isPending}
+                    title="Restart agent sandbox container"
+                    aria-label="Restart agent sandbox container"
+                    className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
+                  >
+                    {restartSandboxMutation.isPending ? (
+                      <ActivitySpinner size="xs" className="text-accent" />
+                    ) : (
+                      <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                    )}
+                  </button>
                 </div>
 
-                {/* Active AI Agent Indicator Badge */}
-                <div className="flex min-w-0 max-w-full items-center gap-3 bg-bg-elevated/90 backdrop-blur-sm border border-border px-3.5 py-2 rounded-xl shadow-xs">
-                  <div className="relative flex shrink-0 items-center justify-center">
-                    <div className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <div className="absolute size-4 rounded-full bg-emerald-500/20" />
-                  </div>
-                  <div className="min-w-0 text-xs">
-                    <div className="text-[10px] uppercase font-mono text-subtle tracking-wider">Active AI Agent</div>
-                    <div className="font-medium text-fg flex min-w-0 items-center gap-1.5">
-                      <span className="truncate">{integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}</span>
-                      <span className="shrink-0 font-mono text-[11px] text-accent">({activeModel})</span>
-                    </div>
-                  </div>
+                {/* Active AI agent indicator */}
+                <div className="flex min-w-0 items-center gap-2">
+                  <StatusDot tone="success">
+                    <span className="text-muted">Agent</span>
+                  </StatusDot>
+                  <span className="truncate font-medium text-fg">
+                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted">{activeModel}</span>
                 </div>
-              </>
+              </div>
             }
             tabs={
               <SegmentedTabs
@@ -568,32 +538,29 @@ function MarketplacePage() {
                   { value: "home", label: "Home", icon: Activity },
                   {
                     value: "curated",
-                    label: "Curated Resources",
+                    label: "Curated resources",
                     icon: Globe,
                     count: marketplaceState?.curatedResources?.length || 4,
                   },
-                  { value: "response", label: "Response Integration", icon: Bot, count: integrations.length },
-                  { value: "powerups", label: "Powerups & Exporters", icon: Zap },
-                  { value: "playbooks", label: "Playbook Blocks", icon: Layers },
+                  { value: "response", label: "Response integration", icon: Bot, count: integrations.length },
+                  { value: "powerups", label: "Powerups & exporters", icon: Zap },
+                  { value: "playbooks", label: "Playbook blocks", icon: Layers },
                 ]}
               />
             }
           />
         </header>
 
-        {/* ========================================================================= */}
-        {/* TAB 1: RESPONSE INTEGRATION (STATIC TOOLBAR + SCROLLABLE CARDS GRID)       */}
-        {/* ========================================================================= */}
+        {/* Response integration tab */}
         {activeTab === "response" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* 100% STATIC CATEGORIES & SEARCH TOOLBAR WITH TRANSLUCENT BACKDROP */}
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3 md:px-10">
+            <div className="z-10 shrink-0 border-b border-border bg-bg px-4 py-3 md:px-10">
               <Toolbar
                 className="mb-0"
                 left={
                   <>
-                    <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-subtle">
-                      <Filter className="size-3" /> Category
+                    <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted">
+                      <Filter className="size-4" strokeWidth={1.75} /> Category
                     </span>
                     <SegmentedTabs
                       size="sm"
@@ -614,21 +581,21 @@ function MarketplacePage() {
                       items={["All", "Installed", "Available"].map((st) => ({ value: st, label: st }))}
                     />
                     <div className="relative w-full sm:w-60">
-                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-subtle" />
+                      <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" strokeWidth={1.75} />
                       <Input
-                        placeholder="Filter integrations..."
+                        placeholder="Filter integrations…"
                         aria-label="Filter integrations"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-8 h-8 text-xs bg-bg-subtle"
+                        className="h-9 rounded-lg border-border bg-bg-elevated pl-9 text-sm"
                       />
                       {searchQuery && (
                         <button
                           onClick={() => setSearchQuery("")}
                           aria-label="Clear filter"
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-subtle hover:text-fg"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-subtle hover:text-fg"
                         >
-                          <X className="size-3" />
+                          <X className="size-3.5" />
                         </button>
                       )}
                     </div>
@@ -637,423 +604,240 @@ function MarketplacePage() {
               />
             </div>
 
-            {/* SCROLLABLE CARDS GRID CONTAINER: ONLY THIS AREA SCROLLS */}
+            {/* Scrollable cards grid */}
             <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
-              {/* Feedback Alert if tested */}
               {testResult && (
                 <div
                   className={cn(
-                    "mb-4 p-3.5 rounded-xl border text-xs flex items-center justify-between transition-all",
-                    testResult.success
-                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                      : "bg-red-500/10 border-red-500/30 text-red-400"
+                    "mb-4 flex items-center justify-between gap-3 rounded-xl border bg-bg-card p-3.5 text-sm",
+                    testResult.success ? "border-sage/40 text-sage" : "border-danger/50 text-danger",
                   )}
                 >
                   <div className="flex items-center gap-2">
                     {testResult.success ? (
-                      <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />
+                      <CheckCircle2 className="size-4 shrink-0" />
                     ) : (
-                      <AlertCircle className="size-4 shrink-0 text-red-400" />
+                      <AlertCircle className="size-4 shrink-0" />
                     )}
                     <span>{testResult.message}</span>
                   </div>
-                  {testResult.latencyMs && (
-                    <Badge className="text-[10px] font-mono border border-emerald-500/30 text-emerald-400">
-                      Latency: {testResult.latencyMs}ms
-                    </Badge>
-                  )}
+                  {testResult.latencyMs && <StatusChip tone="success">Latency {testResult.latencyMs} ms</StatusChip>}
                 </div>
               )}
 
-              {/* 4 IN A ROW CONTAINER GRID */}
               {isLoading ? (
                 <div className="flex flex-col items-center justify-center py-20 text-muted">
-                  <ActivitySpinner size="lg" className="text-accent mb-2" />
-                  <p className="text-sm">Loading Integration Framework & Marketplace...</p>
+                  <ActivitySpinner size="lg" className="mb-2 text-accent" />
+                  <p className="text-sm">Loading integration framework & marketplace…</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                   {filteredIntegrations.map((item) => {
-                  const isInstalled = item.status === "installed";
-                  const isActive = activeProviderId === item.id;
-
-                  return (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        "group relative flex flex-col justify-between rounded-xl border bg-bg-elevated p-4.5 transition-all duration-200 hover:shadow-md hover:border-accent/40",
-                        isActive
-                          ? "border-emerald-500/50 shadow-xs ring-1 ring-emerald-500/20 bg-emerald-500/[0.02]"
-                          : isInstalled
-                          ? "border-border"
-                          : "border-border/70 opacity-90"
-                      )}
-                    >
-                      {/* Card Header: Category & Top-Right Status Badge */}
-                      <div>
-                        <div className="flex items-start justify-between gap-2 mb-3">
-                          <span className="text-[10px] font-mono uppercase tracking-wider text-accent font-medium px-2 py-0.5 rounded-md bg-accent/10">
-                            {item.category}
-                          </span>
-
-                          {/* Top-Right Status Badge */}
-                          <div className="flex items-center gap-1">
-                            {isActive ? (
-                              <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 font-medium flex items-center gap-1">
-                                <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                Active
-                              </Badge>
-                            ) : isInstalled ? (
-                              <Badge className="bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[10px] px-2 py-0.5 font-medium flex items-center gap-1">
-                                <Check className="size-3" />
-                                Installed
-                              </Badge>
-                            ) : (
-                              <Badge className="text-subtle text-[10px] px-2 py-0.5 border border-border">
-                                Available
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Title, Icon & Version */}
-                        <div className="flex items-center gap-2.5 mb-2">
-                          <div className="p-2 rounded-lg bg-bg-subtle border border-border text-fg group-hover:text-accent transition-colors shrink-0">
-                            {item.type === "cli_agent" ? (
-                              <Terminal className="size-4" />
-                            ) : (
-                              <Sparkles className="size-4" />
-                            )}
-                          </div>
-                          <div className="min-w-0">
-                            <h3 className="text-sm font-semibold text-fg truncate group-hover:text-accent transition-colors">
-                              {item.name}
-                            </h3>
-                            <div className="flex items-center gap-1.5 text-[11px] text-subtle">
-                              <span>{item.provider}</span>
-                              <span>·</span>
-                              <span className="font-mono text-[10px]">{item.version}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Description */}
-                        <p className="text-xs text-muted line-clamp-3 leading-relaxed mb-3">
-                          {item.description}
-                        </p>
-
-                        {/* Tags */}
-                        <div className="flex flex-wrap gap-1 mb-4">
-                          {item.tags.slice(0, 3).map((tag) => (
-                            <span
-                              key={tag}
-                              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-bg-subtle text-subtle border border-border/50"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Card Bottom: EXACTLY TWO BUTTONS AT BOTTOM RIGHT */}
-                      <div className="pt-3 border-t border-border/60 flex items-center justify-end gap-2">
-                        {/* Button 1: Details (opens 1/4 screen drawer) */}
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => setSelectedIntegration(item)}
-                          className="text-xs h-7.5 px-3 gap-1.5"
-                        >
-                          Details
-                        </Button>
-
-                        {/* Button 2: Install (if not installed) OR Configure (if already installed) */}
-                        {isInstalled ? (
-                          <Button
-                            size="sm"
-                            variant="secondary"
+                    const isInstalled = item.status === "installed";
+                    const isActive = activeProviderId === item.id;
+                    return (
+                      <IntegrationCard
+                        key={item.id}
+                        icon={item.type === "cli_agent" ? Terminal : Sparkles}
+                        name={item.name}
+                        meta={
+                          <>
+                            {item.category} · {item.provider} · <span className="font-mono">{item.version}</span>
+                          </>
+                        }
+                        description={item.description}
+                        onOpen={() => setSelectedIntegration(item)}
+                        status={
+                          isActive ? (
+                            <StatusChip tone="success" dot>
+                              Active
+                            </StatusChip>
+                          ) : isInstalled ? (
+                            <StatusChip tone="info">Installed</StatusChip>
+                          ) : (
+                            <StatusChip>Not installed</StatusChip>
+                          )
+                        }
+                        action={
+                          <ActionButton
+                            variant={isInstalled ? "outline" : "primary"}
+                            icon={isInstalled ? Settings2 : Download}
                             onClick={() => handleOpenConfigModal(item, false)}
-                            className="text-xs h-7.5 px-3 gap-1.5 font-medium border-accent/30 hover:border-accent"
                           >
-                            <Settings2 className="size-3 text-accent" />
-                            Configure
-                          </Button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={() => handleOpenConfigModal(item, false)}
-                            className="text-xs h-7.5 px-3 gap-1.5 font-medium bg-accent hover:bg-accent/90 text-white shadow-xs"
-                          >
-                            <Download className="size-3" />
-                            Install
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                            {isInstalled ? "Configure" : "Install"}
+                          </ActionButton>
+                        }
+                      />
+                    );
+                  })}
+                </div>
               )}
 
               {!isLoading && filteredIntegrations.length === 0 && (
-                <div className="text-center py-16 border border-dashed border-border rounded-xl">
-                  <Cpu className="size-8 text-subtle mx-auto mb-2 opacity-50" />
-                  <div className="text-sm font-medium text-fg">No integrations match your filters</div>
-                  <div className="text-xs text-subtle mt-1">Try resetting the category or search query.</div>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      setCategoryFilter("All");
-                      setStatusFilter("All");
-                      setSearchQuery("");
-                    }}
-                    className="mt-3 text-xs"
-                  >
-                    Reset Filters
-                  </Button>
-                </div>
+                <EmptyState
+                  icon={Cpu}
+                  title="No integrations match your filters"
+                  description="Try resetting the category or search query."
+                  action={
+                    <ActionButton
+                      onClick={() => {
+                        setCategoryFilter("All");
+                        setStatusFilter("All");
+                        setSearchQuery("");
+                      }}
+                    >
+                      Reset filters
+                    </ActionButton>
+                  }
+                />
               )}
             </div>
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* TAB 2: CURATED RESOURCES (STATIC TOOLBAR + SCROLLABLE CONTENT)             */}
-        {/* ========================================================================= */}
+        {/* Curated resources tab */}
         {activeTab === "curated" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-fg">Curated Threat Intelligence Feeds</h2>
-                <p className="text-xs text-subtle mt-0.5">
-                  Pre-vetted, high-fidelity security research blogs, incident timelines, and regulatory advisory feeds.
-                </p>
-              </div>
-              <Badge className="text-xs border border-border">
-                {marketplaceState?.curatedResources?.length || 4} Feeds Configured
-              </Badge>
-            </div>
-
             <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <TabIntro
+                title="Curated threat intelligence feeds"
+                description="Pre-vetted, high-fidelity security research blogs, incident timelines, and regulatory advisory feeds."
+                aside={<span className="text-sm text-muted">{marketplaceState?.curatedResources?.length || 4} feeds configured</span>}
+              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {(marketplaceState?.curatedResources || []).map((res) => (
-                  <div
+                  <IntegrationCard
                     key={res.id}
-                    className="border border-border rounded-xl bg-bg-elevated p-4.5 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-mono uppercase text-accent bg-accent/10 px-2 py-0.5 rounded">
-                          {res.category}
-                        </span>
-                        <Badge className="text-[10px] border border-emerald-500/30 text-emerald-400">
-                          Trust Score: {res.trustScore}%
-                        </Badge>
-                      </div>
-                      <h3 className="text-sm font-medium text-fg">{res.name}</h3>
-                      <div className="text-[11px] text-subtle mb-2">Provider: {res.provider} · Format: {res.format}</div>
-                      <p className="text-xs text-muted leading-relaxed mb-3">{res.description}</p>
-                      <div className="font-mono text-[11px] text-accent/80 bg-bg-subtle p-2 rounded border border-border truncate mb-3">
-                        {res.endpointUrl}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between pt-3 border-t border-border/60">
-                      <div className="flex gap-1">
-                        {res.tags.map((t) => (
-                          <span key={t} className="text-[10px] font-mono px-1.5 py-0.5 bg-bg-subtle text-subtle rounded">
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                      <Badge className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]">
-                        Active Ingest
-                      </Badge>
-                    </div>
-                  </div>
+                    icon={Globe}
+                    name={res.name}
+                    meta={`${res.category} · ${res.provider} · ${res.format} · Trust ${res.trustScore}%`}
+                    description={res.description}
+                    footnote={<span className="block truncate font-mono text-xs text-subtle">{res.endpointUrl}</span>}
+                    status={
+                      <StatusChip tone="success" dot>
+                        Active ingest
+                      </StatusChip>
+                    }
+                  />
                 ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* TAB 3: POWERUPS & EXPORTERS (STATIC TOOLBAR + SCROLLABLE CONTENT)          */}
-        {/* ========================================================================= */}
+        {/* Powerups & exporters tab */}
         {activeTab === "powerups" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-fg">Automation Powerups & Exporters</h2>
-                <p className="text-xs text-subtle mt-0.5">
-                  Extend AIE capabilities with custom rule generators, incident response webhooks, and bundle serializers.
-                </p>
-              </div>
-            </div>
-
             <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <TabIntro
+                title="Automation powerups & exporters"
+                description="Extend AIE capabilities with custom rule generators, incident response webhooks, and bundle serializers."
+              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {(marketplaceState?.powerups || []).map((pwr) => (
-                  <div
+                  <IntegrationCard
                     key={pwr.id}
-                    className="border border-border rounded-xl bg-bg-elevated p-4.5 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-mono uppercase text-accent bg-accent/10 px-2 py-0.5 rounded">
-                          {pwr.category}
-                        </span>
-                        <Badge
-                          className={cn(
-                            "text-[10px]",
-                            pwr.status === "installed"
-                              ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
-                              : "bg-bg-subtle text-subtle"
-                          )}
-                        >
-                          {pwr.status === "installed" ? "Installed" : "Available"}
-                        </Badge>
-                      </div>
-                      <h3 className="text-sm font-medium text-fg">{pwr.name}</h3>
-                      <div className="text-[11px] text-subtle mb-2">Author: {pwr.author} · {pwr.version}</div>
-                      <p className="text-xs text-muted leading-relaxed mb-3">{pwr.description}</p>
-                    </div>
-                    <div className="pt-3 border-t border-border/60 flex items-center justify-between">
-                      <div className="flex gap-1">
-                        {pwr.tags.map((t) => (
-                          <span key={t} className="text-[10px] font-mono px-1.5 py-0.5 bg-bg-subtle text-subtle rounded">
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                      <Button size="sm" variant="secondary" className="text-xs h-7">
-                        {pwr.status === "installed" ? "Configure" : "Enable"}
-                      </Button>
-                    </div>
-                  </div>
+                    icon={Plug}
+                    name={pwr.name}
+                    meta={
+                      <>
+                        {pwr.category} · {pwr.author} · <span className="font-mono">{pwr.version}</span>
+                      </>
+                    }
+                    description={pwr.description}
+                    status={
+                      pwr.status === "installed" ? (
+                        <StatusChip tone="info">Installed</StatusChip>
+                      ) : (
+                        <StatusChip>Not installed</StatusChip>
+                      )
+                    }
+                    action={<ActionButton>{pwr.status === "installed" ? "Configure" : "Enable"}</ActionButton>}
+                  />
                 ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* TAB 4: PLAYBOOK BLOCKS (STATIC TOOLBAR + SCROLLABLE CONTENT)               */}
-        {/* ========================================================================= */}
+        {/* Playbook blocks tab */}
         {activeTab === "playbooks" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="shrink-0 z-10 bg-bg/80 backdrop-blur-lg border-b border-border/60 px-4 py-3.5 md:px-10 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-fg">Adversary Emulation Playbook Blocks</h2>
-                <p className="text-xs text-subtle mt-0.5">
-                  Modular purple-team scenario components, automated attack chain runners, and defense verification blocks.
-                </p>
-              </div>
-            </div>
-
             <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <TabIntro
+                title="Adversary emulation playbook blocks"
+                description="Modular purple-team scenario components, automated attack chain runners, and defense verification blocks."
+              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {(marketplaceState?.playbooks || []).map((pb) => (
-                  <div
+                  <IntegrationCard
                     key={pb.id}
-                    className="border border-border rounded-xl bg-bg-elevated p-4.5 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-mono uppercase text-accent bg-accent/10 px-2 py-0.5 rounded">
-                          {pb.framework}
-                        </span>
-                        <Badge
-                          className={cn(
-                            "text-[10px]",
-                            pb.difficulty === "Advanced"
-                              ? "text-red-400 border-red-500/30"
-                              : "text-amber-400 border-amber-500/30"
-                          )}
-                        >
-                          {pb.difficulty}
-                        </Badge>
-                      </div>
-                      <h3 className="text-sm font-medium text-fg">{pb.name}</h3>
-                      <div className="text-[11px] text-subtle mb-2">
-                        Steps: {pb.stepsCount} · Tactics: {pb.tactics.join(", ")}
-                      </div>
-                      <p className="text-xs text-muted leading-relaxed mb-3">{pb.description}</p>
-                      <div className="flex flex-wrap gap-1 mb-3">
-                        {pb.techniques.map((t) => (
-                          <span key={t} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent">
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="pt-3 border-t border-border/60 flex items-center justify-end">
-                      <Button size="sm" variant="secondary" className="text-xs h-7 gap-1">
-                        <Play className="size-3 text-accent" /> Run Block
-                      </Button>
-                    </div>
-                  </div>
+                    icon={Layers}
+                    name={pb.name}
+                    meta={`${pb.framework} · ${pb.stepsCount} steps · ${pb.tactics.join(", ")}`}
+                    description={pb.description}
+                    footnote={
+                      <span className="block truncate font-mono text-xs text-subtle" title={pb.techniques.join(", ")}>
+                        {pb.techniques.join("  ")}
+                      </span>
+                    }
+                    status={
+                      <StatusChip tone={pb.difficulty === "Advanced" ? "danger" : "warning"}>{pb.difficulty}</StatusChip>
+                    }
+                    action={<ActionButton icon={Play}>Run block</ActionButton>}
+                  />
                 ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* TAB 5: HOME TAB                                                           */}
-        {/* ========================================================================= */}
+        {/* Home tab */}
         {activeTab === "home" && (
-          <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8 space-y-6">
-            <div className="rounded-2xl border border-border bg-gradient-to-br from-bg-elevated to-bg-subtle p-6">
-              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
+            <section className="rounded-xl border border-border bg-bg-card p-5">
+              <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
                 <div>
-                  <Badge tone="accent" className="mb-2 text-white">
-                    Ecosystem Architecture
-                  </Badge>
-                  <h2 className="text-lg font-semibold text-fg">Modular AI Agent & Emulation Ecosystem</h2>
-                  <p className="text-xs text-subtle mt-1 max-w-xl">
+                  <h2 className="text-base font-medium text-fg">Modular AI agent & emulation ecosystem</h2>
+                  <p className="mt-1 max-w-xl text-sm text-muted">
                     AIE is designed from the ground up to support interchangeable AI agents, automated discovery
                     connectors, and modular attack-flow playbooks without hard vendor lock-in.
                   </p>
                 </div>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => setActiveTab("response")}
-                  className="gap-2 bg-accent text-white"
-                >
-                  <Bot className="size-3.5" /> Manage AI Integrations
-                </Button>
+                <ActionButton variant="primary" icon={Bot} onClick={() => setActiveTab("response")}>
+                  Manage AI integrations
+                </ActionButton>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 pt-6 border-t border-border/60">
-                <div className="p-3 bg-bg/50 rounded-xl border border-border">
-                  <div className="text-[10px] text-subtle uppercase font-mono">Installed Agents</div>
-                  <div className="text-lg font-bold text-fg mt-1">
+              <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 border-t border-border pt-5 md:grid-cols-4">
+                <div className="min-w-0">
+                  <dt className="text-sm text-muted">Installed agents</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-fg tabular-nums">
                     {integrations.filter((x) => x.status === "installed").length} / {integrations.length}
-                  </div>
+                  </dd>
                 </div>
-                <div className="p-3 bg-bg/50 rounded-xl border border-border">
-                  <div className="text-[10px] text-subtle uppercase font-mono">Active Provider</div>
-                  <div className="text-sm font-semibold text-accent mt-1 truncate">
+                <div className="min-w-0">
+                  <dt className="text-sm text-muted">Active provider</dt>
+                  <dd className="mt-1 truncate text-base font-medium text-fg">
                     {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}
-                  </div>
+                  </dd>
                 </div>
-                <div className="p-3 bg-bg/50 rounded-xl border border-border">
-                  <div className="text-[10px] text-subtle uppercase font-mono">Curated Feeds</div>
-                  <div className="text-lg font-bold text-fg mt-1">
-                    {marketplaceState?.curatedResources?.length || 4} Active
-                  </div>
+                <div className="min-w-0">
+                  <dt className="text-sm text-muted">Curated feeds</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-fg tabular-nums">
+                    {marketplaceState?.curatedResources?.length || 4}
+                    <span className="ml-1.5 text-sm font-normal text-muted">active</span>
+                  </dd>
                 </div>
-                <div className="p-3 bg-bg/50 rounded-xl border border-border">
-                  <div className="text-[10px] text-subtle uppercase font-mono">Playbook Blocks</div>
-                  <div className="text-lg font-bold text-fg mt-1">
-                    {marketplaceState?.playbooks?.length || 3} Ready
-                  </div>
+                <div className="min-w-0">
+                  <dt className="text-sm text-muted">Playbook blocks</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-fg tabular-nums">
+                    {marketplaceState?.playbooks?.length || 3}
+                    <span className="ml-1.5 text-sm font-normal text-muted">ready</span>
+                  </dd>
                 </div>
-              </div>
-            </div>
+              </dl>
+            </section>
           </div>
         )}
 
@@ -1073,7 +857,7 @@ function MarketplacePage() {
               {/* Drawer Header */}
               <div className="p-4 flex items-start justify-between gap-3 drawer-section-header shrink-0">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="p-2 rounded-xl bg-accent/15 border border-accent/30 text-accent shrink-0 shadow-inner backdrop-blur-xs">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg">
                     {selectedIntegration.type === "cli_agent" ? (
                       <Terminal className="size-4" />
                     ) : (
@@ -1081,18 +865,19 @@ function MarketplacePage() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <h2 className="text-sm font-semibold text-fg tracking-tight truncate">{selectedIntegration.name}</h2>
+                    <h2 className="truncate text-base font-medium text-fg">{selectedIntegration.name}</h2>
                     <div className="flex items-center gap-1.5 text-[11px] text-subtle mt-0.5">
                       <span>{selectedIntegration.provider}</span>
                       <span>·</span>
-                      <span className="font-mono text-[10px] text-accent">{selectedIntegration.version}</span>
+                      <span className="font-mono text-[11px]">{selectedIntegration.version}</span>
                     </div>
                   </div>
                 </div>
 
                 <button
                   onClick={() => setSelectedIntegration(null)}
-                  className="p-1.5 rounded-xl text-subtle hover:text-fg hover:bg-bg-subtle border border-transparent hover:border-border transition-all cursor-pointer shrink-0"
+                  aria-label="Close details"
+                  className="shrink-0 rounded-lg p-1.5 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg"
                 >
                   <X className="size-4" />
                 </button>
@@ -1103,57 +888,54 @@ function MarketplacePage() {
                 {/* Status Bar */}
                 <div className="flex items-center justify-between p-3 rounded-xl card-liquid-glass">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-subtle">Status:</span>
+                    <span className="text-xs text-muted">Status</span>
                     {selectedIntegration.status === "installed" ? (
-                      <Badge className="bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30 text-[10px]">
+                      <StatusChip tone="success">
                         Installed
-                      </Badge>
+                      </StatusChip>
                     ) : (
-                      <Badge className="text-subtle text-[10px] border border-border bg-bg-subtle">
+                      <StatusChip>
                         Available
-                      </Badge>
+                      </StatusChip>
                     )}
                   </div>
                   {activeProviderId === selectedIntegration.id ? (
-                    <Badge className="bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30 text-[10px] flex items-center gap-1">
-                      <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Active Provider
-                    </Badge>
+                    <StatusDot tone="success">Active provider</StatusDot>
                   ) : null}
                 </div>
 
                 {/* Agent Engine Status Overview */}
                 {selectedIntegration.type === "cli_agent" && (
-                  <div className="p-3.5 rounded-2xl card-liquid-glass space-y-2.5">
+                  <div className="p-3.5 rounded-xl card-liquid-glass space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
                         <Terminal className="size-3.5 text-accent" />
-                        <span>Agent Engine Status</span>
+                        <span>Agent engine status</span>
                       </div>
-                      <Badge className={cn("text-[9px] font-mono", selectedIntegration.status === "installed" ? "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30" : "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30")}>
-                        {selectedIntegration.status === "installed" ? "ONLINE & READY" : "ONBOARDING REQUIRED"}
-                      </Badge>
+                      <StatusChip tone={selectedIntegration.status === "installed" ? "success" : "warning"}>
+                        {selectedIntegration.status === "installed" ? "Online & ready" : "Onboarding required"}
+                      </StatusChip>
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Architecture:</span>
-                        <span className="font-medium text-fg">Isolated Container Sandbox</span>
+                        <span>Architecture</span>
+                        <span className="font-medium text-fg">Isolated container sandbox</span>
                       </div>
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Authentication:</span>
+                        <span>Authentication</span>
                         <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
                       </div>
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Active Model:</span>
+                        <span>Active model</span>
                         <span className="font-mono text-accent">
                           {selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
                         </span>
                       </div>
                       {selectedIntegration.config?.lastLatencyMs && (
                         <div className="flex items-center justify-between text-subtle">
-                          <span>Verified Latency:</span>
-                          <span className="font-mono text-emerald-400">{selectedIntegration.config.lastLatencyMs}ms</span>
+                          <span>Verified latency</span>
+                          <span className="font-mono text-sage">{selectedIntegration.config.lastLatencyMs}ms</span>
                         </div>
                       )}
                     </div>
@@ -1162,7 +944,7 @@ function MarketplacePage() {
 
                 {/* Overview */}
                 <div>
-                  <h4 className="text-[10px] uppercase font-mono tracking-wider text-subtle mb-1 font-semibold">
+                  <h4 className="mb-2 text-sm font-medium text-fg">
                     Overview
                   </h4>
                   <p className="text-xs text-muted leading-relaxed">
@@ -1171,10 +953,10 @@ function MarketplacePage() {
                 </div>
 
                 {/* Collapsible: Supported Actions */}
-                <div className="border border-border/80 rounded-lg bg-bg-subtle/40 overflow-hidden">
+                <div className="overflow-hidden rounded-lg border border-border">
                   <button
                     onClick={() => setActionsExpanded(!actionsExpanded)}
-                    className="w-full flex items-center justify-between p-2.5 text-xs font-semibold text-fg hover:bg-bg-subtle transition-colors cursor-pointer select-none"
+                    className="flex w-full select-none items-center justify-between p-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
                   >
                     <div className="flex items-center gap-1.5">
                       <Zap className="size-3.5 text-accent" />
@@ -1184,9 +966,9 @@ function MarketplacePage() {
                   </button>
 
                   {actionsExpanded && (
-                    <div className="p-2.5 pt-0 space-y-1.5 border-t border-border/50">
+                    <div className="divide-y divide-border border-t border-border">
                       {selectedIntegration.actions.map((act) => (
-                        <div key={act.id} className="p-2 rounded-md bg-bg-elevated border border-border/60">
+                        <div key={act.id} className="px-3 py-2">
                           <div className="font-medium text-fg text-xs flex items-center gap-1.5">
                             <span className="size-1.5 rounded-full bg-accent" />
                             {act.name}
@@ -1201,27 +983,27 @@ function MarketplacePage() {
                 </div>
 
                 {/* Collapsible: Connectors & Protocols */}
-                <div className="border border-border/80 rounded-lg bg-bg-subtle/40 overflow-hidden">
+                <div className="overflow-hidden rounded-lg border border-border">
                   <button
                     onClick={() => setConnectorsExpanded(!connectorsExpanded)}
-                    className="w-full flex items-center justify-between p-2.5 text-xs font-semibold text-fg hover:bg-bg-subtle transition-colors cursor-pointer select-none"
+                    className="flex w-full select-none items-center justify-between p-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
                   >
                     <div className="flex items-center gap-1.5">
                       <Plug className="size-3.5 text-accent" />
-                      <span>Connectors & Auth Protocol</span>
+                      <span>Connectors & auth protocol</span>
                     </div>
                     {connectorsExpanded ? <ChevronDown className="size-3.5 text-subtle" /> : <ChevronRight className="size-3.5 text-subtle" />}
                   </button>
 
                   {connectorsExpanded && (
-                    <div className="p-2.5 pt-0 space-y-1.5 border-t border-border/50">
+                    <div className="divide-y divide-border border-t border-border">
                       {selectedIntegration.connectors.map((conn, i) => (
-                        <div key={i} className="p-2 rounded-md bg-bg-elevated border border-border/60">
+                        <div key={i} className="px-3 py-2">
                           <div className="font-medium text-fg text-xs flex items-center justify-between">
                             <span>{conn.label}</span>
-                            <Badge className="text-[10px] font-mono border border-border">
+                            <StatusChip>
                               {conn.type}
-                            </Badge>
+                            </StatusChip>
                           </div>
                           <div className="text-[11px] text-subtle mt-1 leading-snug">
                             {conn.description}
@@ -1233,28 +1015,28 @@ function MarketplacePage() {
                 </div>
 
                 {/* Collapsible: Supported Models */}
-                <div className="border border-border/80 rounded-lg bg-bg-subtle/40 overflow-hidden">
+                <div className="overflow-hidden rounded-lg border border-border">
                   <button
                     onClick={() => setModelsExpanded(!modelsExpanded)}
-                    className="w-full flex items-center justify-between p-2.5 text-xs font-semibold text-fg hover:bg-bg-subtle transition-colors cursor-pointer select-none"
+                    className="flex w-full select-none items-center justify-between p-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
                   >
                     <div className="flex items-center gap-1.5">
                       <Cpu className="size-3.5 text-accent" />
-                      <span>Supported Models ({selectedIntegration.supportedModels.length})</span>
+                      <span>Supported models ({selectedIntegration.supportedModels.length})</span>
                     </div>
                     {modelsExpanded ? <ChevronDown className="size-3.5 text-subtle" /> : <ChevronRight className="size-3.5 text-subtle" />}
                   </button>
 
                   {modelsExpanded && (
-                    <div className="p-2.5 pt-0 space-y-1 border-t border-border/50">
+                    <div className="divide-y divide-border border-t border-border">
                       {selectedIntegration.supportedModels.map((m) => (
                         <div
                           key={m}
-                          className="font-mono text-[11px] p-1.5 rounded-md bg-bg-elevated border border-border/60 text-fg flex items-center justify-between"
+                          className="flex items-center justify-between px-3 py-1.5 font-mono text-[11px] text-fg"
                         >
                           <span className="truncate">{m}</span>
                           {selectedIntegration.config?.selectedModel === m && (
-                            <Badge className="bg-emerald-500/10 text-emerald-400 text-[9px]">Default</Badge>
+                            <StatusChip tone="success">Default</StatusChip>
                           )}
                         </div>
                       ))}
@@ -1264,14 +1046,14 @@ function MarketplacePage() {
 
                 {/* Tags */}
                 <div>
-                  <h4 className="text-[10px] uppercase font-mono tracking-wider text-subtle mb-1 font-semibold">
-                    Security Tags
+                  <h4 className="mb-2 text-sm font-medium text-fg">
+                    Tags
                   </h4>
                   <div className="flex flex-wrap gap-1">
                     {selectedIntegration.tags.map((t) => (
                       <span
                         key={t}
-                        className="text-[10px] font-mono px-2 py-0.5 rounded bg-bg-subtle border border-border text-muted"
+                        className="rounded-md bg-bg-subtle px-2 py-0.5 text-[11px] text-muted"
                       >
                         {t}
                       </span>
@@ -1281,7 +1063,7 @@ function MarketplacePage() {
 
                 {/* Configuration Timestamp Info */}
                 {selectedIntegration.config?.installedAt && (
-                  <div className="text-[10px] text-subtle font-mono pt-2 border-t border-border/60">
+                  <div className="border-t border-border pt-3 text-[11px] text-subtle">
                     <div>Installed: {new Date(selectedIntegration.config.installedAt).toLocaleString()}</div>
                     {selectedIntegration.config.lastReconfiguredAt && (
                       <div className="text-accent">
@@ -1293,15 +1075,15 @@ function MarketplacePage() {
 
                 {/* Agent Interactive Test & Prompt Debug Section (Very bottom of details) */}
                 {selectedIntegration.id === "agy_agent" && selectedIntegration.status === "installed" && (
-                  <div className="rounded-2xl card-liquid-glass overflow-hidden space-y-2.5 p-3.5 shadow-sm">
+                  <div className="rounded-xl card-liquid-glass overflow-hidden space-y-2.5 p-3.5 shadow-sm">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
                         <Terminal className="size-3.5 text-accent" />
-                        <span>Interactive Agent Test Console</span>
+                        <span>Interactive agent test console</span>
                       </div>
-                      <Badge className="text-[9px] border border-emerald-500/30 text-emerald-500 dark:text-emerald-400 font-mono">
+                      <StatusChip tone="success">
                         print-only · sandboxed
-                      </Badge>
+                      </StatusChip>
                     </div>
                     <p className="text-[11px] text-muted leading-relaxed">
                       Test real-time IPC communication and cognitive responses with the local Antigravity CLI agent.
@@ -1339,7 +1121,7 @@ function MarketplacePage() {
                       >
                         <Bot className="size-3 text-accent shrink-0" />
                         <span className="truncate">
-                          {activeProviderId === selectedIntegration.id ? "Active Provider" : "Set as Active"}
+                          {activeProviderId === selectedIntegration.id ? "Active provider" : "Set as active"}
                         </span>
                       </Button>
 
@@ -1356,7 +1138,7 @@ function MarketplacePage() {
                         ) : (
                           <RefreshCw className="size-3 text-accent shrink-0" />
                         )}
-                        <span>{testConnectionMutation.isPending ? "Testing..." : "Test Connection"}</span>
+                        <span>{testConnectionMutation.isPending ? "Testing…" : "Test connection"}</span>
                       </Button>
                     </div>
 
@@ -1370,7 +1152,7 @@ function MarketplacePage() {
                         title="Performs clean uninstall and runs fresh installation"
                       >
                         <RefreshCw className="size-3" />
-                        Re-Config
+                        Reconfigure
                       </Button>
 
                       <Button
@@ -1388,7 +1170,7 @@ function MarketplacePage() {
                         size="sm"
                         variant="danger"
                         onClick={() => setUninstallConfirmItem(selectedIntegration)}
-                        className="text-xs h-7.5 gap-1 text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-500/30"
+                        className="text-xs h-7.5 gap-1"
                       >
                         <Trash2 className="size-3" />
                         Uninstall
@@ -1401,10 +1183,10 @@ function MarketplacePage() {
                       size="sm"
                       variant="primary"
                       onClick={() => handleOpenConfigModal(selectedIntegration, false)}
-                      className="flex-1 text-xs h-8 gap-1.5 bg-accent text-white font-medium"
+                      className="flex-1 text-xs h-8 gap-1.5 font-medium"
                     >
                       <Download className="size-3.5" />
-                      Install Integration
+                      Install integration
                     </Button>
                     <Button
                       size="sm"
@@ -1434,17 +1216,17 @@ function MarketplacePage() {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setConfigModalItem(null)} />
 
-            <div className="relative w-full max-w-lg bg-bg-elevated border border-border rounded-2xl shadow-2xl p-6 z-10 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            <div className="relative w-full max-w-lg bg-bg-card border border-border rounded-xl shadow-2xl p-6 z-10 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
               {/* Modal Header */}
               <div className="flex items-start justify-between gap-3 mb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-accent/10 border border-accent/20 text-accent">
+                  <div className="flex size-10 items-center justify-center rounded-lg bg-bg-subtle text-fg">
                     {configModalItem.type === "cli_agent" ? <Terminal className="size-5" /> : <Key className="size-5" />}
                   </div>
                   <div>
-                    <h3 className="text-base font-semibold text-fg">
+                    <h3 className="text-base font-medium text-fg">
                       {isReconfigMode
-                        ? `Re-Configure & Reinstall ${configModalItem.name}`
+                        ? `Reconfigure & reinstall ${configModalItem.name}`
                         : configModalItem.status === "installed"
                         ? `Configure ${configModalItem.name}`
                         : `Install ${configModalItem.name}`}
@@ -1456,6 +1238,7 @@ function MarketplacePage() {
                 </div>
                 <button
                   onClick={() => setConfigModalItem(null)}
+                  aria-label="Close"
                   className="p-1 rounded-lg text-subtle hover:text-fg hover:bg-bg-subtle cursor-pointer"
                 >
                   <X className="size-4" />
@@ -1476,22 +1259,22 @@ function MarketplacePage() {
                   className={cn(
                     "mb-4 p-3 rounded-xl border text-xs flex items-center justify-between transition-all",
                     modalTestResult.success
-                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                      : "bg-red-500/10 border-red-500/30 text-red-400"
+                      ? "bg-sage/10 border-sage/40 text-sage"
+                      : "bg-danger/10 border-danger/50 text-danger"
                   )}
                 >
                   <div className="flex items-center gap-2">
                     {modalTestResult.success ? (
-                      <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />
+                      <CheckCircle2 className="size-4 shrink-0 text-sage" />
                     ) : (
-                      <AlertCircle className="size-4 shrink-0 text-red-400" />
+                      <AlertCircle className="size-4 shrink-0 text-danger" />
                     )}
                     <span>{modalTestResult.message}</span>
                   </div>
                   {modalTestResult.latencyMs && (
-                    <Badge className="text-[10px] font-mono border border-emerald-500/30 text-emerald-400">
+                    <StatusChip tone="success">
                       {modalTestResult.latencyMs}ms
-                    </Badge>
+                    </StatusChip>
                   )}
                 </div>
               )}
@@ -1540,8 +1323,8 @@ function MarketplacePage() {
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-subtle font-medium flex items-center gap-1">
-                        <span>API Key</span>
-                        <span className="text-red-400 font-bold">*</span>
+                        <span>API key</span>
+                        <span className="text-danger font-bold">*</span>
                       </label>
                       <a
                         href={configModalItem.authUrl}
@@ -1549,7 +1332,7 @@ function MarketplacePage() {
                         rel="noreferrer"
                         className="text-[11px] text-accent hover:underline flex items-center gap-1"
                       >
-                        Get Key <ExternalLink className="size-2.5" />
+                        Get key <ExternalLink className="size-2.5" />
                       </a>
                     </div>
                     <Input
@@ -1567,7 +1350,7 @@ function MarketplacePage() {
                   </div>
 
                   <div>
-                    <label className="block text-subtle font-medium mb-1">Target Model</label>
+                    <label className="block text-subtle font-medium mb-1">Target model</label>
                     <select
                       value={selectedModelInput || configModalItem.supportedModels[0]}
                       onChange={(e) => setSelectedModelInput(e.target.value)}
@@ -1594,7 +1377,7 @@ function MarketplacePage() {
                       ) : (
                         <RefreshCw className="size-3 text-accent" />
                       )}
-                      <span>{modalTestConnectionMutation.isPending ? "Testing..." : "Test Connection"}</span>
+                      <span>{modalTestConnectionMutation.isPending ? "Testing…" : "Test connection"}</span>
                     </Button>
                   </div>
                 </div>
@@ -1627,7 +1410,7 @@ function MarketplacePage() {
                     }}
                     className="text-xs bg-accent text-white font-medium"
                   >
-                    {configModalItem.status === "installed" ? "Save Configuration" : "Save & Activate"}
+                    {configModalItem.status === "installed" ? "Save configuration" : "Save & activate"}
                   </Button>
                 )}
               </div>
@@ -1642,8 +1425,8 @@ function MarketplacePage() {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setUninstallConfirmItem(null)} />
 
-            <div className="relative w-full max-w-md bg-bg-elevated border border-red-500/30 rounded-2xl shadow-2xl p-6 z-10 animate-in zoom-in-95 duration-150">
-              <div className="flex items-center gap-3 text-red-400 mb-3">
+            <div className="relative w-full max-w-md bg-bg-card border border-border rounded-xl shadow-2xl p-6 z-10 animate-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 text-danger mb-3">
                 <AlertCircle className="size-6" />
                 <h3 className="text-base font-semibold text-fg">Uninstall {uninstallConfirmItem.name}?</h3>
               </div>
@@ -1660,9 +1443,9 @@ function MarketplacePage() {
                   variant="danger"
                   disabled={uninstallMutation.isPending}
                   onClick={() => uninstallMutation.mutate(uninstallConfirmItem.id)}
-                  className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30"
+                  className="text-xs bg-danger/15 text-danger border border-danger/40 hover:bg-danger/25"
                 >
-                  Confirm Uninstall
+                  Confirm uninstall
                 </Button>
               </div>
             </div>
@@ -1670,5 +1453,69 @@ function MarketplacePage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+type IconType = typeof Globe;
+
+/** Hadrian-style integration card: icon + name, one-line description, one status chip, one action. */
+function IntegrationCard({
+  icon: Icon,
+  name,
+  meta,
+  description,
+  footnote,
+  status,
+  action,
+  onOpen,
+}: {
+  icon: IconType;
+  name: React.ReactNode;
+  meta?: React.ReactNode;
+  description: React.ReactNode;
+  footnote?: React.ReactNode;
+  status?: React.ReactNode;
+  action?: React.ReactNode;
+  onOpen?: () => void;
+}) {
+  const head = (
+    <>
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg">
+        <Icon className="size-[18px]" strokeWidth={1.75} />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-base font-medium text-fg group-hover/head:text-accent">{name}</span>
+        {meta && <span className="block truncate text-xs text-subtle">{meta}</span>}
+      </span>
+    </>
+  );
+  return (
+    <div className="flex flex-col rounded-xl border border-border bg-bg-card p-5">
+      {onOpen ? (
+        <button type="button" onClick={onOpen} className="group/head flex min-w-0 items-center gap-3 text-left" title="View details">
+          {head}
+        </button>
+      ) : (
+        <div className="flex min-w-0 items-center gap-3">{head}</div>
+      )}
+      <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted">{description}</p>
+      {footnote && <div className="mt-2">{footnote}</div>}
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5">
+        <div>{status}</div>
+        {action}
+      </div>
+    </div>
+  );
+}
+
+function TabIntro({ title, description, aside }: { title: string; description: string; aside?: React.ReactNode }) {
+  return (
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h2 className="text-lg font-medium text-fg">{title}</h2>
+        <p className="mt-1 text-sm text-muted">{description}</p>
+      </div>
+      {aside}
+    </div>
   );
 }
