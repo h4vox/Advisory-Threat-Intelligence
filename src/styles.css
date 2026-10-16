@@ -12,16 +12,16 @@
   --color-subtle: #74777a;
   --color-border: #232327;
   --color-border-strong: #34343a;
-  --color-accent: #c5d0c8;
-  --color-accent-fg: #0b0c0e;
-  --color-sage: #7ea48a;
-  --color-warn: #c4a574;
-  --color-danger: #c56b5a;
-  --color-bg-card: #111114;
-  --color-ring: #c5d0c8;
+  --color-accent: #8b7cf6;
+  --color-accent-fg: #ffffff;
+  --color-sage: #4fbf8b;
+  --color-warn: #e5a54b;
+  --color-danger: #ef6a5e;
+  --color-bg-card: #111115;
+  --color-ring: #8b7cf6;
 
   /* Category colours: one hue per entity/document family (balanced, like the reference UI). */
-  --color-primary: #8b7cf6;
+  --color-primary: #7c6cf2;
   --color-primary-fg: #ffffff;
   --color-cat-actor: #f0616d;
   --color-cat-malware: #f59e5b;
@@ -46,22 +46,22 @@
 :root {
   --color-bg: #0a0a0c;
   --color-bg-elevated: #121215;
-  --color-bg-card: #111114;
+  --color-bg-card: #111115;
   --color-bg-subtle: #1b1b1f;
   --color-fg: #f2f2f0;
   --color-muted: #a3a6a1;
   --color-subtle: #74777a;
   --color-border: #232327;
   --color-border-strong: #34343a;
-  --color-accent: #c5d0c8;
-  --color-accent-fg: #0b0c0e;
-  --color-sage: #7ea48a;
-  --color-warn: #c4a574;
-  --color-danger: #c56b5a;
-  --color-ring: #c5d0c8;
+  --color-accent: #8b7cf6;
+  --color-accent-fg: #ffffff;
+  --color-sage: #4fbf8b;
+  --color-warn: #e5a54b;
+  --color-danger: #ef6a5e;
+  --color-ring: #8b7cf6;
 
   /* Category colours: one hue per entity/document family (balanced, like the reference UI). */
-  --color-primary: #8b7cf6;
+  --color-primary: #7c6cf2;
   --color-primary-fg: #ffffff;
   --color-cat-actor: #f0616d;
   --color-cat-malware: #f59e5b;
@@ -76,6 +76,7 @@
 
   /* Native controls (checkboxes, selects, scrollbars) follow the theme. */
   color-scheme: dark;
+  --shadow-card: none;
 
   /* Liquid Glass Dynamic Tokens (Dark) */
   --glass-blur-ratio: 70%;
@@ -96,21 +97,21 @@
 
 [data-theme="light"], .light {
   color-scheme: light;
-  --color-bg: #f5f5f3;
+  --color-bg: #f6f7f9;
   --color-bg-elevated: #ffffff;
   --color-bg-card: #ffffff;
-  --color-bg-subtle: #ecece8;
-  --color-fg: #141618;
-  --color-muted: #5c605b;
-  --color-subtle: #7a7e78;
-  --color-border: #dcded9;
-  --color-border-strong: #c2c5be;
-  --color-accent: #2e3831;
-  --color-accent-fg: #f5f5f3;
-  --color-sage: #4d7a5b;
-  --color-warn: #96703b;
-  --color-danger: #9c3f2e;
-  --color-ring: #2e3831;
+  --color-bg-subtle: #f1f3f6;
+  --color-fg: #111318;
+  --color-muted: #5b616e;
+  --color-subtle: #8a909c;
+  --color-border: #e3e6eb;
+  --color-border-strong: #cfd4dc;
+  --color-accent: #5b4bd6;
+  --color-accent-fg: #ffffff;
+  --color-sage: #1f8a5b;
+  --color-warn: #b26b0b;
+  --color-danger: #d1393b;
+  --color-ring: #5b4bd6;
 
   --color-primary: #5b4bd6;
   --color-primary-fg: #ffffff;
@@ -119,11 +120,14 @@
   --color-cat-technique: #2f6fd8;
   --color-cat-cve: #c23d8f;
   --color-cat-ioc: #0f9a86;
-  --color-cat-source: #3f7a52;
+  --color-cat-source: #2f8a55;
   --color-cat-advisory: #a77b06;
   --color-cat-emulation: #6d4fd8;
   --color-cat-flow: #0f86c4;
   --color-info: #2f6fd8;
+
+  /* Soft card elevation (light only; dark relies on borders). */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.03);
 
   /* Liquid Glass Dynamic Tokens (Light) */
   --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, var(--glass-opacity-light, 0.78)) 0%, rgba(240, 246, 255, 0.58) 50%, rgba(225, 238, 255, 0.42) 100%);
@@ -731,3 +735,105 @@ body,
   box-shadow: var(--glass-shadow);
 }
 
+
+/* ========================================================================= */
+/* 8. PHASE 8: SHELL, PRIMARY, LIGHT ELEVATION & GLASS CANVAS                */
+/* ========================================================================= */
+
+/* Light theme: white cards on a cool grey canvas with a hairline + soft shadow. */
+[data-theme="light"] .rounded-xl.border.bg-bg-card,
+.light .rounded-xl.border.bg-bg-card,
+[data-theme="light"] .card-liquid-glass,
+.light .card-liquid-glass {
+  box-shadow: var(--shadow-card);
+}
+
+/* Primary action (ActionButton variant="primary" and .btn-primary). */
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-primary-fg);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.btn-primary:hover {
+  background: color-mix(in oklab, var(--color-primary) 88%, white);
+}
+
+/* Liquid glass: a faint tinted canvas so frosted surfaces have something to refract. */
+[data-style="liquid-glass"] .app-shell-root,
+.theme-liquid-glass .app-shell-root {
+  background-image:
+    radial-gradient(60rem 40rem at 8% -10%, color-mix(in oklab, var(--color-primary) 16%, transparent) 0%, transparent 60%),
+    radial-gradient(50rem 36rem at 100% 0%, color-mix(in oklab, var(--color-cat-flow) 10%, transparent) 0%, transparent 60%),
+    radial-gradient(46rem 34rem at 60% 110%, color-mix(in oklab, var(--color-cat-cve) 8%, transparent) 0%, transparent 60%) !important;
+  background-attachment: fixed;
+}
+
+/* Sidebar + top bar become frosted panes in liquid glass. */
+[data-style="liquid-glass"] .app-sidebar,
+.theme-liquid-glass .app-sidebar,
+[data-style="liquid-glass"] .app-topbar,
+.theme-liquid-glass .app-topbar {
+  background: color-mix(in oklab, var(--color-bg) 62%, transparent) !important;
+  backdrop-filter: blur(var(--glass-blur, 24px)) saturate(var(--glass-saturate, 180%));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 24px)) saturate(var(--glass-saturate, 180%));
+  border-color: var(--glass-border-subtle) !important;
+}
+
+/* Primary buttons in liquid glass keep the brand violet, frosted. */
+[data-style="liquid-glass"] button[class*="bg-accent"],
+.theme-liquid-glass button[class*="bg-accent"],
+[data-style="liquid-glass"] .btn-primary,
+.theme-liquid-glass .btn-primary,
+[data-theme="light"][data-style="liquid-glass"] button[class*="bg-accent"],
+.light.theme-liquid-glass button[class*="bg-accent"],
+[data-theme="light"][data-style="liquid-glass"] .btn-primary,
+.light.theme-liquid-glass .btn-primary {
+  background: linear-gradient(135deg,
+      color-mix(in oklab, var(--color-primary) 92%, white) 0%,
+      color-mix(in oklab, var(--color-primary) 78%, transparent) 100%) !important;
+  color: var(--color-primary-fg) !important;
+  border: 1px solid color-mix(in oklab, var(--color-primary) 60%, white) !important;
+  border-top-color: rgba(255, 255, 255, 0.55) !important;
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.35),
+              0 6px 18px -4px color-mix(in oklab, var(--color-primary) 55%, transparent) !important;
+}
+[data-style="liquid-glass"] button[class*="bg-accent"]:hover,
+.theme-liquid-glass button[class*="bg-accent"]:hover,
+[data-style="liquid-glass"] .btn-primary:hover,
+.theme-liquid-glass .btn-primary:hover,
+[data-theme="light"][data-style="liquid-glass"] button[class*="bg-accent"]:hover,
+.light.theme-liquid-glass button[class*="bg-accent"]:hover,
+[data-theme="light"][data-style="liquid-glass"] .btn-primary:hover,
+.light.theme-liquid-glass .btn-primary:hover {
+  background: linear-gradient(135deg,
+      color-mix(in oklab, var(--color-primary) 85%, white) 0%,
+      color-mix(in oklab, var(--color-primary) 88%, transparent) 100%) !important;
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.45),
+              0 8px 22px -4px color-mix(in oklab, var(--color-primary) 65%, transparent) !important;
+}
+
+/* Light liquid glass: white-on-white needs a visible hairline. */
+[data-theme="light"][data-style="liquid-glass"] .rounded-xl.border.bg-bg-card,
+.light.theme-liquid-glass .rounded-xl.border.bg-bg-card,
+[data-theme="light"][data-style="liquid-glass"] .rounded-xl.border.bg-bg-elevated,
+.light.theme-liquid-glass .rounded-xl.border.bg-bg-elevated,
+[data-theme="light"][data-style="liquid-glass"] .rounded-lg.border.bg-bg-elevated,
+.light.theme-liquid-glass .rounded-lg.border.bg-bg-elevated,
+[data-theme="light"][data-style="liquid-glass"] .card-liquid-glass,
+.light.theme-liquid-glass .card-liquid-glass {
+  border: 1px solid rgba(16, 24, 40, 0.08) !important;
+  border-top-color: rgba(255, 255, 255, 0.95) !important;
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(16, 24, 40, 0.04), 0 10px 28px -8px rgba(40, 32, 120, 0.12) !important;
+}
+[data-theme="light"][data-style="liquid-glass"] .dropdown-liquid-glass,
+.light.theme-liquid-glass .dropdown-liquid-glass {
+  border: 1px solid rgba(16, 24, 40, 0.10) !important;
+}
+
+/* Light theme: white chrome (sidebar + top bar) frames the grey canvas. */
+[data-theme="light"] .app-sidebar,
+.light .app-sidebar,
+[data-theme="light"] .app-topbar,
+.light .app-topbar {
+  background-color: var(--color-bg-card);
+}

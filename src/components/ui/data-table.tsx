@@ -78,7 +78,7 @@ export function DataTable<T>({
         <input
           type="checkbox"
           aria-label="Select all rows"
-          className="size-4 cursor-pointer accent-[var(--color-accent)]"
+          className="size-4 cursor-pointer accent-[var(--color-primary)]"
           checked={table.getIsAllRowsSelected()}
           ref={(el) => {
             if (el) el.indeterminate = table.getIsSomeRowsSelected();
@@ -90,7 +90,7 @@ export function DataTable<T>({
         <input
           type="checkbox"
           aria-label="Select row"
-          className="size-4 cursor-pointer accent-[var(--color-accent)]"
+          className="size-4 cursor-pointer accent-[var(--color-primary)]"
           checked={row.getIsSelected()}
           onClick={(e) => e.stopPropagation()}
           onChange={row.getToggleSelectedHandler()}
@@ -129,7 +129,7 @@ export function DataTable<T>({
           {caption && <caption className="sr-only">{caption}</caption>}
           <thead>
             {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id} className="border-b border-border">
+              <tr key={hg.id} className="border-b border-border bg-bg-subtle/50">
                 {hg.headers.map((header) => {
                   const meta = (header.column.columnDef.meta ?? {}) as DataTableColumnMeta;
                   const canSort = header.column.getCanSort();
@@ -189,7 +189,7 @@ export function DataTable<T>({
                   className={cn(
                     "border-b border-border last:border-b-0 transition-colors",
                     onRowClick && "cursor-pointer hover:bg-bg-subtle focus-visible:bg-bg-subtle focus-visible:outline-none",
-                    (row.getIsSelected() || active) && "bg-bg-subtle",
+                    (row.getIsSelected() || active) && "bg-primary/[0.07] hover:bg-primary/10",
                   )}
                 >
                   {row.getVisibleCells().map((cell) => {
