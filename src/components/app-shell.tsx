@@ -28,6 +28,9 @@ import {
   Upload,
   UserRound,
   X,
+  Route as RouteIcon,
+  ScanSearch,
+  UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { getDashboard, getStorageStats } from "@/lib/aie/server";
@@ -50,8 +53,15 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Intelligence",
     items: [
       { to: "/library", label: "Library", icon: Library },
+      { to: "/search", label: "Search", icon: ScanSearch },
+      { to: "/actors", label: "Threat actors", icon: UsersRound },
       { to: "/matrix", label: "ATT&CK Matrix", icon: Layers },
     ],
+  },
+  {
+    id: "emulation",
+    label: "Emulation",
+    items: [{ to: "/purple", label: "Purple paths", icon: RouteIcon }],
   },
   {
     id: "collection",
