@@ -2,22 +2,58 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
-import { ArrowUpRight, FileText, Search, SearchX, Shield, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import {
+  ArrowUpRight,
+  FileText,
+  FlaskConical,
+  GitBranch,
+  LayoutGrid,
+  Layers,
+  List,
+  Megaphone,
+  Plus,
+  Search,
+  SearchX,
+  Shield,
+  SlidersHorizontal,
+  Sparkles,
+  Swords,
+  Table2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { EmptyState } from "@/components/ui/primitives";
+import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
 import { cn } from "@/lib/cn";
-import type { ReportListItem } from "@/lib/aie/types";
+import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
-import { ActionButton, SegmentedTabs, Toolbar } from "@/components/layout/page";
-import { ListPageTemplate, Pagination } from "@/components/templates/page-templates";
+import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
+import { Pagination } from "@/components/templates/page-templates";
 import { ReportTable } from "@/components/library/report-table";
 import { ReportPdfDialog } from "@/components/library/report-pdf-dialog";
 import { AiReviewDialog } from "@/components/library/ai-review-dialog";
-import { compareReports, downloadHtml, type ReportSort, type ReportSortKey } from "@/components/library/report-utils";
+import { ReportFeedCard, ReportListRow, TierDot } from "@/components/library/report-card";
+import { FacetGroup, FacetPanel, FacetToggle, type FacetOption } from "@/components/library/facet-sidebar";
+import { LibraryKpiStrip, type LibraryKpi } from "@/components/library/library-kpis";
+import {
+  DOC_TABS,
+  TIER_META,
+  actorsOf,
+  cvesOf,
+  docTypesOf,
+  hasEmulationContent,
+  malwareOf,
+  publisherOf,
+  tacticsOf,
+  techniquesOf,
+  tierOf,
+} from "@/components/library/intel-taxonomy";
+import { fetchEmulationOptions, fetchIntelCoverage, hasEmulationOptionsApi, hasIntelCoverageApi } from "@/components/library/intel-api";
+import { compareReports, dateValue, downloadHtml, type ReportSort, type ReportSortKey } from "@/components/library/report-utils";
 
 const librarySearchSchema = z.object({
   q: z.string().optional(),
@@ -33,53 +69,56 @@ export const Route = createFileRoute("/library")({
   component: LibraryPage,
 });
 
-const RESOURCE_KINDS: { id: string; label: string }[] = [
-  { id: "ALL", label: "All" },
-  { id: "FULL_ATTACK_CHAIN", label: "Attack chains" },
-  { id: "CAMPAIGN_INTEL", label: "Campaigns" },
-  { id: "PROCEDURE_DEEPDIVE", label: "Procedures" },
-  { id: "MALWARE_ANALYSIS", label: "Malware" },
-  { id: "DETECTION_GUIDANCE", label: "Detections" },
-  { id: "VULNERABILITY_ADVISORY", label: "Vulnerabilities" },
-  { id: "THREAT_ACTOR_DOSSIER", label: "Actor dossiers" },
-];
-
 const PAGE_SIZES = [20, 40, 60, 100, "all"] as const;
 type PageSize = (typeof PAGE_SIZES)[number];
 
 const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
 
-const selectCls =
-  "h-9 w-full rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent";
+type ViewMode = "cards" | "table" | "list";
+const VIEW_KEY = "aie_library_view";
+type OrderBy = "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
 
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  allLabel,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  allLabel: string;
-  options: string[];
-}) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="text-xs text-muted">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={selectCls}>
-        <option value="ALL">
-          {allLabel} ({options.length})
-        </option>
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
+const selectCls =
+  "h-9 rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]";
+
+type Derived = {
+  types: DocType[];
+  tier: SourceTier | null;
+  publisher: string;
+  actors: string[];
+  malware: string[];
+  tactics: string[];
+  techniques: string[];
+  cves: string[];
+  emulation: boolean;
+  published: number;
+};
+
+function derive(r: ReportListItem): Derived {
+  return {
+    types: docTypesOf(r),
+    tier: tierOf(r),
+    publisher: publisherOf(r),
+    actors: actorsOf(r),
+    malware: malwareOf(r),
+    tactics: tacticsOf(r),
+    techniques: techniquesOf(r).map((t) => t.id),
+    cves: cvesOf(r),
+    emulation: hasEmulationContent(r),
+    published: dateValue(r.publishedAt),
+  };
+}
+
+function countBy(values: string[][]): FacetOption[] {
+  const m = new Map<string, number>();
+  for (const vs of values) for (const v of new Set(vs)) m.set(v, (m.get(v) ?? 0) + 1);
+  return Array.from(m.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: value, count, text: value }));
+}
+
+function toggle(list: string[], v: string): string[] {
+  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
 function FilterChip({ children, onRemove }: { children: React.ReactNode; onRemove: () => void }) {
@@ -104,23 +143,47 @@ function LibraryPage() {
   const navigate = Route.useNavigate();
 
   const [q, setQ] = useState(searchParams.q || "");
-  const [selectedKind, setSelectedKind] = useState("ALL");
-  const [selectedTag, setSelectedTag] = useState(searchParams.tag || "ALL");
-  const [selectedActor, setSelectedActor] = useState("ALL");
-  const [selectedMalware, setSelectedMalware] = useState("ALL");
-  const [selectedTactic, setSelectedTactic] = useState("ALL");
-  const [selectedPublisher, setSelectedPublisher] = useState("ALL");
+  const [docTab, setDocTab] = useState("ALL");
+  const [selDocTypes, setSelDocTypes] = useState<string[]>([]);
+  const [selTiers, setSelTiers] = useState<string[]>([]);
+  const [selPublishers, setSelPublishers] = useState<string[]>([]);
+  const [selActors, setSelActors] = useState<string[]>([]);
+  const [selMalware, setSelMalware] = useState<string[]>([]);
+  const [selTactics, setSelTactics] = useState<string[]>([]);
+  const [selTags, setSelTags] = useState<string[]>(searchParams.tag ? [searchParams.tag] : []);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [minQuality, setMinQuality] = useState<number>(0);
   const [onlyWithIocs, setOnlyWithIocs] = useState(false);
-  const [sortBy, setSortBy] = useState<"newest" | "quality" | "iocs" | "words" | "rejected">(
-    searchParams.sort || "newest",
+  const [onlyWithEmulation, setOnlyWithEmulation] = useState(false);
+  const [showRejected, setShowRejected] = useState(searchParams.sort === "rejected");
+  const [orderBy, setOrderBy] = useState<OrderBy>(
+    searchParams.sort && searchParams.sort !== "rejected" ? searchParams.sort : "newest",
   );
   const [colSort, setColSort] = useState<ReportSort>(null);
-  const [showFilters, setShowFilters] = useState(Boolean(searchParams.tag || searchParams.sort));
+  const [showFilters, setShowFilters] = useState(false);
   const [previewReportId, setPreviewReportId] = useState<string | null>(searchParams.pdf || null);
   const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
   const [evidenceReport, setEvidenceReport] = useState<ReportListItem | null>(null);
   const [isAuditing, setIsAuditing] = useState(false);
+  const [view, setViewState] = useState<ViewMode>("cards");
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(VIEW_KEY);
+      if (v === "cards" || v === "table" || v === "list") setViewState(v);
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  const setView = (v: ViewMode) => {
+    setViewState(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* storage unavailable */
+    }
+  };
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(20);
@@ -174,7 +237,6 @@ function LibraryPage() {
 
   const isDeepSearchActive = debouncedQ.length >= 2;
 
-  // Server-side deep content search over the full extracted text
   const { data: searchResults, isLoading: isSearchLoading } = useQuery({
     queryKey: ["reports-search", debouncedQ],
     queryFn: () => listReports({ data: { q: debouncedQ, limit: 200 } }),
@@ -182,7 +244,6 @@ function LibraryPage() {
     staleTime: 30_000,
   });
 
-  // Fetch all reports to enable rich interactive filtering and instant counts
   const { data: rawReports, isLoading: isBaseLoading } = useQuery({
     queryKey: ["reports-all"],
     queryFn: () => listReports({ data: { limit: 500 } }),
@@ -190,13 +251,47 @@ function LibraryPage() {
     placeholderData: (previousData) => previousData,
   });
 
+  const { data: coverage } = useQuery({
+    queryKey: ["intel-coverage"],
+    queryFn: fetchIntelCoverage,
+    enabled: hasIntelCoverageApi,
+    staleTime: 60_000,
+  });
+
   const isLoading = isDeepSearchActive ? isSearchLoading : isBaseLoading;
 
   const allReports = useMemo(() => rawReports || [], [rawReports]);
+  // Full-text hits from the server, plus everything already loaded (matched client-side on entities below).
   const activeReportsPool = useMemo(() => {
-    if (isDeepSearchActive && searchResults) return searchResults;
-    return allReports;
+    if (!isDeepSearchActive || !searchResults) return allReports;
+    const ids = new Set(searchResults.map((r) => r.id));
+    return [...searchResults, ...allReports.filter((r) => !ids.has(r.id))];
   }, [isDeepSearchActive, searchResults, allReports]);
+  const serverHitIds = useMemo(() => new Set((isDeepSearchActive ? searchResults : undefined)?.map((r) => r.id) ?? []), [isDeepSearchActive, searchResults]);
+
+  // Derived taxonomy/entities per report, computed once per record.
+  const derivedRef = useRef(new WeakMap<ReportListItem, Derived>());
+  const d = useCallback((r: ReportListItem): Derived => {
+    let v = derivedRef.current.get(r);
+    if (!v) {
+      v = derive(r);
+      derivedRef.current.set(r, v);
+    }
+    return v;
+  }, []);
+
+  const libraryTechniques = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of allReports) if (r.status !== "rejected") for (const t of d(r).techniques) s.add(t);
+    return Array.from(s).sort();
+  }, [allReports, d]);
+
+  const { data: emulationOptions } = useQuery({
+    queryKey: ["emulation-options", libraryTechniques.join(",")],
+    queryFn: () => fetchEmulationOptions(libraryTechniques),
+    enabled: hasEmulationOptionsApi && libraryTechniques.length > 0,
+    staleTime: 5 * 60_000,
+  });
 
   const handleRunAiAudit = async () => {
     setIsAuditing(true);
@@ -209,6 +304,7 @@ function LibraryPage() {
       );
       void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
       void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
+      void queryClient.invalidateQueries({ queryKey: ["intel-coverage"] });
     } catch (err: any) {
       toast.error(`AI audit failed: ${err?.message || "Unknown error"}`);
     } finally {
@@ -216,79 +312,14 @@ function LibraryPage() {
     }
   };
 
-  // Compute category counts
-  const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      ALL: allReports.length,
-      FULL_ATTACK_CHAIN: 0,
-      CAMPAIGN_INTEL: 0,
-      PROCEDURE_DEEPDIVE: 0,
-      MALWARE_ANALYSIS: 0,
-      DETECTION_GUIDANCE: 0,
-      VULNERABILITY_ADVISORY: 0,
-      THREAT_ACTOR_DOSSIER: 0,
-    };
+  const acceptedReports = useMemo(() => allReports.filter((r) => r.status !== "rejected"), [allReports]);
+  const rejectedCount = allReports.length - acceptedReports.length;
 
-    for (const r of allReports) {
-      const k = r.resourceKind || "CAMPAIGN_INTEL";
-      if (counts[k] !== undefined) {
-        counts[k]++;
-      }
-    }
-    return counts;
-  }, [allReports]);
-
-  // Extract distinct tag options from current library dataset
-  const filterOptions = useMemo(() => {
-    const actorsSet = new Set<string>();
-    const malwareSet = new Set<string>();
-    const tacticsSet = new Set<string>();
-    const publishersSet = new Set<string>();
-    const tagsSet = new Set<string>();
-
-    for (const r of allReports) {
-      if (r.publisher) publishersSet.add(r.publisher);
-      if (r.sourceName) publishersSet.add(r.sourceName);
-
-      if (Array.isArray(r.tags)) {
-        for (const t of r.tags) if (t) tagsSet.add(t);
-      }
-
-      if (r.analysis?.threatActors) {
-        for (const a of r.analysis.threatActors) if (a && a !== "None Identified") actorsSet.add(a);
-      }
-      if (r.extractedEntities?.threatActors) {
-        for (const a of r.extractedEntities.threatActors) if (a) actorsSet.add(a);
-      }
-
-      if (r.analysis?.malware) {
-        for (const m of r.analysis.malware) if (m && m !== "None Identified") malwareSet.add(m);
-      }
-      if (r.extractedEntities?.malwareFamilies) {
-        for (const m of r.extractedEntities.malwareFamilies) if (m) malwareSet.add(m);
-      }
-
-      if (r.analysis?.attackChain) {
-        for (const step of r.analysis.attackChain) if (step.tactic) tacticsSet.add(step.tactic);
-      }
-      if (r.extractedEntities?.tactics) {
-        for (const t of r.extractedEntities.tactics) if (t) tacticsSet.add(t);
-      }
-    }
-
-    return {
-      actors: Array.from(actorsSet).sort(),
-      malware: Array.from(malwareSet).sort(),
-      tactics: Array.from(tacticsSet).sort(),
-      publishers: Array.from(publishersSet).sort(),
-      tags: Array.from(tagsSet).sort(),
-    };
-  }, [allReports]);
-
-  const rejectedCount = useMemo(
-    () => allReports.filter((r) => r.status === "rejected").length,
-    [allReports],
-  );
+  const tabCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const t of DOC_TABS) out[t.id] = acceptedReports.filter((r) => !t.types || d(r).types.some((x) => t.types!.includes(x))).length;
+    return out;
+  }, [acceptedReports, d]);
 
   // Robust target report resolution: matches by ID, formatted ID, URL, canonical URL, or title
   const targetReport = useMemo(() => {
@@ -297,7 +328,6 @@ function LibraryPage() {
     const lower = rawTarget.toLowerCase();
     const cleanTarget = lower.replace(/^(rpt_|rst[-_]|report[-_])/i, "");
 
-    // 1. Exact ID match (raw mongo id, custom id, or formatted id)
     const byId = allReports.find((r) => {
       const rIdLower = r.id.toLowerCase();
       const cleanR = rIdLower.replace(/^(rpt_|rst[-_]|report[-_])/i, "");
@@ -312,7 +342,6 @@ function LibraryPage() {
     });
     if (byId) return byId;
 
-    // 2. Exact URL or canonicalUrl match
     const byUrl = allReports.find(
       (r) =>
         (r.canonicalUrl && (r.canonicalUrl === rawTarget || r.canonicalUrl.toLowerCase() === lower)) ||
@@ -320,7 +349,6 @@ function LibraryPage() {
     );
     if (byUrl) return byUrl;
 
-    // 3. Normalized URL match (ignoring protocol, www., and trailing slashes)
     const normalizeUrl = (u: string) =>
       u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
     const normTarget = normalizeUrl(rawTarget);
@@ -338,18 +366,12 @@ function LibraryPage() {
       if (byNormUrl) return byNormUrl;
     }
 
-    // 4. Exact Title match
-    const byExactTitle = allReports.find(
-      (r) => r.title && r.title.trim().toLowerCase() === lower,
-    );
+    const byExactTitle = allReports.find((r) => r.title && r.title.trim().toLowerCase() === lower);
     if (byExactTitle) return byExactTitle;
 
-    // 5. Partial Title substring match (at least 3 characters)
     if (lower.length >= 3) {
       const byTitle = allReports.find(
-        (r) =>
-          r.title &&
-          (r.title.toLowerCase().includes(lower) || lower.includes(r.title.toLowerCase())),
+        (r) => r.title && (r.title.toLowerCase().includes(lower) || lower.includes(r.title.toLowerCase())),
       );
       if (byTitle) return byTitle;
     }
@@ -362,7 +384,6 @@ function LibraryPage() {
   const selOpenedRef = useRef<string | null>(null);
   useEffect(() => {
     if (searchParams.selected) {
-      // A ?selected= link auto-opens the preview at most once; an explicit ?pdf= also counts.
       if (selOpenedRef.current !== searchParams.selected && (searchParams.pdf || targetReport)) {
         selOpenedRef.current = searchParams.selected;
         if (!searchParams.pdf && targetReport) setPreviewReportId(targetReport.id);
@@ -387,151 +408,181 @@ function LibraryPage() {
     [targetHighlightId, targetReport],
   );
 
-  // Filter and sort reports
+  const query = q.trim().toLowerCase();
+
+  /** Status + tab + text search: the pool that facet counts describe. */
+  const basePool = useMemo(() => {
+    const tab = DOC_TABS.find((t) => t.id === docTab) ?? DOC_TABS[0];
+    return activeReportsPool.filter((r) => {
+      if (showRejected ? r.status !== "rejected" : r.status === "rejected") return false;
+      if (tab.types && !d(r).types.some((t) => tab.types!.includes(t))) return false;
+      if (query && !serverHitIds.has(r.id)) {
+        const x = d(r);
+        const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.id} ${formatReportId(r.id)} ${r.sourceId} ${
+          r.ingestOrigin || ""
+        } ${formatDomainId(r.sourceDomain || r.url)} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${r.tags?.join(" ") || ""} ${x.actors.join(
+          " ",
+        )} ${x.malware.join(" ")} ${x.cves.join(" ")} ${x.techniques.join(" ")} ${r.analysis?.ttps?.join(" ") || ""} ${r.analysis?.ioas?.join(" ") || ""} ${x.tactics.join(" ")} ${r.iocs?.map((i) => i.value).join(" ") || ""}`.toLowerCase();
+        if (!searchable.includes(query)) return false;
+      }
+      return true;
+    });
+  }, [activeReportsPool, showRejected, docTab, query, serverHitIds, d]);
+
+  const facets = useMemo(() => {
+    const types = countBy(basePool.map((r) => d(r).types));
+    const tiers = countBy(basePool.map((r) => [d(r).tier ? String(d(r).tier) : "unrated"]));
+    return {
+      docTypes: types.map((o) => ({ ...o, label: <DocTypeBadge type={o.value as DocType} />, text: DOC_TYPE_META[o.value as DocType]?.label ?? o.value })),
+      tiers: tiers
+        .sort((a, b) => a.value.localeCompare(b.value))
+        .map((o) => ({
+          ...o,
+          label:
+            o.value === "unrated" ? (
+              <span className="text-subtle">Unrated source</span>
+            ) : (
+              <span className="inline-flex items-center gap-2">
+                <TierDot tier={Number(o.value) as SourceTier} />
+                {TIER_META[Number(o.value) as SourceTier].label.replace(/^Tier \d · /, "")}
+                <span className="text-subtle">· T{o.value}</span>
+              </span>
+            ),
+        })),
+      publishers: countBy(basePool.map((r) => [d(r).publisher])),
+      actors: countBy(basePool.map((r) => d(r).actors)).map((o) => ({
+        ...o,
+        label: <span style={{ color: "var(--color-cat-actor)" }}>{o.value}</span>,
+      })),
+      malware: countBy(basePool.map((r) => d(r).malware)).map((o) => ({
+        ...o,
+        label: <span style={{ color: "var(--color-cat-malware)" }}>{o.value}</span>,
+      })),
+      tactics: countBy(basePool.map((r) => d(r).tactics)),
+      tags: countBy(basePool.map((r) => r.tags ?? [])),
+      withIocs: basePool.filter((r) => (r.iocCount || 0) > 0).length,
+      withEmulation: basePool.filter((r) => d(r).emulation).length,
+    };
+  }, [basePool, d]);
+
+  const fromTs = dateFrom ? Date.parse(`${dateFrom}T00:00:00Z`) : null;
+  const toTs = dateTo ? Date.parse(`${dateTo}T23:59:59Z`) : null;
+
   const filteredReports = useMemo(() => {
-    // Direct Item Selector: If a specific resource is requested via ?selected=..., isolate directly to only that exact resource
-    if (searchParams.selected) {
-      return targetReport ? [targetReport] : [];
-    }
+    if (searchParams.selected) return targetReport ? [targetReport] : [];
 
-    const query = q.trim().toLowerCase();
+    const anyMatch = (sel: string[], vals: string[]) =>
+      sel.length === 0 || sel.some((s) => vals.some((v) => v.toLowerCase() === s.toLowerCase()));
 
-    const list = activeReportsPool
-      .filter((r) => {
+    const list = basePool.filter((r) => {
+      const x = d(r);
+      if (!anyMatch(selDocTypes, x.types)) return false;
+      if (!anyMatch(selTiers, [x.tier ? String(x.tier) : "unrated"])) return false;
+      if (!anyMatch(selPublishers, [x.publisher])) return false;
+      if (!anyMatch(selActors, x.actors)) return false;
+      if (!anyMatch(selMalware, x.malware)) return false;
+      if (!anyMatch(selTactics, x.tactics)) return false;
+      if (!anyMatch(selTags, r.tags ?? [])) return false;
+      if (fromTs !== null && (!x.published || x.published < fromTs)) return false;
+      if (toTs !== null && (!x.published || x.published > toTs)) return false;
+      if (minQuality > 0 && r.qualityScore < minQuality) return false;
+      if (onlyWithIocs && (r.iocCount || 0) === 0) return false;
+      if (onlyWithEmulation && !x.emulation) return false;
+      return true;
+    });
 
-        // If viewing rejected, show ONLY records flagged/rejected by AI quality audit
-        if (sortBy === "rejected") {
-          if (r.status !== "rejected") return false;
-        } else {
-          // Standard view: hide rejected non-threat pages
-          if (r.status === "rejected") return false;
-        }
+    const cmp = (a: ReportListItem, b: ReportListItem) => {
+      switch (orderBy) {
+        case "published":
+          return d(b).published - d(a).published;
+        case "quality":
+          return b.qualityScore - a.qualityScore;
+        case "iocs":
+          return (b.iocCount || 0) - (a.iocCount || 0);
+        case "techniques":
+          return d(b).techniques.length - d(a).techniques.length;
+        case "words":
+          return (b.wordCount || 0) - (a.wordCount || 0);
+        default:
+          return dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
+      }
+    };
 
-        if (selectedKind !== "ALL") {
-          const kind = r.resourceKind || "CAMPAIGN_INTEL";
-          if (kind !== selectedKind) return false;
-        }
-
-        if (selectedActor !== "ALL") {
-          const hasActor =
-            r.analysis?.threatActors?.some((a) => a.toLowerCase() === selectedActor.toLowerCase()) ||
-            r.extractedEntities?.threatActors?.some((a) => a.toLowerCase() === selectedActor.toLowerCase());
-          if (!hasActor) return false;
-        }
-
-        if (selectedMalware !== "ALL") {
-          const hasMalware =
-            r.analysis?.malware?.some((m) => m.toLowerCase() === selectedMalware.toLowerCase()) ||
-            r.extractedEntities?.malwareFamilies?.some((m) => m.toLowerCase() === selectedMalware.toLowerCase());
-          if (!hasMalware) return false;
-        }
-
-        if (selectedTactic !== "ALL") {
-          const hasTactic =
-            r.analysis?.attackChain?.some((s) => s.tactic.toLowerCase() === selectedTactic.toLowerCase()) ||
-            r.extractedEntities?.tactics?.some((t) => t.toLowerCase() === selectedTactic.toLowerCase());
-          if (!hasTactic) return false;
-        }
-
-        if (selectedPublisher !== "ALL") {
-          const pub = (r.publisher || r.sourceName || "").toLowerCase();
-          if (pub !== selectedPublisher.toLowerCase()) return false;
-        }
-
-        if (selectedTag !== "ALL") {
-          const hasTag = r.tags && r.tags.some((t) => t.toLowerCase() === selectedTag.toLowerCase());
-          if (!hasTag) return false;
-        }
-
-        if (minQuality > 0 && r.qualityScore < minQuality) {
-          return false;
-        }
-
-        if (onlyWithIocs && (r.iocCount || 0) === 0) {
-          return false;
-        }
-
-        // For single-character or instant client typing before debounce
-        if (query && !isDeepSearchActive) {
-          const repId = formatReportId(r.id);
-          const domId = formatDomainId(r.sourceDomain || r.url);
-          const tagsStr = r.tags?.join(" ") || "";
-          const searchable = `${r.title} ${r.sourceName} ${r.publisher} ${r.url} ${r.canonicalUrl} ${r.id} ${repId} ${r.sourceId} ${r.ingestOrigin || ""} ${domId} ${r.excerpt} ${r.classification} ${r.resourceKind || ""} ${tagsStr} ${
-            r.analysis?.threatActors?.join(" ") || ""
-          } ${r.analysis?.malware?.join(" ") || ""} ${r.extractedEntities?.cves?.join(" ") || ""} ${
-            r.iocs?.map((i) => i.value).join(" ") || ""
-          }`.toLowerCase();
-
-          if (!searchable.includes(query)) return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        if (sortBy === "rejected") return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
-        if (sortBy === "quality") return b.qualityScore - a.qualityScore;
-        if (sortBy === "iocs") return (b.iocCount || 0) - (a.iocCount || 0);
-        if (sortBy === "words") return (b.wordCount || 0) - (a.wordCount || 0);
-        return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
-      });
-
-    // Ensure targetReport is in the list even if current active filters would have excluded it
-    if (targetReport && !list.some((r) => r.id === targetReport.id)) {
-      const merged = [...list, targetReport];
-      return merged.sort((a, b) => {
-        if (sortBy === "rejected") return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
-        if (sortBy === "quality") return b.qualityScore - a.qualityScore;
-        if (sortBy === "iocs") return (b.iocCount || 0) - (a.iocCount || 0);
-        if (sortBy === "words") return (b.wordCount || 0) - (a.wordCount || 0);
-        return new Date(b.ingestedAt).getTime() - new Date(a.ingestedAt).getTime();
-      });
-    }
-
-    return list;
+    // Keep the highlighted report visible even when filters would exclude it.
+    if (targetReport && !list.some((r) => r.id === targetReport.id)) list.push(targetReport);
+    return list.sort(cmp);
   }, [
-    activeReportsPool,
+    basePool,
     searchParams.selected,
-    isDeepSearchActive,
     targetReport,
-    q,
-    sortBy,
-    selectedKind,
-    selectedActor,
-    selectedMalware,
-    selectedTactic,
-    selectedPublisher,
-    selectedTag,
+    selDocTypes,
+    selTiers,
+    selPublishers,
+    selActors,
+    selMalware,
+    selTactics,
+    selTags,
+    fromTs,
+    toTs,
     minQuality,
     onlyWithIocs,
+    onlyWithEmulation,
+    orderBy,
+    d,
   ]);
 
   const sortedReports = useMemo(() => {
-    if (!colSort) return filteredReports;
+    if (!colSort || view !== "table") return filteredReports;
     const cmp = compareReports(colSort.key);
     const list = [...filteredReports].sort(cmp);
     return colSort.desc ? list.reverse() : list;
-  }, [filteredReports, colSort]);
+  }, [filteredReports, colSort, view]);
 
   const onSort = useCallback((key: ReportSortKey) => {
-    setColSort((prev) =>
-      prev?.key === key ? { key, desc: !prev.desc } : { key, desc: !TEXT_SORTS.includes(key) },
-    );
+    setColSort((prev) => (prev?.key === key ? { key, desc: !prev.desc } : { key, desc: !TEXT_SORTS.includes(key) }));
   }, []);
 
-  const activeFiltersCount =
-    (selectedTag !== "ALL" ? 1 : 0) +
-    (selectedActor !== "ALL" ? 1 : 0) +
-    (selectedMalware !== "ALL" ? 1 : 0) +
-    (selectedTactic !== "ALL" ? 1 : 0) +
-    (selectedPublisher !== "ALL" ? 1 : 0) +
-    (minQuality > 0 ? 1 : 0) +
-    (onlyWithIocs ? 1 : 0) +
-    (sortBy === "rejected" ? 1 : 0);
+  const filterChips: Array<{ label: string; clear: () => void }> = [
+    ...selDocTypes.map((v) => ({ label: DOC_TYPE_META[v as DocType]?.label ?? v, clear: () => setSelDocTypes((s) => s.filter((x) => x !== v)) })),
+    ...selTiers.map((v) => ({
+      label: v === "unrated" ? "Unrated source" : TIER_META[Number(v) as SourceTier].short,
+      clear: () => setSelTiers((s) => s.filter((x) => x !== v)),
+    })),
+    ...selPublishers.map((v) => ({ label: `Publisher: ${v}`, clear: () => setSelPublishers((s) => s.filter((x) => x !== v)) })),
+    ...selActors.map((v) => ({ label: `Actor: ${v}`, clear: () => setSelActors((s) => s.filter((x) => x !== v)) })),
+    ...selMalware.map((v) => ({ label: `Malware: ${v}`, clear: () => setSelMalware((s) => s.filter((x) => x !== v)) })),
+    ...selTactics.map((v) => ({ label: `Tactic: ${v}`, clear: () => setSelTactics((s) => s.filter((x) => x !== v)) })),
+    ...selTags.map((v) => ({ label: `Tag: ${v}`, clear: () => setSelTags((s) => s.filter((x) => x !== v)) })),
+    ...(dateFrom ? [{ label: `From ${dateFrom}`, clear: () => setDateFrom("") }] : []),
+    ...(dateTo ? [{ label: `To ${dateTo}`, clear: () => setDateTo("") }] : []),
+    ...(minQuality > 0 ? [{ label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) }] : []),
+    ...(onlyWithIocs ? [{ label: "Has IOCs", clear: () => setOnlyWithIocs(false) }] : []),
+    ...(onlyWithEmulation ? [{ label: "Has emulation", clear: () => setOnlyWithEmulation(false) }] : []),
+    ...(showRejected ? [{ label: `Rejected by AI (${rejectedCount})`, clear: () => setShowRejected(false) }] : []),
+  ];
+  const activeFiltersCount = filterChips.length;
 
-  // Reset pagination to page 1 on filter changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [q, selectedKind, selectedTag, selectedActor, selectedMalware, selectedTactic, selectedPublisher, minQuality, onlyWithIocs, sortBy, colSort]);
+  }, [
+    q,
+    docTab,
+    selDocTypes,
+    selTiers,
+    selPublishers,
+    selActors,
+    selMalware,
+    selTactics,
+    selTags,
+    dateFrom,
+    dateTo,
+    minQuality,
+    onlyWithIocs,
+    onlyWithEmulation,
+    showRejected,
+    orderBy,
+    colSort,
+  ]);
 
   const numericPageSize = pageSize === "all" ? Math.max(1, sortedReports.length) : pageSize;
   const pageCount = Math.max(1, Math.ceil(sortedReports.length / numericPageSize));
@@ -555,10 +606,9 @@ function LibraryPage() {
       if (cancelled) return;
       attempts++;
       const id = targetReport?.id || targetHighlightId;
-      const el =
-        document.getElementById(`report-${id}`) || document.querySelector(`[data-report-id="${CSS.escape(id)}"]`);
+      const el = document.getElementById(`report-${id}`) || document.querySelector(`[data-report-id="${CSS.escape(id)}"]`);
       if (el) {
-        el.closest("tr")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        (el.closest("tr") ?? el).scrollIntoView({ behavior: "smooth", block: "center" });
       } else if (attempts < 40) {
         setTimeout(tryScroll, 80);
       }
@@ -568,7 +618,7 @@ function LibraryPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [targetHighlightId, targetReport, currentPage]);
+  }, [targetHighlightId, targetReport, currentPage, view]);
 
   const pagedReports = useMemo(
     () => sortedReports.slice((currentPage - 1) * numericPageSize, currentPage * numericPageSize),
@@ -581,14 +631,19 @@ function LibraryPage() {
   };
 
   const resetFilters = () => {
-    setSelectedTag("ALL");
-    setSelectedActor("ALL");
-    setSelectedMalware("ALL");
-    setSelectedTactic("ALL");
-    setSelectedPublisher("ALL");
+    setSelDocTypes([]);
+    setSelTiers([]);
+    setSelPublishers([]);
+    setSelActors([]);
+    setSelMalware([]);
+    setSelTactics([]);
+    setSelTags([]);
+    setDateFrom("");
+    setDateTo("");
     setMinQuality(0);
     setOnlyWithIocs(false);
-    if (sortBy === "rejected") setSortBy("newest");
+    setOnlyWithEmulation(false);
+    setShowRejected(false);
     setQ("");
     if (searchParams.selected || searchParams.highlight) clearSelection();
   };
@@ -623,158 +678,359 @@ function LibraryPage() {
     [openReport, openPdfModal, handleDownload],
   );
 
-  const filterChips: Array<{ label: string; clear: () => void }> = [
-    selectedTag !== "ALL" && { label: `Tag: ${selectedTag}`, clear: () => setSelectedTag("ALL") },
-    selectedActor !== "ALL" && { label: `Actor: ${selectedActor}`, clear: () => setSelectedActor("ALL") },
-    selectedMalware !== "ALL" && { label: `Malware: ${selectedMalware}`, clear: () => setSelectedMalware("ALL") },
-    selectedTactic !== "ALL" && { label: `Tactic: ${selectedTactic}`, clear: () => setSelectedTactic("ALL") },
-    selectedPublisher !== "ALL" && { label: `Publisher: ${selectedPublisher}`, clear: () => setSelectedPublisher("ALL") },
-    minQuality > 0 && { label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) },
-    onlyWithIocs && { label: "Has IOCs", clear: () => setOnlyWithIocs(false) },
-    sortBy === "rejected" && { label: `Rejected by AI (${rejectedCount})`, clear: () => setSortBy("newest") },
-  ].filter(Boolean) as Array<{ label: string; clear: () => void }>;
+  // ---------------------------------------------------------------- KPIs
+  const kpis = useMemo<LibraryKpi[]>(() => {
+    const typeCount = (types: DocType[]) => {
+      if (coverage && Object.keys(coverage.byDocType).length > 0) {
+        return types.reduce((n, t) => n + (coverage.byDocType[t] ?? 0), 0);
+      }
+      return acceptedReports.filter((r) => d(r).types.some((t) => types.includes(t))).length;
+    };
+    const src = coverage && Object.keys(coverage.byDocType).length > 0 ? "Coverage index" : "Loaded reports";
+    let atomic: number | null = coverage?.atomicTechniques ?? null;
+    let atomicHint: string = "Coverage index";
+    if (atomic === null && emulationOptions) {
+      atomic = libraryTechniques.filter((t) => (emulationOptions[t] ?? []).some((o) => o.kind === "atomic_test")).length;
+      atomicHint = `of ${libraryTechniques.length} library techniques`;
+    }
+    if (atomic === null) atomicHint = hasEmulationOptionsApi ? "Checking Atomic Red Team…" : "Atomic tests not synced yet";
+    return [
+      {
+        id: "reports",
+        label: "Reports",
+        value: coverage?.total ?? acceptedReports.length,
+        kind: "source",
+        icon: FileText,
+        hint: rejectedCount > 0 ? `${rejectedCount} rejected by AI` : src,
+        onClick: () => setDocTab("ALL"),
+        active: docTab === "ALL",
+      },
+      {
+        id: "advisories",
+        label: "Advisories",
+        value: typeCount(["THREAT_ADVISORY", "VULNERABILITY_ADVISORY", "KEV_ENTRY"]),
+        kind: "advisory",
+        icon: Megaphone,
+        hint: "Threat, vulnerability & KEV",
+        onClick: () => setDocTab("advisory"),
+        active: docTab === "advisory",
+      },
+      {
+        id: "emulation",
+        label: "Emulation plans",
+        value: typeCount(["ADVERSARY_EMULATION_PLAN", "MICRO_EMULATION_PLAN"]),
+        kind: "emulation",
+        icon: Swords,
+        hint: "Full & micro plans",
+        onClick: () => setDocTab("emulation"),
+        active: docTab === "emulation",
+      },
+      {
+        id: "flows",
+        label: "Attack flows",
+        value: typeCount(["ATTACK_FLOW"]),
+        kind: "flow",
+        icon: GitBranch,
+        hint: "CTID Attack Flow",
+        onClick: () => setDocTab("flow"),
+        active: docTab === "flow",
+      },
+      {
+        id: "techniques",
+        label: "Techniques",
+        value: libraryTechniques.length,
+        kind: "technique",
+        icon: Layers,
+        hint: "Distinct ATT&CK IDs",
+      },
+      {
+        id: "atomic",
+        label: "Atomic-covered",
+        value: atomic,
+        kind: "emulation",
+        icon: FlaskConical,
+        hint: atomicHint,
+      },
+    ];
+  }, [coverage, acceptedReports, rejectedCount, d, emulationOptions, libraryTechniques, docTab]);
+
+  // ---------------------------------------------------------------- sidebar
+  const sidebar = (
+    <FacetPanel activeCount={activeFiltersCount} onClearAll={resetFilters}>
+      <FacetGroup
+        title="Document type"
+        options={facets.docTypes}
+        selected={selDocTypes}
+        onToggle={(v) => setSelDocTypes((s) => toggle(s, v))}
+        onClear={() => setSelDocTypes([])}
+      />
+      <FacetGroup
+        title="Source tier"
+        options={facets.tiers}
+        selected={selTiers}
+        onToggle={(v) => setSelTiers((s) => toggle(s, v))}
+        onClear={() => setSelTiers([])}
+      />
+      <FacetGroup
+        title="Publisher"
+        options={facets.publishers}
+        selected={selPublishers}
+        onToggle={(v) => setSelPublishers((s) => toggle(s, v))}
+        onClear={() => setSelPublishers([])}
+      />
+      <FacetGroup
+        title="Threat actor"
+        options={facets.actors}
+        selected={selActors}
+        onToggle={(v) => setSelActors((s) => toggle(s, v))}
+        onClear={() => setSelActors([])}
+        emptyText="No attributed actors"
+      />
+      <FacetGroup
+        title="Malware & tools"
+        options={facets.malware}
+        selected={selMalware}
+        onToggle={(v) => setSelMalware((s) => toggle(s, v))}
+        onClear={() => setSelMalware([])}
+        emptyText="No named malware"
+      />
+      <FacetGroup
+        title="ATT&CK tactic"
+        options={facets.tactics}
+        selected={selTactics}
+        onToggle={(v) => setSelTactics((s) => toggle(s, v))}
+        onClear={() => setSelTactics([])}
+        defaultOpen={false}
+      />
+      {facets.tags.length > 0 && (
+        <FacetGroup
+          title="Tag"
+          options={facets.tags}
+          selected={selTags}
+          onToggle={(v) => setSelTags((s) => toggle(s, v))}
+          onClear={() => setSelTags([])}
+          defaultOpen={selTags.length > 0}
+        />
+      )}
+      <section className="border-b border-border px-4 py-3.5">
+        <div className="mb-2.5 flex items-center justify-between">
+          <h3 className="text-sm font-medium text-fg">Published</h3>
+          {(dateFrom || dateTo) && (
+            <button
+              type="button"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+              className="text-xs text-muted hover:text-fg"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="space-y-1">
+            <span className="text-[11px] text-subtle">From</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg [color-scheme:inherit]"
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] text-subtle">To</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg"
+            />
+          </label>
+        </div>
+      </section>
+      <section className="space-y-0.5 px-2.5 py-3">
+        <FacetToggle label="Has IOCs" checked={onlyWithIocs} onChange={setOnlyWithIocs} count={facets.withIocs} />
+        <FacetToggle
+          label="Has emulation content"
+          hint="Plans, flows, atomics or drafted procedures"
+          checked={onlyWithEmulation}
+          onChange={setOnlyWithEmulation}
+          count={facets.withEmulation}
+        />
+        <FacetToggle
+          label="Rejected by AI only"
+          hint="Records the quality gate flagged"
+          checked={showRejected}
+          onChange={setShowRejected}
+          count={rejectedCount}
+        />
+        <label className="flex items-center justify-between gap-3 px-1.5 pt-2 text-sm text-muted">
+          Minimum quality
+          <select value={minQuality} onChange={(e) => setMinQuality(parseFloat(e.target.value))} className={cn(selectCls, "h-8 text-xs")}>
+            <option value={0}>Any</option>
+            <option value={0.6}>≥ 60%</option>
+            <option value={0.8}>≥ 80%</option>
+          </select>
+        </label>
+      </section>
+    </FacetPanel>
+  );
+
+  const emptyState = isLoading ? (
+    <div className="flex justify-center py-10">
+      <ActivitySpinner size="lg" className="text-accent" />
+    </div>
+  ) : (
+    <EmptyState
+      icon={SearchX}
+      title={allReports.length === 0 ? "The library is empty" : "No reports match these filters"}
+      description={
+        allReports.length === 0
+          ? "Ingest a report URL or sync a structured source to start building the library."
+          : "Try a broader search, another document type, or remove some filters."
+      }
+      action={
+        allReports.length === 0 ? (
+          <ActionButton variant="primary" icon={Plus} to="/ingest">
+            Ingest report
+          </ActionButton>
+        ) : activeFiltersCount > 0 || q || searchParams.selected || docTab !== "ALL" ? (
+          <ActionButton
+            onClick={() => {
+              resetFilters();
+              setDocTab("ALL");
+            }}
+          >
+            Reset filters
+          </ActionButton>
+        ) : undefined
+      }
+    />
+  );
 
   return (
     <AppShell>
-      <ListPageTemplate
-        header={{
-          title: "Library",
-          description: "Acquired threat intelligence with normalized evidence, IOCs and reconstructed attack chains.",
-          actions: (
-            <ActionButton
-              variant="primary"
-              icon={Sparkles}
-              disabled={isAuditing}
-              onClick={handleRunAiAudit}
-              title="Run the AI quality gate across acquired reports"
-            >
-              {isAuditing ? "Auditing…" : "Audit with AI"}
-            </ActionButton>
-          ),
-          tabs: (
-            <SegmentedTabs
-              ariaLabel="Report category"
-              items={RESOURCE_KINDS.map((c) => ({ value: c.id, label: c.label, count: categoryCounts[c.id] ?? 0 }))}
-              value={selectedKind}
-              onChange={setSelectedKind}
-            />
-          ),
-        }}
-        toolbar={
-          <div className="mb-4 flex flex-col gap-3">
-            <Toolbar
-              className="mb-0"
-              left={
-                <>
-                  <div className="relative w-full sm:w-80">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" />
-                    <input
-                      value={q}
-                      onChange={(e) => setQ(e.target.value)}
-                      placeholder="Search title, CVE, actor, malware, hash…"
-                      aria-label="Search library"
-                      className="h-9 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-8 text-sm text-fg placeholder:text-subtle focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                    {q && (
-                      <button
-                        type="button"
-                        onClick={() => setQ("")}
-                        aria-label="Clear search"
-                        className="absolute right-2 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-fg"
-                      >
-                        <X className="size-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowFilters(!showFilters)}
-                    aria-expanded={showFilters}
-                    className={cn(
-                      "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle",
-                      showFilters && "bg-bg-subtle",
-                    )}
-                  >
-                    <SlidersHorizontal className="size-4" strokeWidth={1.75} />
-                    Filters
-                    {activeFiltersCount > 0 && (
-                      <span className="rounded bg-accent px-1.5 text-[11px] font-medium text-accent-fg tabular-nums">
-                        {activeFiltersCount}
-                      </span>
-                    )}
-                  </button>
-                </>
-              }
-              right={
-                <span className="text-sm text-muted">
-                  <span className="tabular-nums text-fg">{sortedReports.length}</span>{" "}
-                  {sortedReports.length === 1 ? "report" : "reports"}
-                  {sortedReports.length !== allReports.length && (
-                    <span className="text-subtle"> of {allReports.length}</span>
-                  )}
-                  {isDeepSearchActive && <span className="text-subtle"> · full-text search</span>}
-                </span>
-              }
-            />
+      <div className="mx-auto w-full max-w-[1480px]">
+        <PageHeader
+          title="Library"
+          description="Threat reports, advisories, DFIR cases, emulation plans, attack flows and ATT&CK knowledge — with evidence, IOCs and emulation coverage."
+          actions={
+            <>
+              <ActionButton
+                icon={Sparkles}
+                disabled={isAuditing}
+                onClick={handleRunAiAudit}
+                title="Run the AI quality gate across acquired reports"
+              >
+                {isAuditing ? "Auditing…" : "Audit with AI"}
+              </ActionButton>
+              <ActionButton variant="primary" icon={Plus} to="/ingest">
+                Ingest report
+              </ActionButton>
+            </>
+          }
+        />
 
-            {showFilters && (
-              <div className="rounded-xl border border-border bg-bg-card p-5">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h2 className="text-base font-medium text-fg">Filters</h2>
-                  {activeFiltersCount > 0 && (
-                    <button type="button" onClick={resetFilters} className="text-sm text-muted hover:text-fg">
-                      Reset all
+        <LibraryKpiStrip items={kpis} />
+
+        <div className="mb-5">
+          <SegmentedTabs
+            ariaLabel="Document type"
+            items={DOC_TABS.map((t) => ({ value: t.id, label: t.label, count: tabCounts[t.id] ?? 0 }))}
+            value={docTab}
+            onChange={setDocTab}
+          />
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+          <aside className="hidden min-w-0 xl:block">
+            <div className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded-xl">{sidebar}</div>
+          </aside>
+
+          <div className="min-w-0">
+            {/* Results toolbar */}
+            <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <div className="relative w-full sm:w-72 2xl:w-80">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" />
+                  <input
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder="Search title, actor, malware, CVE, technique, hash…"
+                    aria-label="Search library"
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-8 text-sm text-fg placeholder:text-subtle focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
+                  />
+                  {q && (
+                    <button
+                      type="button"
+                      onClick={() => setQ("")}
+                      aria-label="Clear search"
+                      className="absolute right-2 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-fg"
+                    >
+                      <X className="size-3.5" />
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                  <FilterSelect label="Tag" value={selectedTag} onChange={setSelectedTag} allLabel="All tags" options={filterOptions.tags} />
-                  <FilterSelect label="Threat actor" value={selectedActor} onChange={setSelectedActor} allLabel="All actors" options={filterOptions.actors} />
-                  <FilterSelect label="Malware family" value={selectedMalware} onChange={setSelectedMalware} allLabel="All malware" options={filterOptions.malware} />
-                  <FilterSelect label="ATT&CK tactic" value={selectedTactic} onChange={setSelectedTactic} allLabel="All tactics" options={filterOptions.tactics} />
-                  <FilterSelect label="Publisher" value={selectedPublisher} onChange={setSelectedPublisher} allLabel="All publishers" options={filterOptions.publishers} />
-                </div>
-                <div className="mt-4 flex flex-wrap items-end gap-4 border-t border-border pt-4">
-                  <label className="block w-full space-y-1.5 sm:w-48">
-                    <span className="text-xs text-muted">Minimum quality</span>
-                    <select value={minQuality} onChange={(e) => setMinQuality(parseFloat(e.target.value))} className={selectCls}>
-                      <option value={0}>Any score</option>
-                      <option value={0.6}>60% or higher</option>
-                      <option value={0.8}>80% or higher</option>
-                    </select>
-                  </label>
-                  <label className="block w-full space-y-1.5 sm:w-56">
-                    <span className="text-xs text-muted">Order</span>
-                    <select
-                      value={sortBy}
-                      onChange={(e) => {
-                        setSortBy(e.target.value as typeof sortBy);
-                        setColSort(null);
-                      }}
-                      className={selectCls}
-                    >
-                      <option value="newest">Newest ingested</option>
-                      <option value="quality">Quality score</option>
-                      <option value="iocs">Most IOCs</option>
-                      <option value="words">Longest analysis</option>
-                      <option value="rejected">Rejected by AI only ({rejectedCount})</option>
-                    </select>
-                  </label>
-                  <label className="flex h-9 cursor-pointer items-center gap-2 text-sm text-muted">
-                    <input
-                      type="checkbox"
-                      checked={onlyWithIocs}
-                      onChange={(e) => setOnlyWithIocs(e.target.checked)}
-                      className="size-4 accent-[var(--color-accent)]"
-                    />
-                    Only reports with IOCs
-                  </label>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(!showFilters)}
+                  aria-expanded={showFilters}
+                  className={cn(
+                    "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle xl:hidden",
+                    showFilters && "bg-bg-subtle",
+                  )}
+                >
+                  <SlidersHorizontal className="size-4" strokeWidth={1.75} />
+                  Filters
+                  {activeFiltersCount > 0 && (
+                    <span className="rounded bg-[var(--color-primary)] px-1.5 text-[11px] font-medium text-[var(--color-primary-fg)] tabular-nums">
+                      {activeFiltersCount}
+                    </span>
+                  )}
+                </button>
+                <span className="text-sm text-muted">
+                  <span className="tabular-nums text-fg">{sortedReports.length}</span> {sortedReports.length === 1 ? "result" : "results"}
+                  {isDeepSearchActive && <span className="text-subtle"> · full-text</span>}
+                </span>
               </div>
-            )}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-sm text-muted">
+                  <span className="hidden sm:inline">Sort</span>
+                  <select
+                    value={orderBy}
+                    onChange={(e) => {
+                      setOrderBy(e.target.value as OrderBy);
+                      setColSort(null);
+                    }}
+                    aria-label="Sort results"
+                    className={selectCls}
+                  >
+                    <option value="newest">Newest ingested</option>
+                    <option value="published">Newest published</option>
+                    <option value="quality">Quality score</option>
+                    <option value="techniques">Most techniques</option>
+                    <option value="iocs">Most IOCs</option>
+                    <option value="words">Longest</option>
+                  </select>
+                </label>
+                <SegmentedTabs<ViewMode>
+                  ariaLabel="Result view"
+                  items={[
+                    { value: "cards", label: <span className="max-sm:sr-only">Cards</span>, icon: LayoutGrid },
+                    { value: "list", label: <span className="max-sm:sr-only">List</span>, icon: List },
+                    { value: "table", label: <span className="max-sm:sr-only">Table</span>, icon: Table2 },
+                  ]}
+                  value={view}
+                  onChange={setView}
+                />
+              </div>
+            </div>
+
+            {showFilters && <div className="mb-4 xl:hidden">{sidebar}</div>}
 
             {filterChips.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <span className="text-xs text-muted">Filtered by</span>
                 {filterChips.map((c) => (
                   <FilterChip key={c.label} onRemove={c.clear}>
@@ -788,12 +1044,11 @@ function LibraryPage() {
             )}
 
             {searchParams.selected && (
-              <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mb-3 flex flex-col gap-3 rounded-xl border border-border bg-bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-center gap-3">
-                  <FileText className="size-4 shrink-0 text-accent" strokeWidth={1.75} />
+                  <FileText className="size-4 shrink-0 text-[var(--color-primary)]" strokeWidth={1.75} />
                   <p className="min-w-0 truncate text-sm text-muted">
-                    Showing one report:{" "}
-                    <span className="text-fg">{targetReport ? targetReport.title : searchParams.selected}</span>
+                    Showing one report: <span className="text-fg">{targetReport ? targetReport.title : searchParams.selected}</span>
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -813,76 +1068,72 @@ function LibraryPage() {
                 </div>
               </div>
             )}
-          </div>
-        }
-        footer={
-          sortedReports.length > 0 ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <label className="flex items-center gap-2 text-sm text-muted">
-                Rows per page
-                <select
-                  value={String(pageSize)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setPageSize(v === "all" ? "all" : (Number(v) as PageSize));
-                    setCurrentPage(1);
-                  }}
-                  className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-sm text-fg"
-                >
-                  {PAGE_SIZES.map((s) => (
-                    <option key={s} value={String(s)}>
-                      {s === "all" ? "All" : s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="sm:min-w-[320px]">
-                <Pagination
-                  page={Math.min(currentPage, pageCount)}
-                  pageCount={pageCount}
-                  total={sortedReports.length}
-                  pageSize={numericPageSize}
-                  onPage={handlePageChange}
-                />
+
+            {isLoading && allReports.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-bg-card py-16 text-muted">
+                <ActivitySpinner size="lg" className="mb-2 text-accent" />
+                <p className="text-sm">Loading the library…</p>
               </div>
-            </div>
-          ) : undefined
-        }
-      >
-        {isLoading && allReports.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-bg-card py-16 text-muted">
-            <ActivitySpinner size="lg" className="mb-2 text-accent" />
-            <p className="text-sm">Loading the library…</p>
-          </div>
-        ) : (
-          <ReportTable
-            rows={pagedReports}
-            sort={colSort}
-            onSort={onSort}
-            actions={rowActions}
-            isHighlighted={isHighlighted}
-            showSnippets={isDeepSearchActive}
-            empty={
-              isLoading ? (
-                <div className="flex justify-center">
-                  <ActivitySpinner size="lg" className="text-accent" />
+            ) : view === "table" ? (
+              <ReportTable
+                rows={pagedReports}
+                sort={colSort}
+                onSort={onSort}
+                actions={rowActions}
+                isHighlighted={isHighlighted}
+                showSnippets={isDeepSearchActive}
+                empty={emptyState}
+              />
+            ) : pagedReports.length === 0 ? (
+              <div className="rounded-xl border border-border bg-bg-card">{emptyState}</div>
+            ) : view === "list" ? (
+              <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-bg-card">
+                {pagedReports.map((r) => (
+                  <ReportListRow key={r.id} r={r} actions={rowActions} highlighted={isHighlighted(r)} />
+                ))}
+              </ul>
+            ) : (
+              <div className="space-y-3">
+                {pagedReports.map((r) => (
+                  <ReportFeedCard key={r.id} r={r} actions={rowActions} highlighted={isHighlighted(r)} showSnippet={isDeepSearchActive} />
+                ))}
+              </div>
+            )}
+
+            {sortedReports.length > 0 && (
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <label className="flex items-center gap-2 text-sm text-muted">
+                  Per page
+                  <select
+                    value={String(pageSize)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPageSize(v === "all" ? "all" : (Number(v) as PageSize));
+                      setCurrentPage(1);
+                    }}
+                    className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-sm text-fg"
+                  >
+                    {PAGE_SIZES.map((s) => (
+                      <option key={s} value={String(s)}>
+                        {s === "all" ? "All" : s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="sm:min-w-[320px]">
+                  <Pagination
+                    page={Math.min(currentPage, pageCount)}
+                    pageCount={pageCount}
+                    total={sortedReports.length}
+                    pageSize={numericPageSize}
+                    onPage={handlePageChange}
+                  />
                 </div>
-              ) : (
-                <EmptyState
-                  icon={SearchX}
-                  title="No reports match these filters"
-                  description="Try a broader search or remove some filters."
-                  action={
-                    activeFiltersCount > 0 || q || searchParams.selected ? (
-                      <ActionButton onClick={resetFilters}>Reset filters</ActionButton>
-                    ) : undefined
-                  }
-                />
-              )
-            }
-          />
-        )}
-      </ListPageTemplate>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       <ReportPdfDialog
         reportId={previewReportId}

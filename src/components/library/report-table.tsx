@@ -17,7 +17,9 @@ import { Meter, StatusChip } from "@/components/ui/primitives";
 import type { ReportListItem } from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 import { ActionMenu } from "./action-menu";
-import { aiReview, formatDate, kindLabel, qualityTone, techniqueCount, type ReportSort, type ReportSortKey } from "./report-utils";
+import { DocTypeBadge } from "@/components/ui/entity";
+import { docTypesOf } from "./intel-taxonomy";
+import { aiReview, formatDate, qualityTone, techniqueCount, type ReportSort, type ReportSortKey } from "./report-utils";
 
 function SortHeader({
   label,
@@ -108,8 +110,8 @@ export function ReportTable({
               </span>
               <div className="min-w-0">
                 <p className="line-clamp-2 font-medium leading-snug text-fg">{r.title}</p>
-                <p className="mt-0.5 hidden truncate text-xs text-muted md:block 2xl:hidden">
-                  {kindLabel(r.resourceKind, r.classification)}
+                <p className="mt-1 hidden md:block 2xl:hidden">
+                  <DocTypeBadge type={docTypesOf(r)[0]} />
                 </p>
                 <p className="mt-0.5 truncate text-xs text-muted md:hidden">
                   {r.publisher || r.sourceName || "Unknown publisher"}
@@ -157,9 +159,7 @@ export function ReportTable({
         id: "type",
         enableSorting: false,
         header: () => <SortHeader label="Type" k="type" sort={sort} onSort={onSort} />,
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap text-muted">{kindLabel(row.original.resourceKind, row.original.classification)}</span>
-        ),
+        cell: ({ row }) => <DocTypeBadge type={docTypesOf(row.original)[0]} />,
         meta: { className: "hidden 2xl:table-cell", headerClassName: "hidden 2xl:table-cell" } satisfies DataTableColumnMeta,
       },
       {
@@ -196,7 +196,7 @@ export function ReportTable({
           const n = techniqueCount(row.original);
           return <span className={cn(!n && "text-subtle")}>{n}</span>;
         },
-        meta: { align: "right", hideBelow: "xl" } satisfies DataTableColumnMeta,
+        meta: { align: "right", className: "hidden 2xl:table-cell", headerClassName: "hidden 2xl:table-cell" } satisfies DataTableColumnMeta,
       },
       {
         id: "ai",
@@ -212,7 +212,7 @@ export function ReportTable({
             </span>
           );
         },
-        meta: { hideBelow: "sm" } satisfies DataTableColumnMeta,
+        meta: { className: "hidden 2xl:table-cell", headerClassName: "hidden 2xl:table-cell" } satisfies DataTableColumnMeta,
       },
       {
         id: "actions",
