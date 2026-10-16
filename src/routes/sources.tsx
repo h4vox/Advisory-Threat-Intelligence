@@ -6,12 +6,21 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
   Ban,
   Bot,
+  Braces,
   CheckCircle2,
+  Database,
   ExternalLink,
   Eye,
   EyeOff,
+  FlaskConical,
+  GitBranch,
   Globe,
+  Info,
+  Layers,
+  Library,
   Plus,
+  RefreshCw,
+  Rss,
   Search,
   Shield,
   Sparkles,
@@ -19,7 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { ActionButton, PageHeader, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
+import { ActionButton, PageHeader, SectionCard, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState, Meter, StatusChip, StatusDot, type Tone } from "@/components/ui/primitives";
@@ -27,7 +36,14 @@ import { RowMenu, SourceMark, Switch } from "@/components/sources/row-menu";
 import { SearchField } from "@/components/ingest/controls";
 import { humanize, shortDate } from "@/components/ingest/format";
 import { cn } from "@/lib/cn";
+import { DocTypeBadge, EntityIcon, entityMeta, type EntityKind } from "@/components/ui/entity";
 import {
+  getIntelCoverage,
+  getSourceRegistry,
+  syncStructuredSource,
+  classifyLibraryDocTypes,
+  type RegistrySourceView,
+  type SourceRegistryResponse,
   listSources,
   toggleSource,
   listDiscoveredSources,
@@ -40,13 +56,15 @@ import {
   getAgentStatus,
   probeSourceFeeds,
 } from "@/lib/aie/server";
-import type { DiscoveredSourceRecord, SourceProbeResult, SourceRecord } from "@/lib/aie/types";
+import type { ConnectorType, DiscoveredSourceRecord, SourceProbeResult, SourceRecord, SourceTier } from "@/lib/aie/types";
 
 export const Route = createFileRoute("/sources")({ component: SourcesPage });
 
 function SourcesPage() {
   const qc = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"curated" | "discovered">("curated");
+  const [activeTab, setActiveTab] = useState<"registry" | "curated" | "discovered">("registry");
+  const [tierFilter, setTierFilter] = useState<"all" | "1" | "2" | "3" | "4">("all");
+  const [syncingIds, setSyncingIds] = useState<string[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addDomain, setAddDomain] = useState("");
   const [addCrawlPattern, setAddCrawlPattern] = useState("");
@@ -61,6 +79,54 @@ function SourcesPage() {
     queryFn: () => listSources(),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
+  });
+
+  // Tiered registry (seed definitions + live enabled / crawl / sync state)
+  const { data: registry, isLoading: registryLoading } = useQuery({
+    queryKey: ["source-registry"],
+    queryFn: () => getSourceRegistry(),
+    staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const { data: coverage } = useQuery({
+    queryKey: ["intel-coverage"],
+    queryFn: () => getIntelCoverage(),
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const syncMut = useMutation({
+    mutationFn: (sourceId: string) => syncStructuredSource({ data: { sourceId } }),
+    onMutate: (sourceId) => setSyncingIds((ids) => [...ids, sourceId]),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success(res.message, {
+          description: res.warnings?.length ? `${res.warnings.length} warning${res.warnings.length === 1 ? "" : "s"}: ${res.warnings[0]}` : undefined,
+        });
+      } else if (res.requiresMongo) {
+        toast.warning("Requires MongoDB", { description: res.message });
+      } else {
+        toast.error(res.message);
+      }
+    },
+    onError: (err: Error) => toast.error(`Sync failed: ${err.message}`),
+    onSettled: (_res, _err, sourceId) => {
+      setSyncingIds((ids) => ids.filter((id) => id !== sourceId));
+      void qc.invalidateQueries({ queryKey: ["source-registry"] });
+      void qc.invalidateQueries({ queryKey: ["intel-coverage"] });
+      void qc.invalidateQueries({ queryKey: ["reports"] });
+    },
+  });
+
+  const classifyMut = useMutation({
+    mutationFn: () => classifyLibraryDocTypes({ data: { limit: 500 } }),
+    onSuccess: (res) => {
+      if (!res.ok) toast.warning("Requires MongoDB", { description: res.message });
+      else toast.success(res.message, { description: res.remaining ? `${res.remaining} still to classify — run again.` : "All stored reports carry document types." });
+      void qc.invalidateQueries({ queryKey: ["intel-coverage"] });
+    },
+    onError: (err: Error) => toast.error(`Classification failed: ${err.message}`),
   });
 
   // Discovered sources query
@@ -115,6 +181,7 @@ function SourcesPage() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["sources"] });
+      void qc.invalidateQueries({ queryKey: ["source-registry"] });
       void qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
@@ -495,14 +562,24 @@ function SourcesPage() {
     <AppShell>
       <PageHeader
         title="Sources"
-        description="Curated sources are the protected baseline publishers. Discovered sources come from the crawler or the AI agent and can be reviewed, toggled or revoked."
+        description="A tiered intelligence registry: authoritative structured data (ATT&CK, KEV, CERT advisories), adversary-emulation content, research publishers and community sources — each with its connector, the document types it yields and a confidence class."
         actions={
           <div className="flex flex-wrap items-center gap-2 md:flex-nowrap [&>*]:whitespace-nowrap">
+            {activeTab === "registry" && registry?.persistence === "mongodb" && (coverage?.unclassified ?? 0) > 0 && (
+              <ActionButton
+                icon={Layers}
+                disabled={classifyMut.isPending}
+                onClick={() => classifyMut.mutate()}
+                title="Assign document types, source tier and confidence to reports stored before classification existed"
+              >
+                {classifyMut.isPending ? "Classifying…" : `Classify ${coverage?.unclassified.toLocaleString()} reports`}
+              </ActionButton>
+            )}
             <ActionButton
               icon={probeMut.isPending ? undefined : Zap}
               disabled={probeMut.isPending}
               onClick={() => {
-                const currentList = activeTab === "curated" ? filteredSources : filteredDiscovered;
+                const currentList = activeTab === "discovered" ? filteredDiscovered : filteredSources;
                 const ids = currentList.map((s) => s.id);
                 probeMut.mutate(ids.length > 0 ? ids : undefined);
               }}
@@ -540,6 +617,7 @@ function SourcesPage() {
             value={activeTab}
             onChange={setActiveTab}
             items={[
+              { value: "registry", label: "Registry", icon: Library, count: registry?.sources.length },
               { value: "curated", label: "Curated", icon: Shield, count: filteredSources.length },
               { value: "discovered", label: "Discovered", icon: Globe, count: filteredDiscovered.length },
             ]}
@@ -547,12 +625,16 @@ function SourcesPage() {
         }
       />
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Shield} label="Curated sources" value={(sources ?? []).length} />
-        <StatCard icon={Eye} label="Active curated" value={curatedActive} />
-        <StatCard icon={Globe} label="Discovered sources" value={(discoveredSources ?? []).length} />
-        <StatCard icon={CheckCircle2} label="Reports collected" value={reportsCollected.toLocaleString()} />
-      </div>
+      {activeTab === "registry" ? (
+        <RegistryStats registry={registry} coverage={coverage} />
+      ) : (
+        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard icon={Shield} label="Curated sources" value={(sources ?? []).length} />
+          <StatCard icon={Eye} label="Active curated" value={curatedActive} />
+          <StatCard icon={Globe} label="Discovered sources" value={(discoveredSources ?? []).length} />
+          <StatCard icon={CheckCircle2} label="Reports collected" value={reportsCollected.toLocaleString()} />
+        </div>
+      )}
 
       <Toolbar
         left={
@@ -566,6 +648,21 @@ function SourcesPage() {
         }
         right={
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
+            {activeTab === "registry" && (
+              <SegmentedTabs
+                size="sm"
+                ariaLabel="Filter by tier"
+                value={tierFilter}
+                onChange={setTierFilter}
+                items={[
+                  { value: "all", label: "All tiers" },
+                  { value: "1", label: "Tier 1" },
+                  { value: "2", label: "Tier 2" },
+                  { value: "3", label: "Tier 3" },
+                  { value: "4", label: "Tier 4" },
+                ]}
+              />
+            )}
             {probeList.length > 0 && (
               <span className="tabular-nums">
                 Probe: {probeOnline} online · {probeList.length - probeOnline} offline
@@ -580,6 +677,21 @@ function SourcesPage() {
           </div>
         }
       />
+
+      {activeTab === "registry" && (
+        <RegistryView
+          registry={registry}
+          loading={registryLoading && !registry}
+          query={searchQuery}
+          tier={tierFilter}
+          discoveredCount={(discoveredSources ?? []).length}
+          syncingIds={syncingIds}
+          probeResults={probeResults}
+          onSync={(id) => syncMut.mutate(id)}
+          onToggle={(id, enabled) => toggleMut.mutate({ id, enabled })}
+          onShowDiscovered={() => setActiveTab("discovered")}
+        />
+      )}
 
       {activeTab === "curated" && (
         <DataTable
@@ -724,3 +836,359 @@ function SourcesPage() {
 
 const INPUT_CLS =
   "h-9 w-full rounded-lg border border-border bg-bg-subtle px-3 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none";
+
+// ---------------------------------------------------------------------------
+// Tiered registry
+// ---------------------------------------------------------------------------
+
+type IntelCoverageView = Awaited<ReturnType<typeof getIntelCoverage>>;
+
+const TIER_KIND: Record<SourceTier, EntityKind> = { 1: "advisory", 2: "emulation", 3: "technique", 4: "source" };
+const TIER_ICON: Record<SourceTier, typeof Shield> = { 1: Shield, 2: FlaskConical, 3: Search, 4: Globe };
+
+const CONNECTOR_META: Record<ConnectorType, { label: string; icon: typeof Rss; hint: string }> = {
+  stix_bundle: { label: "STIX bundle", icon: Database, hint: "Official STIX 2.1 bundle, parsed into structured records" },
+  github_repo: { label: "GitHub repo", icon: GitBranch, hint: "Repository files via the GitHub tree API and raw content" },
+  json_feed: { label: "JSON feed", icon: Braces, hint: "Machine-readable JSON feed" },
+  rss: { label: "RSS feed", icon: Rss, hint: "Feed polled by the crawler" },
+  html: { label: "HTML archive", icon: Globe, hint: "Research archive pages crawled within the endpoint pattern" },
+  search: { label: "Search", icon: Search, hint: "Search-driven discovery" },
+};
+
+function TierBadge({ tier }: { tier: SourceTier }) {
+  const color = entityMeta(TIER_KIND[tier]).color;
+  return (
+    <span
+      className="inline-flex items-center rounded-md px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums"
+      style={{ color, backgroundColor: `color-mix(in oklab, ${color} 16%, transparent)` }}
+    >
+      T{tier}
+    </span>
+  );
+}
+
+function ConnectorChip({ connector }: { connector: ConnectorType }) {
+  const meta = CONNECTOR_META[connector] ?? CONNECTOR_META.html;
+  const Icon = meta.icon;
+  return (
+    <span
+      title={meta.hint}
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-xs text-muted"
+    >
+      <Icon className="size-3.5" strokeWidth={1.75} />
+      {meta.label}
+    </span>
+  );
+}
+
+function ConfidenceMeter({ value, cls }: { value: number; cls: string }) {
+  return (
+    <div className="flex w-full items-center gap-2" title={`${humanize(cls)} · confidence weight ${value.toFixed(2)}`}>
+      <Meter value={value} tone={value >= 0.95 ? "success" : value >= 0.85 ? "info" : value >= 0.7 ? "warning" : "danger"} label="Source confidence" />
+      <span className="w-8 shrink-0 text-right text-xs tabular-nums text-muted">{value.toFixed(2)}</span>
+    </div>
+  );
+}
+
+function SyncStatus({ s }: { s: RegistrySourceView }) {
+  if (s.structured) {
+    if (s.lastSyncError) {
+      return (
+        <span title={s.lastSyncError}>
+          <StatusChip tone="danger" dot>
+            Sync failed
+          </StatusChip>
+        </span>
+      );
+    }
+    if (s.lastSyncAt) {
+      const warn = s.lastSyncWarnings?.length ?? 0;
+      return (
+        <div className="flex flex-col items-start gap-0.5">
+          <StatusChip tone={warn ? "warning" : "success"} dot>
+            {(s.lastSyncCount ?? 0).toLocaleString()} records
+          </StatusChip>
+          <span className="text-xs text-subtle tabular-nums" title={warn ? s.lastSyncWarnings?.join("\n") : undefined}>
+            Synced {shortDate(s.lastSyncAt)}
+            {warn ? ` · ${warn} warning${warn === 1 ? "" : "s"}` : ""}
+          </span>
+        </div>
+      );
+    }
+    return <StatusChip tone="neutral">Not synced</StatusChip>;
+  }
+  if (!s.enabled) {
+    const unverified = /unverified|until/i.test(s.notes);
+    return (
+      <span title={s.notes}>
+        <StatusChip tone={unverified ? "warning" : "neutral"}>{unverified ? "Needs review" : "Paused"}</StatusChip>
+      </span>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-0.5">
+      <StatusChip tone={(s.resourceCount ?? 0) > 0 ? "success" : "neutral"} dot>
+        {(s.resourceCount ?? 0).toLocaleString()} reports
+      </StatusChip>
+      <span className="text-xs text-subtle tabular-nums">{s.lastIngestAt ? `Crawled ${shortDate(s.lastIngestAt)}` : "Awaiting first crawl"}</span>
+    </div>
+  );
+}
+
+function RegistryRow({
+  s,
+  syncing,
+  probe,
+  onSync,
+  onToggle,
+}: {
+  s: RegistrySourceView;
+  syncing: boolean;
+  probe?: SourceProbeResult;
+  onSync: () => void;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const host = s.homepageUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-5 py-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1.4fr)_9rem_9.5rem_auto] lg:items-center">
+      <div className="flex min-w-0 items-start gap-3">
+        <TierBadge tier={s.tier} />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium text-fg">{s.name}</span>
+            <ConnectorChip connector={s.connector ?? "html"} />
+          </div>
+          <a
+            href={s.homepageUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-0.5 inline-flex max-w-full items-center gap-1 text-xs text-subtle hover:text-fg"
+          >
+            <span className="truncate">{host}</span>
+            <ExternalLink className="size-3 shrink-0" />
+          </a>
+          <p className="mt-1 line-clamp-2 text-xs text-muted" title={s.notes}>
+            {s.notes}
+          </p>
+          {probe && (
+            <div className="mt-1">
+              <StatusDot tone={probe.reachable ? "success" : "danger"}>
+                {probe.reachable ? `Feed online · ${probe.latencyMs} ms` : `Feed offline${probe.error ? ` · ${probe.error}` : ""}`}
+              </StatusDot>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="order-last col-span-2 flex flex-wrap gap-1.5 lg:order-none lg:col-span-1">
+        {(s.yields ?? []).map((t) => (
+          <DocTypeBadge key={t} type={t} />
+        ))}
+      </div>
+
+      <div className="col-span-2 flex items-center gap-3 lg:col-span-1 lg:block">
+        <span className="text-xs text-subtle lg:hidden">Confidence</span>
+        <ConfidenceMeter value={s.confidence} cls={s.confidenceClass} />
+        <div className="hidden truncate text-[11px] text-subtle lg:mt-1 lg:block">
+          {humanize(s.confidenceClass)} · {s.schedule}
+        </div>
+      </div>
+
+      <div className="col-span-2 lg:col-span-1">
+        <SyncStatus s={s} />
+      </div>
+
+      <div className="row-start-1 col-start-2 flex items-center justify-end gap-2 lg:row-auto lg:col-auto">
+        {s.structured ? (
+          <ActionButton icon={syncing ? undefined : RefreshCw} disabled={syncing} onClick={onSync} title={`Run the ${s.name} connector now`}>
+            {syncing ? (
+              <>
+                <ActivitySpinner size="xs" className="text-accent" />
+                <span>Syncing…</span>
+              </>
+            ) : (
+              "Sync now"
+            )}
+          </ActionButton>
+        ) : (
+          <Switch checked={s.enabled} label={s.enabled ? `Pause ${s.name}` : `Enable ${s.name}`} onChange={onToggle} />
+        )}
+      </div>
+    </li>
+  );
+}
+
+function RegistryStats({ registry, coverage }: { registry?: SourceRegistryResponse; coverage?: IntelCoverageView }) {
+  const list = registry?.sources ?? [];
+  const structured = list.filter((s) => s.structured);
+  const synced = structured.filter((s) => s.lastSyncAt && !s.lastSyncError).length;
+  const tierCounts = ([1, 2, 3, 4] as SourceTier[]).map((t) => list.filter((s) => s.tier === t).length);
+  const emulationTechniques = coverage?.emulationTechniques ?? 0;
+  return (
+    <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <StatCard
+        icon={Library}
+        kind="source"
+        label="Registry sources"
+        value={list.length || "—"}
+        hint={list.length ? `T1 ${tierCounts[0]} · T2 ${tierCounts[1]} · T3 ${tierCounts[2]} · T4 ${tierCounts[3]}` : undefined}
+      />
+      <StatCard
+        icon={Database}
+        kind="advisory"
+        label="Structured connectors"
+        value={structured.length || "—"}
+        hint={registry?.structuredSyncAvailable ? `${synced} of ${structured.length} synced` : "Sync requires MongoDB"}
+      />
+      <StatCard
+        icon={FlaskConical}
+        kind="emulation"
+        label="Emulation coverage"
+        value={emulationTechniques ? emulationTechniques.toLocaleString() : "—"}
+        hint={emulationTechniques ? `techniques with atomic tests, CALDERA, CTID or flow procedures` : "Sync Tier 2 sources to index emulation options"}
+      />
+      <StatCard
+        icon={Layers}
+        kind="technique"
+        label="Library documents"
+        value={coverage ? coverage.total.toLocaleString() : "—"}
+        hint={
+          coverage
+            ? `${Object.keys(coverage.byDocType).length} document types${coverage.structured ? ` · ${coverage.structured.toLocaleString()} structured` : ""}`
+            : undefined
+        }
+      />
+    </div>
+  );
+}
+
+function RegistryView({
+  registry,
+  loading,
+  query,
+  tier,
+  discoveredCount,
+  syncingIds,
+  probeResults,
+  onSync,
+  onToggle,
+  onShowDiscovered,
+}: {
+  registry?: SourceRegistryResponse;
+  loading: boolean;
+  query: string;
+  tier: "all" | "1" | "2" | "3" | "4";
+  discoveredCount: number;
+  syncingIds: string[];
+  probeResults: Record<string, SourceProbeResult>;
+  onSync: (id: string) => void;
+  onToggle: (id: string, enabled: boolean) => void;
+  onShowDiscovered: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-bg-card py-16 text-muted">
+        <ActivitySpinner size="lg" className="mb-2 text-accent" />
+        <p className="text-sm">Loading source registry…</p>
+      </div>
+    );
+  }
+  if (!registry) {
+    return <EmptyState icon={Library} title="Registry unavailable" description="The source registry could not be loaded. Try again shortly." />;
+  }
+  const q = query.trim().toLowerCase();
+  const matches = (s: RegistrySourceView) =>
+    !q ||
+    s.name.toLowerCase().includes(q) ||
+    s.homepageUrl.toLowerCase().includes(q) ||
+    (s.yields ?? []).some((y) => y.toLowerCase().includes(q.replace(/\s+/g, "_"))) ||
+    (s.connector ?? "").includes(q);
+  const tiers = ([1, 2, 3, 4] as SourceTier[]).filter((t) => tier === "all" || String(t) === tier);
+
+  return (
+    <div className="space-y-5">
+      {!registry.structuredSyncAvailable && (
+        <div
+          role="note"
+          className="flex items-start gap-3 rounded-xl border px-4 py-3 text-sm"
+          style={{
+            borderColor: "color-mix(in oklab, var(--color-info) 35%, transparent)",
+            backgroundColor: "color-mix(in oklab, var(--color-info) 8%, transparent)",
+          }}
+        >
+          <Info className="mt-0.5 size-4 shrink-0" style={{ color: "var(--color-info)" }} />
+          <div>
+            <div className="font-medium text-fg">Structured sync requires MongoDB</div>
+            <p className="mt-0.5 text-muted">
+              This workspace is using local storage. ATT&CK, emulation-plan, attack-flow and KEV connectors store their records and
+              emulation indexes in MongoDB — configure it to enable “Sync now”. Feed sources below still crawl normally.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {tiers.map((t) => {
+        const meta = registry.tiers[t];
+        const rows = registry.sources.filter((s) => s.tier === t && matches(s));
+        const all = registry.sources.filter((s) => s.tier === t);
+        const TierIcon = TIER_ICON[t];
+        if (q && rows.length === 0) return null;
+        return (
+          <SectionCard
+            key={t}
+            icon={TierIcon}
+            iconKind={TIER_KIND[t]}
+            title={
+              <span className="flex flex-wrap items-center gap-2">
+                {meta.label}
+                <span className="rounded bg-bg-subtle px-1.5 py-px font-mono text-[10px] text-subtle tabular-nums">{all.length}</span>
+              </span>
+            }
+            actions={<span className="hidden text-xs text-subtle md:inline">{meta.description}</span>}
+            bodyClassName="p-0 pt-3"
+          >
+            <p className="px-5 pb-2 text-xs text-subtle md:hidden">{meta.description}</p>
+            <div className="hidden border-y border-border bg-bg-subtle/40 px-5 py-2 text-[11px] font-medium uppercase tracking-wide text-subtle lg:grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1.4fr)_9rem_9.5rem_auto] lg:gap-x-4">
+              <span>Source · connector</span>
+              <span>Yields</span>
+              <span>Confidence</span>
+              <span>Status</span>
+              <span className="w-24 text-right">Action</span>
+            </div>
+            {rows.length > 0 && (
+              <ul className="divide-y divide-border">
+                {rows.map((s) => (
+                  <RegistryRow
+                    key={s.id}
+                    s={s}
+                    syncing={syncingIds.includes(s.id)}
+                    probe={probeResults[s.id]}
+                    onSync={() => onSync(s.id)}
+                    onToggle={(enabled) => onToggle(s.id, enabled)}
+                  />
+                ))}
+              </ul>
+            )}
+            {t === 4 ? (
+              <div className="flex flex-col items-start gap-3 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <EntityIcon kind="source" />
+                  <p className="text-sm text-muted">
+                    {discoveredCount
+                      ? `${discoveredCount} community sources found by the crawler and AI agent join this tier at a lower confidence.`
+                      : "Community sources discovered by the crawler or AI agent join this tier at a lower confidence."}
+                  </p>
+                </div>
+                <ActionButton icon={Globe} onClick={onShowDiscovered}>
+                  Review discovered
+                </ActionButton>
+              </div>
+            ) : (
+              rows.length === 0 && <p className="px-5 py-5 text-sm text-muted">No sources in this tier.</p>
+            )}
+          </SectionCard>
+        );
+      })}
+    </div>
+  );
+}

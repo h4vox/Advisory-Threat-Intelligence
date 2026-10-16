@@ -23,6 +23,101 @@ export type SourceRecord = {
   discoveredByJobId?: string;
   parentSourceDomain?: string;
   origin?: "seed" | "agent_discovery" | "crawler_outlink" | "manual";
+  /** Source tier (1 structured/authoritative … 4 community); drives confidence. */
+  tier?: SourceTier;
+  /** How the source is acquired (preferred: API/Git/STIX over RSS over HTML). */
+  connector?: ConnectorType;
+  /** Document types this source primarily yields. */
+  yields?: DocType[];
+  /** Structured connector config (repo, branch, path, feed URL…). */
+  connectorConfig?: Record<string, string>;
+  /** Last successful structured sync and item count. */
+  lastSyncAt?: string | null;
+  lastSyncCount?: number;
+  lastSyncError?: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Advisory / emulation intelligence taxonomy (AIE Web Extraction spec §26)
+// ---------------------------------------------------------------------------
+
+/** First-class document types. A document can carry several. */
+export type DocType =
+  | "THREAT_REPORT"
+  | "THREAT_ADVISORY"
+  | "INCIDENT_REPORT"
+  | "DFIR_REPORT"
+  | "MALWARE_REPORT"
+  | "VULNERABILITY_ADVISORY"
+  | "CAMPAIGN_REPORT"
+  | "MITRE_GROUP"
+  | "MITRE_SOFTWARE"
+  | "MITRE_CAMPAIGN"
+  | "MITRE_TECHNIQUE"
+  | "ADVERSARY_EMULATION_PLAN"
+  | "MICRO_EMULATION_PLAN"
+  | "ATTACK_FLOW"
+  | "ATOMIC_TEST"
+  | "CALDERA_ABILITY"
+  | "PURPLE_TEAM_REPORT"
+  | "DETECTION_RESEARCH"
+  | "THREAT_HUNTING_REPORT"
+  | "KEV_ENTRY"
+  | "OTHER";
+
+/** Spec §66 tiers: 1 structured/authoritative, 2 emulation, 3 high-quality research, 4 community. */
+export type SourceTier = 1 | 2 | 3 | 4;
+
+/** Spec §42 source confidence classes. */
+export type SourceConfidenceClass =
+  | "OFFICIAL_PRIMARY"
+  | "TRUSTED_VENDOR"
+  | "RESEARCH_ORG"
+  | "SECONDARY_RESEARCH"
+  | "COMMUNITY"
+  | "UNKNOWN";
+
+export const SOURCE_CONFIDENCE: Record<SourceConfidenceClass, number> = {
+  OFFICIAL_PRIMARY: 1.0,
+  TRUSTED_VENDOR: 0.9,
+  RESEARCH_ORG: 0.9,
+  SECONDARY_RESEARCH: 0.75,
+  COMMUNITY: 0.6,
+  UNKNOWN: 0.3,
+};
+
+/** Acquisition mechanism (spec §15 priority: API > Git > STIX/TAXII > file > RSS > HTML > search). */
+export type ConnectorType =
+  | "stix_bundle"
+  | "github_repo"
+  | "json_feed"
+  | "rss"
+  | "html"
+  | "search";
+
+/** Structured content kept alongside the text for structured-source documents. */
+export type StructuredIntel =
+  | { kind: "attack_group"; attackId: string; aliases: string[]; techniques: string[]; software: string[]; campaigns: string[] }
+  | { kind: "attack_software"; attackId: string; softwareType: "malware" | "tool"; aliases: string[]; platforms: string[]; techniques: string[]; groups: string[] }
+  | { kind: "attack_campaign"; attackId: string; aliases: string[]; firstSeen?: string; lastSeen?: string; techniques: string[]; groups: string[]; software: string[] }
+  | { kind: "atomic_test"; techniqueId: string; tests: Array<{ name: string; guid?: string; platforms: string[]; executor: string; elevationRequired?: boolean; description?: string }> }
+  | { kind: "emulation_plan"; adversary: string; planType: "full" | "micro"; techniques: string[]; files: string[] }
+  | { kind: "attack_flow"; flowName: string; scope?: string; actions: Array<{ id: string; techniqueId?: string; name: string; description?: string }>; relationships: Array<{ from: string; to: string }> }
+  | { kind: "kev"; cveId: string; vendor: string; product: string; dateAdded: string; dueDate?: string; ransomwareUse?: string; requiredAction?: string };
+
+/** Ways a technique can be emulated (spec §32, extended spec §6.21). */
+export type EmulationOption = {
+  techniqueId: string;
+  kind: "atomic_test" | "caldera_ability" | "ctid_procedure" | "attack_flow" | "custom";
+  name: string;
+  /** Atomic/CALDERA identifier or file path. */
+  ref: string;
+  platforms: string[];
+  /** Executor (powershell, command_prompt, bash, manual…), when known. */
+  executor?: string;
+  sourceUrl: string;
+  /** True when the procedure needs elevation. */
+  elevationRequired?: boolean;
 };
 
 export type IocKind = "cve" | "technique" | "sha256" | "sha1" | "md5" | "ipv4" | "domain" | "url" | "email";
@@ -219,6 +314,13 @@ export type ReportRecord = {
   author: string;
   classification: string;
   resourceKind?: ResourceKind;
+  /** Multi-label document types (spec §26); classification stays for older records. */
+  docTypes?: DocType[];
+  /** Tier and confidence of the source this record came from. */
+  sourceTier?: SourceTier;
+  sourceConfidence?: number;
+  /** Structured payload for structured-source records (ATT&CK group, atomic test, emulation plan, attack flow, KEV). */
+  structured?: StructuredIntel;
   extractedEntities?: ExtractedEntities;
   sourceDomain: string;
   version: number;

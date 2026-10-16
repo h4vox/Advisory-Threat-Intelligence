@@ -1,12 +1,39 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Download, FileText, Globe2, Inbox, Library, Plus, Radar, ShieldAlert, Upload } from "lucide-react";
+import { Bell, Bot, Download, FileText, Globe2, Inbox, Keyboard, Library, Moon, Palette, PanelTop, Plus, Radar, Search, ShieldAlert, Sparkles, Upload, UserRound } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ActionButton, SectionCard, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState, Meter, PropertyList, StatusChip, StatusDot } from "@/components/ui/primitives";
 import { DashboardTemplate, Pagination, TwoUp } from "@/components/templates/page-templates";
+import { DOC_TYPE_META, DocTypeBadge, EntityChip, EntityIcon, entityMeta, type EntityKind } from "@/components/ui/entity";
+import type { DocType } from "@/lib/aie/types";
+
+const KINDS: EntityKind[] = ["actor", "malware", "technique", "cve", "ioc", "source", "advisory", "emulation", "flow"];
+const SAMPLE_DOC_TYPES: DocType[] = [
+  "THREAT_REPORT",
+  "THREAT_ADVISORY",
+  "INCIDENT_REPORT",
+  "MALWARE_REPORT",
+  "VULNERABILITY_ADVISORY",
+  "CAMPAIGN_REPORT",
+  "ADVERSARY_EMULATION_PLAN",
+  "ATTACK_FLOW",
+  "ATOMIC_TEST",
+  "KEV_ENTRY",
+];
+
+const CHROME: Array<{ icon: typeof Bell; name: string; note: string }> = [
+  { icon: PanelTop, name: "Breadcrumb", note: "Section / page, derived from the sidebar groups" },
+  { icon: Search, name: "Search field", note: "Opens the ⌘K palette (pages + report search)" },
+  { icon: Sparkles, name: "UI style switch", note: "Default / Liquid glass segmented control" },
+  { icon: Moon, name: "Theme toggle", note: "Dark (default) / light" },
+  { icon: Bell, name: "Activity", note: "Recent crawl & ingest events from the dashboard feed" },
+  { icon: Bot, name: "AI Agent", note: "Opens the agent chat drawer" },
+  { icon: UserRound, name: "Profile menu", note: "Profile dialog, Settings, Keyboard shortcuts, Sign out" },
+  { icon: Keyboard, name: "Shortcuts", note: "⌘K search · ? shortcuts sheet · Esc closes" },
+];
 
 export const Route = createFileRoute("/ui-kit")({ component: UiKit });
 
@@ -88,14 +115,76 @@ function UiKit() {
         }}
         stats={
           <>
-            <StatCard icon={Globe2} label="Sources" value={20} hint="Example hint text" to="/sources" />
-            <StatCard icon={Library} label="Reports" value={654} delta={{ value: "12", direction: "up" }} to="/library" />
-            <StatCard icon={ShieldAlert} label="Techniques" value={87} delta={{ value: "0", direction: "flat" }} />
-            <StatCard icon={Radar} label="IOCs" value={1203} delta={{ value: "4", direction: "down" }} />
+            <StatCard icon={Globe2} kind="source" label="Sources" value={20} hint="Example hint text" to="/sources" />
+            <StatCard icon={Library} kind="advisory" label="Reports" value={654} delta={{ value: "12", direction: "up" }} to="/library" />
+            <StatCard icon={ShieldAlert} kind="technique" label="Techniques" value={87} delta={{ value: "0", direction: "flat" }} />
+            <StatCard icon={Radar} kind="ioc" label="IOCs" value={1203} delta={{ value: "4", direction: "down" }} />
           </>
         }
       >
-        <SectionCard title="Data table" info="Sortable columns, row selection, row click, responsive column hiding." bodyClassName="p-0 px-5 pb-5">
+        <TwoUp ratio="7:5">
+          <SectionCard title="Colour system" icon={Palette} info="Primary = brand & the one primary action. Category hues identify kinds of things. Status hues carry state.">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="flex items-center gap-2.5">
+                <span className="size-8 rounded-lg bg-primary" />
+                <span>
+                  <span className="block text-sm font-medium text-fg">Primary</span>
+                  <span className="block font-mono text-[11px] text-subtle">--color-primary</span>
+                </span>
+              </span>
+              <ActionButton variant="primary" icon={Plus}>
+                Primary action
+              </ActionButton>
+            </div>
+            <div className="mt-5 grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 xl:grid-cols-3">
+              {KINDS.map((k) => (
+                <div key={k} className="flex min-w-0 items-center gap-2.5">
+                  <EntityIcon kind={k} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm text-fg">{entityMeta(k).label}</span>
+                    <span className="block truncate font-mono text-[11px] text-subtle">--color-cat-{k}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="mb-2 text-xs text-subtle">EntityChip</div>
+              <div className="flex flex-wrap gap-2">
+                <EntityChip kind="actor">APT29</EntityChip>
+                <EntityChip kind="malware">Cobalt Strike</EntityChip>
+                <EntityChip kind="technique">T1059.001</EntityChip>
+                <EntityChip kind="cve">CVE-2024-3400</EntityChip>
+                <EntityChip kind="ioc">203.0.113.7</EntityChip>
+                <EntityChip kind="flow">Attack flow</EntityChip>
+              </div>
+            </div>
+          </SectionCard>
+          <SectionCard title="Document types" icon={FileText} iconKind="advisory" info="DocTypeBadge — one hue per document family (DOC_TYPE_META).">
+            <div className="flex flex-wrap gap-2">
+              {SAMPLE_DOC_TYPES.map((t) => (
+                <span key={t} title={DOC_TYPE_META[t].label}>
+                  <DocTypeBadge type={t} />
+                </span>
+              ))}
+            </div>
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="mb-2 text-xs text-subtle">Global top bar (see it above this page)</div>
+              <ul className="space-y-2">
+                {CHROME.map((c) => (
+                  <li key={c.name} className="flex items-start gap-2.5 text-sm">
+                    <c.icon className="mt-0.5 size-4 shrink-0 text-primary" strokeWidth={1.9} />
+                    <span>
+                      <span className="text-fg">{c.name}</span>
+                      <span className="text-muted"> — {c.note}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </SectionCard>
+        </TwoUp>
+
+        <SectionCard title="Data table" info="Sortable columns, row selection, row click, responsive column hiding." bodyClassName="px-5 pb-5 pt-4">
           <Toolbar
             left={
               <input
@@ -112,7 +201,7 @@ function UiKit() {
         </SectionCard>
 
         <TwoUp ratio="7:5">
-          <SectionCard title="Status and meters" actions={<StatusDot>Active</StatusDot>}>
+          <SectionCard title="Status and meters" icon={Radar} iconKind="ioc" actions={<StatusDot>Active</StatusDot>}>
             <div className="flex flex-wrap gap-2">
               <StatusChip>Neutral</StatusChip>
               <StatusChip tone="success" dot>
@@ -121,11 +210,15 @@ function UiKit() {
               <StatusChip tone="warning">At risk</StatusChip>
               <StatusChip tone="danger">Critical</StatusChip>
               <StatusChip tone="info">Inferred</StatusChip>
+              <StatusChip tone="primary">Selected</StatusChip>
             </div>
             <div className="mt-6 space-y-3">
-              <Meter value={0.82} tone="info" label="Example" />
+              <Meter value={0.9} tone="primary" label="Example" />
+              <Meter value={0.82} tone="success" label="Example" />
+              <Meter value={0.64} tone="info" label="Example" />
               <Meter value={0.45} tone="warning" label="Example" />
               <Meter value={0.12} tone="danger" label="Example" />
+              <Meter value={0.7} color={entityMeta("technique").color} label="Category colour" />
             </div>
           </SectionCard>
           <SectionCard title="Property list">

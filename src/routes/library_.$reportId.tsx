@@ -16,6 +16,7 @@ import {
   Printer,
   Shield,
   Sparkles,
+  Swords,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -34,11 +35,19 @@ import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 import type { IocHit } from "@/lib/aie/types";
+import { DocTypeBadge, EntityChip, EntityIcon, type EntityKind } from "@/components/ui/entity";
+import { TierDot } from "@/components/library/report-card";
+import { AttackCoverageStrip } from "@/components/library/attack-coverage";
+import { StructuredPanel } from "@/components/library/structured-panel";
+import { ReportEmulation } from "@/components/library/report-emulation";
+import { TIER_META, actorsOf, cvesOf, docTypesOf, malwareOf, techniquesOf, tierOf } from "@/components/library/intel-taxonomy";
+import { DOC_TYPE_META } from "@/components/ui/entity";
 
 const TABS = [
   { value: "overview", label: "Overview" },
   { value: "document", label: "Document" },
   { value: "attack-chain", label: "Attack chain" },
+  { value: "emulation", label: "Emulation" },
   { value: "evidence", label: "Evidence" },
   { value: "iocs", label: "IOCs" },
   { value: "detections", label: "Detections" },
@@ -81,6 +90,29 @@ function InlineList({ items, empty }: { items: string[] | undefined; empty: stri
           {i}
         </span>
       ))}
+    </div>
+  );
+}
+
+function EntityCard({ kind, title, items, empty }: { kind: EntityKind; title: string; items: string[]; empty: string }) {
+  return (
+    <div className="rounded-xl border border-border bg-bg-card p-4">
+      <div className="mb-3 flex items-center gap-2.5">
+        <EntityIcon kind={kind} size="sm" />
+        <h3 className="text-sm font-medium text-fg">{title}</h3>
+        <span className="ml-auto font-mono text-[11px] tabular-nums text-subtle">{items.length}</span>
+      </div>
+      {items.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {items.map((i) => (
+            <EntityChip key={i} kind={kind}>
+              {i}
+            </EntityChip>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-subtle">{empty}</p>
+      )}
     </div>
   );
 }
@@ -163,6 +195,8 @@ function ReportPage() {
     return joined.length > 1100 ? `${joined.slice(0, 1100).trimEnd()}…` : joined;
   }, [data?.extractedText]);
 
+  const techniques = useMemo(() => (data ? techniquesOf(data) : []), [data]);
+
   const aiSubject = useMemo(
     () => (aiOpen && data ? { ...data, iocCount: data.iocs.length } : null),
     [aiOpen, data],
@@ -228,9 +262,12 @@ function ReportPage() {
   const norm = (u: string) => shortUrl(u).replace(/\/+$/, "").toLowerCase();
   const canonical = data.canonicalUrl && (!original || norm(data.canonicalUrl) !== norm(original)) ? data.canonicalUrl : null;
   const publisher = data.publisher || data.sourceName || null;
-  const actors = analysis?.threatActors?.filter((a) => a && a !== "None Identified");
-  const malware = analysis?.malware?.filter((m) => m && m !== "None Identified");
-  const cves = Array.from(new Set([...(analysis?.vulnerabilities ?? []), ...(data.extractedEntities?.cves ?? [])]));
+  const actors = actorsOf(data);
+  const malware = malwareOf(data);
+  const cves = cvesOf(data);
+  const docTypes = docTypesOf(data);
+  const tier = tierOf(data);
+  const reportedOrder = analysis?.evidence?.chain?.orderBasis === "reported";
 
   return (
     <AppShell>
@@ -239,6 +276,18 @@ function ReportPage() {
           backTo: "/library",
           icon: FileText,
           title: <span className="line-clamp-3 whitespace-normal">{data.title}</span>,
+          description: (
+            <span className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              {docTypes.map((t) => (
+                <DocTypeBadge key={t} type={t} />
+              ))}
+              <span className="inline-flex items-center gap-1.5 text-muted">
+                <TierDot tier={tier} withLabel />
+              </span>
+              {publisher && <span className="font-medium text-fg">{publisher}</span>}
+              {formatDate(data.publishedAt) && <span className="tabular-nums text-subtle">{formatDate(data.publishedAt)}</span>}
+            </span>
+          ),
           actions: (
             <div className="flex flex-wrap items-center gap-2 whitespace-nowrap md:flex-nowrap">
               <ActionButton icon={Printer} onClick={printDocument}>
@@ -282,7 +331,9 @@ function ReportPage() {
                     ? data.iocs.length
                     : t.value === "attack-chain"
                       ? (analysis?.attackChain?.length ?? 0)
-                      : undefined,
+                      : t.value === "emulation"
+                        ? techniques.length
+                        : undefined,
               }))}
               value={tab}
               onChange={setTab}
@@ -306,6 +357,19 @@ function ReportPage() {
                 { label: "Published", value: formatDate(data.publishedAt) },
                 { label: "Ingested", value: formatDate(data.ingestedAt) ?? formatDateTime(data.ingestedAt) },
                 { label: "Source", value: data.sourceName || data.sourceDomain || null },
+                {
+                  label: "Document type",
+                  value: docTypes.map((t) => DOC_TYPE_META[t]?.label ?? t).join(", "),
+                },
+                {
+                  label: "Source tier",
+                  value: tier ? TIER_META[tier].label : <span className="text-subtle">Unrated (source predates tiers)</span>,
+                },
+                {
+                  label: "Source confidence",
+                  hidden: typeof data.sourceConfidence !== "number",
+                  value: <span className="tabular-nums">{Math.round((data.sourceConfidence ?? 0) * 100)}%</span>,
+                },
                 { label: "Type", value: kindLabel(data.resourceKind, data.classification) },
                 {
                   label: "Classification",
@@ -384,29 +448,52 @@ function ReportPage() {
               )}
             </Section>
 
+            {data.structured && (
+              <Section title="Structured intelligence" description="Fields parsed from the structured source record.">
+                <StructuredPanel data={data.structured} />
+              </Section>
+            )}
+
             <Section title="Threat context" description="Entities named in the analysis of this report.">
-              <dl className="grid grid-cols-1 gap-x-6 gap-y-4 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
-                <dt className="text-muted">Threat actors</dt>
-                <dd>
-                  <InlineList items={actors} empty="Unattributed or commodity activity" />
-                </dd>
-                <dt className="text-muted">Malware and tools</dt>
-                <dd>
-                  <InlineList items={malware} empty="No named malware" />
-                </dd>
-                <dt className="text-muted">Vulnerabilities</dt>
-                <dd>
-                  <InlineList items={cves} empty="No CVEs referenced" />
-                </dd>
-                {data.tags && data.tags.length > 0 && (
-                  <>
-                    <dt className="text-muted">Tags</dt>
-                    <dd>
-                      <InlineList items={data.tags} empty="" />
-                    </dd>
-                  </>
-                )}
-              </dl>
+              <div className="grid gap-3 md:grid-cols-3">
+                <EntityCard kind="actor" title="Threat actors" items={actors} empty="Unattributed or commodity activity" />
+                <EntityCard kind="malware" title="Malware & tools" items={malware} empty="No named malware" />
+                <EntityCard kind="cve" title="Vulnerabilities" items={cves} empty="No CVEs referenced" />
+              </div>
+              {data.tags && data.tags.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+                  <span className="text-muted">Tags</span>
+                  <InlineList items={data.tags} empty="" />
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="ATT&CK coverage"
+              description="Techniques mapped from this report, grouped by enterprise tactic."
+              actions={
+                techniques.length > 0 ? (
+                  <ActionButton icon={Swords} onClick={() => setTab("emulation")}>
+                    Plan emulation
+                  </ActionButton>
+                ) : undefined
+              }
+            >
+              {techniques.length > 0 ? (
+                <>
+                  <AttackCoverageStrip techniques={techniques} onSelectTactic={() => setTab("attack-chain")} />
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {techniques.map((t) => (
+                      <EntityChip key={t.id} kind="technique" title={`${t.id}${t.name ? ` · ${t.name}` : ""} (${t.label})`}>
+                        {t.id}
+                        {t.name && <span className="font-normal opacity-80"> {t.name}</span>}
+                      </EntityChip>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-subtle">No ATT&CK techniques mapped for this report.</p>
+              )}
             </Section>
 
             <Section
@@ -547,6 +634,10 @@ function ReportPage() {
               </Section>
             )}
           </>
+        )}
+
+        {tab === "emulation" && (
+          <ReportEmulation title={data.title} url={data.canonicalUrl || data.url} techniques={techniques} reportedOrder={reportedOrder} />
         )}
 
         {tab === "evidence" && (

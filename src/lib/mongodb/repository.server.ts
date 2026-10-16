@@ -3,6 +3,7 @@ import { decryptConfigSecrets, encryptConfigSecrets } from "../aie/secret-box.se
 import { getThreatIntelCollection, isMongoConfigured } from "./client.server";
 import type {
   AppSettings,
+  EmulationOption,
   CrawlConfig,
   CrawlJob,
   CrawlJobItem,
@@ -1146,6 +1147,14 @@ export async function mongoListSources(): Promise<SourceRecord[]> {
         notes: doc.notes || "",
         lastIngestAt: doc.lastIngestAt || null,
         resourceCount: count,
+        // Registry fields (tier / connector / yields) and structured-sync status.
+        tier: doc.tier ?? seedDef?.tier,
+        connector: doc.connector ?? seedDef?.connector,
+        yields: Array.isArray(doc.yields) ? doc.yields : seedDef?.yields,
+        connectorConfig: doc.connectorConfig ?? seedDef?.connectorConfig,
+        lastSyncAt: doc.lastSyncAt ?? null,
+        lastSyncCount: typeof doc.lastSyncCount === "number" ? doc.lastSyncCount : undefined,
+        lastSyncError: doc.lastSyncError ?? null,
       };
     });
     cachedSourcesList = { timestamp: Date.now(), data: result };
@@ -1180,14 +1189,14 @@ export async function mongoUpdateSourceLastIngest(id: string): Promise<void> {
   invalidateCrawlerStateCache();
 }
 
-export async function mongoSeedSources(sources: SourceRecord[]): Promise<void> {
+export async function mongoSeedSources(sources: Array<Omit<SourceRecord, "lastIngestAt"> & { lastIngestAt?: string | null }>): Promise<void> {
   const col = await getThreatIntelCollection();
   const count = await col.countDocuments({ docType: "source" });
   if (count === 0) {
     for (const s of sources) {
       await col.updateOne(
         { docType: "source", id: s.id },
-        { $set: { docType: "source", ...s, createdAt: new Date().toISOString() } },
+        { $set: { docType: "source", lastIngestAt: null, ...s, createdAt: new Date().toISOString() } },
         { upsert: true },
       );
     }
@@ -1202,6 +1211,28 @@ export async function mongoSeedSources(sources: SourceRecord[]): Promise<void> {
       }
     }
   }
+
+  // Registry sync: upsert every seeded source's registry fields (tier, connector,
+  // yields, feeds, notes…) onto existing docs and insert sources added since the
+  // first seed. User state — `enabled`, ingest/sync history — is only set on insert.
+  const now = new Date().toISOString();
+  const ops = SOURCE_SEED.map((seed) => {
+    const { id, enabled, ...registry } = seed;
+    const $set: Record<string, unknown> = { updatedAt: now };
+    for (const [k, v] of Object.entries(registry)) if (v !== undefined) $set[k] = v;
+    return {
+      updateOne: {
+        filter: { docType: "source", id },
+        update: {
+          $set,
+          $setOnInsert: { docType: "source", id, enabled, lastIngestAt: null, createdAt: now },
+        },
+        upsert: true,
+      },
+    };
+  });
+  if (ops.length) await col.bulkWrite(ops, { ordered: false });
+  cachedSourcesList = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3528,3 +3559,354 @@ export async function mongoListChatSessions(userId: string): Promise<
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Structured intelligence (ATT&CK, emulation, attack flows, KEV)
+//
+// Structured-source documents are stored as ordinary `report` docs (stable
+// ids: att_G0016, art_T1059.001, ctid_fin6, af_<slug>…) so the library,
+// search and facets see them. Lookup indexes live beside them:
+//   docType "emulation_index"  one row per (source, kind, technique) with EmulationOption[]
+//   docType "kev"              one row per CISA KEV CVE
+//   docType "attack_technique" ATT&CK technique reference (name, tactics, platforms, data sources)
+// ---------------------------------------------------------------------------
+
+export type StructuredUpsertResult = { upserted: number; modified: number; unchanged: number; skipped: number; pruned: number; errors: string[] };
+
+const STRUCTURED_BATCH = 400;
+
+let structuredIndexesEnsured = false;
+async function ensureStructuredIndexes(col: Awaited<ReturnType<typeof getThreatIntelCollection>>) {
+  if (structuredIndexesEnsured) return;
+  structuredIndexesEnsured = true;
+  try {
+    await col.createIndexes([
+      { key: { docType: 1, techniqueId: 1 }, name: "structured_technique_lookup", background: true },
+      { key: { docType: 1, cveId: 1 }, name: "structured_kev_lookup", background: true },
+      { key: { docType: 1, sourceId: 1, discoveryMethod: 1 }, name: "structured_source_docs", background: true },
+      { key: { docType: 1, docTypes: 1 }, name: "report_doc_types", background: true },
+    ]);
+  } catch (err) {
+    console.debug("[mongodb] structured index check:", (err as Error).message);
+  }
+}
+
+async function bulkUpsertInBatches(
+  col: Awaited<ReturnType<typeof getThreatIntelCollection>>,
+  ops: any[],
+): Promise<{ upserted: number; modified: number; matched: number; errors: string[] }> {
+  let upserted = 0;
+  let modified = 0;
+  let matched = 0;
+  const errors: string[] = [];
+  for (let i = 0; i < ops.length; i += STRUCTURED_BATCH) {
+    const chunk = ops.slice(i, i + STRUCTURED_BATCH);
+    try {
+      const r = await col.bulkWrite(chunk, { ordered: false });
+      upserted += r.upsertedCount;
+      modified += r.modifiedCount;
+      matched += r.matchedCount;
+    } catch (err: any) {
+      // Unordered bulk writes apply every op that can be applied; duplicate
+      // canonical URLs (a crawled copy of the same page) are reported, not fatal.
+      const r = err?.result;
+      if (r) {
+        upserted += r.upsertedCount ?? 0;
+        modified += r.modifiedCount ?? 0;
+        matched += r.matchedCount ?? 0;
+      }
+      const writeErrors: any[] = err?.writeErrors ?? err?.result?.getWriteErrors?.() ?? [];
+      if (Array.isArray(writeErrors) && writeErrors.length) {
+        for (const we of writeErrors.slice(0, 5)) errors.push(String(we?.errmsg ?? we?.err?.errmsg ?? we?.message ?? we));
+        if (writeErrors.length > 5) errors.push(`…and ${writeErrors.length - 5} more write errors`);
+      } else {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+  return { upserted, modified, matched, errors };
+}
+
+/**
+ * Upserts structured-source reports by stable id. `ingestedAt` is kept from the
+ * first sync; content fields are replaced. With `prune`, reports previously
+ * synced from this source that are no longer produced are removed.
+ */
+export async function mongoUpsertStructuredReports(
+  sourceId: string,
+  docs: ReportRecord[],
+  opts?: { prune?: boolean },
+): Promise<StructuredUpsertResult> {
+  await ensureMongoIndexes();
+  const col = await getThreatIntelCollection();
+  const now = new Date().toISOString();
+  const ops = docs.map((d) => {
+    const { ingestedAt, ...rest } = d;
+    return {
+      updateOne: {
+        filter: { docType: "report", id: d.id },
+        update: {
+          $set: {
+            ...rest,
+            docType: "report",
+            excerpt: excerptOf(d.extractedText || d.title || ""),
+            tags: Array.isArray(d.tags) && d.tags.length ? d.tags : deriveReportTags(d as any),
+            structuredSyncAt: now,
+            updatedAt: now,
+          },
+          $setOnInsert: { ingestedAt: ingestedAt || now },
+        },
+        upsert: true,
+      },
+    };
+  });
+  await ensureStructuredIndexes(col);
+  const r = await bulkUpsertInBatches(col, ops);
+  let pruned = 0;
+  if (opts?.prune && docs.length > 0) {
+    const keep = docs.map((d) => d.id);
+    const del = await col.deleteMany({ docType: "report", sourceId, discoveryMethod: "structured_sync", id: { $nin: keep } });
+    pruned = del.deletedCount ?? 0;
+  }
+  invalidateReportsCache();
+  invalidateDashboardCache();
+  return {
+    upserted: r.upserted,
+    modified: r.modified,
+    unchanged: Math.max(0, r.matched - r.modified),
+    skipped: Math.max(0, docs.length - r.upserted - r.matched),
+    pruned,
+    errors: r.errors,
+  };
+}
+
+export type EmulationIndexRow = {
+  techniqueId: string;
+  kind: EmulationOption["kind"];
+  sourceId: string;
+  options: EmulationOption[];
+};
+
+/** Upserts a source's emulation-index rows (same technique+kind merged); prunes stale rows unless `prune: false`. */
+export async function mongoReplaceEmulationIndex(sourceId: string, rows: EmulationIndexRow[], opts?: { prune?: boolean }): Promise<number> {
+  const col = await getThreatIntelCollection();
+  await ensureStructuredIndexes(col);
+  const merged = new Map<string, EmulationIndexRow>();
+  for (const r of rows) {
+    const key = `${r.kind}|${r.techniqueId}`;
+    const cur = merged.get(key);
+    if (!cur) merged.set(key, { ...r, options: [...r.options] });
+    else {
+      const seen = new Set(cur.options.map((o) => `${o.ref}|${o.name}`));
+      for (const o of r.options) if (!seen.has(`${o.ref}|${o.name}`)) cur.options.push(o);
+    }
+  }
+  const now = new Date().toISOString();
+  const ids: string[] = [];
+  const ops = [...merged.values()].map((r) => {
+    const id = `emu_${sourceId}_${r.kind}_${r.techniqueId}`;
+    ids.push(id);
+    return {
+      updateOne: {
+        filter: { docType: "emulation_index", id },
+        update: { $set: { docType: "emulation_index", id, ...r, options: r.options.slice(0, 200), updatedAt: now } },
+        upsert: true,
+      },
+    };
+  });
+  await bulkUpsertInBatches(col, ops);
+  // Stale rows are dropped only after a complete sync (a partial sync keeps them).
+  if (opts?.prune !== false) await col.deleteMany({ docType: "emulation_index", sourceId, id: { $nin: ids } });
+  return merged.size;
+}
+
+/**
+ * Emulation options grouped by technique. A parent id (T1059) also returns its
+ * sub-techniques' options (T1059.001…), keyed by their own ids.
+ */
+export async function mongoGetEmulationOptions(techniqueIds: string[]): Promise<Record<string, EmulationOption[]>> {
+  const ids = Array.from(new Set(techniqueIds.map((t) => t.trim().toUpperCase()).filter((t) => /^T\d{4}(\.\d{3})?$/.test(t)))).slice(0, 200);
+  if (ids.length === 0) return {};
+  const col = await getThreatIntelCollection();
+  const parents = ids.filter((t) => !t.includes("."));
+  const or: Filter<Document>[] = [{ techniqueId: { $in: ids } }];
+  if (parents.length) or.push({ techniqueId: { $regex: `^(${parents.join("|")})\\.\\d{3}$` } });
+  const rows = await col
+    .find({ docType: "emulation_index", $or: or })
+    .project({ _id: 0, techniqueId: 1, kind: 1, options: 1 })
+    .limit(2000)
+    .toArray();
+  const KIND_ORDER: Record<string, number> = { atomic_test: 0, caldera_ability: 1, ctid_procedure: 2, attack_flow: 3, custom: 4 };
+  const out: Record<string, EmulationOption[]> = {};
+  for (const r of rows as any[]) {
+    const list = (out[r.techniqueId] ??= []);
+    for (const o of (r.options ?? []) as EmulationOption[]) list.push(o);
+  }
+  for (const k of Object.keys(out)) {
+    out[k].sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || a.name.localeCompare(b.name));
+    out[k] = out[k].slice(0, 120);
+  }
+  return out;
+}
+
+export type KevIndexRow = {
+  cveId: string;
+  vendor: string;
+  product: string;
+  name: string;
+  dateAdded: string;
+  dueDate?: string;
+  ransomwareUse?: string;
+  requiredAction?: string;
+  shortDescription?: string;
+  notes?: string;
+  cwes?: string[];
+};
+
+export async function mongoReplaceKevIndex(sourceId: string, rows: KevIndexRow[]): Promise<number> {
+  const col = await getThreatIntelCollection();
+  await ensureStructuredIndexes(col);
+  const now = new Date().toISOString();
+  const ids = rows.map((r) => `kev_${r.cveId}`);
+  const ops = rows.map((r, i) => ({
+    updateOne: {
+      filter: { docType: "kev", id: ids[i] },
+      update: { $set: { docType: "kev", id: ids[i], sourceId, ...r, updatedAt: now } },
+      upsert: true,
+    },
+  }));
+  await bulkUpsertInBatches(col, ops);
+  if (rows.length > 0) await col.deleteMany({ docType: "kev", sourceId, id: { $nin: ids } });
+  return rows.length;
+}
+
+/** KEV rows for the given CVE ids (case-insensitive). */
+export async function mongoGetKevEntries(cveIds: string[]): Promise<KevIndexRow[]> {
+  const ids = Array.from(new Set(cveIds.map((c) => c.trim().toUpperCase()).filter((c) => /^CVE-\d{4}-\d{4,}$/.test(c)))).slice(0, 500);
+  if (ids.length === 0) return [];
+  const col = await getThreatIntelCollection();
+  const rows = await col
+    .find({ docType: "kev", cveId: { $in: ids } })
+    .project({ _id: 0, docType: 0, id: 0, sourceId: 0, updatedAt: 0 })
+    .toArray();
+  return rows as unknown as KevIndexRow[];
+}
+
+export type AttackTechniqueRow = {
+  id: string;
+  name: string;
+  tactics: string[];
+  platforms: string[];
+  dataSources: string[];
+  isSubtechnique: boolean;
+  url: string;
+  description?: string;
+};
+
+export async function mongoReplaceAttackTechniqueIndex(rows: AttackTechniqueRow[]): Promise<number> {
+  const col = await getThreatIntelCollection();
+  const now = new Date().toISOString();
+  const ops = rows.map((t) => ({
+    updateOne: {
+      filter: { docType: "attack_technique", id: `tech_${t.id}` },
+      update: { $set: { ...t, docType: "attack_technique", id: `tech_${t.id}`, techniqueId: t.id, updatedAt: now } },
+      upsert: true,
+    },
+  }));
+  await bulkUpsertInBatches(col, ops);
+  if (rows.length > 0) {
+    await col.deleteMany({ docType: "attack_technique", id: { $nin: rows.map((t) => `tech_${t.id}`) } });
+  }
+  return rows.length;
+}
+
+/** Stored ATT&CK technique reference rows (all, or the given ids). */
+export async function mongoGetAttackTechniques(ids?: string[]): Promise<AttackTechniqueRow[]> {
+  const col = await getThreatIntelCollection();
+  const filter: Filter<Document> = { docType: "attack_technique" };
+  if (ids?.length) filter.techniqueId = { $in: ids.map((i) => i.toUpperCase()) };
+  const rows = await col
+    .find(filter)
+    .project({ _id: 0, docType: 0, updatedAt: 0 })
+    .toArray();
+  return (rows as any[]).map(({ techniqueId, ...r }) => ({ ...r, id: techniqueId })) as AttackTechniqueRow[];
+}
+
+/** Records the outcome of a structured sync on the source document. */
+export async function mongoRecordSourceSync(
+  id: string,
+  outcome: { ok: boolean; count?: number; error?: string | null; stats?: Record<string, number>; warnings?: string[] },
+): Promise<void> {
+  const col = await getThreatIntelCollection();
+  const now = new Date().toISOString();
+  const $set: Record<string, unknown> = { lastSyncAttemptAt: now, updatedAt: now, lastSyncError: outcome.error ?? null };
+  if (outcome.ok) {
+    $set.lastSyncAt = now;
+    $set.lastSyncCount = outcome.count ?? 0;
+    $set.lastSyncStats = outcome.stats ?? {};
+    $set.lastSyncWarnings = (outcome.warnings ?? []).slice(0, 20);
+    $set.lastIngestAt = now;
+  }
+  await col.updateOne({ docType: "source", id }, { $set });
+  cachedSourcesList = null;
+  invalidateCrawlerStateCache();
+}
+
+export type IntelCoverageCounts = {
+  byDocType: Record<string, number>;
+  byTier: Record<string, number>;
+  total: number;
+  structured: number;
+  atomicTechniques: number;
+  emulationTechniques: number;
+  emulationByKind: Record<string, number>;
+  kevEntries: number;
+  attackTechniques: number;
+};
+
+/** Counts by DocType and source tier plus index sizes (dashboards / library facets). */
+export async function mongoGetIntelCoverage(): Promise<IntelCoverageCounts> {
+  const col = await getThreatIntelCollection();
+  const [byType, byTier, total, structured, emuKinds, emuTechs, atomicTechs, kev, techniques] = await Promise.all([
+    col
+      .aggregate<{ _id: string; n: number }>([
+        { $match: { docType: "report", status: { $ne: "rejected" }, "docTypes.0": { $exists: true } } },
+        { $unwind: "$docTypes" },
+        { $group: { _id: "$docTypes", n: { $sum: 1 } } },
+      ])
+      .toArray(),
+    col
+      .aggregate<{ _id: number | null; n: number }>([
+        { $match: { docType: "report", status: { $ne: "rejected" } } },
+        { $group: { _id: "$sourceTier", n: { $sum: 1 } } },
+      ])
+      .toArray(),
+    col.countDocuments({ docType: "report", status: { $ne: "rejected" } }),
+    col.countDocuments({ docType: "report", discoveryMethod: "structured_sync" }),
+    col
+      .aggregate<{ _id: string; n: number }>([{ $match: { docType: "emulation_index" } }, { $group: { _id: "$kind", n: { $sum: 1 } } }])
+      .toArray(),
+    col.distinct("techniqueId", { docType: "emulation_index" }),
+    col.distinct("techniqueId", { docType: "emulation_index", kind: "atomic_test" }),
+    col.countDocuments({ docType: "kev" }),
+    col.countDocuments({ docType: "attack_technique" }),
+  ]);
+  const byDocType: Record<string, number> = {};
+  for (const r of byType) if (r._id) byDocType[r._id] = r.n;
+  const byTierOut: Record<string, number> = {};
+  for (const r of byTier) byTierOut[String(r._id ?? "unknown")] = r.n;
+  if (kev > 0) byDocType.KEV_ENTRY = (byDocType.KEV_ENTRY ?? 0) + kev;
+  const emulationByKind: Record<string, number> = {};
+  for (const r of emuKinds) emulationByKind[r._id] = r.n;
+  return {
+    byDocType,
+    byTier: byTierOut,
+    total,
+    structured,
+    atomicTechniques: atomicTechs.length,
+    emulationTechniques: emuTechs.length,
+    emulationByKind,
+    kevEntries: kev,
+    attackTechniques: techniques,
+  };
+}

@@ -2,6 +2,7 @@ import type { ComponentType, ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, Info, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { entityMeta, type EntityKind } from "@/components/ui/entity";
 
 /**
  * Page structure primitives: one consistent layout for every screen.
@@ -13,9 +14,31 @@ import { cn } from "@/lib/cn";
 
 type IconType = ComponentType<{ className?: string; strokeWidth?: number }>;
 
+/** Tinted icon-well style for a CSS colour (same recipe as EntityIcon). */
+function tint(color: string) {
+  return { color, backgroundColor: `color-mix(in oklab, ${color} 15%, transparent)` };
+}
+
+/** Default category hue for a KPI, inferred from its label when no kind is given. */
+function kindForLabel(label: ReactNode): EntityKind | undefined {
+  if (typeof label !== "string") return undefined;
+  const l = label.toLowerCase();
+  if (/actor|group|campaign/.test(l)) return "actor";
+  if (/malware|tool|software/.test(l)) return "malware";
+  if (/technique|tactic|att&ck|ttp/.test(l)) return "technique";
+  if (/cve|vuln|kev/.test(l)) return "cve";
+  if (/ioc|indicator/.test(l)) return "ioc";
+  if (/source|feed/.test(l)) return "source";
+  if (/report|advisor|document|library/.test(l)) return "advisory";
+  if (/emulat|simulat|atomic|plan|quality/.test(l)) return "emulation";
+  if (/flow|chain/.test(l)) return "flow";
+  return undefined;
+}
+
 export function PageHeader({
   title,
   icon: Icon,
+  iconKind,
   description,
   eyebrow,
   backTo,
@@ -25,6 +48,8 @@ export function PageHeader({
 }: {
   title: ReactNode;
   icon?: IconType;
+  /** Category hue for the header icon well (defaults to primary). */
+  iconKind?: EntityKind;
   description?: ReactNode;
   eyebrow?: ReactNode;
   backTo?: string;
@@ -46,8 +71,11 @@ export function PageHeader({
             </Link>
           )}
           {Icon && (
-            <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-elevated text-accent">
-              <Icon className="size-[18px]" strokeWidth={1.75} />
+            <span
+              className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg"
+              style={tint(iconKind ? entityMeta(iconKind).color : "var(--color-primary)")}
+            >
+              <Icon className="size-[18px]" strokeWidth={1.9} />
             </span>
           )}
           <div className="min-w-0">
@@ -86,7 +114,7 @@ export function ActionButton({
 }) {
   const cls = cn(
     "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-    variant === "primary" && "bg-accent text-accent-fg hover:opacity-90",
+    variant === "primary" && "btn-primary",
     variant === "outline" && "border border-border bg-bg-elevated text-fg hover:bg-bg-subtle",
     variant === "ghost" && "text-muted hover:bg-bg-subtle hover:text-fg",
   );
@@ -112,6 +140,7 @@ export function ActionButton({
 
 export function StatCard({
   icon: Icon,
+  kind,
   label,
   value,
   delta,
@@ -120,6 +149,8 @@ export function StatCard({
   search,
 }: {
   icon?: IconType;
+  /** Category hue for the icon well; inferred from the label when omitted. */
+  kind?: EntityKind;
   label: ReactNode;
   value: ReactNode;
   /** Signed change; rendered as a chip with a trend arrow. */
@@ -129,13 +160,17 @@ export function StatCard({
   search?: Record<string, unknown>;
 }) {
   const DeltaIcon = delta?.direction === "up" ? TrendingUp : delta?.direction === "down" ? TrendingDown : Minus;
+  const resolved = kind ?? kindForLabel(label);
+  const color = resolved ? entityMeta(resolved).color : "var(--color-primary)";
+  const deltaColor =
+    delta?.direction === "up" ? "var(--color-cat-ioc)" : delta?.direction === "down" ? "var(--color-cat-actor)" : "var(--color-muted)";
   return (
     <div className="rounded-xl border border-border bg-bg-card p-5">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2.5">
           {Icon && (
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-bg-subtle text-accent">
-              <Icon className="size-4" strokeWidth={1.75} />
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg" style={tint(color)}>
+              <Icon className="size-4" strokeWidth={1.9} />
             </span>
           )}
           <span className="truncate text-[15px] font-medium text-fg">{label}</span>
@@ -154,7 +189,10 @@ export function StatCard({
       <div className="mt-4 flex items-baseline gap-2.5">
         <span className="text-[32px] font-semibold leading-none tracking-tight text-fg tabular-nums">{value}</span>
         {delta && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-bg-subtle px-1.5 py-0.5 text-xs font-medium text-muted tabular-nums">
+          <span
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium tabular-nums"
+            style={delta.direction === "flat" || !delta.direction ? { color: deltaColor, backgroundColor: "var(--color-bg-subtle)" } : tint(deltaColor)}
+          >
             <DeltaIcon className="size-3.5" />
             {delta.value}
           </span>
@@ -167,6 +205,8 @@ export function StatCard({
 
 export function SectionCard({
   title,
+  icon: TitleIcon,
+  iconKind,
   info,
   actions,
   children,
@@ -174,6 +214,9 @@ export function SectionCard({
   bodyClassName,
 }: {
   title: ReactNode;
+  /** Small coloured glyph before the title. */
+  icon?: IconType;
+  iconKind?: EntityKind;
   info?: string;
   actions?: ReactNode;
   children: ReactNode;
@@ -184,6 +227,14 @@ export function SectionCard({
     <section className={cn("rounded-xl border border-border bg-bg-card", className)}>
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-5">
         <h2 className="flex items-center gap-2 text-base font-medium text-fg">
+          {TitleIcon && (
+            <span
+              className="flex size-6 shrink-0 items-center justify-center rounded-md"
+              style={tint(iconKind ? entityMeta(iconKind).color : "var(--color-primary)")}
+            >
+              <TitleIcon className="size-3.5" strokeWidth={2} />
+            </span>
+          )}
           {title}
           {info && (
             <span title={info} aria-label={info} className="text-subtle">

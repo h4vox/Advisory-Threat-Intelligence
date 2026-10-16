@@ -1,8 +1,9 @@
 # AIE UI design system
 
 This guide covers how every AIE screen is built. The structure follows the professional security-platform
-pattern (Hadrian-style): a quiet dark canvas, a grouped sidebar, a title row with its actions, then
-panels, tables and detail pages. All of it uses the theme tokens in `src/styles.css`.
+pattern (Hadrian-style): a quiet canvas, a grouped sidebar, a slim global top bar, a title row with its
+actions, then panels, tables and detail pages. Colour is **balanced**: neutral surfaces, with hue carried by
+icons, chips, bars and the one primary button. All of it uses the theme tokens in `src/styles.css`.
 
 The live reference is the **UI kit** page at `/ui-kit` (open it with ⌘K → "UI kit"). Copy from there.
 
@@ -11,8 +12,9 @@ The live reference is the **UI kit** page at `/ui-kit` (open it with ⌘K → "U
 ## 1. Foundations
 
 **Themes**
-- **Dark** is the default.
-- **Light** and **liquid glass** remain available from the workspace menu (top-left) and from Settings.
+- **Dark** is the default. **Light** is a first-class theme (see §1.1).
+- Theme (dark / light) and UI style (Default / Liquid glass) are switched from the **top bar** (right side),
+  from the Profile dialog, and from Settings. They persist in `localStorage` (`aie_theme`, `aie_ui_style`).
 
 **Tokens.** Use only these. Never add hex colours in components.
 
@@ -26,8 +28,48 @@ The live reference is the **UI kit** page at `/ui-kit` (open it with ⌘K → "U
 | `text-muted` | Secondary text, column headers, labels |
 | `text-subtle` | Hints, placeholders, timestamps |
 | `border-border` | All borders: 1px, low contrast |
-| `bg-accent` / `text-accent-fg` | The one primary action per header |
-| `text-sage` / `text-warn` / `text-danger` | Status only: ok / attention / critical |
+| `bg-primary` / `text-primary-fg` | Brand violet: the one primary action (`ActionButton variant="primary"` → `.btn-primary`), active nav marker, focus ring, selection |
+| `text-accent` | Inline links ("Open matrix →"); equals primary in both themes |
+| `text-sage` / `text-warn` / `text-danger` / `text-info` | Status: ok / attention / critical / informational |
+| `--color-cat-*` | Category hues (below): icons, chips, bars — never large fills |
+
+**Category colours** (one hue per entity / document family; light-theme values are darker for contrast)
+
+| Token | Kind | Use |
+|---|---|---|
+| `--color-cat-actor` | Threat actor, campaign, incident | `EntityIcon kind="actor"` |
+| `--color-cat-malware` | Malware / tool / software | |
+| `--color-cat-technique` | ATT&CK technique / tactic | heatmap scale, tactic bars |
+| `--color-cat-cve` | Vulnerability / KEV | CVE items |
+| `--color-cat-ioc` | Indicator, detection, hunting | |
+| `--color-cat-source` | Source / feed | |
+| `--color-cat-advisory` | Advisory, report | |
+| `--color-cat-emulation` | Emulation plan, atomic test, CALDERA | |
+| `--color-cat-flow` | Attack flow | |
+
+Use them through `EntityIcon` (tinted square well), `EntityChip` (tinted chip with dot) and `DocTypeBadge`
+(`src/components/ui/entity.tsx`). For anything else use the same recipe:
+`color: var(--color-cat-x); background: color-mix(in oklab, var(--color-cat-x) 14%, transparent)`.
+
+**Balance rule.** Hue lives in icon wells, chips, bars and small numbers. Surfaces stay neutral. A tinted
+background above ~10% mix is only for chips/badges; panels may take at most a 2–8% tint (e.g. heatmap cells).
+
+### 1.1 Light theme
+
+Light must look as finished as dark. Values: canvas `#f6f7f9`, cards and chrome (sidebar, top bar) pure white,
+1px borders `#e3e6eb`, text `#111318` / muted `#5b616e` / subtle `#8a909c`, subtle fill `#f1f3f6`,
+primary `#5b4bd6`. Cards (`rounded-xl border bg-bg-card`) automatically get a very soft shadow
+(`--shadow-card: 0 1px 2px rgba(16,24,40,.04)`).
+- Never hard-code `rgba(255,255,255,…)` or `bg-black/…` for surfaces: they vanish or turn muddy in light.
+  Use tokens, or `color-mix(… , transparent)` with a token.
+- Avoid grey-on-grey: `text-subtle` only on `bg-card`/`bg-bg`, never on `bg-bg-subtle` for important text.
+- Check `/ui-kit` in light after any visual change.
+
+### 1.2 Liquid glass
+
+Liquid glass is a style layer, not a theme: it works in dark and light. It paints a faint tinted canvas,
+frosts sidebar/top bar/cards (`.rounded-xl.border.bg-bg-card`, `.card-liquid-glass`, `.dropdown-liquid-glass`)
+and keeps the primary button violet. Build with tokens and these classes; no extra work per page.
 
 **Radius**
 - `rounded-xl` (12px) for panels and tables.
@@ -50,12 +92,26 @@ The live reference is the **UI kit** page at `/ui-kit` (open it with ⌘K → "U
 - Sections use `space-y-6`; grids use `gap-4` for stat rows and `gap-6` for panels.
 - Panel padding is `p-5`.
 
+### 1.3 App chrome: sidebar + global top bar
+
+- **Sidebar** (`w-60`): product mark only in its 56px header (no profile there), grouped nav, active item
+  marked with a primary bar and primary icon, counts only when the store reports them.
+- **Top bar** (56px, aligned with the sidebar header): left = breadcrumb (group / page); centre = search
+  field that opens the ⌘K palette; right = UI style segmented switch, theme toggle, Activity (bell; recent
+  crawl & ingest events), AI Agent, and the profile menu (avatar → Profile dialog, Settings, Keyboard
+  shortcuts, Sign out).
+- **Mobile**: menu button (opens the drawer), page title, search, AI agent, profile. Theme and style move
+  into the profile menu.
+- Shortcuts: ⌘K / Ctrl+K search, `?` shortcuts sheet, Esc closes.
+- Pages keep their own `PageHeader` (title + actions) below the top bar; don't add page controls to the top bar.
+
 ## 2. Rules: do / don't
 
 **Do**
 - Use sentence case for every title, label, tab and button ("Launch crawler", not "LAUNCH CRAWLER").
 - Give each page header at most one primary action; everything else is outline.
-- Use colour only for meaning: severity and status.
+- Use colour for meaning: status hues for state, category hues for the kind of thing, primary for the action.
+- Give KPI tiles and section titles a coloured icon (`StatCard kind`, `SectionCard icon iconKind`).
 - Show one status chip per row at most. Put everything else in table columns.
 - Use icons from `lucide-react`, stroke 1.75, `size-4` in controls and `size-[18px]` in nav.
 - Show honest empty states (`EmptyState`) instead of placeholder numbers.
@@ -73,18 +129,19 @@ The live reference is the **UI kit** page at `/ui-kit` (open it with ⌘K → "U
 
 | Need | Component | File |
 |---|---|---|
-| App frame, sidebar, ⌘K search | `AppShell` | `src/components/app-shell.tsx` |
+| App frame, sidebar, top bar, ⌘K search, profile, activity | `AppShell` | `src/components/app-shell.tsx` |
 | Page title row + actions + tabs | `PageHeader` | `src/components/layout/page.tsx` |
 | Header / toolbar buttons | `ActionButton` (`primary`, `outline`, `ghost`) | same |
-| KPI tile | `StatCard` | same |
-| Titled panel | `SectionCard` | same |
+| KPI tile (`kind` = icon hue, inferred from label) | `StatCard` | same |
+| Titled panel (`icon` + `iconKind` for a small coloured glyph) | `SectionCard` | same |
 | View switch with counts | `SegmentedTabs` | same |
 | Search/filter row above lists | `Toolbar` | same |
 | Lists | `DataTable` (sorting, selection, row click) | `src/components/ui/data-table.tsx` |
-| Status | `StatusChip`, `StatusDot` | `src/components/ui/primitives.tsx` |
+| Status (`neutral`/`success`/`warning`/`danger`/`info`/`primary`, tinted) | `StatusChip`, `StatusDot` | `src/components/ui/primitives.tsx` |
 | Detail "Properties" column | `PropertyList` | same |
 | No data | `EmptyState` | same |
-| Score bars | `Meter` | same |
+| Score bars (`tone`, or `color` for a category token) | `Meter` | same |
+| Entity / document colour language | `EntityIcon`, `EntityChip`, `DocTypeBadge`, `DOC_TYPE_META` | `src/components/ui/entity.tsx` |
 | Evidence and quotes | `EvidencePanel` | `src/components/evidence/` |
 
 ## 4. Page templates
@@ -129,7 +186,8 @@ Start every new page from a template in `src/components/templates/page-templates
 - [ ] Built from a template, so header, actions and tabs sit in the standard places.
 - [ ] Only tokens; it reads well in dark, light and liquid glass.
 - [ ] Sentence case; no decorative uppercase labels or emoji.
-- [ ] One primary action; no more than 3 buttons per row.
+- [ ] One primary action (violet `btn-primary`); no more than 3 buttons per row.
+- [ ] Balanced colour: KPI and section icons use category hues; status chips use status tones; no large coloured fills.
 - [ ] Lists use `DataTable`; rows open a detail page.
 - [ ] Empty, loading and error states are present and honest.
 - [ ] At 390px wide: no horizontal page scroll, and actions wrap.

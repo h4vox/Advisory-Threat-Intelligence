@@ -5,29 +5,39 @@ type IconType = ComponentType<{ className?: string; strokeWidth?: number }>;
 
 /**
  * Small display primitives shared by every page. Rules (see docs/UI_DESIGN_SYSTEM.md):
- * - Colour carries meaning only (status/severity). One StatusChip per row at most.
+ * - Status colour carries meaning (ok / attention / critical / info). One StatusChip per row at most.
+ * - Category colour (EntityIcon / EntityChip) identifies the kind of thing; primary = brand / selection.
  * - Sentence case everywhere; no decorative UPPERCASE mono labels.
  */
 
-export type Tone = "neutral" | "success" | "warning" | "danger" | "info";
+export type Tone = "neutral" | "success" | "warning" | "danger" | "info" | "primary";
 
-const TONE: Record<Tone, { chip: string; dot: string }> = {
-  neutral: { chip: "border-border text-muted", dot: "bg-subtle" },
-  success: { chip: "border-sage/40 text-sage", dot: "bg-sage" },
-  warning: { chip: "border-warn/40 text-warn", dot: "bg-warn" },
-  danger: { chip: "border-danger/50 text-danger", dot: "bg-danger" },
-  info: { chip: "border-accent/40 text-accent", dot: "bg-accent" },
+const TONE_COLOR: Record<Tone, string> = {
+  neutral: "var(--color-muted)",
+  success: "var(--color-sage)",
+  warning: "var(--color-warn)",
+  danger: "var(--color-danger)",
+  info: "var(--color-info)",
+  primary: "var(--color-primary)",
 };
+
+function chipStyle(tone: Tone) {
+  if (tone === "neutral") return { color: "var(--color-muted)", backgroundColor: "var(--color-bg-subtle)", borderColor: "var(--color-border)" };
+  const c = TONE_COLOR[tone];
+  return {
+    color: c,
+    backgroundColor: `color-mix(in oklab, ${c} 13%, transparent)`,
+    borderColor: `color-mix(in oklab, ${c} 26%, transparent)`,
+  };
+}
 
 export function StatusChip({ tone = "neutral", children, dot }: { tone?: Tone; children: ReactNode; dot?: boolean }) {
   return (
     <span
-      className={cn(
-        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-medium",
-        TONE[tone].chip,
-      )}
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-medium"
+      style={chipStyle(tone)}
     >
-      {dot && <span className={cn("size-1.5 rounded-full", TONE[tone].dot)} />}
+      {dot && <span className="size-1.5 rounded-full" style={{ backgroundColor: TONE_COLOR[tone] }} />}
       {children}
     </span>
   );
@@ -37,7 +47,7 @@ export function StatusChip({ tone = "neutral", children, dot }: { tone?: Tone; c
 export function StatusDot({ tone = "success", children }: { tone?: Tone; children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted">
-      <span className={cn("size-1.5 rounded-full", TONE[tone].dot)} />
+      <span className="size-1.5 rounded-full" style={{ backgroundColor: TONE_COLOR[tone] }} />
       {children}
     </span>
   );
@@ -95,12 +105,34 @@ export function EmptyState({
   );
 }
 
-/** Thin horizontal meter (e.g. quality score, coverage). value 0..1. */
-export function Meter({ value, tone = "info", label }: { value: number; tone?: Tone; label?: string }) {
+/**
+ * Thin horizontal meter (e.g. quality score, coverage). value 0..1.
+ * `tone` picks a status/primary hue; `color` overrides with any CSS colour (e.g. a category token).
+ */
+export function Meter({
+  value,
+  tone = "primary",
+  color,
+  label,
+  className,
+}: {
+  value: number;
+  tone?: Tone;
+  color?: string;
+  label?: string;
+  className?: string;
+}) {
   const pct = Math.max(0, Math.min(1, value)) * 100;
   return (
-    <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-subtle" role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
-      <div className={cn("h-full rounded-full", TONE[tone].dot)} style={{ width: `${pct}%` }} />
+    <div
+      className={cn("h-1.5 w-full overflow-hidden rounded-full bg-bg-subtle", className)}
+      role="meter"
+      aria-valuenow={Math.round(pct)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label}
+    >
+      <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color ?? TONE_COLOR[tone] }} />
     </div>
   );
 }
