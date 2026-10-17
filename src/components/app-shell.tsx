@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Cpu,
   Globe2,
+  KeyRound,
   Keyboard,
   Layers,
   LayoutDashboard,
@@ -30,13 +31,15 @@ import {
   X,
   Route as RouteIcon,
   ScanSearch,
+  ShieldAlert,
   UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { getDashboard, getStorageStats } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
-import { authEnabled, signOut } from "@/lib/auth/client";
-import { useCurrentUser, type AppUser } from "@/lib/auth/use-current-user";
+import type { AppUser } from "@/lib/auth/use-current-user";
+import { useAppSession, useSignOut, type SessionUser } from "./auth/use-app-session";
+import { ChangePasswordForm } from "./auth/change-password-form";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
 import { CommandPalette, type PaletteNavItem } from "./layout/command-palette";
 import { actorCrumbName } from "./actors/actor-names";
@@ -169,6 +172,16 @@ function applyStyle(style: UiStyle) {
     const ratio = parseInt(safeGet("aie_glass_blur_ratio") ?? "70", 10);
     applyGlassBlurTokens(!isNaN(ratio) && ratio >= 5 && ratio <= 110 ? ratio : 70);
   }
+}
+
+const profileAction =
+  "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle";
+
+function signInLabel(user: SessionUser | null): string {
+  if (!user) return "Not signed in";
+  if (user.method === "password") return "Username and password";
+  if (user.method === "sso") return "Single sign-on";
+  return "Sign-in off: local workspace user";
 }
 
 function initials(user: AppUser | null) {
@@ -412,8 +425,11 @@ export function AppShell({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const user = useCurrentUser();
+  const session = useAppSession();
+  const user = session.user;
+  const signOutAll = useSignOut();
   const crumbs = breadcrumbFor(pathname);
 
   const countsQuery = useQuery({
@@ -491,8 +507,10 @@ export function AppShell({
     window.dispatchEvent(new Event("aie-style-changed"));
   };
 
-  const displayName = user?.displayName || "Analyst";
+  const displayName = user?.displayName || user?.username || "Analyst";
   const email = user?.primaryEmail || "";
+  const identityLine = email || (user?.username ? `@${user.username}` : "No email on this session");
+  const canSignOut = Boolean(user && user.method !== "dev");
 
   const profileMenu = (
     <DropdownMenu.Root>
@@ -512,7 +530,7 @@ export function AppShell({
             <Avatar user={user} />
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-fg">{displayName}</div>
-              <div className="truncate text-xs text-muted">{email || "No email on this session"}</div>
+              <div className="truncate text-xs text-muted">{identityLine}</div>
             </div>
           </div>
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
@@ -520,6 +538,13 @@ export function AppShell({
             <UserRound className="size-4 text-muted" />
             Profile
           </DropdownMenu.Item>
+          {user?.method === "password" && (
+            <DropdownMenu.Item onSelect={() => setPasswordOpen(true)} className={menuItem}>
+              <KeyRound className="size-4 text-muted" />
+              Change password
+              {user.weakPassword && <span className="ml-auto size-1.5 rounded-full bg-warn" aria-label="Recommended" />}
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item asChild className={menuItem}>
             <Link to="/settings">
               <Settings className="size-4 text-muted" />
@@ -548,14 +573,14 @@ export function AppShell({
           </div>
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
           <DropdownMenu.Item
-            disabled={!authEnabled}
-            onSelect={() => void signOut().catch(() => undefined)}
+            disabled={!canSignOut}
+            onSelect={() => void signOutAll({ hasSsoSession: session.hasSsoSession })}
             className={menuItem}
-            title={authEnabled ? undefined : "Sign-in is disabled for this workspace"}
+            title={canSignOut ? undefined : "Sign-in is off for this local workspace"}
           >
             <LogOut className="size-4 text-muted" />
             Sign out
-            {!authEnabled && <span className="ml-auto text-[11px] text-subtle">Sign-in off</span>}
+            {!canSignOut && <span className="ml-auto text-[11px] text-subtle">Sign-in off</span>}
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
@@ -738,22 +763,57 @@ export function AppShell({
           <Avatar user={user} size="lg" />
           <div className="min-w-0">
             <div className="truncate text-base font-semibold text-fg">{displayName}</div>
-            <div className="truncate text-sm text-muted">{email || "No email on this session"}</div>
+            <div className="truncate text-sm text-muted">{identityLine}</div>
           </div>
           <span className="ml-auto shrink-0 rounded-md px-2 py-0.5 text-xs font-medium text-primary" style={{ backgroundColor: "color-mix(in oklab, var(--color-primary) 14%, transparent)" }}>
-            Analyst
+            {user?.role === "admin" ? "Administrator" : "Analyst"}
           </span>
         </div>
+        {user?.method === "password" && user.weakPassword && (
+          <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-border p-3 text-sm">
+            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warn" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-fg">Your password is short</div>
+              <div className="text-muted">It was set from the server environment. Choose one with at least 8 characters.</div>
+            </div>
+            <button type="button" onClick={() => setPasswordOpen(true)} className="shrink-0 text-sm font-medium text-accent hover:underline">
+              Change
+            </button>
+          </div>
+        )}
         <dl className="mt-4 grid grid-cols-[minmax(0,8.5rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
-          <dt className="text-muted">User ID</dt>
-          <dd className="truncate font-mono text-xs leading-5 text-fg">{user?.id ?? "Unknown"}</dd>
+          {user?.username ? (
+            <>
+              <dt className="text-muted">Username</dt>
+              <dd className="truncate font-mono text-xs leading-5 text-fg">{user.username}</dd>
+            </>
+          ) : (
+            <>
+              <dt className="text-muted">User ID</dt>
+              <dd className="truncate font-mono text-xs leading-5 text-fg">{user?.id ?? "Unknown"}</dd>
+            </>
+          )}
           <dt className="text-muted">Sign-in</dt>
-          <dd className="text-fg">
-            {!authEnabled || user?.isDevFallback ? "Disabled — local workspace user" : "Signed-in account session"}
-          </dd>
+          <dd className="text-fg">{signInLabel(user)}</dd>
           <dt className="text-muted">Role</dt>
-          <dd className="text-fg">Analyst</dd>
+          <dd className="text-fg">{user?.role === "admin" ? "Administrator: manages users" : "Analyst"}</dd>
         </dl>
+        {(user?.method === "password" || user?.role === "admin") && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {user?.method === "password" && (
+              <button type="button" onClick={() => setPasswordOpen(true)} className={profileAction}>
+                <KeyRound className="size-4 text-muted" />
+                Change password
+              </button>
+            )}
+            {user?.role === "admin" && (
+              <Link to="/settings" search={{ tab: "users" }} onClick={() => setProfileOpen(false)} className={profileAction}>
+                <UsersRound className="size-4 text-muted" />
+                Manage users
+              </Link>
+            )}
+          </div>
+        )}
         <div className="mt-5 border-t border-border pt-4">
           <div className="mb-3 text-sm font-medium text-fg">Preferences</div>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -765,6 +825,10 @@ export function AppShell({
             <StyleSwitch value={uiStyle} onChange={changeStyle} labels="always" />
           </div>
         </div>
+      </DialogShell>
+
+      <DialogShell open={passwordOpen} onOpenChange={setPasswordOpen} title="Change password" description="Other browsers signed in to this account are signed out.">
+        <ChangePasswordForm username={user?.username ?? ""} onDone={() => setPasswordOpen(false)} />
       </DialogShell>
 
       <DialogShell open={shortcutsOpen} onOpenChange={setShortcutsOpen} title="Keyboard shortcuts" description="Work faster without leaving the keyboard.">
