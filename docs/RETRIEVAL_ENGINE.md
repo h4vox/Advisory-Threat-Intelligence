@@ -137,6 +137,11 @@ The AI audit ("Audit with AI") writes the same fields. A future AI reviewer can 
     seed list (`src/lib/mongodb/srv-fallback.ts`). It accepts only hosts under the cluster's own domain.
   - **Unreachable MongoDB.** When MongoDB can't be reached, the Library shows the error and a plain-language fix
     instead of an empty library.
+- **Vercel:**
+  - Builds run on Node 22 (`engines.node` in `package.json`; Vite 8 needs Node 20.19+ or 22.12+).
+  - Set `MONGODB_URI` for the library.
+  - `DATABASE_URL`, if set, must be a Postgres connection string. Migrations run against it during `npm run build`.
+    A MongoDB string there is skipped with a warning instead of failing the deploy.
 - **Network:** the user deployment needs outbound HTTPS to source sites, `api.github.com` (CALDERA, Unit 42 and CTID
   file listings; set `GITHUB_TOKEN` for higher limits) and `cisa.gov`. The connectors fall back to raw GitHub files
   where possible.
