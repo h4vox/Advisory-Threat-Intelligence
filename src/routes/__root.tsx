@@ -1,11 +1,11 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRootRoute, HeadContent, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRootRoute, HeadContent, Navigate, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
+import { ACCOUNT_SESSION_KEY, useAppSession } from "@/components/auth/use-app-session";
 import { AuthProvider } from "@/lib/auth/provider";
-import { RedirectToSignIn } from "@/lib/auth/gates";
-import { useCurrentUserState } from "@/lib/auth/use-current-user";
+import { authClient, authEnabled } from "@/lib/auth/client";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "AIE";
@@ -44,37 +44,69 @@ export const Route = createRootRoute({
 
 const PUBLIC_PATHS = ["/login"];
 
-/** Every page except sign-in requires a session; server functions enforce the allowlist. */
+/**
+ * Every page except sign-in requires a session (password or single sign-on); server functions
+ * enforce access. The session check is bounded (see useAppSession), and the loading screen offers
+ * a plain link to the sign-in page after a few seconds, which works even before scripts load.
+ */
 function AuthGate({ children }: { children: ReactNode }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { user, isPending } = useCurrentUserState();
-  if (PUBLIC_PATHS.includes(pathname)) return <>{children}</>;
-  if (isPending) {
-    return (
-      <div className="grid h-dvh place-items-center bg-bg text-subtle">
-        <span className="font-mono text-[11px] uppercase tracking-widest">Checking session…</span>
-      </div>
-    );
+  const location = useRouterState({ select: (s) => s.location });
+  const session = useAppSession();
+  if (PUBLIC_PATHS.includes(location.pathname)) return <>{children}</>;
+  if (session.isPending) return <SessionCheckScreen />;
+  if (!session.user) {
+    return <Navigate to="/login" search={location.pathname === "/" ? {} : { redirect: location.href }} replace />;
   }
-  if (!user) return <RedirectToSignIn />;
   return <>{children}</>;
 }
 
-function RootDocument() {
-  const [queryClient] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            staleTime: 60_000,
-            gcTime: 10 * 60_000,
-            refetchOnWindowFocus: false,
-            refetchOnReconnect: false,
-            retry: 1,
-          },
-        },
-      }),
+function SessionCheckScreen() {
+  return (
+    <div className="grid h-dvh place-items-center bg-bg px-4 text-center">
+      <div className="space-y-3">
+        <span aria-hidden className="mx-auto block size-5 rounded-full border-2 border-border border-t-primary motion-safe:animate-spin" />
+        <p role="status" className="text-sm text-muted">
+          Checking session…
+        </p>
+        <p className="session-slow-hint text-xs text-subtle">
+          Taking longer than usual.{" "}
+          <a href="/login" className="text-accent underline-offset-4 hover:underline">
+            Go to sign in
+          </a>{" "}
+          or reload the page.
+        </p>
+      </div>
+    </div>
   );
+}
+
+/** A server call answered "Unauthorized" (session ended or revoked): re-check, so the gate shows sign-in. */
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof Error && error.message === "Unauthorized";
+}
+
+function RootDocument() {
+  const [queryClient] = useState(() => {
+    const onError = (error: unknown) => {
+      if (!isUnauthorized(error)) return;
+      void client.invalidateQueries({ queryKey: ACCOUNT_SESSION_KEY });
+      if (authEnabled) authClient.$store.notify("$sessionSignal");
+    };
+    const client: QueryClient = new QueryClient({
+      queryCache: new QueryCache({ onError }),
+      mutationCache: new MutationCache({ onError }),
+      defaultOptions: {
+        queries: {
+          staleTime: 60_000,
+          gcTime: 10 * 60_000,
+          refetchOnWindowFocus: false,
+          refetchOnReconnect: false,
+          retry: 1,
+        },
+      },
+    });
+    return client;
+  });
 
   return (
     <html lang="en" className="antialiased" suppressHydrationWarning>

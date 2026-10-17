@@ -837,3 +837,18 @@ body,
 .light .app-topbar {
   background-color: var(--color-bg-card);
 }
+
+/* Session check: after a few seconds, offer the sign-in link (pure CSS, so it works before scripts load). */
+.session-slow-hint {
+  animation: session-slow-hint-in 0.3s ease 6s both;
+}
+@keyframes session-slow-hint-in {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}

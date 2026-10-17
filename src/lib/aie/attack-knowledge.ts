@@ -17,7 +17,10 @@ export type AttackTechnique = {
   platforms: string[];
   dataSources: string[];
   isSubtechnique: boolean;
+  /** ATT&CK mitigations (M-IDs) linked by "mitigates" relationships. */
+  mitigations?: string[];
 };
+export type AttackMitigation = { id: string; name: string; description: string };
 export type AttackGroup = { id: string; name: string; aliases: string[]; description: string; techniques: string[]; software: string[] };
 export type AttackSoftware = {
   id: string;
@@ -58,6 +61,7 @@ type Knowledge = {
   groups: AttackGroup[];
   software: AttackSoftware[];
   campaigns: AttackCampaign[];
+  mitigations?: AttackMitigation[];
 };
 
 const K = knowledge as unknown as Knowledge;
@@ -94,6 +98,7 @@ const techById = new Map(K.techniques.map((t) => [t.id, t]));
 const groupById = new Map(K.groups.map((g) => [g.id, g]));
 const softwareById = new Map(K.software.map((s) => [s.id, s]));
 const campaignById = new Map(K.campaigns.map((c) => [c.id, c]));
+const mitigationById = new Map((K.mitigations ?? []).map((m) => [m.id, m]));
 
 export const attackTechniques = (): readonly AttackTechnique[] => K.techniques;
 export const attackGroups = (): readonly AttackGroup[] => K.groups;
@@ -111,6 +116,37 @@ export function getSoftware(id: string): AttackSoftware | undefined {
 }
 export function getCampaign(id: string): AttackCampaign | undefined {
   return campaignById.get(id.trim().toUpperCase());
+}
+
+export function getMitigation(id: string): AttackMitigation | undefined {
+  return mitigationById.get(id.trim().toUpperCase());
+}
+
+export type RankedMitigation = AttackMitigation & { techniques: string[] };
+
+/**
+ * ATT&CK mitigations for a set of techniques, ranked by how many of them each mitigation covers.
+ * A sub-technique without its own links falls back to its parent's.
+ */
+export function mitigationsForTechniques(ids: string[]): RankedMitigation[] {
+  const covered = new Map<string, Set<string>>();
+  for (const raw of ids) {
+    const id = raw.trim().toUpperCase();
+    const t = techById.get(id);
+    const links = t?.mitigations?.length ? t.mitigations : (techById.get(id.split(".")[0])?.mitigations ?? []);
+    for (const m of links) {
+      const set = covered.get(m) ?? new Set<string>();
+      set.add(id);
+      covered.set(m, set);
+    }
+  }
+  return [...covered.entries()]
+    .map(([mid, techs]) => {
+      const m = mitigationById.get(mid);
+      return m ? { ...m, techniques: [...techs].sort((a, b) => a.localeCompare(b, "en", { numeric: true })) } : null;
+    })
+    .filter((m): m is RankedMitigation => m !== null)
+    .sort((a, b) => b.techniques.length - a.techniques.length || a.id.localeCompare(b.id, "en", { numeric: true }));
 }
 
 /** Campaigns attributed to a group. */

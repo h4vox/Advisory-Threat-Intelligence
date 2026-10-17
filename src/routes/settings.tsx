@@ -27,9 +27,11 @@ import {
   Sparkles,
   Sun,
   Trash2,
+  UsersRound,
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { UsersPanel } from "@/components/settings/users-panel";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
@@ -52,7 +54,7 @@ import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
 import { AGY_AVAILABLE_MODELS, sanitizeAgyModel } from "@/lib/aie/agent-framework/types";
 
 const settingsSearchSchema = z.object({
-  tab: z.enum(["crawler", "policy", "storage", "display", "agent"]).optional(),
+  tab: z.enum(["crawler", "policy", "storage", "display", "agent", "users"]).optional(),
 });
 
 export const Route = createFileRoute("/settings")({
@@ -66,6 +68,7 @@ const SETTINGS_SECTIONS = [
   { id: "storage", label: "Database & storage", icon: Database, badge: "Storage" },
   { id: "display", label: "Display & preferences", icon: Sliders, badge: "UI" },
   { id: "agent", label: "AI agent", icon: Sparkles, badge: "AGY" },
+  { id: "users", label: "Users & access", icon: UsersRound, badge: "Admin" },
 ] as const;
 
 const INTERVAL_PRESETS = [
@@ -94,6 +97,10 @@ function SettingsPage() {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(
     search.tab ?? "crawler"
   );
+  // Deep links (e.g. Profile → Manage users) can switch sections while the page is open.
+  useEffect(() => {
+    if (search.tab) setActiveSection(search.tab);
+  }, [search.tab]);
 
   // Fetch Configurations from Database
   const configQuery = useQuery({
@@ -2172,6 +2179,11 @@ function SettingsPage() {
             </div>
           </div>
         )}
+
+        {/* ========================================================================= */}
+        {/* TAB 6: USERS & ACCESS                                                     */}
+        {/* ========================================================================= */}
+        {activeSection === "users" && <UsersPanel />}
         </div>
         </div>
       </div>
