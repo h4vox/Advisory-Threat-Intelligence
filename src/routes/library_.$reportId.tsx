@@ -40,6 +40,7 @@ import { TierDot } from "@/components/library/report-card";
 import { AttackCoverageStrip } from "@/components/library/attack-coverage";
 import { StructuredPanel } from "@/components/library/structured-panel";
 import { ReportEmulation } from "@/components/library/report-emulation";
+import { CollectionRecord } from "@/components/library/collection-record";
 import { TIER_META, actorsOf, cvesOf, docTypesOf, malwareOf, techniquesOf, tierOf } from "@/components/library/intel-taxonomy";
 import { DOC_TYPE_META } from "@/components/ui/entity";
 
@@ -363,14 +364,14 @@ function ReportPage() {
                 },
                 {
                   label: "Source tier",
-                  value: tier ? TIER_META[tier].label : <span className="text-subtle">Unrated (source predates tiers)</span>,
+                  value: tier ? TIER_META[tier].label : <span className="text-subtle">Unrated (not a registry source)</span>,
                 },
                 {
                   label: "Source confidence",
                   hidden: typeof data.sourceConfidence !== "number",
                   value: <span className="tabular-nums">{Math.round((data.sourceConfidence ?? 0) * 100)}%</span>,
                 },
-                { label: "Type", value: kindLabel(data.resourceKind, data.classification) },
+                { label: "Content profile", value: kindLabel(data.resourceKind, data.classification) },
                 {
                   label: "Classification",
                   value: data.classification || null,
@@ -637,7 +638,7 @@ function ReportPage() {
         )}
 
         {tab === "emulation" && (
-          <ReportEmulation title={data.title} url={data.canonicalUrl || data.url} techniques={techniques} reportedOrder={reportedOrder} />
+          <ReportEmulation reportId={data.id} title={data.title} url={data.canonicalUrl || data.url} techniques={techniques} reportedOrder={reportedOrder} />
         )}
 
         {tab === "evidence" && (
@@ -760,6 +761,10 @@ function ReportPage() {
                   </ol>
                 </div>
               )}
+            </Section>
+
+            <Section title="Collection record" description="What the collector recorded: ATT&CK entities recognised at ingest, mirrors, content versions, attached PDFs and the pre-fetch relevance score.">
+              <CollectionRecord reportId={data.id} />
             </Section>
 
             <Section title="Hashes" description="Integrity fingerprints for the stored source and its normalized text.">
