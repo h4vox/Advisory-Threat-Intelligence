@@ -41,3 +41,14 @@ test("technique prevalence counts groups, with sub-techniques rolling up to the 
   assert.ok(parent.share > 0 && parent.share <= 1);
   assert.equal(techniquePrevalence("T9999").groups, 0);
 });
+
+test("ATT&CK mitigations: real M-IDs linked to techniques, ranked by coverage", async () => {
+  const { getMitigation, getTechnique, mitigationsForTechniques } = await import("./attack-knowledge.ts");
+  assert.equal(getMitigation("M1043")?.name, "Credential Access Protection");
+  assert.ok(getTechnique("T1003.001")?.mitigations?.includes("M1043"));
+  const ranked = mitigationsForTechniques(["T1003.001", "T1003.003", "T1021.001"]);
+  assert.ok(ranked.length > 0);
+  assert.ok(ranked[0].techniques.length >= ranked[ranked.length - 1].techniques.length);
+  assert.ok(ranked.every((m) => /^M\d{4}$/.test(m.id) && m.name));
+  assert.deepEqual(mitigationsForTechniques(["T9999"]), []);
+});

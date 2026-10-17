@@ -33,6 +33,7 @@ const shortDesc = (s = "") =>
 
 const uses = new Map(); // stix id -> {techniques:Set, software:Set}
 const attributed = new Map(); // campaign stix id -> Set(group stix id)
+const mitigatedBy = new Map(); // technique ATT&CK id -> Set(mitigation M-id)
 for (const r of objects) {
   if (r.type !== "relationship" || r.revoked || r.x_mitre_deprecated) continue;
   const src = byId.get(r.source_ref);
@@ -48,6 +49,14 @@ for (const r of objects) {
       if (id) u.software.add(id);
     }
     uses.set(src.id, u);
+  } else if (r.relationship_type === "mitigates" && src.type === "course-of-action" && dst.type === "attack-pattern") {
+    const mid = attackId(src);
+    const tid = attackId(dst);
+    if (mid && /^M\d{4}$/.test(mid) && tid) {
+      const set = mitigatedBy.get(tid) ?? new Set();
+      set.add(mid);
+      mitigatedBy.set(tid, set);
+    }
   } else if (r.relationship_type === "attributed-to" && src.type === "campaign" && dst.type === "intrusion-set") {
     const s = attributed.get(src.id) ?? new Set();
     const gid = attackId(dst);
@@ -85,7 +94,11 @@ for (const o of objects) {
   }
 }
 const byAttack = (a, b) => a.id.localeCompare(b.id, "en", { numeric: true });
-const techniques = buildAttackTechniqueIndex(bundle).map(({ description, url, ...t }) => t);
+const techniques = buildAttackTechniqueIndex(bundle).map(({ description, url, ...t }) => ({ ...t, mitigations: sortIds(mitigatedBy.get(t.id)) }));
+const mitigations = objects
+  .filter((o) => o.type === "course-of-action" && active(o) && /^M\d{4}$/.test(attackId(o) ?? ""))
+  .map((o) => ({ id: attackId(o), name: o.name, description: shortDesc(o.description) }))
+  .sort(byAttack);
 const collection = objects.find((o) => o.type === "x-mitre-collection");
 const out = {
   attackVersion: collection?.x_mitre_version ?? null,
@@ -95,8 +108,9 @@ const out = {
   groups: groups.sort(byAttack),
   software: software.sort(byAttack),
   campaigns: campaigns.sort(byAttack),
+  mitigations,
 };
 await writeFile(OUT, JSON.stringify(out));
 console.log(
-  `ATT&CK ${out.attackVersion}: ${techniques.length} techniques, ${groups.length} groups, ${software.length} software, ${campaigns.length} campaigns → ${OUT.pathname}`,
+  `ATT&CK ${out.attackVersion}: ${techniques.length} techniques, ${groups.length} groups, ${software.length} software, ${campaigns.length} campaigns, ${mitigations.length} mitigations → ${OUT.pathname}`,
 );
