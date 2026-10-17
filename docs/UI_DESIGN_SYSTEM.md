@@ -143,6 +143,13 @@ and keeps the primary button violet. Build with tokens and these classes; no ext
 | Score bars (`tone`, or `color` for a category token) | `Meter` | same |
 | Entity / document colour language | `EntityIcon`, `EntityChip`, `DocTypeBadge`, `DOC_TYPE_META` | `src/components/ui/entity.tsx` |
 | Evidence and quotes | `EvidencePanel` | `src/components/evidence/` |
+| Intelligence search: query bar with autocomplete, "Interpreted as" chips, explainable result card | `SearchBar`, `InterpretedChips`, `ResultCard`, `Highlight` | `src/components/search/` |
+| Collection health, yield bar, job funnel | `CollectionHealthView`, `AcceptanceBar`, `HealthChip`, `CrawlFunnelPanel` | `src/components/collector/collector-ui.tsx` |
+| Report collection record (ATT&CK refs, mirrors, versions, PDFs) | `CollectionRecord` | `src/components/library/collection-record.tsx` |
+| Purple path builder, phase view, step drawer, exports | `PurpleBuilder`, `PurplePathView`, `PurpleKpis`, `StepDrawer`, `PurpleExportButtons` | `src/components/purple/` |
+| Threat actor card, technique mini bar, profile tabs | `ActorCard`, `TechniqueMiniBar`, `KpiStrip`, `ProfileOverview`, `TechniquesTab` … | `src/components/actors/` |
+
+Search, collection, actors and purple paths are described in `docs/RETRIEVAL_ENGINE.md`.
 
 ## 4. Page templates
 
