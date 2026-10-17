@@ -512,7 +512,8 @@ export async function mongoListReports(params?: {
   await ensureMongoIndexes();
   const col = await getThreatIntelCollection();
 
-  const filter: Filter<Document> = { docType: "report" };
+  // Superseded copies (status "duplicate") are linked to their canonical report and stay out of listings.
+  const filter: Filter<Document> = { docType: "report", status: { $ne: "duplicate" } };
   const andConditions: Filter<Document>[] = [];
 
   if (params?.classification && params.classification !== "ALL") {
@@ -3909,4 +3910,115 @@ export async function mongoGetIntelCoverage(): Promise<IntelCoverageCounts> {
     kevEntries: kev,
     attackTechniques: techniques,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Intelligence search candidates (phase 9 hybrid ranker; re-ranked in src/lib/aie/search)
+// ---------------------------------------------------------------------------
+
+/** Fields the hybrid ranker and the library hit list need (no raw HTML / PDF bytes). */
+const INTEL_CANDIDATE_PROJECTION = {
+  _id: 0,
+  rawHtml: 0,
+  pdfBase64: 0,
+  originalContent: 0,
+  scoreBreakdown: 0,
+} as const;
+
+/**
+ * Candidate reports for intelligence search: weighted `$text` over the
+ * alias-expanded query, entity-field regexes for every alias, and exact CVE /
+ * ATT&CK id matches, merged (exact ids first). With no text to search
+ * (filter-only queries) the newest reports are returned. Bounded; the caller
+ * re-ranks.
+ */
+export async function mongoSearchIntelCandidates(opts: {
+  text: string;
+  aliases: string[];
+  cves: string[];
+  techniques: string[];
+  filterOnly: boolean;
+  limit?: number;
+}): Promise<Document[]> {
+  if (!isMongoConfigured()) return [];
+  const limit = Math.max(10, Math.min(400, opts.limit ?? 150));
+  await ensureMongoIndexes();
+  const col = await getThreatIntelCollection();
+  const base: Filter<Document> = { docType: "report", status: { $nin: ["rejected", "duplicate"] } };
+  const startTime = Date.now();
+  if (opts.filterOnly) {
+    const docs = await col.find(base).project(INTEL_CANDIDATE_PROJECTION).sort({ publishedAt: -1, ingestedAt: -1 }).limit(limit * 2).toArray();
+    logger.mongo("searchIntelCandidates", "threat-intel", Date.now() - startTime, `${docs.length} (filter-only)`);
+    return docs;
+  }
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lists: Document[][] = [];
+  const idOr: Filter<Document>[] = [];
+  const cves = opts.cves.map((c) => c.toUpperCase()).slice(0, 20);
+  const techs = opts.techniques.map((t) => t.toUpperCase()).slice(0, 60);
+  if (cves.length) {
+    idOr.push({ "extractedEntities.cves": { $in: cves } }, { "analysis.vulnerabilities": { $in: cves } }, { "iocs.value": { $in: cves.map((c) => c.toLowerCase()) } }, { "structured.cveId": { $in: cves } });
+  }
+  if (techs.length) {
+    idOr.push(
+      { "extractedEntities.techniques.id": { $in: techs } },
+      { "analysis.ttps": { $in: techs } },
+      { "structured.techniques": { $in: techs } },
+      { "structured.techniqueId": { $in: techs } },
+    );
+  }
+  if (idOr.length) lists.push(await col.find({ ...base, $or: idOr }).project(INTEL_CANDIDATE_PROJECTION).limit(limit).toArray().catch(() => []));
+  const aliases = Array.from(new Set(opts.aliases.map((a) => a.trim()).filter((a) => a.length >= 3))).slice(0, 40);
+  if (aliases.length) {
+    const re = new RegExp(`(^|[^\\w])(${aliases.map(esc).join("|")})([^\\w]|$)`, "i");
+    lists.push(
+      await col
+        .find({
+          ...base,
+          $or: [
+            { title: { $regex: re } },
+            { "analysis.threatActors": { $regex: re } },
+            { "analysis.malware": { $regex: re } },
+            { "extractedEntities.threatActors": { $regex: re } },
+            { "extractedEntities.malwareFamilies": { $regex: re } },
+            { "extractedEntities.campaign": { $regex: re } },
+            { "structured.aliases": { $regex: re } },
+          ],
+        })
+        .project(INTEL_CANDIDATE_PROJECTION)
+        .limit(limit)
+        .toArray()
+        .catch(() => []),
+    );
+  }
+  const q = opts.text.trim();
+  if (q) {
+    try {
+      lists.push(
+        await col
+          .find({ ...base, $text: { $search: toMongoTextSearch(q) } })
+          .project({ ...INTEL_CANDIDATE_PROJECTION, _textScore: { $meta: "textScore" } })
+          .sort({ _textScore: { $meta: "textScore" } })
+          .limit(limit)
+          .toArray(),
+      );
+    } catch (err) {
+      logger.warn("MONGO", `$text intel search failed, using regex fallback: ${(err as Error).message}`);
+      const tokens = queryTerms(q).filter((t) => t.length >= 3).slice(0, 8);
+      if (tokens.length) {
+        const re = new RegExp(tokens.map(esc).join("|"), "i");
+        lists.push(
+          await col
+            .find({ ...base, $or: [{ title: { $regex: re } }, { extractedText: { $regex: re } }] })
+            .project(INTEL_CANDIDATE_PROJECTION)
+            .limit(limit)
+            .toArray()
+            .catch(() => []),
+        );
+      }
+    }
+  }
+  const merged = dedupeDocs(lists.flat());
+  logger.mongo("searchIntelCandidates", "threat-intel", Date.now() - startTime, `${merged.length} candidates from ${lists.length} strategies`);
+  return merged.slice(0, limit * 2);
 }
