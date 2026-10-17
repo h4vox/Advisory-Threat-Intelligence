@@ -1,5 +1,6 @@
 import { MongoClient, type Db, type Collection } from "mongodb";
 import dns from "node:dns";
+import { isSrvLookupError, isSrvUri, resolveSeedListUri } from "./srv-fallback";
 
 // Fix Windows / local ISP DNS and IPv6 NAT64 issues: prefer IPv4 addresses first
 try {
@@ -13,13 +14,15 @@ try {
 declare global {
   // eslint-disable-next-line no-var
   var __mongoClientPromise: Promise<MongoClient> | undefined;
+  /** Seed list found through public DNS for a mongodb+srv URI the local resolver could not look up. */
+  var __mongoSeedList: { srv: string; seed: string } | undefined;
 }
 
 const DEFAULT_DB_NAME = "threat-intel-DB";
 const DEFAULT_COLLECTION_NAME = "threat-intel";
 
 const MISSING_URI_MESSAGE =
-  "MONGODB_URI is not set. Configure MONGODB_URI in your environment (see .env.example); no built-in database credentials are provided.";
+  "MONGODB_URI is not set. Add it to the server environment (or a .env file next to package.json) and restart; no built-in database credentials are provided.";
 
 export function getMongoUri(): string | undefined {
   const envUri = process.env.MONGODB_URI?.trim();
@@ -78,14 +81,31 @@ export async function getMongoClient(): Promise<MongoClient> {
   const connectPromise = (async () => {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= 2; attempt++) {
+      const known = globalThis.__mongoSeedList?.srv === uri ? globalThis.__mongoSeedList.seed : undefined;
       try {
-        return await tryConnect(uri);
-      } catch (srvErr) {
-        lastErr = srvErr;
+        return await tryConnect(known ?? uri);
+      } catch (err) {
+        lastErr = err;
+        // Some ISP / corporate / VPN resolvers refuse the SRV lookup a mongodb+srv URI needs.
+        // Ask public DNS for the cluster's host list instead (see ./srv-fallback).
+        if (!known && isSrvUri(uri) && isSrvLookupError(err)) {
+          try {
+            const seed = await resolveSeedListUri(uri);
+            if (seed) {
+              const client = await tryConnect(seed);
+              globalThis.__mongoSeedList = { srv: uri, seed };
+              console.warn("[mongodb] This network's DNS refused the cluster's SRV lookup; connected using the host list from public DNS instead.");
+              return client;
+            }
+          } catch (fallbackErr) {
+            lastErr = fallbackErr;
+            console.warn("[mongodb] Public-DNS fallback failed:", fallbackErr instanceof Error ? fallbackErr.message : fallbackErr);
+          }
+        }
         if (attempt < 2) {
           console.warn(
             `[mongodb] Connection attempt ${attempt} failed, retrying in 1s...`,
-            srvErr instanceof Error ? srvErr.message : srvErr,
+            err instanceof Error ? err.message : err,
           );
           await new Promise((r) => setTimeout(r, 1000));
         }

@@ -74,7 +74,9 @@ import type {
 import { DEFAULT_APP_SETTINGS, SOURCE_CONFIDENCE } from "./types";
 import { getSql } from "@/lib/db";
 import { logger } from "./logger";
-import { isMongoConfigured, getThreatIntelCollection } from "../mongodb/client.server";
+import { isMongoConfigured, getThreatIntelCollection, getCollectionName, getDatabaseName } from "../mongodb/client.server";
+import { localHiddenReasons } from "../mongodb/library-gate-repo.server";
+import { redactMongoUri } from "../mongodb/srv-fallback";
 import {
   mongoGetDashboardStats,
   mongoListReports,
@@ -1027,7 +1029,13 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
     const rows = await sql.query<ReportRow>(
       `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc`,
     );
-    let items = rows.map(toListItem);
+    // Why a report is hidden (library gate or an analyst); MongoDB keeps this on the document.
+    const hiddenReasons = await localHiddenReasons().catch(() => new Map<string, string>());
+    let items = rows.map((row) => {
+      const item = toListItem(row);
+      const reason = item.status === "rejected" ? hiddenReasons.get(item.id) : undefined;
+      return reason ? { ...item, aiAuditReason: reason } : item;
+    });
 
     if (classification && classification !== "ALL") {
       items = items.filter((r) => r.classification === classification);
@@ -2212,19 +2220,24 @@ export const purgeServerCaches = createServerFn({ method: "POST" }).middleware([
 export const getStorageStats = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<StorageStats> => {
   const startTime = Date.now();
   logger.serverFn("getStorageStats", "START");
+  let error: string | undefined;
   if (isMongoConfigured()) {
     try {
       const stats = await mongoGetStorageStats();
       logger.serverFn("getStorageStats", "DONE", Date.now() - startTime);
-      return stats;
+      return { ...stats, engine: "mongodb" };
     } catch (err) {
       logger.error("SERVER-FN", "mongoGetStorageStats failed", err);
+      // Shown to signed-in analysts so they can fix the connection; never the credentials.
+      error = redactMongoUri(err instanceof Error ? err.message : String(err)).slice(0, 400);
     }
   }
   return {
     configured: false,
-    databaseName: "sqlite",
-    collectionName: "reports",
+    engine: isMongoConfigured() ? "mongodb" : "local",
+    ...(error ? { error } : {}),
+    databaseName: isMongoConfigured() ? getDatabaseName() : "local",
+    collectionName: isMongoConfigured() ? getCollectionName() : "reports",
     totalReports: 0,
     totalSources: 0,
     totalDiscovered: 0,

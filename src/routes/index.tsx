@@ -28,6 +28,7 @@ import { useState, useRef, type ReactNode } from "react";
 import { AppShell } from "@/components/app-shell";
 import { EmptyState, Meter, StatusChip, StatusDot, type Tone } from "@/components/ui/primitives";
 import { ActionButton, PageHeader, SectionCard, SegmentedTabs, StatCard } from "@/components/layout/page";
+import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { DocTypeBadge, EntityChip, EntityIcon, entityMeta, type EntityKind } from "@/components/ui/entity";
 import { IdBadge } from "@/components/id-badge";
@@ -97,6 +98,7 @@ function Home() {
         }
       />
       <div className="space-y-6">
+        <DataSourceNotice />
         {/* KPI row */}
         {error ? (
           <p className="text-sm text-danger">{error.message}</p>

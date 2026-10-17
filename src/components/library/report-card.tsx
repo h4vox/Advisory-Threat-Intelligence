@@ -5,7 +5,7 @@ import type { ReportListItem } from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 import { ActionMenu } from "./action-menu";
 import type { ReportRowActions } from "./report-table";
-import { aiReview, formatDate, qualityTone } from "./report-utils";
+import { aiReview, formatDate, qualityTone, visibilityMenuItem } from "./report-utils";
 import { actorsOf, cvesOf, docTypesOf, malwareOf, publisherOf, techniquesOf, tierOf, TIER_META } from "./intel-taxonomy";
 
 type Chip = { kind: EntityKind; label: string; title?: string };
@@ -31,6 +31,7 @@ function rowMenu(r: ReportListItem, actions: ReportRowActions) {
         { label: "Download", icon: Download, onSelect: () => actions.download(r) },
         { label: "Evidence", icon: Shield, onSelect: () => actions.evidence(r) },
         { label: "AI review", icon: Sparkles, onSelect: () => actions.aiReview(r) },
+        visibilityMenuItem(r, actions),
         "separator",
         { label: "Open original URL", icon: ArrowUpRight, href: original, disabled: !original },
       ]}
@@ -122,7 +123,7 @@ export function ReportFeedCard({
             {types.slice(0, 3).map((t) => (
               <DocTypeBadge key={t} type={t} />
             ))}
-            {rejected && <StatusChip tone="danger">Rejected</StatusChip>}
+            {rejected && <StatusChip tone="neutral">Hidden</StatusChip>}
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <TierDot tier={tier} />
               <span className="truncate font-medium text-fg/90">{publisherOf(r)}</span>
