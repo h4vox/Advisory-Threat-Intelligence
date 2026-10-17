@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { UsersPanel } from "@/components/settings/users-panel";
+import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
@@ -114,6 +115,20 @@ function SettingsPage() {
     queryFn: () => getAppSettings(),
     staleTime: 60000,
   });
+
+  // Where the library is read from (shared with the app shell's nav counts).
+  const dataSourceQuery = useQuery({
+    queryKey: ["nav-counts"],
+    queryFn: () => getStorageStats(),
+    staleTime: 5 * 60_000,
+  });
+  const dataSource = (() => {
+    const st = dataSourceQuery.data;
+    if (!st) return { label: "Checking…", chip: "Checking…", dot: "bg-subtle", text: "text-subtle", engine: undefined };
+    if (st.engine === "mongodb" && !st.error) return { label: `MongoDB · ${st.databaseName}`, chip: "Connected", dot: "bg-sage", text: "text-sage", engine: "mongodb" as const };
+    if (st.engine === "mongodb") return { label: "MongoDB not reachable", chip: "Not reachable", dot: "bg-danger", text: "text-danger", engine: "mongodb" as const };
+    return { label: "Local database (MONGODB_URI not set)", chip: "MONGODB_URI not set", dot: "bg-warn", text: "text-warn", engine: "local" as const };
+  })();
 
   const storageStatsQuery = useQuery({
     queryKey: ["storage-stats"],
@@ -390,8 +405,8 @@ function SettingsPage() {
                   </span>
                 )}
                 <span className="flex items-center gap-1.5 text-subtle">
-                  <span className="size-1.5 rounded-full bg-sage" />
-                  Primary storage: <span className="text-fg">Cloud database cluster</span>
+                  <span className={cn("size-1.5 rounded-full", dataSource.dot)} />
+                  Primary storage: <span className="text-fg">{dataSource.label}</span>
                 </span>
               </span>
             </span>
@@ -1253,27 +1268,28 @@ function SettingsPage() {
         {/* ========================================================================= */}
         {activeSection === "storage" && (
           <div className="space-y-6">
+            <DataSourceNotice />
             {/* Storage Architecture Overview */}
             <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
               <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="flex items-center gap-2 text-base font-medium text-fg">
                   <Database className="size-4 text-muted" strokeWidth={1.75} />
-                  Cloud database cluster telemetry
+                  {dataSource.engine === "local" ? "Local database telemetry" : "MongoDB telemetry"}
                 </h3>
-                <span className="flex items-center gap-1.5 text-xs text-sage">
-                  <span className="size-2 rounded-full bg-sage " />
-                  Cluster0 connected
+                <span className={cn("flex items-center gap-1.5 text-xs", dataSource.text)}>
+                  <span className={cn("size-2 rounded-full", dataSource.dot)} />
+                  {dataSource.chip}
                 </span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="rounded-lg bg-bg-subtle/60 p-3">
                   <span className="block text-xs text-muted">Database</span>
-                  <span className="mt-1 block font-mono text-sm text-fg">threat-intel-DB</span>
+                  <span className="mt-1 block font-mono text-sm text-fg">{dataSourceQuery.data?.databaseName ?? "—"}</span>
                 </div>
                 <div className="rounded-lg bg-bg-subtle/60 p-3">
                   <span className="block text-xs text-muted">Collection</span>
-                  <span className="mt-1 block font-mono text-sm text-fg">threat-intel</span>
+                  <span className="mt-1 block font-mono text-sm text-fg">{dataSourceQuery.data?.collectionName ?? "—"}</span>
                 </div>
                 <div className="rounded-lg bg-bg-subtle/60 p-3">
                   <span className="block text-xs text-muted">Stored reports</span>

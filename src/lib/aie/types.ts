@@ -871,9 +871,15 @@ export type AppSettings = {
 
 export type StorageStats = {
   configured: boolean;
+  /** Where the library is read from: MongoDB (MONGODB_URI) or the built-in local database. */
+  engine?: "mongodb" | "local";
+  /** MongoDB is configured but could not be reached (credentials removed). */
+  error?: string;
   databaseName: string;
   collectionName: string;
   totalReports: number;
+  /** Reports the Library shows (not hidden, not superseded copies). */
+  visibleReports?: number;
   totalSources: number;
   totalDiscovered: number;
   totalJobs: number;
