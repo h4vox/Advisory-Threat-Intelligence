@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -39,7 +39,14 @@ import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 
-export const Route = createFileRoute("/matrix")({ component: MatrixPage });
+export const Route = createFileRoute("/matrix")({
+  // ?technique=T1003.001 opens that technique (deep links from search, actor and purple-path pages).
+  validateSearch: (search: Record<string, unknown>): { technique?: string } => {
+    const t = typeof search.technique === "string" ? search.technique.trim().toUpperCase() : "";
+    return /^T\d{4}(\.\d{3})?$/.test(t) ? { technique: t } : {};
+  },
+  component: MatrixPage,
+});
 
 type LayoutMode = "side" | "flat" | "mini";
 
@@ -127,6 +134,8 @@ function MatrixPage() {
   const [selectedTechnique, setSelectedTechnique] = useState<MappedTechnique | null>(null);
   const [selectedSubTech, setSelectedSubTech] = useState<MappedSubTechnique | null>(null);
   const [previewReportId, setPreviewReportId] = useState<string | null>(null);
+  // Reports shown in the technique drawer: the open sub-technique's own mapping, else the technique's.
+  const drawerReports = (selectedSubTech ? selectedSubTech.mappedReports : selectedTechnique?.mappedReports) ?? [];
 
   // Fetch Central Intelligence Reports with 60s cache for fast 0ms navigation
   const { data: allReports = [], isFetching, refetch } = useQuery({
@@ -148,6 +157,38 @@ function MatrixPage() {
   const mappedTactics: MappedTactic[] = useMemo(() => {
     return mapReportsToMitreMatrix(allReports);
   }, [allReports]);
+
+  // Deep link: open the requested technique once the matrix is built (only once per id).
+  const { technique: linkedTechnique } = Route.useSearch();
+  const openedLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (!linkedTechnique || openedLink.current === linkedTechnique || mappedTactics.length === 0) return;
+    const parentId = linkedTechnique.split(".")[0];
+    for (const tactic of mappedTactics) {
+      const tech = tactic.techniques.find((t) => t.id === parentId);
+      if (!tech) continue;
+      openedLink.current = linkedTechnique;
+      setSelectedTechnique(tech);
+      setSelectedSubTech(linkedTechnique.includes(".") ? tech.subTechniques.find((st) => st.id === linkedTechnique) ?? null : null);
+      return;
+    }
+  }, [linkedTechnique, mappedTactics]);
+
+  // Keep an open drawer in sync with the rebuilt matrix (reports load or refetch after it opened).
+  useEffect(() => {
+    if (!selectedTechnique) return;
+    for (const tactic of mappedTactics) {
+      const fresh = tactic.techniques.find((t) => t.id === selectedTechnique.id && t.tacticId === selectedTechnique.tacticId);
+      if (!fresh) continue;
+      if (fresh !== selectedTechnique) setSelectedTechnique(fresh);
+      if (selectedSubTech) {
+        const sub = fresh.subTechniques.find((st) => st.id === selectedSubTech.id) ?? null;
+        if (sub !== selectedSubTech) setSelectedSubTech(sub);
+      }
+      return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync only when the matrix is rebuilt
+  }, [mappedTactics]);
 
   // Aggregate Metrics
   const stats = useMemo(() => {
@@ -794,9 +835,9 @@ function MatrixPage() {
                       {selectedSubTech ? selectedSubTech.id : selectedTechnique.id}
                     </span>
                     <span className="text-sm text-muted">· {selectedTechnique.tacticName}</span>
-                    {selectedTechnique.coverageCount > 0 && (
+                    {drawerReports.length > 0 && (
                       <StatusChip tone="success" dot>
-                        {selectedTechnique.coverageCount} reports mapped
+                        {drawerReports.length} {drawerReports.length === 1 ? "report" : "reports"} mapped
                       </StatusChip>
                     )}
                   </div>
@@ -893,9 +934,9 @@ function MatrixPage() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between border-b border-border pb-2">
                     <h3 className="text-sm font-medium text-fg">
-                      Mapped intelligence reports ({selectedTechnique?.mappedReports?.length ?? 0})
+                      Mapped intelligence reports ({drawerReports.length})
                     </h3>
-                    {(!selectedTechnique?.mappedReports || selectedTechnique.mappedReports.length === 0) && (
+                    {drawerReports.length === 0 && (
                       <Button
                         size="sm"
                         variant="secondary"
@@ -907,7 +948,7 @@ function MatrixPage() {
                     )}
                   </div>
 
-                  {(!selectedTechnique?.mappedReports || selectedTechnique.mappedReports.length === 0) ? (
+                  {drawerReports.length === 0 ? (
                     <div className="space-y-2 rounded-xl bg-bg-subtle/50 p-6 text-center text-sm text-muted">
                       <ShieldAlert className="mx-auto size-6 text-subtle" strokeWidth={1.75} />
                       <p className="font-medium text-fg">
@@ -927,7 +968,7 @@ function MatrixPage() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {selectedTechnique.mappedReports.map((report) => (
+                      {drawerReports.map((report) => (
                         <div
                           key={report.id}
                           className="space-y-2.5 rounded-xl bg-bg-subtle/50 p-4 transition-colors hover:bg-bg-subtle"

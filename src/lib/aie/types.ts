@@ -286,6 +286,59 @@ export type ExtractedEntities = {
   detectionRules: Array<{ type: "sigma" | "yara" | "kql" | "hunting"; title: string; query: string }>;
   mitigations: string[];
   campaign: string | null;
+  /** Canonical ATT&CK references found at ingest (bundled knowledge), with the matched alias and first offset. */
+  attackRefs?: AttackEntityRef[];
+};
+
+/** ATT&CK group / software / campaign recognised in a report at ingest (collector entity enrichment). */
+export type AttackEntityRef = {
+  kind: "group" | "software" | "campaign";
+  /** G-ID, S-ID or C-ID. */
+  id: string;
+  name: string;
+  /** Alias as written in the report. */
+  matched: string;
+  /** Offset of the first mention in extractedText (-1 when only the title mentions it). */
+  firstOffset: number;
+  count: number;
+  inTitle?: boolean;
+  /** Section heading of the first mention (structured extraction). */
+  section?: string;
+};
+
+/** Multi-hash fingerprints used for de-duplication (spec §18). */
+export type ReportFingerprints = {
+  contentSha256: string;
+  normalizedTextHash: string;
+  titlePublisherHash: string | null;
+  simhash: string;
+  tokens: number;
+};
+
+/** Another URL where the same document (or a syndicated copy) was seen. */
+export type ReportMirror = {
+  url: string;
+  canonicalUrl: string;
+  publisher: string;
+  sourceDomain: string;
+  sourceId?: string | null;
+  matchKind: "canonical_url" | "content_sha256" | "normalized_text" | "title_publisher" | "simhash";
+  distance?: number;
+  seenAt: string;
+};
+
+/** A superseded version of a report's content (incremental crawl, spec §45). */
+export type ReportVersionEntry = { version: number; textHash: string; rawHash?: string; wordCount?: number; replacedAt: string };
+
+/** A document attached to a report, e.g. the full-report PDF linked from a blog post. */
+export type ReportAttachment = {
+  kind: "pdf";
+  url: string;
+  bytes: number;
+  chars: number;
+  pages?: number;
+  status: "attached" | "too_large" | "no_text" | "failed" | "skipped";
+  detail?: string;
 };
 
 export type ReportRecord = {
@@ -343,6 +396,12 @@ export type ReportRecord = {
   scoreBreakdown?: AgentScoreBreakdown;
   aiTokensUsed?: { inputTokens: number; outputTokens: number; totalTokens: number };
   aiProvider?: string;
+  /** Collector (phase 9): dedup fingerprints, mirrors, superseded versions, attachments, pre-fetch relevance. */
+  fingerprints?: ReportFingerprints;
+  mirrors?: ReportMirror[];
+  versionHistory?: ReportVersionEntry[];
+  attachments?: ReportAttachment[];
+  relevance?: { score: number; reason: string };
 };
 
 export type AgentScoreBreakdown = {
@@ -500,7 +559,7 @@ export type DashboardStats = {
   attackHeatmap?: AttackHeatmapCell[];
 };
 
-export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION";
+export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION" | "BACKFILL";
 
 export type CrawlJobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -593,6 +652,38 @@ export type CrawlJob = {
   throughputDocsPerSec?: number;
   maxResourcesPerRun?: number;
   stageCounts?: Record<CrawlPipelineStage, number>;
+  /** Collector funnel (discovered → fetched → relevant → unique → qualified → stored) and skip reasons. */
+  funnel?: CrawlFunnel;
+};
+
+/** Per-job collection funnel with the reasons items left it (spec §53). */
+export type CrawlFunnel = {
+  discovered: number;
+  /** Candidates that passed the relevance pre-score. */
+  relevant: number;
+  fetched: number;
+  /** Fetched and not a duplicate of a stored document. */
+  unique: number;
+  qualified: number;
+  stored: number;
+  skippedRelevance: number;
+  unchanged: number;
+  notModified: number;
+  duplicates: Record<string, number>;
+  newVersions: number;
+  robotsBlocked: number;
+  failed: number;
+  pdfAttached: number;
+  sourcesCrawled: number;
+  sourcesSkipped: Array<{ sourceId: string; name: string; reason: string }>;
+  feedsNotModified: number;
+  sitemapUrls: number;
+  feedsAutodiscovered: number;
+  listingPages: number;
+  /** Lowest-scoring skipped candidates, for the job log. */
+  relevanceSamples: Array<{ title: string; url: string; score: number; reason: string }>;
+  mode?: "incremental" | "backfill";
+  backfill?: { sourceId: string; months: number; sinceIso: string } | null;
 };
 
 export type CrawlJobItem = {

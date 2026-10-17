@@ -17,11 +17,13 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --experimental-strip-types --test 'scripts/**/*.test.mjs' src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts 'src/lib/aie/*.test.ts' 'src/lib/aie/connectors/*.test.ts'",
+    "test": "node --experimental-strip-types --test 'scripts/**/*.test.mjs' src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts 'src/lib/aie/*.test.ts' 'src/lib/aie/connectors/*.test.ts' 'src/lib/aie/actors/*.test.ts' 'src/lib/aie/purple/*.test.ts' 'src/lib/aie/collector/*.test.ts' 'src/lib/aie/search/*.test.ts'",
     "eval": "node --experimental-strip-types --no-warnings=ExperimentalWarning --import ./scripts/eval/register.mjs scripts/eval/run-eval.mjs",
+    "eval:retrieval": "node --experimental-strip-types --no-warnings=ExperimentalWarning --import ./scripts/eval/register.mjs scripts/eval/run-retrieval-eval.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "aie": "node bin/aie.mjs"
+    "aie": "node bin/aie.mjs",
+    "build:attack-knowledge": "node --experimental-strip-types --no-warnings scripts/build-attack-knowledge.mjs"
   },
   "bin": {
     "aie": "./bin/aie.mjs"

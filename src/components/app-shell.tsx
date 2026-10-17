@@ -28,6 +28,9 @@ import {
   Upload,
   UserRound,
   X,
+  Route as RouteIcon,
+  ScanSearch,
+  UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { getDashboard, getStorageStats } from "@/lib/aie/server";
@@ -36,6 +39,7 @@ import { authEnabled, signOut } from "@/lib/auth/client";
 import { useCurrentUser, type AppUser } from "@/lib/auth/use-current-user";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
 import { CommandPalette, type PaletteNavItem } from "./layout/command-palette";
+import { actorCrumbName } from "./actors/actor-names";
 
 type NavIcon = ComponentType<{ className?: string; strokeWidth?: number }>;
 type NavItem = { to: string; label: string; icon: NavIcon };
@@ -50,8 +54,15 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Intelligence",
     items: [
       { to: "/library", label: "Library", icon: Library },
+      { to: "/search", label: "Search", icon: ScanSearch },
+      { to: "/actors", label: "Threat actors", icon: UsersRound },
       { to: "/matrix", label: "ATT&CK Matrix", icon: Layers },
     ],
+  },
+  {
+    id: "emulation",
+    label: "Emulation",
+    items: [{ to: "/purple", label: "Purple paths", icon: RouteIcon }],
   },
   {
     id: "collection",
@@ -85,6 +96,16 @@ function isActive(pathname: string, to: string) {
 
 /** Breadcrumb trail for the current route, derived from the nav model. */
 function breadcrumbFor(pathname: string): string[] {
+  const actor = pathname.match(/^\/actors\/([^/]+)/);
+  if (actor) {
+    let id = actor[1];
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      /* keep raw */
+    }
+    return ["Intelligence", "Threat actors", actorCrumbName(id) ?? id];
+  }
   for (const g of NAV_GROUPS) {
     for (const item of g.items) {
       if (!isActive(pathname, item.to)) continue;

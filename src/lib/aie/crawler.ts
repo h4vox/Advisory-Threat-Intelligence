@@ -16,6 +16,7 @@ import {
   extractHtmlMetadata,
   MAX_BYTES,
   scoreQuality,
+  sectionsOf,
   sha256Hex,
   toIsoString,
 } from "./extract";
@@ -67,6 +68,35 @@ import {
 } from "../mongodb/repository.server";
 import { SOURCE_SEED, isStructuredSource, registryEntry } from "./catalog";
 import { annotateReportProvenance } from "./doc-classifier";
+import { CollectorRun, COLLECTOR_USER_AGENT, type CrawlRunOptions } from "./collector/run";
+import { computeFingerprints, hammingDistance64, normalizeForFingerprint, simhash64 } from "./collector/fingerprint";
+import { DUPLICATE_KIND_LABEL, preferCanonical } from "./collector/dedup";
+import {
+  discoverFeedLinks,
+  filterSitemapEntries,
+  findNextPageUrl,
+  paginationUrls,
+  parseSitemapXml,
+  planBackfill,
+  rankChildSitemaps,
+  titleFromSlug,
+} from "./collector/discovery-depth";
+import { appendPdfText, enrichAttackEntities, findFullReportPdfLinks, withAttackRefs } from "./collector/enrich";
+import type { RelevanceResult } from "./collector/relevance";
+import { computeDue } from "./collector/health";
+import {
+  applyReportVersion,
+  findStoredReportByCanonical,
+  getSourceHealthMap,
+  mergeLocalReportMeta,
+  recordMirror,
+  supersedeWithCanonical,
+} from "../mongodb/collector-repo.server";
+import type { TextSection } from "./extract";
+import type { ReportAttachment, ReportMirror } from "./types";
+
+/** Re-fetched pages this close (SimHash bits) to the stored copy are cosmetic edits, not new versions. */
+const COSMETIC_CHANGE_DISTANCE = 2;
 
 function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -197,7 +227,7 @@ interface FrontierItem {
   parentUrl: string | null;
   parentSource: string | null;
   discoveryPath: string[];
-  discoveryMethod: "seed_source" | "rss_feed" | "outlink_citation" | "pdf_reference" | "repo_reference" | "search_expansion" | "agent_discovery";
+  discoveryMethod: "seed_source" | "rss_feed" | "outlink_citation" | "pdf_reference" | "repo_reference" | "search_expansion" | "agent_discovery" | "sitemap";
   sourceId?: string;
   sourceSlug?: string;
   publisher?: string;
@@ -207,6 +237,12 @@ interface FrontierItem {
   title?: string;
   /** Publication date reported by the source (feed or page metadata); null when unknown. */
   publishedAt?: string | null;
+  /** Feed summary (used by the relevance pre-score when the full text is not preloaded). */
+  summary?: string;
+  /** Sitemap lastmod / feed updated date: a listing-reported change after our last fetch triggers revalidation. */
+  lastmodHint?: string | null;
+  /** Relevance pre-score computed at enqueue (title, summary, URL, source history). */
+  relevance?: RelevanceResult;
 }
 
 export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
@@ -219,8 +255,7 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
   }
 
   const sql = await getSql();
-  const rows = await sql<CrawlConfig>`select * from crawl_config limit 1`;
-  if (rows.length > 0) return rows[0];
+  const rows = await sql<Record<string, unknown>>`select * from crawl_config limit 1`;
 
   const defaultConfig: CrawlConfig = {
     id: "cfg_default",
@@ -270,6 +305,32 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
     nextRunAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
   };
 
+  if (rows.length > 0) {
+    // The local table stores a subset of the config in snake_case columns: map it over the defaults
+    // (returning the raw row left autoIngest / autoAnalyze / dedupMethod undefined, i.e. silently off).
+    const r = rows[0];
+    const pick = <T,>(v: unknown, fallback: T): T => (v === null || v === undefined ? fallback : (v as T));
+    const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : typeof v === "string" ? v : null);
+    return {
+      ...defaultConfig,
+      id: String(r.id ?? defaultConfig.id),
+      enabled: pick(r.enabled, defaultConfig.enabled),
+      paused: pick(r.paused, defaultConfig.paused),
+      frequencyMinutes: Number(pick(r.frequency_minutes, defaultConfig.frequencyMinutes)),
+      startHour: pick(r.start_hour, defaultConfig.startHour),
+      maxResourcesPerRun: Number(pick(r.max_resources_per_run, defaultConfig.maxResourcesPerRun)),
+      maxDepth: Number(pick(r.max_depth, defaultConfig.maxDepth)),
+      autoIngest: pick(r.auto_ingest, defaultConfig.autoIngest),
+      autoAnalyze: pick(r.auto_analyze, defaultConfig.autoAnalyze),
+      searchDiscovery: pick(r.search_discovery, defaultConfig.searchDiscovery),
+      recursiveDiscovery: pick(r.recursive_discovery, defaultConfig.recursiveDiscovery),
+      keywords: pick(r.keywords, defaultConfig.keywords),
+      dateRangeDays: r.date_range_days === null || r.date_range_days === undefined ? null : Number(r.date_range_days),
+      lastRunAt: iso(r.last_run_at),
+      nextRunAt: iso(r.next_run_at),
+    };
+  }
+
   await sql`
     insert into crawl_config (
       id, enabled, paused, frequency_minutes, start_hour, max_resources_per_run,
@@ -291,6 +352,7 @@ export async function executeCrawlJob(
   jobId: string,
   triggerType: CrawlTrigger = "MANUAL",
   targetedQuery?: string,
+  runOptions: CrawlRunOptions = {},
 ): Promise<CrawlJob> {
   const isMongo = isMongoConfigured();
   const config = isMongo ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();
@@ -304,14 +366,25 @@ export async function executeCrawlJob(
   if (breadth === "focused") maxDepth = 1;
   else if (breadth === "wide") maxDepth = Math.max(maxDepth, 4);
 
-  const configuredMax = config.maxResourcesPerJob || config.maxResourcesPerRun || 60;
+  let configuredMax = config.maxResourcesPerJob || config.maxResourcesPerRun || 60;
   const maxTotalResources = targetedQuery
     ? Math.min(Math.max(configuredMax, 15), 100)
     : breadth === "wide"
       ? Math.min(Math.max(configuredMax, 30), 300)
       : Math.min(Math.max(configuredMax, 20), 150);
-  const maxPerDomain = breadth === "wide" ? Math.max(config.maxResourcesPerDomain || 8, 8) : config.maxResourcesPerDomain || 6;
+  let maxPerDomain = breadth === "wide" ? Math.max(config.maxResourcesPerDomain || 8, 8) : config.maxResourcesPerDomain || 6;
   const maxPdfDownloads = config.maxPdfDownloads || 10;
+
+  // Collector context: schedules, backoff, fetch state, robots, relevance, multi-hash dedup, funnel.
+  const collector = await CollectorRun.start(jobId, triggerType, runOptions);
+  const backfillPlan = collector.backfillPlan;
+  if (backfillPlan) {
+    // A backfill walks one source's history: bounded by the plan, not the per-run caps.
+    configuredMax = backfillPlan.maxArticles;
+    maxPerDomain = backfillPlan.maxArticles;
+  }
+  const isTargeted = Boolean(targetedQuery);
+  let pdfAttachments = 0;
 
   const initialJob: CrawlJob = {
     id: jobId,
@@ -425,7 +498,7 @@ export async function executeCrawlJob(
     const preHarvestedItems: FrontierItem[] = [];
 
     // Autonomous AI Agent Source Discovery (Adversary Emulation Intelligence Skill)
-    if (isMongoConfigured() && config.agentDiscoveryEnabled !== false) {
+    if (isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
       try {
         logger.agent(
           "DISCOVERY",
@@ -626,8 +699,14 @@ export async function executeCrawlJob(
     }
 
     // Apply whitelist if configured
-    if (config.activeSources && config.activeSources.length > 0) {
+    if (config.activeSources && config.activeSources.length > 0 && !runOptions.backfill) {
       sources = sources.filter((s) => config.activeSources.includes(s.id) || config.activeSources.includes(s.slug));
+    }
+
+    // Per-source schedules and failure backoff (scheduled runs crawl only due sources).
+    sources = collector.selectSources(sources, runOptions);
+    if (collector.funnel.sourcesSkipped.length) {
+      logger.info("collector", `Skipped ${collector.funnel.sourcesSkipped.length} source(s): ${collector.funnel.sourcesSkipped.slice(0, 5).map((s) => `${s.name} (${s.reason})`).join("; ")}`);
     }
 
     if (isMongoConfigured()) {
@@ -711,15 +790,21 @@ export async function executeCrawlJob(
       }
     }
 
-    const enqueue = (item: FrontierItem) => {
-      if (enqueuedUrls.has(item.canonicalUrl)) return;
-      if (!validateSafePublicUrl(item.canonicalUrl).safe) return;
+    const enqueue = (item: FrontierItem): boolean => {
+      // One canonical form for every discovery path (outlinks come from discovery.ts's older stripper).
+      try {
+        item.canonicalUrl = canonicalizeUrl(item.canonicalUrl || item.url);
+      } catch {
+        return false;
+      }
+      if (enqueuedUrls.has(item.canonicalUrl)) return false;
+      if (!validateSafePublicUrl(item.canonicalUrl).safe) return false;
 
       // Candidate Resource Gate: Filter out index, category roots, podcasts, webinars, and sitemaps early
       const isFeed = item.discoveryMethod === "rss_feed";
       const candCheck = isCandidateResourceUrl(item.canonicalUrl, isFeed);
       if (!candCheck.isResource) {
-        return;
+        return false;
       }
 
       // Strict Scoped Research Endpoint Guard:
@@ -728,12 +813,25 @@ export async function executeCrawlJob(
       const itemDomain = item.domain.toLowerCase().replace(/^www\./, "");
       const pattern = (item.sourceId ? sourcePatternMap.get(item.sourceId) : undefined) || sourcePatternMap.get(itemDomain);
       if (pattern && !matchesCrawlPattern(item.canonicalUrl, pattern)) {
-        return;
+        return false;
       }
+
+      // Relevance pre-score from what the listing tells us; it orders the frontier and gates the fetch.
+      if (!item.relevance) {
+        item.relevance = collector.prescore({
+          title: item.title,
+          summary: item.summary ?? item.preloadedText?.slice(0, 1200),
+          url: item.canonicalUrl,
+          sourceId: item.sourceId,
+          targeted: isTargeted && item.discoveryMethod === "search_expansion",
+        });
+      }
+      item.priorityScore = Math.max(0, Math.min(1.2, item.priorityScore + (item.relevance.score - 0.5) * 0.3));
 
       enqueuedUrls.add(item.canonicalUrl);
       frontierQueue.push(item);
       discoveredCount++;
+      return true;
     };
 
     // Enqueue any items extracted during early autonomous source discovery
@@ -741,56 +839,134 @@ export async function executeCrawlJob(
       enqueue(phi);
     }
 
-    // Phase A: Seed Continuous Feeds (RSS & Atom)
+    // Per-source feed outcome: drives feed autodiscovery, sitemap use and listing pagination.
+    const feedOutcome = new Map<string, { status: "ok" | "not_modified" | "error" | "none"; items: number }>();
+    const SHORT_FEED_ITEMS = 8;
+    const enqueueFeedItems = (source: SourceRecord, feedTarget: string, xml: string): number => {
+      let added = 0;
+      for (const item of parseRssOrAtomXml(xml)) {
+        try {
+          const canonical = canonicalizeUrl(item.url);
+          const domain = new URL(canonical).hostname.replace(/^www\./, "");
+          const ok = enqueue({
+            url: item.url,
+            canonicalUrl: canonical,
+            depth: 0,
+            priorityScore: 0.9,
+            parentUrl: feedTarget,
+            parentSource: source.name,
+            discoveryPath: [source.homepageUrl, item.url],
+            discoveryMethod: "rss_feed",
+            sourceId: source.id,
+            sourceSlug: source.slug,
+            publisher: source.name,
+            domain,
+            title: item.title,
+            summary: item.summary,
+            // Clean structured text from the feed content (never the raw HTML).
+            preloadedText: item.contentText || item.summary,
+            publishedAt: item.publishedAt ? item.publishedAt.slice(0, 10) : null,
+            lastmodHint: item.publishedAt,
+          });
+          if (ok) added++;
+        } catch {
+          /* skip invalid */
+        }
+      }
+      return added;
+    };
+
+    // Phase A: Seed Continuous Feeds (RSS & Atom) with conditional GET (ETag / Last-Modified)
     if (config.rssDiscovery !== false) {
       await Promise.allSettled(
         sources.map(async (source) => {
           if (!source.enabled) return;
           const feedTarget = source.feedUrl || `${source.homepageUrl.replace(/\/+$/, "")}/feed/`;
-          try {
-            // SSRF-guarded fetch: DNS-validated on every hop, deadline spans the body read, size-capped.
-            const xml = await safeFetchText(feedTarget, {
-              timeoutMs: 4500,
-              maxBytes: 3_000_000,
-              userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-              acceptHeader: "application/rss+xml, application/atom+xml, text/xml, */*",
-            });
-
-            if (xml !== null) {
-              const feedItems = parseRssOrAtomXml(xml);
-
-              for (const item of feedItems) {
-                try {
-                  const canonical = canonicalizeUrl(item.url);
-                  const domain = new URL(canonical).hostname.replace(/^www\./, "");
-                  enqueue({
-                    url: item.url,
-                    canonicalUrl: canonical,
-                    depth: 0,
-                    priorityScore: 0.90,
-                    parentUrl: feedTarget,
-                    parentSource: source.name,
-                    discoveryPath: [source.homepageUrl, item.url],
-                    discoveryMethod: "rss_feed",
-                    sourceId: source.id,
-                    sourceSlug: source.slug,
-                    publisher: source.name,
-                    domain,
-                    title: item.title,
-                    preloadedText: item.rawContent || item.summary,
-                    publishedAt: item.publishedAt ? item.publishedAt.slice(0, 10) : null,
-                  });
-                } catch {
-                  /* skip invalid */
-                }
-              }
-            }
-          } catch {
-            /* silent fallback */
+          // SSRF-guarded conditional fetch: DNS-validated on every hop, size-capped; 304 means nothing new.
+          const res = await collector.fetchSourceDocument(source.id, feedTarget, "feed", {
+            timeoutMs: 4500,
+            accept: "application/rss+xml, application/atom+xml, text/xml, */*",
+            forceFull: Boolean(backfillPlan),
+          });
+          if (res.status !== "ok") {
+            feedOutcome.set(source.id, { status: res.status === "error" ? "error" : "not_modified", items: 0 });
+            return;
           }
+          const items = parseRssOrAtomXml(res.body).length;
+          feedOutcome.set(source.id, { status: items > 0 ? "ok" : "error", items });
+          if (items === 0) collector.sourceReachable(source.id, true, `feed ${feedTarget.slice(0, 120)}: no RSS/Atom items`);
+          enqueueFeedItems(source, feedTarget, res.body);
         }),
       );
     }
+
+    // Phase A2: Sitemaps (sitemap.xml / sitemap index with lastmod). Used for backfills, for sources whose
+    // feed is short, missing or failing, and on wide crawls. Only entries modified since the source's last
+    // crawl (or inside the backfill window) are enqueued.
+    const sitemapSources = sources.filter((source) => {
+      if (!source.enabled) return false;
+      if (backfillPlan) return source.id === backfillPlan.sourceId;
+      if (!source.sitemapUrl) return false;
+      const fo = feedOutcome.get(source.id);
+      return breadth === "wide" || !fo || fo.status === "error" || (fo.status === "ok" && fo.items < SHORT_FEED_ITEMS);
+    });
+    await Promise.allSettled(
+      sitemapSources.map(async (source) => {
+        const roots = source.sitemapUrl ? [source.sitemapUrl] : await collector.robotsSitemaps(source.homepageUrl);
+        if (roots.length === 0 && backfillPlan) roots.push(`${new URL(source.homepageUrl).origin}/sitemap.xml`);
+        const sinceIso =
+          backfillPlan?.sinceIso ??
+          (collector.lastCrawledAt(source.id) || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+        const perSourceCap = backfillPlan ? backfillPlan.maxArticles : 25;
+        const maxChildren = backfillPlan ? backfillPlan.maxChildSitemaps : 2;
+        let added = 0;
+        for (const root of roots.slice(0, 2)) {
+          if (added >= perSourceCap) break;
+          const res = await collector.fetchSourceDocument(source.id, root, "sitemap", { timeoutMs: 8000, maxBytes: 8_000_000, accept: "application/xml,text/xml,*/*", forceFull: Boolean(backfillPlan) });
+          if (res.status !== "ok") continue;
+          let parsed = parseSitemapXml(res.body);
+          const childUrls: string[] = [];
+          if (parsed.type === "sitemapindex") {
+            childUrls.push(...rankChildSitemaps(parsed.entries, { sinceIso, limit: maxChildren }).map((e) => e.loc));
+            parsed = { type: "urlset", entries: [] };
+          }
+          const entrySets = [parsed.entries];
+          for (const child of childUrls) {
+            const cr = await collector.fetchSourceDocument(source.id, child, "sitemap", { timeoutMs: 8000, maxBytes: 8_000_000, accept: "application/xml,text/xml,*/*", forceFull: Boolean(backfillPlan) });
+            if (cr.status === "ok") entrySets.push(parseSitemapXml(cr.body).entries);
+          }
+          for (const entries of entrySets) {
+            for (const e of filterSitemapEntries(entries, { sinceIso, limit: perSourceCap - added })) {
+              try {
+                const canonical = canonicalizeUrl(e.loc);
+                const ok = enqueue({
+                  url: e.loc,
+                  canonicalUrl: canonical,
+                  depth: 0,
+                  priorityScore: backfillPlan ? 0.86 : 0.8,
+                  parentUrl: root,
+                  parentSource: source.name,
+                  discoveryPath: [source.homepageUrl, root, e.loc],
+                  discoveryMethod: "sitemap",
+                  sourceId: source.id,
+                  sourceSlug: source.slug,
+                  publisher: source.name,
+                  domain: new URL(canonical).hostname.replace(/^www\./, ""),
+                  title: titleFromSlug(e.loc),
+                  lastmodHint: e.lastmod,
+                });
+                if (ok) {
+                  added++;
+                  collector.funnel.sitemapUrls++;
+                }
+              } catch {
+                /* skip invalid */
+              }
+            }
+          }
+        }
+      }),
+    );
 
     // Phase B: Seed Homepage Permalinks
     if (config.htmlDiscovery !== false) {
@@ -798,13 +974,28 @@ export async function executeCrawlJob(
         sources.map(async (source) => {
           if (!source.enabled) return;
           try {
-            // SSRF-guarded fetch: DNS-validated on every hop, deadline spans the body read, size-capped.
-            const html = await safeFetchText(source.homepageUrl, {
+            const fo = feedOutcome.get(source.id);
+            const feedWeak = !fo || fo.status === "error" || (fo.status === "ok" && fo.items < SHORT_FEED_ITEMS);
+            // SSRF-guarded conditional fetch; read in full when the feed is weak (needed for feed autodiscovery).
+            const homeRes = await collector.fetchSourceDocument(source.id, source.homepageUrl, "listing", {
               timeoutMs: 4500,
-              maxBytes: 3_000_000,
-              userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-              acceptHeader: "text/html,application/xhtml+xml,text/plain",
+              accept: "text/html,application/xhtml+xml,text/plain",
+              forceFull: feedWeak || Boolean(backfillPlan),
             });
+            const html = homeRes.status === "ok" ? homeRes.body : null;
+
+            // Feed autodiscovery (<link rel="alternate">) when the configured feed is missing, failing or short.
+            if (html !== null && feedWeak && config.rssDiscovery !== false) {
+              const configured = (source.feedUrl || "").replace(/\/+$/, "");
+              const alt = discoverFeedLinks(html, source.homepageUrl).find((f) => f.url.replace(/\/+$/, "") !== configured);
+              if (alt) {
+                const ar = await collector.fetchSourceDocument(source.id, alt.url, "feed", { timeoutMs: 4500, accept: "application/rss+xml, application/atom+xml, text/xml, */*" });
+                if (ar.status === "ok" && enqueueFeedItems(source, alt.url, ar.body) > 0) {
+                  collector.funnel.feedsAutodiscovered++;
+                  logger.info("collector", `Autodiscovered feed for ${source.name}: ${alt.url}`);
+                }
+              }
+            }
 
             if (html !== null) {
               const { discoveredLinks, newDiscoveredSources, graphEdges } = extractOutlinksAndCitations(
@@ -899,12 +1090,12 @@ export async function executeCrawlJob(
                 for (const archiveUrl of source.researchArchives) {
                   if (archiveUrl === source.homepageUrl) continue;
                   try {
-                    const archHtml = await safeFetchText(archiveUrl, {
+                    const archRes = await collector.fetchSourceDocument(source.id, archiveUrl, "listing", {
                       timeoutMs: 8000,
-                      maxBytes: 3_000_000,
-                      userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal; cti-discovery-graph)",
-                      acceptHeader: "text/html,application/xhtml+xml,text/plain",
+                      accept: "text/html,application/xhtml+xml,text/plain",
+                      forceFull: Boolean(backfillPlan),
                     });
+                    const archHtml = archRes.status === "ok" ? archRes.body : null;
                     if (archHtml !== null) {
                       const archLinks = extractOutlinksAndCitations(archHtml, archiveUrl, {
                         sourceId: source.id,
@@ -939,29 +1130,39 @@ export async function executeCrawlJob(
                 }
               }
 
-              // Deep Pagination: Explore page 2 for high-trust sources if breadth is balanced/wide
-              if ((breadth === "wide" || maxDepth >= 3) && source.paginationPattern) {
-                const page2Url = source.paginationPattern.replace("{n}", "2");
-                try {
-                  const p2Html = await safeFetchText(page2Url, {
-                    timeoutMs: 8000,
-                    maxBytes: 3_000_000,
-                    userAgent: "AIE-Autonomous-Threat-Crawler/3.0 (+https://aie-intel.internal)",
+              // Listing / archive pagination: research hubs whose feed is short are walked past page 1
+              // (page pattern, rel=next or "Older posts"); a backfill walks up to its page budget. Stops at
+              // the first page that adds no new candidates.
+              const shortFeed = feedWeak;
+              const maxPages = backfillPlan ? backfillPlan.maxListingPages : shortFeed ? 4 : breadth === "wide" || maxDepth >= 3 ? 2 : 1;
+              const listingStart = source.researchArchives?.[0] || source.homepageUrl;
+              if (maxPages >= 2 && (source.paginationPattern || shortFeed || backfillPlan)) {
+                const queue = source.paginationPattern ? paginationUrls(source.paginationPattern, 2, maxPages) : [];
+                let pageUrl: string | null = queue.shift() ?? null;
+                let prevHtml = html;
+                let prevUrl = listingStart;
+                if (!pageUrl && prevHtml) pageUrl = findNextPageUrl(prevHtml, prevUrl);
+                for (let page = 2; pageUrl && page <= maxPages; page++) {
+                  const pr = await collector.fetchSourceDocument(source.id, pageUrl, "listing", { timeoutMs: 8000, accept: "text/html,application/xhtml+xml,text/plain", forceFull: Boolean(backfillPlan) });
+                  if (pr.status !== "ok") break;
+                  collector.funnel.listingPages++;
+                  const pLinks = extractOutlinksAndCitations(pr.body, pageUrl, {
+                    sourceId: source.id,
+                    publisher: source.name,
+                    discoveryMethod: "crawl_source",
+                    depth: 1,
+                    allowExternalDomains: false,
                   });
-                  if (p2Html !== null) {
-                    const p2Links = extractOutlinksAndCitations(p2Html, page2Url, {
-                      sourceId: source.id,
-                      publisher: source.name,
-                      discoveryMethod: "crawl_source",
-                      depth: 2,
-                    });
-                    for (const l of p2Links.discoveredLinks) {
+                  let added = 0;
+                  for (const l of pLinks.discoveredLinks) {
+                    if (l.isExternalDomain) continue;
+                    if (
                       enqueue({
                         url: l.url,
                         canonicalUrl: l.canonicalUrl,
-                        depth: 2,
+                        depth: 1,
                         priorityScore: l.priorityScore,
-                        parentUrl: page2Url,
+                        parentUrl: pageUrl,
                         parentSource: source.name,
                         discoveryPath: l.discoveryPath,
                         discoveryMethod: "seed_source",
@@ -970,11 +1171,14 @@ export async function executeCrawlJob(
                         publisher: l.publisher || source.name,
                         domain: l.domain,
                         title: l.title,
-                      });
-                    }
+                      })
+                    )
+                      added++;
                   }
-                } catch {
-                  /* ignore */
+                  if (added === 0) break;
+                  prevHtml = pr.body;
+                  prevUrl = pageUrl;
+                  pageUrl = source.paginationPattern ? queue.shift() ?? null : findNextPageUrl(prevHtml, prevUrl);
                 }
               }
             }
@@ -1094,7 +1298,11 @@ export async function executeCrawlJob(
     }
 
     const jobStartTime = Date.now();
-    const maxRunTimeMinutes = config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0 ? config.maxRunTimeMinutes : 5;
+    const maxRunTimeMinutes = backfillPlan
+      ? backfillPlan.maxRunMinutes
+      : config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0
+        ? config.maxRunTimeMinutes
+        : 5;
     const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
 
     // 4. ADAPTIVE CONCURRENT WORKER POOL & HOST-AWARE DISPATCHER
@@ -1167,6 +1375,190 @@ export async function executeCrawlJob(
       return null;
     }
 
+    /** Writes a crawl job item (Mongo and the SQL audit table). */
+    async function recordItem(
+      current: FrontierItem,
+      decision: string,
+      reason: string,
+      stage: CrawlPipelineStage,
+      extra: Partial<CrawlJobItem> = {},
+    ): Promise<void> {
+      const item: CrawlJobItem = {
+        id: newId("itm"),
+        jobId,
+        sourceId: current.sourceId || null,
+        url: current.url,
+        canonicalUrl: current.canonicalUrl,
+        title: extra.title || current.title || "Untitled",
+        classification: extra.classification || "THREAT_REPORT",
+        decision,
+        reason,
+        stage,
+        discoveryMethod: current.discoveryMethod,
+        discoveryQuery: "",
+        parentUrl: current.parentUrl,
+        depth: current.depth,
+        publisher: current.publisher || current.domain,
+        discoveryPath: current.discoveryPath,
+        createdAt: new Date().toISOString(),
+        ...extra,
+      };
+      if (isMongoConfigured()) {
+        try {
+          await mongoInsertCrawlJobItem(item);
+        } catch {
+          /* telemetry only */
+        }
+      }
+      if (sql) {
+        try {
+          await sql`
+            insert into crawl_job_items (
+              id, job_id, source_id, url, canonical_url, title, classification,
+              decision, reason, discovery_method, discovery_query, depth, publisher
+            ) values (
+              ${item.id}, ${jobId}, ${item.sourceId}, ${item.url}, ${item.canonicalUrl}, ${item.title}, ${item.classification},
+              ${decision}, ${reason}, ${current.discoveryMethod}, '', ${current.depth}, ${item.publisher}
+            )
+          `;
+        } catch {
+          /* ignore sql fallback error */
+        }
+      }
+    }
+
+    async function politeWait(current: FrontierItem) {
+      const lastDomainHit = domainLastAccessTimes.get(current.domain) || 0;
+      const timeSinceDomainHit = Date.now() - lastDomainHit;
+      const politeDelay = Math.max(
+        Math.min(config.rateLimitMs ?? 150, 300),
+        backfillPlan?.hostSpacingMs ?? 0,
+        await collector.crawlDelayMs(current.canonicalUrl),
+      );
+      if (timeSinceDomainHit < politeDelay) {
+        await new Promise((r) => setTimeout(r, politeDelay - timeSinceDomainHit));
+      }
+      domainLastAccessTimes.set(current.domain, Date.now());
+    }
+
+    /**
+     * Incremental crawl of an already-stored URL: conditional GET when the listing reports an update
+     * (sitemap lastmod / feed date after our last fetch) or the periodic revalidation window passed.
+     * 304 or the same normalised content → unchanged; changed content → a new version of the same
+     * report (previous hash kept). Returns false when the URL was not revalidated.
+     */
+    async function revalidateKnownUrl(current: FrontierItem): Promise<boolean> {
+      let stored: Awaited<ReturnType<typeof findStoredReportByCanonical>> = null;
+      try {
+        stored = await findStoredReportByCanonical(current.canonicalUrl);
+      } catch {
+        return false;
+      }
+      if (!stored) return false;
+      const storedNorm = stored.normalizedTextHash ?? sha256Hex(normalizeForFingerprint(stored.extractedText || ""));
+      await collector.ensureArticleBaseline(current.canonicalUrl, current.sourceId, {
+        textHash: storedNorm,
+        version: stored.version,
+        reportId: stored.id,
+        ingestedAt: stored.ingestedAt,
+      });
+      const decision = await collector.revalidationDecision(current.canonicalUrl, { lastmod: current.lastmodHint });
+      if (!decision.revalidate) return false;
+      if (!(await collector.robotsAllowed(current.canonicalUrl))) return false;
+
+      evaluatedCount++;
+      await politeWait(current);
+      let res: Awaited<ReturnType<CollectorRun["fetchArticle"]>>;
+      try {
+        res = await collector.fetchArticle(current.canonicalUrl, {
+          conditional: true,
+          timeoutMs: 6000,
+          userAgent: COLLECTOR_USER_AGENT,
+          accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+        });
+      } catch (err) {
+        collector.count(current.sourceId, "failed");
+        collector.funnel.failed++;
+        logger.warn("collector", `Revalidation failed for ${current.canonicalUrl}: ${(err as Error).message}`);
+        return false;
+      }
+      collector.count(current.sourceId, "fetched");
+      const unchanged = async (reason: string) => {
+        collector.funnel.unchanged++;
+        collector.count(current.sourceId, "unchanged");
+        duplicateCount++;
+        await recordItem(current, "UNCHANGED", `${reason} · ${decision.reason}`, "duplicate", { title: stored!.title });
+        return true;
+      };
+      if (res.status === "not_modified") {
+        collector.funnel.notModified++;
+        await collector.noteArticleFetch(current.canonicalUrl, current.sourceId, { status: 304 });
+        return unchanged("Not modified since last fetch (HTTP 304)");
+      }
+      if (res.contentType.includes("pdf")) return unchanged("PDF re-fetch: content versioning applies to HTML pages");
+      const ex = htmlToText(res.body, { structured: true });
+      const norm = sha256Hex(normalizeForFingerprint(ex.text));
+      const outcome = await collector.noteArticleFetch(current.canonicalUrl, current.sourceId, {
+        status: res.httpStatus,
+        etag: res.etag,
+        lastModified: res.lastModified,
+        textHash: norm,
+        reportId: stored.id,
+      });
+      if (outcome !== "changed") return unchanged("Content unchanged (same normalised text hash)");
+      // Rotating "related posts" blocks, dates or share counts change the hash but not the report.
+      const cosmetic = hammingDistance64(simhash64(normalizeForFingerprint(stored.extractedText || "")), simhash64(normalizeForFingerprint(ex.text)));
+      if (cosmetic <= COSMETIC_CHANGE_DISTANCE) return unchanged(`Only cosmetic changes (SimHash distance ${cosmetic} ≤ ${COSMETIC_CHANGE_DISTANCE}); stored version kept`);
+      const words = ex.text.split(/\s+/).filter(Boolean).length;
+      if (words < 150 || words < stored.wordCount * 0.5) {
+        return unchanged(`Fetched copy has ${words} words vs ${stored.wordCount} stored (paywall, error or partial page) — stored version kept`);
+      }
+
+      const title = ex.title && ex.title !== "Untitled report" ? ex.title : stored.title;
+      const { score, wordCount } = scoreQuality(ex.text, title);
+      const iocs = harvestIocs(ex.text, { sourceDomain: current.domain });
+      const analysis = config.autoAnalyze ? analyzeThreatIntelligence(ex.text, title, "THREAT_REPORT") : undefined;
+      const entities = analysis ? extractStructuredEntities(ex.text, title, "THREAT_REPORT", analysis) : undefined;
+      const refs = enrichAttackEntities(title, ex.text, ex.sections);
+      const nextVersion = stored.version + 1;
+      try {
+        await applyReportVersion({
+          reportId: stored.id,
+          version: nextVersion,
+          previous: { version: stored.version, textHash: stored.textHash, rawHash: stored.rawHash, wordCount: stored.wordCount, replacedAt: new Date().toISOString() },
+          fields: {
+            title,
+            extractedText: ex.text,
+            textHash: sha256Hex(ex.text),
+            rawHash: sha256Hex(res.bytes),
+            wordCount,
+            qualityScore: score,
+            iocs,
+            analysis,
+            extractedEntities: withAttackRefs(entities, refs),
+            fingerprints: computeFingerprints({ text: ex.text, title, publisher: current.publisher || current.domain }),
+            contentType: res.contentType,
+          },
+        });
+      } catch (err) {
+        logger.warn("collector", `New version not stored for ${stored.id}: ${(err as Error).message}`);
+        return unchanged("Content changed but the new version could not be stored");
+      }
+      collector.funnel.newVersions++;
+      collector.funnel.stored++;
+      collector.count(current.sourceId, "versions");
+      collector.count(current.sourceId, "accepted");
+      collector.noteQuality(current.sourceId, score);
+      await recordItem(
+        current,
+        "UPDATED",
+        `Content changed since last fetch: stored as v${nextVersion} of ${stored.id} (previous hash ${stored.textHash.slice(0, 12)}… kept) · ${decision.reason}`,
+        "ingested",
+        { title, qualityScore: score },
+      );
+      return true;
+    }
+
     async function processFrontierItem(current: FrontierItem): Promise<void> {
       if (jobControl.cancel) return;
       currentlyProcessingUrls.add(current.url);
@@ -1186,8 +1578,12 @@ export async function executeCrawlJob(
           }
         }
 
+        if (isDuplicate && (await revalidateKnownUrl(current))) return;
+
         if (isDuplicate) {
           duplicateCount++;
+          collector.funnel.unchanged++;
+          collector.count(current.sourceId, "unchanged");
           const itemId = newId("itm");
           const jobItem: CrawlJobItem = {
             id: itemId,
@@ -1289,6 +1685,16 @@ export async function executeCrawlJob(
           return;
         }
 
+        // 4.15 Relevance pre-score gate (before any fetch): junk is skipped with a recorded reason.
+        if (current.relevance?.decision === "skip") {
+          skippedCount++;
+          collector.recordRelevanceSkip(current.title || current.canonicalUrl, current.canonicalUrl, current.relevance);
+          collector.count(current.sourceId, "skippedRelevance");
+          await recordItem(current, "SKIPPED", current.relevance.reason, "rejected", { qualityScore: current.relevance.score });
+          return;
+        }
+        collector.funnel.relevant++;
+
         // 4.2 Content Acquisition & Evaluation Increment
         evaluatedCount++;
         domainVisitCounts.set(current.domain, currentDomainCount + 1);
@@ -1301,27 +1707,37 @@ export async function executeCrawlJob(
         let fetchedHtmlBody = "";
         // Bytes exactly as fetched (null when the text came preloaded from a feed).
         let fetchedOriginal: Uint8Array | null = null;
+        let textSections: TextSection[] | undefined;
+        let fetchValidators: { status: number; etag: string | null; lastModified: string | null } | null = null;
+        const attachments: ReportAttachment[] = [];
 
         const currentWordCount = textContent.split(/\s+/).filter(Boolean).length;
         const needsFullArticleFetch = currentWordCount < 300;
 
-        if (needsFullArticleFetch) {
-          try {
-            // Polite per-domain rate limit delay (only pauses requests to the SAME domain, allowing other domains to run concurrently!)
-            const lastDomainHit = domainLastAccessTimes.get(current.domain) || 0;
-            const timeSinceDomainHit = Date.now() - lastDomainHit;
-            const politeDelay = Math.min(config.rateLimitMs ?? 150, 300);
-            if (timeSinceDomainHit < politeDelay) {
-              await new Promise((r) => setTimeout(r, politeDelay - timeSinceDomainHit));
-            }
-            domainLastAccessTimes.set(current.domain, Date.now());
+        const robotsOk = needsFullArticleFetch ? await collector.robotsAllowed(current.canonicalUrl) : true;
+        if (!robotsOk && !textContent) {
+          collector.funnel.robotsBlocked++;
+          skippedCount++;
+          await recordItem(current, "SKIPPED", "Disallowed by the publisher's robots.txt", "rejected");
+          return;
+        }
 
-            const fetched = await safeFetchResource(current.canonicalUrl, {
+        if (needsFullArticleFetch && robotsOk) {
+          try {
+            // Polite per-host spacing (config, backfill plan and robots.txt crawl-delay).
+            await politeWait(current);
+
+            const fetchedRes = await collector.fetchArticle(current.canonicalUrl, {
+              conditional: false,
               timeoutMs: 4500,
               userAgent:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; AIE-Threat-Crawler/3.0)",
-              acceptHeader: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
+              accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
             });
+            if (fetchedRes.status !== "ok") throw new Error("Unexpected HTTP 304 to an unconditional request");
+            const fetched = fetchedRes;
+            fetchValidators = { status: fetched.httpStatus, etag: fetched.etag, lastModified: fetched.lastModified };
+            collector.count(current.sourceId, "fetched");
 
             rawBytes = fetched.bytes;
             fetchedOriginal = fetched.bytes;
@@ -1377,9 +1793,40 @@ export async function executeCrawlJob(
             } else {
               const body = fetched.body;
               fetchedHtmlBody = body;
-              const extracted = htmlToText(body);
+              // Structure-preserving extraction: headings, lists, tables (IOC appendices) and code blocks.
+              const extracted = htmlToText(body, { structured: true });
               if (extracted.text && extracted.text.length > textContent.length) {
                 textContent = extracted.text;
+                textSections = extracted.sections;
+              }
+
+              // "Download the full report" → attach the PDF text (size-capped, per-job budget, robots).
+              for (const link of findFullReportPdfLinks(body, current.canonicalUrl, 1)) {
+                if (pdfAttachments >= maxPdfDownloads) {
+                  attachments.push({ kind: "pdf", url: link.url, bytes: 0, chars: 0, status: "skipped", detail: "Per-job PDF budget reached" });
+                  break;
+                }
+                if (storedCanonicalUrls.has(canonicalizeUrl(link.url)) || !(await collector.robotsAllowed(link.url))) break;
+                pdfAttachments++;
+                try {
+                  const pdf = await safeFetchResource(link.url, { timeoutMs: 15000, maxBytes: 15_000_000, acceptHeader: "application/pdf,*/*;q=0.5" });
+                  if (!pdf.contentType.includes("pdf") && !/\.pdf$/i.test(new URL(link.url).pathname)) {
+                    attachments.push({ kind: "pdf", url: link.url, bytes: pdf.bytes.byteLength, chars: 0, status: "failed", detail: `Not a PDF (${pdf.contentType})` });
+                    break;
+                  }
+                  const pr = await extractTextFromPdfBuffer(Buffer.from(pdf.bytes));
+                  if (!pr.noText && pr.text && pr.text.trim().length > 500) {
+                    textContent = appendPdfText(textContent, { url: link.url, text: pr.text, pages: pr.pageCount });
+                    textSections = undefined;
+                    attachments.push({ kind: "pdf", url: link.url, bytes: pdf.bytes.byteLength, chars: pr.text.length, pages: pr.pageCount, status: "attached" });
+                    collector.funnel.pdfAttached++;
+                  } else {
+                    attachments.push({ kind: "pdf", url: link.url, bytes: pdf.bytes.byteLength, chars: 0, pages: pr.pageCount, status: "no_text", detail: pr.failureReason || "No extractable text layer" });
+                  }
+                } catch (pdfErr) {
+                  const msg = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+                  attachments.push({ kind: "pdf", url: link.url, bytes: 0, chars: 0, status: /size limit|exceeded/i.test(msg) ? "too_large" : "failed", detail: msg.slice(0, 160) });
+                }
               }
               if (extracted.title && extracted.title !== "Untitled report") {
                 docTitle = extracted.title;
@@ -1401,6 +1848,8 @@ export async function executeCrawlJob(
               }
             }
           } catch (fetchErr) {
+            collector.funnel.failed++;
+            collector.count(current.sourceId, "failed");
             if (!textContent) {
               failedCount++;
               const itemId = newId("itm");
@@ -1433,18 +1882,77 @@ export async function executeCrawlJob(
           }
         }
 
-        // Check Content Hash Deduplication
+        // Funnel "acquired": full text obtained, by fetch or supplied by the feed.
+        collector.funnel.fetched++;
+
+        // Multi-hash content dedup (spec §18): SHA-256, normalised text, title+publisher, SimHash (Hamming <= 3).
+        // The better canonical (primary publisher, higher tier, earlier date) wins; the other URL becomes a mirror.
         const textHash = sha256Hex(textContent);
+        const fingerprints = computeFingerprints({ text: textContent, title: docTitle, publisher: current.publisher || current.domain });
+        const candidateTier = (current.sourceId ? registryEntry(current.sourceId)?.tier : undefined) ?? 4;
+        let supersedes: { id: string; mirror: ReportMirror } | null = null;
+        if (config.dedupMethod !== "canonical_url") {
+          const match = collector.dedup.findContentDuplicate({
+            canonicalUrl: current.canonicalUrl,
+            title: docTitle,
+            publisher: current.publisher || current.domain,
+            sourceDomain: current.domain,
+            sourceTier: candidateTier,
+            publishedAt: current.publishedAt ?? null,
+            fingerprints,
+          });
+          if (match) {
+            const mirrorOf = (url: string, canonicalUrl: string, publisher: string, sourceDomain: string, sourceId?: string | null): ReportMirror => ({
+              url,
+              canonicalUrl,
+              publisher,
+              sourceDomain,
+              sourceId: sourceId ?? null,
+              matchKind: match.kind,
+              distance: match.distance,
+              seenAt: new Date().toISOString(),
+            });
+            const label = `${DUPLICATE_KIND_LABEL[match.kind]}${match.distance !== undefined ? `, Hamming ${match.distance}` : ""}`;
+            const winner = preferCanonical(
+              { sourceDomain: match.entry.sourceDomain, sourceTier: match.entry.sourceTier, publishedAt: match.entry.publishedAt },
+              { sourceDomain: current.domain, sourceTier: candidateTier, publishedAt: current.publishedAt },
+            );
+            collector.funnel.duplicates[match.kind] = (collector.funnel.duplicates[match.kind] ?? 0) + 1;
+            if (winner === "existing") {
+              duplicateCount++;
+              collector.count(current.sourceId, "duplicate");
+              try {
+                await recordMirror(match.entry.id, mirrorOf(current.url, current.canonicalUrl, current.publisher || current.domain, current.domain, current.sourceId));
+              } catch {
+                /* mirror is best effort */
+              }
+              await recordItem(
+                current,
+                "DUPLICATE",
+                `Duplicate of ${match.entry.id} ("${match.entry.title.slice(0, 60)}", ${match.entry.sourceDomain}) by ${label}; recorded as "also seen at"`,
+                "duplicate",
+                { title: docTitle },
+              );
+              return;
+            }
+            // The new copy is the better canonical: store it and link the older record to it.
+            supersedes = { id: match.entry.id, mirror: mirrorOf(match.entry.canonicalUrl, match.entry.canonicalUrl, match.entry.publisher, match.entry.sourceDomain) };
+            logger.info("collector", `"${docTitle.slice(0, 60)}" supersedes ${match.entry.id} as canonical (${label})`);
+          }
+        }
         if (
+          !supersedes &&
           (config.dedupMethod === "content_hash" || config.dedupMethod === "both" || config.dedupMethod === "smart_hybrid") &&
           storedHashes.has(textHash)
         ) {
           duplicateCount++;
+          collector.count(current.sourceId, "duplicate");
+          collector.funnel.duplicates.content_sha256 = (collector.funnel.duplicates.content_sha256 ?? 0) + 1;
           return;
         }
 
         // Check Near-Duplicate & Syndication with SimHash
-        if (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both") {
+        if (!supersedes && (config.dedupMethod === "smart_hybrid" || config.dedupMethod === "content_hash" || config.dedupMethod === "both")) {
           const candidateSimhash = computeReportSimHash(textContent);
           const candidateExcerptSimhash = computeReportSimHash(excerptOf(textContent));
           const nearDuplicate = storedSimhashes.find(
@@ -1452,6 +1960,8 @@ export async function executeCrawlJob(
           );
           if (nearDuplicate) {
             duplicateCount++;
+            collector.count(current.sourceId, "duplicate");
+            collector.funnel.duplicates.simhash = (collector.funnel.duplicates.simhash ?? 0) + 1;
             console.log(`[crawler] SYNDICATED / NEAR-DUPLICATE of ${nearDuplicate.id}: "${docTitle.slice(0, 60)}"`);
             const itemId = newId("itm");
             const jobItem: CrawlJobItem = {
@@ -1480,17 +1990,24 @@ export async function executeCrawlJob(
           }
         }
 
-        // Check dateRangeDays filter if configured
-        if (config.dateRangeDays && config.dateRangeDays > 0) {
+        collector.funnel.unique++;
+
+        // Date window: the configured dateRangeDays, or the backfill window.
+        const windowCutoff = backfillPlan
+          ? Date.parse(backfillPlan.sinceIso)
+          : config.dateRangeDays && config.dateRangeDays > 0
+            ? Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000
+            : NaN;
+        if (Number.isFinite(windowCutoff)) {
           // Prefer the source-reported date; fall back to the first ISO-style date near the top.
           const pubDateMatch = current.publishedAt
             ? [current.publishedAt]
             : textContent.slice(0, 1500).match(/\b((?:19|20)\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
           if (pubDateMatch) {
             const parsedPubDate = new Date(pubDateMatch[0]).getTime();
-            const cutoff = Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000;
-            if (!isNaN(parsedPubDate) && parsedPubDate < cutoff) {
+            if (!isNaN(parsedPubDate) && parsedPubDate < windowCutoff) {
               skippedCount++;
+              await recordItem(current, "SKIPPED", `Published ${pubDateMatch[0]}, before the ${backfillPlan ? `${backfillPlan.months}-month backfill` : `${config.dateRangeDays}-day`} window`, "rejected", { title: docTitle });
               return;
             }
           }
@@ -1644,6 +2161,7 @@ export async function executeCrawlJob(
 
         if (!qual.qualified) {
           rejectedCount++;
+          collector.count(current.sourceId, "rejectedQuality");
           const itemId = newId("itm");
           const rejectMsg = qual.rejectionReason || "Below qualification threshold";
           logger.qualification(current.canonicalUrl, "REJECT", qual.score, rejectMsg);
@@ -1749,6 +2267,7 @@ export async function executeCrawlJob(
         }
 
         qualifiedCount++;
+        collector.funnel.qualified++;
         logger.qualification(
           current.canonicalUrl,
           "PASS",
@@ -1769,6 +2288,9 @@ export async function executeCrawlJob(
           intelAnalysis = analyzeThreatIntelligence(textContent, docTitle, qual.classification);
           extractedEntities = extractStructuredEntities(textContent, docTitle, qual.classification, intelAnalysis);
         }
+        // Canonical ATT&CK references (bundled knowledge) with the matched alias and first offset.
+        const attackRefs = enrichAttackEntities(docTitle, textContent, textSections ?? sectionsOf(textContent));
+        const relevanceNote = current.relevance ? { score: current.relevance.score, reason: current.relevance.reason } : undefined;
 
         // High-Fidelity PDF & HTML Layout Generation
         let pristineHtml = "";
@@ -1803,6 +2325,28 @@ export async function executeCrawlJob(
           ingestedCount++;
           storedCanonicalUrls.add(current.canonicalUrl);
           storedHashes.add(textHash);
+          collector.funnel.stored++;
+          collector.count(current.sourceId, "new");
+          collector.count(current.sourceId, "accepted");
+          collector.noteQuality(current.sourceId, score);
+          collector.dedup.add({
+            id: reportId,
+            canonicalUrl: current.canonicalUrl,
+            title: docTitle,
+            publisher: current.publisher || current.domain,
+            sourceDomain: current.domain,
+            sourceTier: candidateTier,
+            publishedAt: current.publishedAt ?? null,
+            fingerprints,
+            textHash,
+          });
+          if (fetchValidators) {
+            await collector.noteArticleFetch(current.canonicalUrl, current.sourceId, {
+              ...fetchValidators,
+              textHash: fingerprints.normalizedTextHash,
+              reportId,
+            });
+          }
           logger.ingest(
             "ACQUIRED",
             docTitle,
@@ -1910,7 +2454,10 @@ export async function executeCrawlJob(
                 docTypes: provenance.docTypes,
                 sourceTier: provenance.sourceTier,
                 sourceConfidence: provenance.sourceConfidence,
-                extractedEntities,
+                extractedEntities: withAttackRefs(extractedEntities, attackRefs),
+                fingerprints,
+                attachments: attachments.length ? attachments : undefined,
+                relevance: relevanceNote,
                 discoveryMethod: current.discoveryMethod,
                 discoveryQuery: "",
                 parentSource: current.parentSource || current.domain,
@@ -1997,7 +2544,7 @@ export async function executeCrawlJob(
                   source_domain, version, analysis_json, raw_html
                 ) values (
                   ${reportId}, ${effectiveSourceId}, ${docTitle}, ${current.url}, ${current.canonicalUrl},
-                  ${new Date().toISOString().slice(0, 10)}, ${contentType}, 'acquired',
+                  ${current.publishedAt ?? null}, ${contentType}, 'acquired',
                   ${rawHash}, ${textHash}, ${score}, ${JSON.stringify(reasons)}, ${wordCount},
                   ${textContent}, ${JSON.stringify(iocs)}, ${current.depth > 0 ? 'citation_expansion' : 'crawl'},
                   ${effectivePublisher}, ${effectiveAuthor},
@@ -2020,8 +2567,24 @@ export async function executeCrawlJob(
                 on conflict (canonical_url) do update
                 set status = 'ingested', quality_score = ${score}, report_id = ${reportId}, updated_at = now()
               `;
+              if (!isMongoConfigured()) {
+                await mergeLocalReportMeta(reportId, {
+                  fingerprints,
+                  attackRefs,
+                  attachments: attachments.length ? attachments : undefined,
+                  relevance: relevanceNote,
+                });
+              }
             } catch {
               /* ignore SQL fallback error */
+            }
+          }
+
+          if (supersedes) {
+            try {
+              await supersedeWithCanonical(supersedes.id, reportId, supersedes.mirror);
+            } catch (err) {
+              logger.warn("collector", `Could not link ${supersedes.id} to new canonical ${reportId}: ${(err as Error).message}`);
             }
           }
 
@@ -2239,6 +2802,10 @@ export async function executeCrawlJob(
     }
     await reportLiveProgress(true);
 
+    // Feeds / sitemaps / listings whose items were cut by caps keep no validators (next run reads them in full).
+    for (const left of frontierQueue) collector.markUnfinished(left.parentUrl);
+    const funnel = await collector.finish({ discovered: discoveredCount });
+
     // 5. Finalize Job
     const latestConfig = isMongoConfigured() ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();
     const effectiveFreq = Math.max(5, latestConfig.frequencyMinutes || config.frequencyMinutes || 60);
@@ -2257,6 +2824,7 @@ export async function executeCrawlJob(
       newSourcesCount,
       pdfGeneratedCount,
       currentStage: "indexed" as CrawlPipelineStage,
+      funnel,
     };
 
     console.log(
@@ -2349,6 +2917,7 @@ export async function executeCrawlJob(
 export async function createAndRunCrawlJob(
   trigger: CrawlTrigger = "MANUAL",
   targetedQuery?: string,
+  runOptions: CrawlRunOptions = {},
 ): Promise<CrawlJob> {
   // In-memory guard (the only guard without Mongo). A cancelled job keeps its
   // entry until its loop has drained, so this also blocks overlap with it.
@@ -2364,7 +2933,11 @@ export async function createAndRunCrawlJob(
   if (isMongoConfigured()) {
     try {
       const cfg = await mongoGetCrawlConfig();
-      const maxRunTimeMinutes = cfg.maxRunTimeMinutes && cfg.maxRunTimeMinutes > 0 ? cfg.maxRunTimeMinutes : 5;
+      const maxRunTimeMinutes = runOptions.backfill
+        ? planBackfill(runOptions.backfill.months).maxRunMinutes
+        : cfg.maxRunTimeMinutes && cfg.maxRunTimeMinutes > 0
+          ? cfg.maxRunTimeMinutes
+          : 5;
       const lock = await acquireCrawlLock(id, (maxRunTimeMinutes + 5) * 60 * 1000);
       if (!lock.ok) throw new CrawlAlreadyRunningError(lock.heldBy);
     } catch (err) {
@@ -2414,7 +2987,7 @@ export async function createAndRunCrawlJob(
   }
 
   // Start asynchronous crawl in background so the UI immediately shows "Running" status
-  void executeCrawlJob(id, trigger, targetedQuery).catch(async (err) => {
+  void executeCrawlJob(id, trigger, targetedQuery, runOptions).catch(async (err) => {
     console.error(`[crawler] job ${id} error:`, err);
     // executeCrawlJob normally cleans up in its finally; this covers a throw before its try block.
     activeJobs.delete(id);
@@ -2549,7 +3122,19 @@ export async function checkAndTriggerScheduledCrawl(): Promise<ScheduleCheckResu
     const isDueByFrequency = !config.nextRunAt && (!config.lastRunAt || now - lastRunMs >= freqMs);
     const isOverdue = lastRunMs > 0 && now - lastRunMs >= freqMs && (nextRunMs === 0 || nextRunMs <= now);
 
-    const isDue = isDueByNextRun || isDueByFrequency || isOverdue;
+    const globalDue = isDueByNextRun || isDueByFrequency || isOverdue;
+
+    // Per-source schedules (registry hint hourly / daily / weekly): a run is due when the global cadence
+    // elapsed or any source is due (at least 30 minutes after the last run); the run crawls due sources only.
+    const dueSources = await listDueSourceIds(now);
+    const sourceDue = dueSources.length > 0 && (lastRunMs === 0 || now - lastRunMs >= 30 * 60 * 1000);
+    if (globalDue && dueSources.length === 0) {
+      const nextTime = new Date(now + freqMs).toISOString();
+      await col.updateOne({ docType: "crawl_config", id: config.id }, { $set: { nextRunAt: nextTime, updatedAt: new Date().toISOString() } });
+      invalidateCrawlerStateCache();
+      return { triggered: false, reason: "No source is due under its schedule", nextRunAt: nextTime, lastRunAt: config.lastRunAt };
+    }
+    const isDue = globalDue || sourceDue;
 
     if (!isDue) {
       const targetTime = nextRunMs > 0 ? nextRunMs : (lastRunMs > 0 ? lastRunMs + freqMs : now);
@@ -2628,6 +3213,22 @@ export async function checkAndTriggerScheduledCrawl(): Promise<ScheduleCheckResu
   } finally {
     isCheckingSchedule = false;
   }
+}
+
+/** Crawlable registry / discovered sources that are due under their schedule hint and not backing off. */
+async function listDueSourceIds(now = Date.now()): Promise<string[]> {
+  let health = new Map<string, { lastCrawledAt: string | null; backoffUntil: string | null }>();
+  try {
+    health = await getSourceHealthMap();
+  } catch {
+    /* no health yet: every source is due */
+  }
+  return SOURCE_SEED.filter((s) => s.enabled !== false && !isStructuredSource(s))
+    .filter((s) => {
+      const h = health.get(s.id);
+      return computeDue(s.schedule, h?.lastCrawledAt ?? null, h?.backoffUntil ?? null, now).dueNow;
+    })
+    .map((s) => s.id);
 }
 
 // ---------------------------------------------------------------------------

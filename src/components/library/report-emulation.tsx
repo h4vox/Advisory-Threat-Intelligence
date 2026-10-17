@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ClipboardCopy, Crosshair, Download, ExternalLink, FlaskConical, GitBranch, Info, Swords, Wrench } from "lucide-react";
+import { ArrowRight, ClipboardCopy, Crosshair, ExternalLink, FlaskConical, GitBranch, Info, Swords, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { EntityChip, EntityIcon, entityMeta } from "@/components/ui/entity";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
@@ -10,6 +10,19 @@ import type { EmulationOption } from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 import { fetchEmulationOptions, hasEmulationOptionsApi, type EmulationOptionsMap } from "./intel-api";
 import { TACTIC_ORDER, normalizeTactic, type TechniqueRef } from "./intel-taxonomy";
+import { buildPurplePath, type PurpleBuildResult } from "@/lib/aie/server-emulation";
+import { toMarkdown } from "@/lib/aie/purple/export";
+import { PurpleExportButtons, PurplePathView } from "@/components/purple/purple-path-view";
+
+/** Simulation objects for one report, from the purple path generator (source order kept when reported). */
+function useReportPath(reportId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["purple-path-report", reportId],
+    queryFn: () => buildPurplePath({ data: { kind: "report", value: reportId, options: { platforms: [], excludeHighRisk: false, maxSteps: 40 } } }),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
 
 const KIND_META: Record<EmulationOption["kind"], { label: string; icon: typeof FlaskConical; color: string }> = {
   atomic_test: { label: "Atomic test", icon: FlaskConical, color: "var(--color-cat-emulation)" },
@@ -106,52 +119,33 @@ function planText(title: string, url: string, steps: TechniqueRef[], options: Em
 }
 
 export function ReportEmulation({
+  reportId,
   title,
   url,
   techniques,
   reportedOrder,
 }: {
+  reportId: string;
   title: string;
   url: string;
   techniques: TechniqueRef[];
   reportedOrder: boolean;
 }) {
+  const pathQuery = useReportPath(reportId, techniques.length > 0);
+  const built = pathQuery.data && "path" in pathQuery.data ? (pathQuery.data as PurpleBuildResult) : null;
   const ids = useMemo(() => techniques.map((t) => t.id), [techniques]);
   const { data: options, isLoading, isError } = useEmulationOptions(ids);
   const steps = useMemo(() => orderForSimulation(techniques, reportedOrder), [techniques, reportedOrder]);
   const basis = reportedOrder ? "Sequence reported in the source" : "ATT&CK tactic order (the source does not give a verified sequence)";
-  const synced = hasEmulationOptionsApi && !isError && options != null;
+  const synced = hasEmulationOptionsApi && !isError && options != null && (built ? built.coverage.emulationSynced : true);
   const covered = synced ? steps.filter((t) => (options![t.id] ?? []).length > 0).length : 0;
   const atomicCount = synced ? steps.reduce((n, t) => n + (options![t.id] ?? []).filter((o) => o.kind === "atomic_test").length, 0) : 0;
   const emu = entityMeta("emulation").color;
 
   const copyPlan = () => {
-    void navigator.clipboard.writeText(planText(title, url, steps, options, basis));
+    void navigator.clipboard.writeText(built ? toMarkdown(built.path) : planText(title, url, steps, options, basis));
     toast.success("Simulation plan copied", { description: "Markdown draft. Nothing was executed." });
   };
-  const downloadPlan = () => {
-    const payload = {
-      kind: "aie.simulation_plan.draft",
-      status: "planning_only",
-      source: { title, url },
-      order: basis,
-      steps: steps.map((t, i) => ({
-        order: i + 1,
-        techniqueId: t.id,
-        name: t.name,
-        tactic: t.tactic,
-        evidence: t.label,
-        options: options?.[t.id] ?? [],
-      })),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${(title || "report").toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 50)}_simulation_plan.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
   if (techniques.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-bg-card px-6 py-10 text-center">
@@ -192,25 +186,35 @@ export function ReportEmulation({
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="flex shrink-0 flex-wrap gap-2 md:max-w-[50%] md:justify-end">
             <button
               type="button"
               onClick={copyPlan}
-              className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--color-primary)] px-3 text-sm font-medium text-[var(--color-primary-fg)] hover:opacity-90"
+              className="btn-primary inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium"
             >
               <ClipboardCopy className="size-4" strokeWidth={1.75} />
               Copy plan
             </button>
-            <button
-              type="button"
-              onClick={downloadPlan}
+            {built && <PurpleExportButtons path={built.path} />}
+            <Link
+              to="/purple"
+              search={{ report: reportId }}
               className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg hover:bg-bg-subtle"
             >
-              <Download className="size-4" strokeWidth={1.75} />
-              JSON
-            </button>
+              Open in Purple paths
+              <ArrowRight className="size-4" strokeWidth={1.75} />
+            </Link>
           </div>
         </div>
+        {built ? (
+          <div className="border-t border-border bg-bg-card p-4">
+            <PurplePathView path={built.path} compact />
+          </div>
+        ) : pathQuery.isLoading ? (
+          <div className="flex items-center gap-2 border-t border-border bg-bg-card px-5 py-6 text-sm text-muted">
+            <ActivitySpinner size="sm" /> Building simulation objects…
+          </div>
+        ) : (
         <ol className="grid border-t border-border bg-bg-card sm:grid-cols-2 xl:grid-cols-3">
           {steps.map((t, i) => {
             const n = options?.[t.id]?.length ?? 0;
@@ -237,9 +241,10 @@ export function ReportEmulation({
             );
           })}
         </ol>
+        )}
       </section>
 
-      {!hasEmulationOptionsApi || isError ? (
+      {!synced ? (
         <div className="flex items-start gap-3 rounded-xl border border-dashed border-border bg-bg-card px-5 py-4">
           <FlaskConical className="mt-0.5 size-4 shrink-0 text-muted" />
           <div className="text-sm">
@@ -254,7 +259,8 @@ export function ReportEmulation({
         </div>
       ) : null}
 
-      {/* Per-technique options */}
+      {/* Per-technique options (only once an emulation library is synced) */}
+      {synced && (
       <section>
         <div className="mb-4">
           <h2 className="text-xl font-semibold tracking-tight text-fg">Options per technique</h2>
@@ -304,6 +310,7 @@ export function ReportEmulation({
           })}
         </ul>
       </section>
+      )}
     </div>
   );
 }

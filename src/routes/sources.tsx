@@ -19,6 +19,7 @@ import {
   Layers,
   Library,
   Plus,
+  Radar,
   RefreshCw,
   Rss,
   Search,
@@ -57,12 +58,15 @@ import {
   probeSourceFeeds,
 } from "@/lib/aie/server";
 import type { ConnectorType, DiscoveredSourceRecord, SourceProbeResult, SourceRecord, SourceTier } from "@/lib/aie/types";
+import { getCollectorOverview, startSourceBackfill, type CollectorSourceRow } from "@/lib/aie/server-collector";
+import { CollectionHealthView, RegistryHealthLine } from "@/components/collector/collector-ui";
 
 export const Route = createFileRoute("/sources")({ component: SourcesPage });
 
 function SourcesPage() {
   const qc = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"registry" | "curated" | "discovered">("registry");
+  const [activeTab, setActiveTab] = useState<"registry" | "health" | "curated" | "discovered">("registry");
+  const [backfillingId, setBackfillingId] = useState<string | null>(null);
   const [tierFilter, setTierFilter] = useState<"all" | "1" | "2" | "3" | "4">("all");
   const [syncingIds, setSyncingIds] = useState<string[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -87,6 +91,37 @@ function SourcesPage() {
     queryFn: () => getSourceRegistry(),
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
+  });
+
+  // Per-source collection health, yield and schedule (collector)
+  const { data: collector, isLoading: collectorLoading } = useQuery({
+    queryKey: ["collector-overview"],
+    queryFn: () => getCollectorOverview(),
+    staleTime: 20_000,
+    refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
+  });
+  const healthBySource = new Map<string, CollectorSourceRow>((collector?.sources ?? []).map((r) => [r.sourceId, r]));
+
+  const backfillMut = useMutation({
+    mutationFn: (input: { sourceId: string; months: 6 | 12 | 24 }) => startSourceBackfill({ data: input }),
+    onMutate: (input) => setBackfillingId(input.sourceId),
+    onSuccess: (res, input) => {
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      const name = healthBySource.get(input.sourceId)?.name ?? input.sourceId;
+      toast.success(`Backfill started for ${name}`, {
+        description: `Since ${res.plan.sinceIso.slice(0, 10)} · up to ${res.plan.maxArticles} articles and ${res.plan.maxListingPages} listing pages · ${(res.plan.hostSpacingMs / 1000).toFixed(1)} s between requests. Follow it on the Ingest page.`,
+      });
+      void qc.invalidateQueries({ queryKey: ["crawlerState"] });
+    },
+    onError: (err: Error) => toast.error(`Backfill failed to start: ${err.message}`),
+    onSettled: () => {
+      setBackfillingId(null);
+      void qc.invalidateQueries({ queryKey: ["collector-overview"] });
+    },
   });
 
   const { data: coverage } = useQuery({
@@ -496,7 +531,7 @@ function SourcesPage() {
     },
     {
       id: "actions",
-      header: () => <span className="sr-only">Actions</span>,
+      header: () => <span className="relative"><span className="sr-only">Actions</span></span>,
       enableSorting: false,
       cell: ({ row }) => {
         const ds = row.original;
@@ -618,6 +653,7 @@ function SourcesPage() {
             onChange={setActiveTab}
             items={[
               { value: "registry", label: "Registry", icon: Library, count: registry?.sources.length },
+              { value: "health", label: "Health", icon: Radar, count: collector?.failing || undefined },
               { value: "curated", label: "Curated", icon: Shield, count: filteredSources.length },
               { value: "discovered", label: "Discovered", icon: Globe, count: filteredDiscovered.length },
             ]}
@@ -627,7 +663,7 @@ function SourcesPage() {
 
       {activeTab === "registry" ? (
         <RegistryStats registry={registry} coverage={coverage} />
-      ) : (
+      ) : activeTab === "health" ? null : (
         <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard icon={Shield} label="Curated sources" value={(sources ?? []).length} />
           <StatCard icon={Eye} label="Active curated" value={curatedActive} />
@@ -690,6 +726,17 @@ function SourcesPage() {
           onSync={(id) => syncMut.mutate(id)}
           onToggle={(id, enabled) => toggleMut.mutate({ id, enabled })}
           onShowDiscovered={() => setActiveTab("discovered")}
+          health={healthBySource}
+        />
+      )}
+
+      {activeTab === "health" && (
+        <CollectionHealthView
+          overview={collector}
+          loading={collectorLoading}
+          query={searchQuery}
+          backfillingId={backfillingId}
+          onBackfill={(sourceId, months) => backfillMut.mutate({ sourceId, months })}
         />
       )}
 
@@ -941,7 +988,9 @@ function RegistryRow({
   probe,
   onSync,
   onToggle,
+  health,
 }: {
+  health?: CollectorSourceRow;
   s: RegistrySourceView;
   syncing: boolean;
   probe?: SourceProbeResult;
@@ -996,6 +1045,7 @@ function RegistryRow({
 
       <div className="col-span-2 lg:col-span-1">
         <SyncStatus s={s} />
+        {!s.structured && s.enabled && <RegistryHealthLine row={health} />}
       </div>
 
       <div className="row-start-1 col-start-2 flex items-center justify-end gap-2 lg:row-auto lg:col-auto">
@@ -1073,7 +1123,9 @@ function RegistryView({
   onSync,
   onToggle,
   onShowDiscovered,
+  health,
 }: {
+  health?: Map<string, CollectorSourceRow>;
   registry?: SourceRegistryResponse;
   loading: boolean;
   query: string;
@@ -1165,6 +1217,7 @@ function RegistryView({
                     probe={probeResults[s.id]}
                     onSync={() => onSync(s.id)}
                     onToggle={(enabled) => onToggle(s.id, enabled)}
+                    health={health?.get(s.id)}
                   />
                 ))}
               </ul>

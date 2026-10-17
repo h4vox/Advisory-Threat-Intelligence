@@ -58,6 +58,8 @@ import {
 import { formatDateTime } from "@/lib/aie/format";
 import { cn } from "@/lib/cn";
 import type { CrawlConfig } from "@/lib/aie/types";
+import { getCrawlJobFunnels } from "@/lib/aie/server-collector";
+import { CrawlFunnelPanel } from "@/components/collector/collector-ui";
 
 export const Route = createFileRoute("/ingest")({ component: IngestPage });
 
@@ -162,6 +164,7 @@ function IngestPage() {
   // Manual Ingest State
   const [url, setUrl] = useState("");
   const [pasted, setPasted] = useState("");
+  const [pasteUrl, setPasteUrl] = useState("");
 
   // Queue Filter & Pagination State (default 25 per page)
   const [queuePage, setQueuePage] = useState(1);
@@ -214,6 +217,7 @@ function IngestPage() {
   const [jobsTrigger, setJobsTrigger] = useState<string>("all");
   const [jobsSearch, setJobsSearch] = useState("");
   const [jobsSort, setJobsSort] = useState<"newest" | "oldest">("newest");
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
   // Queries
   const crawlerState = useQuery({
@@ -272,6 +276,7 @@ function IngestPage() {
       }
       setUrl("");
       setPasted("");
+      setPasteUrl("");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -571,6 +576,17 @@ function IngestPage() {
   const progressMax = activeJob ? activeJob.maxResourcesPerRun || config.maxResourcesPerRun || 35 : 1;
   const progressPct = Math.min(100, Math.round((progressDone / progressMax) * 100));
   const lastJob = activeJob ?? sortedJobsByRecency(jobs)[0];
+  const funnelJob = (selectedJobId ? jobs.find((j) => j.id === selectedJobId) : undefined) ?? lastJob;
+  const funnelJobIds = Array.from(new Set([funnelJob?.id, ...pagedJobs.map((j) => j.id)].filter(Boolean) as string[]));
+  const funnels = useQuery({
+    queryKey: ["crawl-funnels", funnelJobIds.join(","), activeJob ? activeJob.id : "idle"],
+    queryFn: () => getCrawlJobFunnels({ data: { jobIds: funnelJobIds } }),
+    enabled: funnelJobIds.length > 0,
+    staleTime: 15_000,
+    refetchInterval: activeJob ? 5000 : false,
+    placeholderData: (previousData) => previousData,
+  });
+  const selectedFunnel = funnelJob ? (funnelJob.funnel ?? funnels.data?.[funnelJob.id] ?? null) : null;
   const freq = Number(config.frequencyMinutes);
   const cadence = !config.enabled
     ? "Disabled"
@@ -704,7 +720,7 @@ function IngestPage() {
     },
     {
       id: "actions",
-      header: () => <span className="sr-only">Actions</span>,
+      header: () => <span className="relative"><span className="sr-only">Actions</span></span>,
       enableSorting: false,
       cell: ({ row }) => {
         const res = row.original;
@@ -1201,6 +1217,16 @@ function IngestPage() {
             </div>
           )}
 
+          {funnelJob && (
+            <div id="crawl-funnel" className="scroll-mt-20">
+              <CrawlFunnelPanel
+                funnel={selectedFunnel}
+                loading={funnels.isLoading}
+                jobLabel={`${funnelJob.id === lastJob?.id ? (activeJob ? "Current job" : "Last job") : "Selected job"} · ${formatJobId(funnelJob.id, funnelJob.triggerType)}`}
+              />
+            </div>
+          )}
+
           <SectionCard title="Targeted hunt" info="Runs a search-triggered crawl that expands outlinks and citations for one topic.">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-muted">Enter an adversary group, CVE or malware family to start a focused crawl.</p>
@@ -1298,7 +1324,7 @@ function IngestPage() {
           <section>
             <SectionHeading
               title="Job history"
-              description="Every automated and targeted crawl job."
+              description="Every automated, targeted and backfill crawl job. Select a job to see its collection funnel."
               actions={
                 <ActionButton variant="ghost" icon={Activity} onClick={() => setActiveView("audit")}>
                   Pipeline audit log
@@ -1341,6 +1367,7 @@ function IngestPage() {
                     <option value="MANUAL">Manual</option>
                     <option value="SCHEDULED">Scheduled</option>
                     <option value="SEARCH">Search</option>
+                    <option value="BACKFILL">Backfill</option>
                   </FilterSelect>
                 </>
               }
@@ -1359,6 +1386,11 @@ function IngestPage() {
                   data={pagedJobs}
                   columns={jobColumns}
                   getRowId={(j) => j.id}
+                  onRowClick={(j) => {
+                    setSelectedJobId(j.id);
+                    document.getElementById("crawl-funnel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                  isRowActive={(j) => j.id === funnelJob?.id}
                   caption="Crawl job history"
                   empty={<EmptyState icon={Bot} title="No crawl jobs" description={jobs.length ? "No jobs match these filters." : "Launch a crawl to see its history here."} />}
                 />
@@ -1856,9 +1888,19 @@ function IngestPage() {
             </form>
           </SectionCard>
 
-          <SectionCard title="Ingest pasted text">
+          <SectionCard title="Ingest pasted text" info="For pages the crawler cannot fetch (paywalls, PDFs opened in a browser). The source URL keeps the report's provenance.">
+            <label htmlFor="ingest-paste-url" className="mb-1.5 block text-sm text-muted">
+              Source URL (where this text was published)
+            </label>
+            <Input
+              id="ingest-paste-url"
+              value={pasteUrl}
+              onChange={(e) => setPasteUrl(e.target.value)}
+              placeholder="https://vendor.example/blog/report"
+              className="mb-4 h-9 text-sm"
+            />
             <label htmlFor="ingest-text" className="mb-1.5 block text-sm text-muted">
-              Report text, malware analysis or incident notes
+              Report text or HTML
             </label>
             <Textarea
               id="ingest-text"
@@ -1868,13 +1910,16 @@ function IngestPage() {
               placeholder="Paste the advisory or report text…"
               className="font-mono text-xs"
             />
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+              {pasted.trim() && !/^https?:\/\/\S{4,}/i.test(pasteUrl.trim()) && (
+                <span className="text-xs text-subtle">Add the source URL to ingest.</span>
+              )}
               <ActionButton
-                disabled={manualIngest.isPending || !pasted.trim()}
-                onClick={() => manualIngest.mutate({ pastedText: pasted })}
+                disabled={manualIngest.isPending || !pasted.trim() || !/^https?:\/\/\S{4,}/i.test(pasteUrl.trim())}
+                onClick={() => manualIngest.mutate({ url: pasteUrl.trim(), pastedText: pasted })}
                 icon={FileText}
               >
-                Ingest text
+                {manualIngest.isPending ? "Ingesting…" : "Ingest text"}
               </ActionButton>
             </div>
           </SectionCard>

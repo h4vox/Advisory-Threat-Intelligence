@@ -10,20 +10,29 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ActorsRouteImport } from './routes/actors'
 import { Route as IngestRouteImport } from './routes/ingest'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as MarketplaceRouteImport } from './routes/marketplace'
 import { Route as MatrixRouteImport } from './routes/matrix'
+import { Route as PurpleRouteImport } from './routes/purple'
+import { Route as SearchRouteImport } from './routes/search'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as UiKitRouteImport } from './routes/ui-kit'
+import { Route as ActorsActorIdRouteImport } from './routes/actors_.$actorId'
 import { Route as LibraryReportIdRouteImport } from './routes/library_.$reportId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ActorsRoute = ActorsRouteImport.update({
+  id: '/actors',
+  path: '/actors',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IngestRoute = IngestRouteImport.update({
@@ -51,6 +60,16 @@ const MatrixRoute = MatrixRouteImport.update({
   path: '/matrix',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PurpleRoute = PurpleRouteImport.update({
+  id: '/purple',
+  path: '/purple',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SearchRoute = SearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -66,6 +85,11 @@ const UiKitRoute = UiKitRouteImport.update({
   path: '/ui-kit',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActorsActorIdRoute = ActorsActorIdRouteImport.update({
+  id: '/actors_/$actorId',
+  path: '/actors/$actorId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LibraryReportIdRoute = LibraryReportIdRouteImport.update({
   id: '/library_/$reportId',
   path: '/library/$reportId',
@@ -79,41 +103,53 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/actors': typeof ActorsRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
+  '/purple': typeof PurpleRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/ui-kit': typeof UiKitRoute
+  '/actors/$actorId': typeof ActorsActorIdRoute
   '/library/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/actors': typeof ActorsRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
+  '/purple': typeof PurpleRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/ui-kit': typeof UiKitRoute
+  '/actors/$actorId': typeof ActorsActorIdRoute
   '/library/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/actors': typeof ActorsRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/marketplace': typeof MarketplaceRoute
   '/matrix': typeof MatrixRoute
+  '/purple': typeof PurpleRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/sources': typeof SourcesRoute
   '/ui-kit': typeof UiKitRoute
+  '/actors_/$actorId': typeof ActorsActorIdRoute
   '/library_/$reportId': typeof LibraryReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -121,54 +157,70 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/actors'
     | '/ingest'
     | '/library'
     | '/login'
     | '/marketplace'
     | '/matrix'
+    | '/purple'
+    | '/search'
     | '/settings'
     | '/sources'
     | '/ui-kit'
+    | '/actors/$actorId'
     | '/library/$reportId'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/actors'
     | '/ingest'
     | '/library'
     | '/login'
     | '/marketplace'
     | '/matrix'
+    | '/purple'
+    | '/search'
     | '/settings'
     | '/sources'
     | '/ui-kit'
+    | '/actors/$actorId'
     | '/library/$reportId'
     | '/api/auth/$'
   id:
     | '__root__'
     | '/'
+    | '/actors'
     | '/ingest'
     | '/library'
     | '/login'
     | '/marketplace'
     | '/matrix'
+    | '/purple'
+    | '/search'
     | '/settings'
     | '/sources'
     | '/ui-kit'
+    | '/actors_/$actorId'
     | '/library_/$reportId'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ActorsRoute: typeof ActorsRoute
   IngestRoute: typeof IngestRoute
   LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   MarketplaceRoute: typeof MarketplaceRoute
   MatrixRoute: typeof MatrixRoute
+  PurpleRoute: typeof PurpleRoute
+  SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   SourcesRoute: typeof SourcesRoute
   UiKitRoute: typeof UiKitRoute
+  ActorsActorIdRoute: typeof ActorsActorIdRoute
   LibraryReportIdRoute: typeof LibraryReportIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -180,6 +232,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/actors': {
+      id: '/actors'
+      path: '/actors'
+      fullPath: '/actors'
+      preLoaderRoute: typeof ActorsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ingest': {
@@ -217,6 +276,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MatrixRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/purple': {
+      id: '/purple'
+      path: '/purple'
+      fullPath: '/purple'
+      preLoaderRoute: typeof PurpleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/search': {
+      id: '/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof SearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -238,6 +311,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UiKitRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/actors_/$actorId': {
+      id: '/actors_/$actorId'
+      path: '/actors/$actorId'
+      fullPath: '/actors/$actorId'
+      preLoaderRoute: typeof ActorsActorIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/library_/$reportId': {
       id: '/library_/$reportId'
       path: '/library/$reportId'
@@ -257,14 +337,18 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ActorsRoute: ActorsRoute,
   IngestRoute: IngestRoute,
   LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   MarketplaceRoute: MarketplaceRoute,
   MatrixRoute: MatrixRoute,
+  PurpleRoute: PurpleRoute,
+  SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   SourcesRoute: SourcesRoute,
   UiKitRoute: UiKitRoute,
+  ActorsActorIdRoute: ActorsActorIdRoute,
   LibraryReportIdRoute: LibraryReportIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }

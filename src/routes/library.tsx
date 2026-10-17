@@ -28,6 +28,7 @@ import { EmptyState } from "@/components/ui/primitives";
 import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
+import { searchLibrary } from "@/lib/aie/server-search";
 import { cn } from "@/lib/cn";
 import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
@@ -76,7 +77,7 @@ const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
 
 type ViewMode = "cards" | "table" | "list";
 const VIEW_KEY = "aie_library_view";
-type OrderBy = "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
+type OrderBy = "relevance" | "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
 
 const selectCls =
   "h-9 rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]";
@@ -237,12 +238,17 @@ function LibraryPage() {
 
   const isDeepSearchActive = debouncedQ.length >= 2;
 
-  const { data: searchResults, isLoading: isSearchLoading } = useQuery({
+  // Server-side hybrid ranker (aliases, technique names, field syntax); see src/lib/aie/search.
+  const { data: searchData, isLoading: isSearchLoading } = useQuery({
     queryKey: ["reports-search", debouncedQ],
-    queryFn: () => listReports({ data: { q: debouncedQ, limit: 200 } }),
+    queryFn: () => searchLibrary({ data: { q: debouncedQ, limit: 200 } }),
     enabled: isDeepSearchActive,
     staleTime: 30_000,
   });
+  // Rank by relevance while a search is active, unless the analyst picked another order.
+  useEffect(() => {
+    setOrderBy((prev) => (isDeepSearchActive ? (prev === "newest" ? "relevance" : prev) : prev === "relevance" ? "newest" : prev));
+  }, [isDeepSearchActive]);
 
   const { data: rawReports, isLoading: isBaseLoading } = useQuery({
     queryKey: ["reports-all"],
@@ -261,6 +267,12 @@ function LibraryPage() {
   const isLoading = isDeepSearchActive ? isSearchLoading : isBaseLoading;
 
   const allReports = useMemo(() => rawReports || [], [rawReports]);
+  const searchRank = useMemo(() => new Map((searchData?.hits ?? []).map((h) => [h.id, h.rank])), [searchData]);
+  const searchResults = useMemo(() => {
+    if (!searchData) return undefined;
+    const loaded = new Map(allReports.map((r) => [r.id, r]));
+    return searchData.hits.map((h) => ({ ...(loaded.get(h.id) ?? h.item), matchedSnippet: h.matchedSnippet }));
+  }, [searchData, allReports]);
   // Full-text hits from the server, plus everything already loaded (matched client-side on entities below).
   const activeReportsPool = useMemo(() => {
     if (!isDeepSearchActive || !searchResults) return allReports;
@@ -493,6 +505,8 @@ function LibraryPage() {
 
     const cmp = (a: ReportListItem, b: ReportListItem) => {
       switch (orderBy) {
+        case "relevance":
+          return (searchRank.get(a.id) ?? Infinity) - (searchRank.get(b.id) ?? Infinity) || dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
         case "published":
           return d(b).published - d(a).published;
         case "quality":
@@ -528,6 +542,7 @@ function LibraryPage() {
     onlyWithIocs,
     onlyWithEmulation,
     orderBy,
+    searchRank,
     d,
   ]);
 
@@ -991,7 +1006,12 @@ function LibraryPage() {
                 </button>
                 <span className="text-sm text-muted">
                   <span className="tabular-nums text-fg">{sortedReports.length}</span> {sortedReports.length === 1 ? "result" : "results"}
-                  {isDeepSearchActive && <span className="text-subtle"> · full-text</span>}
+                  {isDeepSearchActive && (
+                    <span className="text-subtle" title="Ranked by the hybrid search engine: aliases, technique names and field syntax are understood">
+                      {" "}
+                      · ranked{searchData?.interpreted.summary ? ` · ${searchData.interpreted.summary}` : ""}
+                    </span>
+                  )}
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1006,6 +1026,7 @@ function LibraryPage() {
                     aria-label="Sort results"
                     className={selectCls}
                   >
+                    {isDeepSearchActive && <option value="relevance">Relevance</option>}
                     <option value="newest">Newest ingested</option>
                     <option value="published">Newest published</option>
                     <option value="quality">Quality score</option>

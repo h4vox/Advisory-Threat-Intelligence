@@ -11,6 +11,9 @@ import {
 } from "./attack-chain";
 import { REPORT_CATALOG, SOURCE_SEED, TIER_LABELS, isStructuredSource, registryEntry } from "./catalog";
 import { annotateReportProvenance, classifyDocument } from "./doc-classifier";
+import { enrichAttackEntities, withAttackRefs } from "./collector/enrich";
+import { computeFingerprints } from "./collector/fingerprint";
+import { mergeLocalReportMeta } from "../mongodb/collector-repo.server";
 import {
   cancelJob,
   checkAndTriggerScheduledCrawl,
@@ -68,7 +71,7 @@ import type {
   StorageStats,
   TrustLevel,
 } from "./types";
-import { DEFAULT_APP_SETTINGS } from "./types";
+import { DEFAULT_APP_SETTINGS, SOURCE_CONFIDENCE } from "./types";
 import { getSql } from "@/lib/db";
 import { logger } from "./logger";
 import { isMongoConfigured, getThreatIntelCollection } from "../mongodb/client.server";
@@ -136,6 +139,7 @@ import {
 import { runStructuredConnector, parserOf, techniqueLookupFrom } from "./connectors/index";
 import { defaultFetcher } from "./connectors/fetch";
 import { lookupAttackTechnique } from "./mitre-matrix";
+import { retrieveForChat } from "./search/corpus.server";
 import {
   buildEvidenceGapReply,
   buildGroundedPrompt,
@@ -248,8 +252,19 @@ function parseJson<T>(raw: string | undefined | null, fallback: T): T {
   }
 }
 
+/**
+ * Source tier and confidence from the source registry for records stored without them (stored before
+ * tiers existed, or in the local store, which has no columns for them). Stored values always win.
+ */
+function withRegistryProvenance<T extends { sourceId?: string; sourceTier?: ReportListItem["sourceTier"]; sourceConfidence?: number }>(r: T): T {
+  if (r.sourceTier && typeof r.sourceConfidence === "number") return r;
+  const src = registryEntry(r.sourceId);
+  if (!src) return r;
+  return { ...r, sourceTier: r.sourceTier ?? src.tier, sourceConfidence: r.sourceConfidence ?? SOURCE_CONFIDENCE[src.confidenceClass] };
+}
+
 function toListItem(r: ReportRow): ReportListItem {
-  return {
+  return withRegistryProvenance({
     id: r.id,
     sourceId: r.source_id,
     sourceName: r.source_name,
@@ -279,7 +294,7 @@ function toListItem(r: ReportRow): ReportListItem {
     rawHtml: "",
     pdfUrl: r.pdf_url || "",
     analysis: parseJson<IntelAnalysis | null>(r.analysis_json, null),
-  };
+  });
 }
 
 let hasSeeded = false;
@@ -530,7 +545,7 @@ export const getDashboard = createServerFn({ method: "GET" }).middleware([analys
   const iocCount = iocRows.reduce((n, row) => n + parseJson<IocHit[]>(row.iocs_json, []).length, 0);
 
   const recentRows = await sql.query<ReportRow>(
-    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id order by r.ingested_at desc limit 6`,
+    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc limit 6`,
   );
   const eventRows = await sql<{
     id: string;
@@ -546,7 +561,7 @@ export const getDashboard = createServerFn({ method: "GET" }).middleware([analys
   const crawlerStatus = runningJobs.length > 0 ? "running" : config.paused ? "paused" : config.enabled ? "scheduled" : "disabled";
 
   const analyticsRows = await sql.query<ReportRow>(
-    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id order by r.ingested_at desc limit 2000`,
+    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc limit 2000`,
   );
   const analytics = computeDashboardAnalytics(analyticsRows.map(toListItem));
 
@@ -990,7 +1005,7 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
 
     if (isMongoConfigured()) {
       try {
-        const reports = await mongoListReports({ ...data, limit, offset });
+        const reports = (await mongoListReports({ ...data, limit, offset })).map(withRegistryProvenance);
         logger.serverFn(
           "listReports",
           "DONE",
@@ -1010,7 +1025,7 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
     const classification = data?.classification?.trim();
 
     const rows = await sql.query<ReportRow>(
-      `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id order by r.ingested_at desc`,
+      `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc`,
     );
     let items = rows.map(toListItem);
 
@@ -1106,7 +1121,7 @@ export const getReport = createServerFn({ method: "GET" }).middleware([analystMi
             mongoReport.rawHtml = sanitizeDocumentHtml(mongoReport.rawHtml);
           }
 
-          return mongoReport;
+          return withRegistryProvenance(mongoReport);
         }
         return null;
       } catch (err) {
@@ -1187,11 +1202,10 @@ export const synthesizeReportAttackChain = createServerFn({ method: "POST" }).mi
       { model: data.model }
     );
 
-    const extractedEntities = extractStructuredEntities(
-      text,
-      report.title,
-      report.classification || "THREAT_REPORT",
-      analysis
+    // Keep the collector's canonical ATT&CK references when the AI pass rebuilds the entities.
+    const extractedEntities = withAttackRefs(
+      extractStructuredEntities(text, report.title, report.classification || "THREAT_REPORT", analysis),
+      report.extractedEntities?.attackRefs ?? enrichAttackEntities(report.title, text),
     );
 
     await col.updateOne(
@@ -1236,9 +1250,10 @@ export const generateReportSigmaRule = createServerFn({ method: "POST" }).middle
       throw new Error(`Report ${data.reportId} not found`);
     }
 
-    const techniques = (report.extractedEntities?.techniques || report.analysis?.ttps || []).map((t: any) =>
-      typeof t === "string" ? t : t.id
-    );
+    // Empty extracted lists (e.g. records that only carry collector attackRefs) fall back to the analysis.
+    const techniques = (
+      (report.extractedEntities?.techniques?.length ? report.extractedEntities.techniques : report.analysis?.ttps) || []
+    ).map((t: any) => (typeof t === "string" ? t : t.id));
     const procedures = report.extractedEntities?.procedures || [];
 
     const result = await generateSigmaRuleWithAI({
@@ -1269,9 +1284,10 @@ export const generateReportEmulationPlan = createServerFn({ method: "POST" }).mi
       throw new Error(`Report ${data.reportId} not found`);
     }
 
-    const techniques = (report.extractedEntities?.techniques || report.analysis?.ttps || []).map((t: any) =>
-      typeof t === "string" ? t : t.id
-    );
+    // Empty extracted lists (e.g. records that only carry collector attackRefs) fall back to the analysis.
+    const techniques = (
+      (report.extractedEntities?.techniques?.length ? report.extractedEntities.techniques : report.analysis?.ttps) || []
+    ).map((t: any) => (typeof t === "string" ? t : t.id));
     const procedures = report.extractedEntities?.procedures || [];
 
     const result = await generateEmulationPlanWithAI({
@@ -1614,6 +1630,9 @@ async function persistReport(input: {
         rawHtml: sanitizedHtml,
         pdfUrl: "",
         analysis,
+        // Collector enrichment: canonical ATT&CK refs and dedup fingerprints (heuristic fields untouched).
+        extractedEntities: withAttackRefs(undefined, enrichAttackEntities(input.title, input.text)),
+        fingerprints: computeFingerprints({ text: input.text, title: input.title, publisher: effectivePublisher }),
       };
       await mongoInsertReport(reportDoc);
 
@@ -1682,6 +1701,12 @@ async function persistReport(input: {
       )
     `;
     await sql`update sources set last_ingest_at = now() where id = ${effectiveSourceId}`;
+    if (!isMongoConfigured()) {
+      await mergeLocalReportMeta(id, {
+        attackRefs: enrichAttackEntities(input.title, input.text),
+        fingerprints: computeFingerprints({ text: input.text, title: input.title, publisher: input.publisher ?? domain }),
+      }).catch(() => undefined);
+    }
     await sql`
       insert into ingest_events (id, report_id, url, outcome, detail)
       values (
@@ -1720,7 +1745,8 @@ export const ingestUrl = createServerFn({ method: "POST" }).middleware([analystM
 
     if (data.pasted && data.pasted.trim().length > 40) {
       const looksHtml = /<html|<body|<article/i.test(data.pasted);
-      const extracted = looksHtml ? htmlToText(data.pasted) : { title: "", text: data.pasted.trim() };
+      // Same structure-preserving extraction as URL ingest and the crawler (headings, lists, IOC tables).
+      const extracted = looksHtml ? htmlToText(data.pasted, { structured: true }) : { title: "", text: data.pasted.trim() };
       const meta = looksHtml ? extractHtmlMetadata(data.pasted) : {};
       const title = extracted.title && extracted.title !== "Untitled report" ? extracted.title : "Pasted report";
       return persistReport({
@@ -1793,7 +1819,7 @@ export const ingestUrl = createServerFn({ method: "POST" }).middleware([analystM
           discoveryMethod: "manual_url",
         });
       }
-      const extracted = htmlToText(fetched.body);
+      const extracted = htmlToText(fetched.body, { structured: true });
       const meta = extractHtmlMetadata(fetched.body);
       const domain = new URL(canonical).hostname.replace(/^www\./, "");
       const isGoogle = domain === "cloud.google.com" || domain.endsWith(".google.com");
@@ -2701,7 +2727,7 @@ export const exportSTIXBundle = createServerFn({ method: "GET" }).middleware([an
 
   const sql = await getSql();
   const rows = await sql.query<ReportRow>(
-    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id order by r.ingested_at desc`,
+    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc`,
   );
 
   const objects: any[] = [];
@@ -3441,11 +3467,24 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
     }
     const queryTokens = conversational ? [] : queryTerms(retrievalQuery);
 
-    // 2. Candidate reports ($text + exact ids) → BM25 passages.
-    const libraryAvailable = isMongoConfigured();
+    // 2. Hybrid retrieval: interpret the question (aliases, technique names), rank library
+    //    reports (Mongo candidates or the local store), then BM25 passages from the top reports.
+    //    Falls back to the previous $text + exact-id path if the hybrid retriever fails.
+    let libraryAvailable = isMongoConfigured();
     let candidates: ReportSearchCandidate[] = [];
     let passages: Passage[] = [];
-    if (!conversational && libraryAvailable) {
+    let hybrid: Awaited<ReturnType<typeof retrieveForChat>> | null = null;
+    if (!conversational) {
+      try {
+        hybrid = await retrieveForChat(retrievalQuery, { ensureLocal: ensureSeeded, k: 8, perDoc: 2 });
+        candidates = hybrid.candidates;
+        passages = hybrid.passages;
+        libraryAvailable = true;
+      } catch (err) {
+        logger.warn("RETRIEVAL", `Hybrid retrieval failed, using $text candidates: ${(err as Error)?.message}`);
+      }
+    }
+    if (!conversational && !hybrid && libraryAvailable) {
       try {
         candidates = await mongoSearchReportCandidates(retrievalQuery, { limit: 25 });
       } catch (err) {
@@ -3528,7 +3567,14 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
     const uncitedClaims =
       !evidenceGap && passages.length > 0 && chatRes.success ? hasUncitedClaims(chatRes.reply) : false;
 
-    const retrievalTrace: ChatRetrievalTrace = {
+    const passageWhy = new Map((hybrid?.why ?? []).map((w) => [w.sid, w]));
+    const retrievalTrace: ChatRetrievalTrace & {
+      ranker?: "hybrid" | "text";
+      interpreted?: { summary: string; chips: string[]; expansion: string };
+      passages: Array<ChatRetrievalTrace["passages"][number] & { why?: string; matchedEntities?: Array<{ name: string; id: string; via: string }> }>;
+    } = {
+      ranker: hybrid ? "hybrid" : "text",
+      interpreted: hybrid?.interpreted,
       query: retrievalQuery,
       tokens: queryTokens,
       conversational,
@@ -3543,6 +3589,7 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
         start: p.start,
         end: p.end,
         score: p.score,
+        ...(passageWhy.get(sids[i]) ? { why: passageWhy.get(sids[i])!.reason, matchedEntities: passageWhy.get(sids[i])!.matchedEntities } : {}),
       })),
       cited: citations.used,
       unknownCitations: citations.unknown,
@@ -3554,6 +3601,8 @@ export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([a
     logger.agent("RETRIEVAL", `chat retrieval for session ${sessionId}`, {
       query: retrievalQuery.slice(0, 200),
       tokens: queryTokens.slice(0, 20).join(" "),
+      ranker: retrievalTrace.ranker,
+      interpreted: retrievalTrace.interpreted?.summary ?? "",
       conversational,
       candidates: candidates.length,
       passages: retrievalTrace.passages.map((p) => `${p.sid}:${p.reportId}@${p.start}-${p.end}`).join(","),

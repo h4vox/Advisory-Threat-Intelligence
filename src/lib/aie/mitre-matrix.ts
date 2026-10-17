@@ -8115,9 +8115,11 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
 
       const hasNovelTtp = matchedReports.some((r) => Boolean(r?.isEmergingTechnique));
 
-      // Map sub-techniques individually
+      // Map sub-techniques individually: structured technique ids first (analysis, evidence, extracted
+      // entities), then the text — list items carry only an excerpt, not the full text.
       const mappedSubTechniques: MappedSubTechnique[] = subTechs.map((sub) => {
         const subMatched = matchedReports.filter((r) => {
+          if (typeof sub?.id === "string" && reportTechniqueIds(r).has(sub.id.toUpperCase())) return true;
           const text = `${r.title || ""} ${r.excerpt || ""} ${(r as any).extractedText || ""}`.toLowerCase();
           return (
             (typeof sub?.id === "string" && text.includes(sub.id.toLowerCase())) ||
@@ -8177,6 +8179,27 @@ export function mapReportsToMitreMatrix(reports: ReportListItem[]): MappedTactic
       totalMappedReports: totalTacticMappedReports,
     };
   });
+}
+
+const techniqueIdCache = new WeakMap<object, Set<string>>();
+
+/** Technique ids a report carries in structured fields (TTP list, attack chain, labelled evidence, extracted entities). */
+function reportTechniqueIds(r: ReportListItem): Set<string> {
+  const cached = techniqueIdCache.get(r);
+  if (cached) return cached;
+  const ids = new Set<string>();
+  const add = (v: unknown) => {
+    const raw = typeof v === "string" ? v : v && typeof v === "object" ? (v as { id?: unknown }).id : undefined;
+    const m = typeof raw === "string" ? raw.toUpperCase().match(/T\d{4}(?:\.\d{3})?/) : null;
+    if (m) ids.add(m[0]);
+  };
+  const a = r.analysis;
+  for (const t of a?.ttps ?? []) add(t);
+  for (const step of a?.attackChain ?? []) for (const t of step?.techniques ?? []) add(t);
+  for (const f of a?.evidence?.techniques ?? []) if (f.label === "observed" || f.label === "inferred") add(f.id);
+  for (const t of r.extractedEntities?.techniques ?? []) add(t);
+  techniqueIdCache.set(r, ids);
+  return ids;
 }
 
 let techniqueIndex: Map<string, { id: string; name: string; tactic: string }> | null = null;
