@@ -222,15 +222,26 @@ export function aliasesFor(kind: AttackEntityKind, id: string): string[] {
   return e ? [e.name, ...e.aliases] : [];
 }
 
-// Text scanning: longest-first alias patterns, built lazily.
-type Pattern = { re: RegExp; entry: AliasEntry };
+// Text scanning: longest-first alias patterns, built lazily and indexed by their first word.
+//
+// A match of an alias that starts with an ASCII letter or digit can only begin where an ASCII word
+// begins in the text (the pattern requires a non-[\w-] character before it), and the text's word
+// there must equal the alias's first word. So instead of running ~4,000 regexes over every document,
+// the scanner walks the text's words once and tests only the aliases indexed under that word, with a
+// sticky copy of the same regex (same boundaries, same case rules). Aliases that start with another
+// character keep the full scan. Overlaps resolve exactly as before: longest alias first.
+type Pattern = { re: RegExp; sticky: RegExp; entry: AliasEntry; order: number };
 let textPatterns: Pattern[] | null = null;
+let patternsByWord: Map<string, Pattern[]> | null = null;
+let unindexedPatterns: Pattern[] = [];
+const WORD_RE = /[A-Za-z0-9]+/g;
+
 function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function buildTextPatterns(): Pattern[] {
   const out: Pattern[] = [];
-  for (const [key, list] of aliasIndex) {
+  for (const list of aliasIndex.values()) {
     for (const entry of list) {
       if (entry.kind === "technique") continue; // technique names are matched via IDs elsewhere
       if (isTooGenericForText(entry.alias)) continue;
@@ -238,12 +249,27 @@ function buildTextPatterns(): Pattern[] {
       // Single plain words (e.g. "Turla", "Emotet") must appear capitalised as written; multi-word or
       // alphanumeric names ("Cozy Bear", "APT29", "UNC2452") match case-insensitively.
       const singleWord = /^[A-Za-z]+$/.test(alias);
-      const flags = singleWord ? "g" : "gi";
-      out.push({ re: new RegExp(`(?<![\\w-])${escapeRe(alias)}(?![\\w-])`, flags), entry });
-      void key;
+      const body = `(?<![\\w-])${escapeRe(alias)}(?![\\w-])`;
+      out.push({ re: new RegExp(body, singleWord ? "g" : "gi"), sticky: new RegExp(body, singleWord ? "y" : "iy"), entry, order: 0 });
     }
   }
   out.sort((a, b) => b.entry.alias.length - a.entry.alias.length);
+  const byWord = new Map<string, Pattern[]>();
+  const unindexed: Pattern[] = [];
+  out.forEach((p, i) => {
+    p.order = i;
+    const first = p.entry.alias.trim().match(/^[A-Za-z0-9]+/)?.[0];
+    if (!first) {
+      unindexed.push(p);
+      return;
+    }
+    const key = first.toLowerCase();
+    const list = byWord.get(key);
+    if (list) list.push(p);
+    else byWord.set(key, [p]);
+  });
+  patternsByWord = byWord;
+  unindexedPatterns = unindexed;
   return out;
 }
 
@@ -256,26 +282,46 @@ export type TextEntityHit = ResolvedEntity & { count: number; firstIndex: number
 export function findEntitiesInText(text: string, opts: { kinds?: AttackEntityKind[]; limit?: number } = {}): TextEntityHit[] {
   if (!text) return [];
   textPatterns ??= buildTextPatterns();
-  const taken: Array<[number, number]> = [];
-  const hits = new Map<string, TextEntityHit>();
-  const overlaps = (s: number, e: number) => taken.some(([a, b]) => s < b && e > a);
-  for (const { re, entry } of textPatterns) {
-    if (opts.kinds && !opts.kinds.includes(entry.kind)) continue;
-    re.lastIndex = 0;
+  const byWord = patternsByWord!;
+  const wanted = (p: Pattern) => !opts.kinds || opts.kinds.includes(p.entry.kind);
+
+  // 1. Candidate matches: indexed aliases at word starts, plus the few unindexed aliases.
+  const found: Array<{ s: number; e: number; p: Pattern; matched: string }> = [];
+  WORD_RE.lastIndex = 0;
+  let w: RegExpExecArray | null;
+  while ((w = WORD_RE.exec(text))) {
+    const candidates = byWord.get(w[0].toLowerCase());
+    if (!candidates) continue;
+    for (const p of candidates) {
+      if (!wanted(p)) continue;
+      p.sticky.lastIndex = w.index;
+      const m = p.sticky.exec(text);
+      if (m) found.push({ s: w.index, e: w.index + m[0].length, p, matched: m[0] });
+    }
+  }
+  for (const p of unindexedPatterns) {
+    if (!wanted(p)) continue;
+    p.re.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(text))) {
-      const s = m.index;
-      const e = s + m[0].length;
-      if (overlaps(s, e)) continue;
-      taken.push([s, e]);
-      const key = `${entry.kind}:${entry.id}`;
-      const prev = hits.get(key);
-      if (prev) {
-        prev.count += 1;
-        prev.firstIndex = Math.min(prev.firstIndex, s);
-      } else {
-        hits.set(key, { kind: entry.kind, id: entry.id, name: entry.name, matched: m[0], count: 1, firstIndex: s });
-      }
+    while ((m = p.re.exec(text))) found.push({ s: m.index, e: m.index + m[0].length, p, matched: m[0] });
+  }
+
+  // 2. Longest alias first (pattern order), then position; skip overlaps with spans already taken.
+  found.sort((a, b) => a.p.order - b.p.order || a.s - b.s);
+  const taken: Array<[number, number]> = [];
+  const overlaps = (s: number, e: number) => taken.some(([a, b]) => s < b && e > a);
+  const hits = new Map<string, TextEntityHit>();
+  for (const f of found) {
+    if (overlaps(f.s, f.e)) continue;
+    taken.push([f.s, f.e]);
+    const { entry } = f.p;
+    const key = `${entry.kind}:${entry.id}`;
+    const prev = hits.get(key);
+    if (prev) {
+      prev.count += 1;
+      prev.firstIndex = Math.min(prev.firstIndex, f.s);
+    } else {
+      hits.set(key, { kind: entry.kind, id: entry.id, name: entry.name, matched: f.matched, count: 1, firstIndex: f.s });
     }
   }
   const list = [...hits.values()].sort((a, b) => b.count - a.count || a.firstIndex - b.firstIndex);
@@ -285,4 +331,25 @@ export function findEntitiesInText(text: string, opts: { kinds?: AttackEntityKin
 /** True when a lookup name is a generic utility/word (useful for down-weighting matches). */
 export function isGenericEntityName(name: string): boolean {
   return GENERIC.has(normalizeEntityName(name));
+}
+
+// Technique prevalence: how many ATT&CK groups use each technique. A group using a
+// sub-technique (T1059.001) also counts towards its parent (T1059).
+let prevalenceIndex: { counts: Map<string, number>; max: number } | null = null;
+
+export function techniquePrevalence(id: string): { groups: number; share: number } {
+  if (!prevalenceIndex) {
+    const counts = new Map<string, number>();
+    for (const g of K.groups) {
+      const ids = new Set<string>();
+      for (const t of g.techniques) {
+        ids.add(t);
+        if (t.includes(".")) ids.add(t.split(".")[0]);
+      }
+      for (const t of ids) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    prevalenceIndex = { counts, max: Math.max(1, ...counts.values()) };
+  }
+  const groups = prevalenceIndex.counts.get(id.trim().toUpperCase()) ?? 0;
+  return { groups, share: groups / prevalenceIndex.max };
 }

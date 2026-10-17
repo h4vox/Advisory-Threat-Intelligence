@@ -81,41 +81,85 @@ export function sha256Hex(input: string | Uint8Array): string {
 
 // Query parameters that only track the visitor and never change the document.
 // NOTE: discovery.ts keeps its own (older) tracking-param stripper; keep the two in sync.
-const TRACKING_PARAMS = new Set(["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "_hsenc", "_hsmi"]);
+const TRACKING_PARAMS = new Set([
+  "fbclid", "gclid", "dclid", "gbraid", "wbraid", "msclkid", "yclid", "igshid", "twclid", "li_fat_id",
+  "mc_cid", "mc_eid", "mkt_tok", "_hsenc", "_hsmi", "_gl", "ref", "ref_src", "ref_url", "referrer",
+  "share", "replytocom", "amp", "amp_js_v", "usqp",
+]);
+
+function decodeParamPart(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch {
+    return raw;
+  }
+}
 
 function isTrackingParam(rawKey: string): boolean {
-  let key = rawKey;
-  try {
-    key = decodeURIComponent(rawKey.replace(/\+/g, " "));
-  } catch {
-    /* keep raw key */
-  }
-  key = key.toLowerCase();
+  const key = decodeParamPart(rawKey).toLowerCase();
   return key.startsWith("utm_") || TRACKING_PARAMS.has(key);
+}
+
+/** Query params that only select an alternate rendition (print view, AMP) of the same document. */
+function isRenditionParam(rawKey: string, rawValue: string | undefined): boolean {
+  const key = decodeParamPart(rawKey).toLowerCase();
+  const value = decodeParamPart(rawValue ?? "").toLowerCase();
+  if (key === "output" || key === "outputtype" || key === "format" || key === "view" || key === "mode") {
+    return value === "print" || value === "amp" || value === "printable";
+  }
+  if (key === "print" || key === "printable" || key === "printer_friendly") {
+    return value === "" || value === "1" || value === "true" || value === "yes";
+  }
+  return false;
+}
+
+/** amp.example.com, m.example.com, mobile.example.com → example.com (only when a registrable host remains). */
+function desktopHost(host: string): string {
+  const m = host.match(/^(?:amp|m|mobile)\.(.+)$/);
+  if (m && m[1].split(".").length >= 2) return m[1];
+  return host;
 }
 
 /**
  * Canonical form used for de-duplication: lower-case host, no default port,
  * no fragment, no tracking params, remaining query params sorted by key
  * (original encoding kept), no trailing slash except on the root path.
+ * Alternate renditions of the same document collapse to the desktop article:
+ * AMP (Google AMP cache URLs, amp./m./mobile. hosts, /amp path segments,
+ * .amp.html, ?amp), print views (/print, ?output=print, ?print=1) and
+ * trailing index.html.
  */
 export function canonicalizeUrl(raw: string): string {
-  const u = new URL(raw.trim());
+  let u = new URL(raw.trim());
+  // Google AMP cache: https://www-example-com.cdn.ampproject.org/c/s/www.example.com/path
+  if (u.hostname.toLowerCase().endsWith(".cdn.ampproject.org")) {
+    const m = u.pathname.match(/^\/(?:[a-z]\/)+?(s\/)?([^/]+\.[^/]+)(\/.*)?$/i);
+    if (m) u = new URL(`${m[1] ? "https" : "http"}://${m[2]}${m[3] ?? "/"}${u.search}`);
+  }
   u.hash = "";
-  u.hostname = u.hostname.toLowerCase();
+  u.hostname = desktopHost(u.hostname.toLowerCase());
   // WHATWG URL already drops a scheme's default port; cover explicit ones too.
   if ((u.protocol === "http:" && u.port === "80") || (u.protocol === "https:" && u.port === "443")) {
     u.port = "";
   }
-  if (u.pathname.endsWith("/") && u.pathname.length > 1) {
-    u.pathname = u.pathname.slice(0, -1);
-  }
+  let path = u.pathname.replace(/\/{2,}/g, "/");
+  path = path
+    .replace(/^\/amp(?=\/.)/i, "")
+    .replace(/\/(?:amp|print|printable)\/?$/i, "")
+    .replace(/\.amp(\.html?)$/i, "$1")
+    .replace(/\/index\.(?:html?|php)$/i, "/");
+  if (path.endsWith("/") && path.length > 1) path = path.slice(0, -1);
+  u.pathname = path || "/";
   if (u.search) {
     const params = u.search
       .slice(1)
       .split("&")
       .filter((p) => p.length > 0)
-      .filter((p) => !isTrackingParam(p.split("=")[0]));
+      .filter((p) => {
+        const eq = p.indexOf("=");
+        const key = eq >= 0 ? p.slice(0, eq) : p;
+        return !isTrackingParam(key) && !isRenditionParam(key, eq >= 0 ? p.slice(eq + 1) : undefined);
+      });
     // Stable sort by key only, so repeated keys keep their relative order.
     const keyOf = (p: string) => p.split("=")[0];
     params.sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
@@ -259,7 +303,7 @@ function fragmentToText(fragment: string): string {
  * stripping; prefer a tighter block holding >= 85% of that text. Falls back to
  * <body> when no candidate has substantial text.
  */
-function selectContentText(html: string): string {
+function selectContentFragment(html: string): { fragment: string; text: string } {
   const pre = preStripHtml(html);
   const bodyRange = findElements(pre, ["body"], undefined, 1)[0];
   const scope = bodyRange ? pre.slice(bodyRange.openEnd, bodyRange.end) : pre;
@@ -276,26 +320,153 @@ function selectContentText(html: string): string {
   );
 
   const scored = candidates.map((c) => {
-    const text = fragmentToText(stripBoilerplate(scope.slice(c.openEnd, c.end)));
-    return { span: c.end - c.start, text };
+    const fragment = stripBoilerplate(scope.slice(c.openEnd, c.end));
+    return { span: c.end - c.start, fragment, text: fragmentToText(fragment) };
   });
   const bestLen = scored.reduce((max, s) => Math.max(max, s.text.length), 0);
 
   if (bestLen < 400) {
-    const bodyText = fragmentToText(stripBoilerplate(scope));
-    if (bodyText.length > bestLen) return bodyText;
+    const bodyFragment = stripBoilerplate(scope);
+    const bodyText = fragmentToText(bodyFragment);
+    if (bodyText.length > bestLen) return { fragment: bodyFragment, text: bodyText };
   }
-  if (scored.length === 0) return "";
+  if (scored.length === 0) return { fragment: "", text: "" };
 
   let chosen = scored[0];
   for (const s of scored) {
     if (s.text.length < bestLen * 0.85) continue;
     if (chosen.text.length < bestLen * 0.85 || s.span < chosen.span) chosen = s;
   }
-  return chosen.text;
+  return { fragment: chosen.fragment, text: chosen.text };
 }
 
-export function htmlToText(html: string): { title: string; text: string } {
+// ---------------------------------------------------------------------------
+// Structure-preserving rendering (spec §19-20): headings, lists, tables and
+// code blocks become markdown-ish text with section names, so evidence keeps
+// its section context and IOC appendix tables stay row-aligned. Only block
+// markers are added (never inline markup), so every prose block of the plain
+// rendering still appears verbatim in the structured one.
+// ---------------------------------------------------------------------------
+
+export type TextSection = { heading: string; level: number; start: number; end: number };
+
+function inlineText(fragment: string): string {
+  return decodeHtmlText(fragment.replace(/<br\s*\/?>/gi, " ").replace(/<[^>]+>/g, " "))
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function preText(fragment: string): string {
+  return decodeHtmlText(fragment.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(?:div|p|li|tr)\s*>/gi, "\n").replace(/<[^>]+>/g, ""))
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/^\n+|\n+$/g, "");
+}
+
+function tableToMarkdown(tableHtml: string): string | null {
+  const rows = findElements(tableHtml, ["tr"], undefined, 5000).map((r) => tableHtml.slice(r.openEnd, r.end));
+  if (rows.length === 0) return null;
+  const lines: string[] = [];
+  let width = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const cells = findElements(rows[i], ["td", "th"], undefined, 200);
+    if (cells.length === 0) continue;
+    const texts = cells.map((c) => inlineText(rows[i].slice(c.openEnd, c.end)).replace(/\|/g, "\\|"));
+    // Layout tables (long prose in a cell) are not data tables.
+    if (texts.some((t) => t.length > 600)) return null;
+    width = Math.max(width, texts.length);
+    lines.push(`| ${texts.join(" | ")} |`);
+    if (lines.length === 1) lines.push(`|${" --- |".repeat(texts.length)}`);
+  }
+  if (lines.length === 0 || width === 0) return null;
+  return lines.join("\n");
+}
+
+function fragmentToStructuredText(fragment: string): string {
+  const blocks: string[] = [];
+  const hold = (s: string) => `\n\n\uE000${blocks.push(s) - 1}\uE000\n\n`;
+  let html = fragment;
+
+  // 1. Code blocks keep their line breaks and indentation.
+  html = html.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre\s*>/gi, (_, inner: string) => {
+    const code = preText(inner);
+    return code.trim() ? hold("```\n" + code + "\n```") : " ";
+  });
+
+  // 2. Data tables become pipe tables (outermost tables first; layout tables fall through).
+  const tables = findElements(html, ["table"], undefined, 400);
+  if (tables.length) {
+    let out = "";
+    let pos = 0;
+    for (const t of tables.sort((a, b) => a.start - b.start)) {
+      if (t.start < pos) continue;
+      const md = tableToMarkdown(html.slice(t.openEnd, t.end));
+      out += html.slice(pos, t.start) + (md ? hold(md) : html.slice(t.start, t.end).replace(/<\/?(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, "\n"));
+      pos = t.end;
+    }
+    html = out + html.slice(pos);
+  }
+
+  // 3. Headings with their level.
+  html = html.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi, (_, level: string, inner: string) => {
+    const t = inlineText(inner);
+    return t ? `\n\n${"#".repeat(Number(level))} ${t}\n\n` : " ";
+  });
+
+  // 4. Lists: ordered items numbered, unordered items bulleted.
+  html = html.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol\s*>/gi, (_, inner: string) => {
+    let n = 0;
+    return `\n${inner.replace(/<li(?=[\s>/])[^>]*>/gi, () => `\n${++n}. `)}\n`;
+  });
+  html = html.replace(/<li(?=[\s>/])[^>]*>/gi, "\n- ");
+
+  // 5. Remaining blocks as in the plain rendering.
+  const text = fragmentToText(html.replace(/<\/li\s*>/gi, "\n"));
+  return text
+    .replace(/\uE000(\d+)\uE000/g, (_, i: string) => blocks[Number(i)] ?? "")
+    .replace(/^• /gm, "- ")
+    // A list item whose content is a paragraph renders as "1.\n\nText": keep marker and text together.
+    .replace(/^(\d{1,3}\.|-)[ \t]*\n+(?=\S)/gm, "$1 ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Section boundaries from markdown-ish headings ("## Name") in structured text. */
+export function sectionsOf(text: string): TextSection[] {
+  const out: TextSection[] = [];
+  const re = /^(?:(#{1,6}) (.+)|```.*)$/gm;
+  let inFence = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (!m[1]) {
+      inFence = !inFence; // comment lines inside code blocks ("# step 1") are not headings
+      continue;
+    }
+    if (inFence) continue;
+    if (out.length) out[out.length - 1].end = m.index;
+    out.push({ heading: m[2].trim(), level: m[1].length, start: m.index, end: text.length });
+  }
+  return out;
+}
+
+/** The section heading that contains a character offset (nearest preceding heading). */
+export function sectionAt(sections: TextSection[], offset: number): string | undefined {
+  let found: TextSection | undefined;
+  for (const s of sections) if (s.start <= offset) found = s;
+  return found?.heading;
+}
+
+/**
+ * Title and main-content text of an HTML page. `structured: true` renders headings, lists, tables
+ * and code blocks as markdown-ish text and returns the section boundaries; the default plain
+ * rendering is unchanged.
+ */
+export function htmlToText(
+  html: string,
+  opts: { structured?: boolean } = {},
+): { title: string; text: string; sections?: TextSection[] } {
   const ogTitle =
     html.match(/<meta\s+[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
     html.match(/<meta\s+[^>]*name=["']twitter:title["'][^>]*content=["']([^"']+)["']/i)?.[1];
@@ -326,7 +497,12 @@ export function htmlToText(html: string): { title: string; text: string } {
     .replace(/\s*[|–—]\s*(Google Cloud Blog|The DFIR Report|Microsoft Security Blog|Unit 42|SentinelOne|Cisco Talos|Huntress|BleepingComputer|Mandiant|CERT Polska).*$/i, "")
     .trim();
 
-  return { title: rawTitle.slice(0, 240), text: selectContentText(html) };
+  const selected = selectContentFragment(html);
+  if (opts.structured) {
+    const text = selected.fragment ? fragmentToStructuredText(selected.fragment) : selected.text;
+    return { title: rawTitle.slice(0, 240), text, sections: sectionsOf(text) };
+  }
+  return { title: rawTitle.slice(0, 240), text: selected.text };
 }
 
 export function extractHtmlMetadata(html: string): {
@@ -881,7 +1057,9 @@ export function scoreQuality(text: string, title: string): {
 }
 
 export function excerptOf(text: string, n = 220): string {
-  const t = text.replace(/\s+/g, " ").trim();
+  // Records stored before feed content was converted can hold markup: never show tags in an excerpt.
+  const plain = /<[a-z!/][^>]*>/i.test(text) ? text.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ") : text;
+  const t = plain.replace(/\s+/g, " ").trim();
   return t.length <= n ? t : `${t.slice(0, n).trim()}…`;
 }
 

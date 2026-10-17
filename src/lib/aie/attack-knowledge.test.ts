@@ -32,3 +32,12 @@ test("aliases and tactic order", () => {
   assert.ok(aliasesFor("group", "G0016").includes("NOBELIUM"));
   assert.ok(tacticRank("Initial Access") < tacticRank("Impact"));
 });
+
+test("technique prevalence counts groups, with sub-techniques rolling up to the parent", async () => {
+  const { techniquePrevalence } = await import("./attack-knowledge.ts");
+  const parent = techniquePrevalence("T1059");
+  const sub = techniquePrevalence("T1059.001");
+  assert.ok(parent.groups >= sub.groups && sub.groups > 10);
+  assert.ok(parent.share > 0 && parent.share <= 1);
+  assert.equal(techniquePrevalence("T9999").groups, 0);
+});

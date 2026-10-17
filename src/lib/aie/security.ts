@@ -708,6 +708,77 @@ export async function safeFetchText(
   }
 }
 
+export type SafeConditionalFetchResult =
+  | ({ status: number; notModified: false } & SafeFetchResult)
+  | { status: 304; notModified: true; etag: string | null; lastModified: string | null; finalUrl: string };
+
+/**
+ * Conditional GET (If-None-Match / If-Modified-Since) through the same SSRF-guarded path as
+ * safeFetchResource: DNS-validated hops, pinned connection, manual redirects, size cap and one
+ * deadline. A 304 returns `notModified: true` without reading a body; any other non-2xx throws.
+ */
+export async function safeConditionalFetch(
+  targetUrl: string,
+  opts?: {
+    etag?: string | null;
+    lastModified?: string | null;
+    timeoutMs?: number;
+    userAgent?: string;
+    maxBytes?: number;
+    acceptHeader?: string;
+    maxRedirects?: number;
+  },
+): Promise<SafeConditionalFetchResult> {
+  const maxBytes = opts?.maxBytes ?? MAX_BYTES;
+  const timeoutMs = opts?.timeoutMs ?? 18000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+  let dispatcher: DispatcherLike | null = null;
+  const headers: Record<string, string> = {
+    "user-agent": opts?.userAgent ?? DEFAULT_USER_AGENT,
+    accept: opts?.acceptHeader ?? DEFAULT_ACCEPT,
+  };
+  // Header values come from earlier responses; drop anything that is not a plain header token.
+  if (opts?.etag && /^[\x20-\x7e]{1,200}$/.test(opts.etag)) headers["if-none-match"] = opts.etag;
+  if (opts?.lastModified && /^[\x20-\x7e]{1,100}$/.test(opts.lastModified)) headers["if-modified-since"] = opts.lastModified;
+  try {
+    const result = await safeRequest(targetUrl, { method: "GET", signal: controller.signal, maxRedirects: opts?.maxRedirects, headers });
+    dispatcher = result.dispatcher;
+    const { res, finalUrl } = result;
+    if (res.status === 304) {
+      try {
+        await res.body?.cancel();
+      } catch {
+        /* ignore */
+      }
+      return { status: 304, notModified: true, etag: res.headers.get("etag"), lastModified: res.headers.get("last-modified"), finalUrl };
+    }
+    if (!res.ok) {
+      try {
+        await res.body?.cancel();
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`Source returned HTTP ${res.status}`);
+    }
+    const bytes = await readBodyCapped(res, maxBytes);
+    const contentType = (res.headers.get("content-type") ?? "text/html").split(";")[0].trim();
+    return {
+      status: res.status,
+      notModified: false,
+      contentType,
+      body: new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+      bytes,
+      etag: res.headers.get("etag"),
+      lastModified: res.headers.get("last-modified"),
+      finalUrl,
+    };
+  } finally {
+    clearTimeout(timeout);
+    closeDispatcher(dispatcher);
+  }
+}
+
 export type SafeProbeResult = {
   ok: boolean;
   statusCode: number | null;
