@@ -24,6 +24,23 @@ export function normalizeUsername(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+export function normalizeEmail(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+/** A deliberately loose check: enough to route a sign-in to email vs. username, not to validate deliverability. */
+export function looksLikeEmail(value: string): boolean {
+  const v = value.trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) && v.length <= 254;
+}
+
+/** A username derived from an email's local part, clamped to the username rules, or "devuser" when nothing usable remains. */
+export function usernameFromEmail(email: string): string {
+  const local = normalizeEmail(email).split("@")[0] ?? "";
+  const cleaned = local.replace(/[^a-z0-9._-]/g, "").replace(/^[._-]+|[._-]+$/g, "");
+  return usernameError(cleaned) ? "devuser" : cleaned;
+}
+
 export function usernameError(username: string): string | null {
   if (username.length < 3) return "Use at least 3 characters.";
   if (username.length > 64) return "Use at most 64 characters.";
