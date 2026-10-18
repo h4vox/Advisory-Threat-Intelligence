@@ -86,7 +86,31 @@ trace records the interpreted query and why each passage was chosen.
   cleanup, risk), a §36 hunt hypothesis (query labelled as a template) and an honest detection status. Exports:
   Markdown, JSON, CALDERA-style YAML. **Planning only: AIE never executes procedures.**
 
-## 6. Quality gates
+## 6. Library gate (hiding unrelated reports)
+
+`src/lib/aie/library-gate.ts` (rules, unit-tested) and `src/lib/mongodb/library-gate-repo.server.ts` (storage) keep
+the library to threat intelligence. When the Library opens, every report not yet checked under the current rules
+version is evaluated once:
+
+| Order | Rule | Example |
+|---|---|---|
+| 1 | **Protected**: never hidden | ATT&CK techniques, CVEs, 2+ indicators, an attack chain, known actors / malware / campaigns, quality ≥ 70%, structured sources, or an analyst kept it |
+| 2 | Page type | homepages, sitemaps, `/blog` / `/tag/…` / `/category/…` listings, privacy / terms / contact pages, search and filter results, government service sites |
+| 3 | Topic | the relevance pre-score finds only off-topic signals: webinars, podcasts, awards, hiring, product launches, earnings, events, marketing |
+| 4 | Stub | under 120 words (when known) with no indicators |
+
+Hidden reports are **never deleted**. They get `status: "rejected"`, `rejectedBy: "rules"`, the status they had before
+and a readable reason, so search, coverage, dashboards and emulation leave them out. The Library shows a summary
+("Hid N unrelated reports"), and **Hidden reports only** lists them with their reasons.
+- **Restore** a report from its menu, or **Restore N shown** for a whole filtered view. A restored report is pinned
+  as kept (`gate.override: "keep"`), so the rules never hide it again.
+- **Hide from library** in a report's menu lets an analyst remove anything the rules missed (`rejectedBy: "analyst"`).
+- Bump `LIBRARY_GATE_VERSION` after changing the rules, and every report is checked again.
+
+The AI audit ("Audit with AI") writes the same fields. A future AI reviewer can supply the same verdict shape
+(`GateVerdict`) in place of the rules.
+
+## 7. Quality gates
 
 | Command | What it checks | Current |
 |---|---|---|
@@ -94,11 +118,30 @@ trace records the interpreted query and why each passage was chosen.
 | `npm run eval -- --raw <dir>` | Extraction and evidence on 5 real vendor reports | 26/26 |
 | `npm run eval:retrieval -- --raw <dir>` | 28 labelled queries (aliases, technique names, CVEs, field syntax, negatives) | reports recall@5 1.00 (BM25 0.95, substring 0.05); unified recall@5 0.965 (BM25 0.535); negatives 8/8 |
 
-## 7. Deployment notes
+## 8. Deployment notes
 
-- **MongoDB** (`MONGODB_URI`) is needed for structured sync (ATT&CK, Atomic, CTID, Attack Flow, KEV), the emulation
-  index, the autonomous scheduler (cross-instance lock) and durable collector state. Without it, crawls run on demand
-  and collector state lives in the local database.
+- **MongoDB** (`MONGODB_URI`) holds the report library. It is also needed for:
+  - structured sync (ATT&CK, Atomic, CTID, Attack Flow, KEV);
+  - the emulation index;
+  - the autonomous scheduler (cross-instance lock);
+  - durable collector state;
+  - accounts.
+
+  Without it, the app runs on a built-in local database that starts empty, and the Overview, Library and Settings
+  pages say so. In the same case, crawls run only on demand, and collector state lives in the local database.
+  - **Connection string.** Earlier versions had a connection string written into the code. That string was removed
+    for security, so a deployment that relied on it now needs `MONGODB_URI` set. For `npm run dev`, a `.env` file
+    next to `package.json` works.
+  - **Networks that refuse SRV DNS lookups.** A `mongodb+srv://` string needs an SRV lookup. When the network refuses
+    it, AIE resolves the cluster through public DNS (1.1.1.1, 8.8.8.8, 9.9.9.9) and connects with the equivalent
+    seed list (`src/lib/mongodb/srv-fallback.ts`). It accepts only hosts under the cluster's own domain.
+  - **Unreachable MongoDB.** When MongoDB can't be reached, the Library shows the error and a plain-language fix
+    instead of an empty library.
+- **Vercel:**
+  - Builds run on Node 22 (`engines.node` in `package.json`; Vite 8 needs Node 20.19+ or 22.12+).
+  - Set `MONGODB_URI` for the library.
+  - `DATABASE_URL`, if set, must be a Postgres connection string. Migrations run against it during `npm run build`.
+    A MongoDB string there is skipped with a warning instead of failing the deploy.
 - **Network:** the user deployment needs outbound HTTPS to source sites, `api.github.com` (CALDERA, Unit 42 and CTID
   file listings; set `GITHUB_TOKEN` for higher limits) and `cisa.gov`. The connectors fall back to raw GitHub files
   where possible.

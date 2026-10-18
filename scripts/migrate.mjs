@@ -18,10 +18,20 @@ import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
 
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = process.env.DATABASE_URL?.trim();
 if (!databaseUrl) {
   console.log(
     "[migrate] DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
+  );
+  process.exit(0);
+}
+// DATABASE_URL is the Postgres database (sign-in sessions, local tables). A MongoDB string there
+// is a misconfiguration (the library uses MONGODB_URI); don't fail every deploy over it.
+if (!/^postgres(?:ql)?:\/\//i.test(databaseUrl)) {
+  const scheme = databaseUrl.split(":")[0] || "unknown";
+  console.warn(
+    `[migrate] DATABASE_URL is not a Postgres connection string (scheme "${scheme}") — skipping migrations. ` +
+      (scheme.startsWith("mongodb") ? "Put the MongoDB connection string in MONGODB_URI instead." : "Set it to postgres://… or remove it."),
   );
   process.exit(0);
 }

@@ -1,5 +1,7 @@
+import { EyeOff, Undo2 } from "lucide-react";
 import type { IntelAnalysis, ExtractedEntities, ReportListItem, ResourceKind } from "@/lib/aie/types";
 import type { Tone } from "@/components/ui/primitives";
+import type { ReportRowActions } from "./report-table";
 
 /** Singular, sentence-case label for a report's resource kind (used as the "Type" column). */
 export const KIND_LABEL: Record<ResourceKind, string> = {
@@ -57,7 +59,7 @@ export type AiReview = { label: string; tone: Tone; rank: number; detail?: strin
 /** One honest AI review state, derived only from stored fields. */
 export function aiReview(r: { aiVerified?: boolean; aiQualityScore?: number; status?: string }): AiReview {
   const score = typeof r.aiQualityScore === "number" && r.aiQualityScore > 0 ? `${r.aiQualityScore}/100` : undefined;
-  if (r.status === "rejected") return { label: "Rejected", tone: "danger", rank: 0, detail: score };
+  if (r.status === "rejected") return { label: "Hidden", tone: "neutral", rank: 0, detail: score };
   if (r.aiVerified) return { label: "AI verified", tone: "success", rank: 3, detail: score };
   if (score) return { label: "Not verified", tone: "warning", rank: 1, detail: score };
   return { label: "Not evaluated", tone: "neutral", rank: 2 };
@@ -120,3 +122,10 @@ export function compareReports(key: ReportSortKey): (a: ReportListItem, b: Repor
   }
 }
 
+
+/** "Hide from library" / "Restore to library" for a report's action menu. */
+export function visibilityMenuItem(r: ReportListItem, actions: ReportRowActions) {
+  return r.status === "rejected"
+    ? { label: "Restore to library", icon: Undo2, onSelect: () => actions.restore?.(r), disabled: !actions.restore }
+    : { label: "Hide from library", icon: EyeOff, onSelect: () => actions.hide?.(r), disabled: !actions.hide };
+}

@@ -3,6 +3,9 @@
   "private": true,
   "sideEffects": false,
   "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
   "overrides": {
     "nf3": "0.3.17"
   },
@@ -17,7 +20,7 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --experimental-strip-types --test 'scripts/**/*.test.mjs' src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts 'src/lib/aie/*.test.ts' 'src/lib/aie/connectors/*.test.ts' 'src/lib/aie/actors/*.test.ts' 'src/lib/aie/purple/*.test.ts' 'src/lib/aie/collector/*.test.ts' 'src/lib/aie/search/*.test.ts' 'src/lib/aie/accounts/*.test.ts'",
+    "test": "node --experimental-strip-types --test 'scripts/**/*.test.mjs' src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts 'src/lib/aie/*.test.ts' 'src/lib/aie/connectors/*.test.ts' 'src/lib/aie/actors/*.test.ts' 'src/lib/aie/purple/*.test.ts' 'src/lib/aie/collector/*.test.ts' 'src/lib/aie/search/*.test.ts' 'src/lib/aie/accounts/*.test.ts' 'src/lib/mongodb/*.test.ts'",
     "eval": "node --experimental-strip-types --no-warnings=ExperimentalWarning --import ./scripts/eval/register.mjs scripts/eval/run-eval.mjs",
     "eval:retrieval": "node --experimental-strip-types --no-warnings=ExperimentalWarning --import ./scripts/eval/register.mjs scripts/eval/run-retrieval-eval.mjs",
     "lint": "eslint .",

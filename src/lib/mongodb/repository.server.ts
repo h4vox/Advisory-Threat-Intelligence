@@ -1,6 +1,6 @@
 import type { Filter, Document } from "mongodb";
 import { decryptConfigSecrets, encryptConfigSecrets } from "../aie/secret-box.server";
-import { getThreatIntelCollection, isMongoConfigured } from "./client.server";
+import { getCollectionName, getDatabaseName, getThreatIntelCollection, isMongoConfigured } from "./client.server";
 import type {
   AppSettings,
   EmulationOption,
@@ -1513,12 +1513,14 @@ export async function mongoGetStorageStats(): Promise<StorageStats> {
   const col = await getThreatIntelCollection();
   const [
     totalReports,
+    visibleReports,
     totalSources,
     totalDiscovered,
     totalJobs,
     totalEvents,
   ] = await Promise.all([
     col.countDocuments({ docType: "report" }),
+    col.countDocuments({ docType: "report", status: { $nin: ["rejected", "duplicate"] } }),
     col.countDocuments({ docType: "source" }),
     col.countDocuments({ docType: "discovered_resource" }),
     col.countDocuments({ docType: "crawl_job" }),
@@ -1527,9 +1529,11 @@ export async function mongoGetStorageStats(): Promise<StorageStats> {
 
   const result: StorageStats = {
     configured: isMongoConfigured(),
-    databaseName: "threat-intel-DB",
-    collectionName: "threat-intel",
+    engine: "mongodb",
+    databaseName: getDatabaseName(),
+    collectionName: getCollectionName(),
     totalReports,
+    visibleReports,
     totalSources,
     totalDiscovered,
     totalJobs,
@@ -3871,18 +3875,18 @@ export async function mongoGetIntelCoverage(): Promise<IntelCoverageCounts> {
   const [byType, byTier, total, structured, emuKinds, emuTechs, atomicTechs, kev, techniques] = await Promise.all([
     col
       .aggregate<{ _id: string; n: number }>([
-        { $match: { docType: "report", status: { $ne: "rejected" }, "docTypes.0": { $exists: true } } },
+        { $match: { docType: "report", status: { $nin: ["rejected", "duplicate"] }, "docTypes.0": { $exists: true } } },
         { $unwind: "$docTypes" },
         { $group: { _id: "$docTypes", n: { $sum: 1 } } },
       ])
       .toArray(),
     col
       .aggregate<{ _id: number | null; n: number }>([
-        { $match: { docType: "report", status: { $ne: "rejected" } } },
+        { $match: { docType: "report", status: { $nin: ["rejected", "duplicate"] } } },
         { $group: { _id: "$sourceTier", n: { $sum: 1 } } },
       ])
       .toArray(),
-    col.countDocuments({ docType: "report", status: { $ne: "rejected" } }),
+    col.countDocuments({ docType: "report", status: { $nin: ["rejected", "duplicate"] } }),
     col.countDocuments({ docType: "report", discoveryMethod: "structured_sync" }),
     col
       .aggregate<{ _id: string; n: number }>([{ $match: { docType: "emulation_index" } }, { $group: { _id: "$kind", n: { $sum: 1 } } }])

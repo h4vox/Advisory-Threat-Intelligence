@@ -19,7 +19,7 @@ import { cn } from "@/lib/cn";
 import { ActionMenu } from "./action-menu";
 import { DocTypeBadge } from "@/components/ui/entity";
 import { docTypesOf } from "./intel-taxonomy";
-import { aiReview, formatDate, qualityTone, techniqueCount, type ReportSort, type ReportSortKey } from "./report-utils";
+import { aiReview, formatDate, qualityTone, techniqueCount, visibilityMenuItem, type ReportSort, type ReportSortKey } from "./report-utils";
 
 function SortHeader({
   label,
@@ -59,6 +59,10 @@ export type ReportRowActions = {
   download: (r: ReportListItem) => void;
   evidence: (r: ReportListItem) => void;
   aiReview: (r: ReportListItem) => void;
+  /** Hide an unrelated report from the library (reversible). */
+  hide?: (r: ReportListItem) => void;
+  /** Put a hidden report back; the rules will not hide it again. */
+  restore?: (r: ReportListItem) => void;
 };
 
 export function ReportTable({
@@ -229,6 +233,7 @@ export function ReportTable({
                 { label: "Download", icon: Download, onSelect: () => actions.download(r) },
                 { label: "Evidence", icon: Shield, onSelect: () => actions.evidence(r) },
                 { label: "AI review", icon: Sparkles, onSelect: () => actions.aiReview(r) },
+                visibilityMenuItem(r, actions),
                 "separator",
                 { label: "Open original URL", icon: ArrowUpRight, href: original, disabled: !original },
               ]}

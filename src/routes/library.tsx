@@ -3,7 +3,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
+  AlertTriangle,
   ArrowUpRight,
+  EyeOff,
   FileText,
   FlaskConical,
   GitBranch,
@@ -12,6 +14,7 @@ import {
   List,
   Megaphone,
   Plus,
+  RefreshCw,
   Search,
   SearchX,
   Shield,
@@ -19,6 +22,7 @@ import {
   Sparkles,
   Swords,
   Table2,
+  Undo2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -29,6 +33,8 @@ import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
 import { searchLibrary } from "@/lib/aie/server-search";
+import { runLibraryGate, setReportVisibility } from "@/lib/aie/server-library";
+import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { cn } from "@/lib/cn";
 import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
@@ -250,12 +256,54 @@ function LibraryPage() {
     setOrderBy((prev) => (isDeepSearchActive ? (prev === "newest" ? "relevance" : prev) : prev === "relevance" ? "newest" : prev));
   }, [isDeepSearchActive]);
 
-  const { data: rawReports, isLoading: isBaseLoading } = useQuery({
+  const {
+    data: rawReports,
+    isLoading: isBaseLoading,
+    error: reportsError,
+    refetch: refetchReports,
+  } = useQuery({
     queryKey: ["reports-all"],
     queryFn: () => listReports({ data: { limit: 500 } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
+
+  // Library gate: hides unrelated reports (homepages, listings, webinars, product news, stubs) once
+  // per rules version; nothing is deleted. See src/lib/aie/library-gate.ts.
+  const gateQuery = useQuery({
+    queryKey: ["library-gate"],
+    queryFn: () => runLibraryGate(),
+    staleTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const [gateNoticeDismissed, setGateNoticeDismissed] = useState(false);
+  const refreshLibrary = useCallback(() => {
+    for (const key of ["reports-all", "reports-search", "intel-coverage", "nav-counts", "dashboard"]) {
+      void queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  }, [queryClient]);
+  useEffect(() => {
+    if (gateQuery.data?.newlyHidden.length) refreshLibrary();
+  }, [gateQuery.data, refreshLibrary]);
+
+  const changeVisibility = useCallback(
+    async (ids: string[], action: "hide" | "restore") => {
+      try {
+        const res = await setReportVisibility({ data: { ids, action } });
+        const n = res.changed;
+        toast.success(
+          action === "hide"
+            ? `Hid ${n} report${n === 1 ? "" : "s"} from the library. Find ${n === 1 ? "it" : "them"} under Hidden.`
+            : `Restored ${n} report${n === 1 ? "" : "s"} to the library.`,
+        );
+        refreshLibrary();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not change the report's visibility");
+      }
+    },
+    [refreshLibrary],
+  );
 
   const { data: coverage } = useQuery({
     queryKey: ["intel-coverage"],
@@ -573,7 +621,7 @@ function LibraryPage() {
     ...(minQuality > 0 ? [{ label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) }] : []),
     ...(onlyWithIocs ? [{ label: "Has IOCs", clear: () => setOnlyWithIocs(false) }] : []),
     ...(onlyWithEmulation ? [{ label: "Has emulation", clear: () => setOnlyWithEmulation(false) }] : []),
-    ...(showRejected ? [{ label: `Rejected by AI (${rejectedCount})`, clear: () => setShowRejected(false) }] : []),
+    ...(showRejected ? [{ label: `Hidden (${rejectedCount})`, clear: () => setShowRejected(false) }] : []),
   ];
   const activeFiltersCount = filterChips.length;
 
@@ -689,8 +737,10 @@ function LibraryPage() {
       download: handleDownload,
       evidence: (r: ReportListItem) => setEvidenceReport(r),
       aiReview: (r: ReportListItem) => setAuditModalReport(r),
+      hide: (r: ReportListItem) => void changeVisibility([r.id], "hide"),
+      restore: (r: ReportListItem) => void changeVisibility([r.id], "restore"),
     }),
-    [openReport, openPdfModal, handleDownload],
+    [openReport, openPdfModal, handleDownload, changeVisibility],
   );
 
   // ---------------------------------------------------------------- KPIs
@@ -716,7 +766,7 @@ function LibraryPage() {
         value: coverage?.total ?? acceptedReports.length,
         kind: "source",
         icon: FileText,
-        hint: rejectedCount > 0 ? `${rejectedCount} rejected by AI` : src,
+        hint: rejectedCount > 0 ? `${rejectedCount} hidden` : src,
         onClick: () => setDocTab("ALL"),
         active: docTab === "ALL",
       },
@@ -874,8 +924,8 @@ function LibraryPage() {
           count={facets.withEmulation}
         />
         <FacetToggle
-          label="Rejected by AI only"
-          hint="Records the quality gate flagged"
+          label="Hidden reports only"
+          hint="Unrelated pages the library gate, the AI audit or an analyst hid"
           checked={showRejected}
           onChange={setShowRejected}
           count={rejectedCount}
@@ -896,6 +946,17 @@ function LibraryPage() {
     <div className="flex justify-center py-10">
       <ActivitySpinner size="lg" className="text-accent" />
     </div>
+  ) : reportsError && allReports.length === 0 ? (
+    <EmptyState
+      icon={AlertTriangle}
+      title="The library could not be loaded"
+      description={reportsError instanceof Error ? reportsError.message : "The report store did not answer."}
+      action={
+        <ActionButton icon={RefreshCw} onClick={() => void refetchReports()}>
+          Try again
+        </ActionButton>
+      }
+    />
   ) : (
     <EmptyState
       icon={SearchX}
@@ -946,6 +1007,30 @@ function LibraryPage() {
             </>
           }
         />
+
+        <DataSourceNotice className="mb-4" />
+        {gateQuery.data && gateQuery.data.newlyHidden.length > 0 && !gateNoticeDismissed && (
+          <div role="status" className="mb-4 flex flex-col gap-3 rounded-xl border border-border bg-bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <EyeOff className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={1.75} />
+              <p className="text-sm text-muted">
+                <span className="font-medium text-fg">
+                  Hid {gateQuery.data.newlyHidden.length} unrelated report{gateQuery.data.newlyHidden.length === 1 ? "" : "s"}
+                </span>{" "}
+                (homepages, listing pages, webinars, product news, empty stubs). Nothing was deleted; reports with techniques, CVEs, indicators or known actors
+                are never hidden.
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <ActionButton icon={EyeOff} onClick={() => setShowRejected(true)}>
+                Review hidden
+              </ActionButton>
+              <ActionButton variant="ghost" icon={X} onClick={() => setGateNoticeDismissed(true)}>
+                Dismiss
+              </ActionButton>
+            </div>
+          </div>
+        )}
 
         <LibraryKpiStrip items={kpis} />
 
@@ -1015,6 +1100,15 @@ function LibraryPage() {
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {showRejected && sortedReports.length > 0 && (
+                  <ActionButton
+                    icon={Undo2}
+                    onClick={() => void changeVisibility(sortedReports.slice(0, 500).map((r) => r.id), "restore")}
+                    title="Put these reports back in the library; the rules will not hide them again"
+                  >
+                    Restore {Math.min(sortedReports.length, 500)} shown
+                  </ActionButton>
+                )}
                 <label className="flex items-center gap-2 text-sm text-muted">
                   <span className="hidden sm:inline">Sort</span>
                   <select

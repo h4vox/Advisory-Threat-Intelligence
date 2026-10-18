@@ -440,7 +440,7 @@ export function AppShell({
   // Only show counts the store actually reports (no badge rather than a misleading 0).
   const storeCounts = countsQuery.data?.configured ? countsQuery.data : undefined;
   const counts: Record<string, number | undefined> = {
-    "/library": storeCounts?.totalReports,
+    "/library": storeCounts?.visibleReports ?? storeCounts?.totalReports,
     "/sources": storeCounts?.totalSources,
   };
 

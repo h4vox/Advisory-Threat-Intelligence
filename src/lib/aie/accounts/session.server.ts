@@ -183,7 +183,13 @@ export async function ensureAccountsReady(): Promise<AccountsStore> {
 
 /** Shown to visitors who may not be signed in: the kind of failure, never hosts, paths or driver text (those go to the server log). */
 function storeError(err: unknown): string {
-  if (err instanceof AccountError) return err.message;
+  if (err instanceof AccountError) {
+    // A store timeout with MongoDB configured almost always means MONGODB_URI or network access.
+    if (err.status === 503 && accountsStorage() === "mongodb") {
+      return "MongoDB did not respond. Check MONGODB_URI and the database's network access (details are in the server log).";
+    }
+    return err.message;
+  }
   console.warn("[accounts] account store error:", err instanceof Error ? err.message : err);
   return accountsStorage() === "mongodb"
     ? "MongoDB is not reachable. Check MONGODB_URI and the database's network access (details are in the server log)."
