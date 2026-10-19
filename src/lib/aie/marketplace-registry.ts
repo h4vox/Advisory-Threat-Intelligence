@@ -255,9 +255,9 @@ export const DEFAULT_INTEGRATIONS: IntegrationItem[] = [
     status: "installed",
     isDefault: true,
     description:
-      "Autonomous CTI research, deep procedurizing, and adversary emulation engine isolated inside a dedicated container sandbox.",
+      "Built-in autonomous agent for CTI research, report qualification, and ATT&CK mapping. Runs in an isolated sandbox with no API key — the default when no direct provider is set.",
     overview:
-      "The Autonomous AI Agent Engine provides deep cognitive threat research. It autonomously navigates cyber disclosures, extracts procedural telemetry, maps adversary tradecraft directly to MITRE ATT&CK techniques, and generates actionable detection engineering rules in an isolated container sandbox.",
+      "The built-in autonomous agent researches public threat intelligence, qualifies and scores candidate reports, maps adversary behaviour to MITRE ATT&CK, and drafts detection rules. It runs in an isolated sandbox and is the zero-configuration fallback used whenever no direct API provider is active.",
     authUrl: generateAgyOAuthUrl(),
     actions: [
       {
