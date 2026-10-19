@@ -116,6 +116,8 @@ export type PlaybookBlockItem = {
 export type MarketplaceState = {
   activeProviderId: string;
   activeModel: string;
+  /** Admin-only Debugger Mode (deep diagnostics in the UI). */
+  debuggerMode: boolean;
   integrations: IntegrationItem[];
   curatedResources: CuratedResourceCatalogItem[];
   powerups: PowerupItem[];

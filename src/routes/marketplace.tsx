@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Activity,
   AlertCircle,
   Bot,
+  Bug,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -40,6 +42,7 @@ import { Input } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
+import { useAppSession } from "@/components/auth/use-app-session";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
   getMarketplaceData,
@@ -56,6 +59,7 @@ import {
   clearAgentSandboxLogs,
   getContainerDetailedMetrics,
   executeDiagnosticsCommand,
+  setDebuggerMode,
   type ContainerDetailedMetrics,
 } from "@/lib/aie/server";
 import type {
@@ -189,6 +193,21 @@ function MarketplacePage() {
   const integrations = marketplaceState?.integrations || [];
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
   const activeModel = sanitizeAgyModel(marketplaceState?.activeModel);
+
+  // Debugger Mode: admin-only switch that reveals deep sandbox/diagnostics UI. Off for everyone by
+  // default, so analysts see clean status instead of container internals.
+  const session = useAppSession();
+  const isAdmin = session.user?.method === "password" && session.user.role === "admin";
+  const debuggerMode = Boolean(marketplaceState?.debuggerMode);
+  const showDebug = isAdmin && debuggerMode;
+  const setDebuggerModeMutation = useMutation({
+    mutationFn: (enabled: boolean) => setDebuggerMode({ data: { enabled } }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
+      queryClient.invalidateQueries({ queryKey: ["app-settings"] });
+    },
+    onError: (err: any) => toast.error(err?.message || "Could not change Debugger Mode"),
+  });
 
   // Real installation mutation (executes real script, rm for reconfig, captures stdout/stderr)
   const realInstallMutation = useMutation({
@@ -479,54 +498,66 @@ function MarketplacePage() {
             title="Marketplace"
             description="Install, configure, and manage external AI agents, API endpoints, curated adversary feeds, and execution blocks."
             actions={
-              <div className="flex min-w-0 max-w-full flex-col gap-1.5 rounded-lg border border-border bg-bg-card px-3 py-2 text-xs">
-                {/* Agent sandbox environment indicator */}
-                <div className="flex items-center gap-2">
-                  <StatusDot
-                    tone={
-                      (sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning) || sandboxStatus?.isReady
-                        ? "success"
-                        : "warning"
-                    }
-                  >
-                    <span className="text-muted">Sandbox</span>
-                  </StatusDot>
-                  <span className="font-medium text-fg">
-                    {sandboxStatus?.runtime === "docker"
-                      ? `${sandboxStatus.containerName} (active)`
-                      : sandboxStatus?.runtime === "wsl"
-                        ? "WSL Linux bridge"
-                        : sandboxStatus?.runtime === "native"
-                          ? "Host native runtime"
-                          : "Standby"}
-                  </span>
-                  {sandboxStatus?.runtime === "docker" && <span className="text-subtle">· Isolated</span>}
-                  <button
-                    type="button"
-                    onClick={() => restartSandboxMutation.mutate()}
-                    disabled={restartSandboxMutation.isPending}
-                    title="Restart agent sandbox container"
-                    aria-label="Restart agent sandbox container"
-                    className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
-                  >
-                    {restartSandboxMutation.isPending ? (
-                      <ActivitySpinner size="xs" className="text-accent" />
-                    ) : (
-                      <RefreshCw className="size-3.5" strokeWidth={1.75} />
-                    )}
-                  </button>
-                </div>
-
-                {/* Active AI agent indicator */}
-                <div className="flex min-w-0 items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {/* Clean "active AI" indicator — the one thing analysts need to see. */}
+                <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
                   <StatusDot tone="success">
-                    <span className="text-muted">Agent</span>
+                    <span className="text-muted">Active AI</span>
                   </StatusDot>
                   <span className="truncate font-medium text-fg">
-                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}
+                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous AI Agent"}
                   </span>
                   <span className="shrink-0 font-mono text-[11px] text-muted">{activeModel}</span>
                 </div>
+
+                {/* Admin-only Debugger Mode switch. */}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setDebuggerModeMutation.mutate(!debuggerMode)}
+                    disabled={setDebuggerModeMutation.isPending}
+                    aria-pressed={debuggerMode}
+                    title={debuggerMode ? "Debugger Mode is on — click to hide diagnostics" : "Debugger Mode — show deep diagnostics"}
+                    className={cn(
+                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+                      debuggerMode ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-bg-elevated text-muted hover:text-fg",
+                    )}
+                  >
+                    <Bug className="size-3.5" strokeWidth={1.75} />
+                    Debugger{debuggerMode ? " on" : ""}
+                  </button>
+                )}
+
+                {/* Sandbox runtime detail only in Debugger Mode. */}
+                {showDebug && (
+                  <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
+                    <StatusDot
+                      tone={(sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning) || sandboxStatus?.isReady ? "success" : "warning"}
+                    >
+                      <span className="text-muted">Sandbox</span>
+                    </StatusDot>
+                    <span className="font-medium text-fg">
+                      {sandboxStatus?.runtime === "docker"
+                        ? `${sandboxStatus.containerName} (active)`
+                        : sandboxStatus?.runtime === "wsl"
+                          ? "WSL Linux bridge"
+                          : sandboxStatus?.runtime === "native"
+                            ? "Host native runtime"
+                            : "Standby"}
+                    </span>
+                    {sandboxStatus?.runtime === "docker" && <span className="text-subtle">· Isolated</span>}
+                    <button
+                      type="button"
+                      onClick={() => restartSandboxMutation.mutate()}
+                      disabled={restartSandboxMutation.isPending}
+                      title="Restart agent sandbox container"
+                      aria-label="Restart agent sandbox container"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
+                    >
+                      {restartSandboxMutation.isPending ? <ActivitySpinner size="xs" className="text-accent" /> : <RefreshCw className="size-3.5" strokeWidth={1.75} />}
+                    </button>
+                  </div>
+                )}
               </div>
             }
             tabs={

@@ -3446,6 +3446,7 @@ export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
   return {
     activeProviderId: settings.activeAgentProvider || "agy_agent",
     activeModel: sanitizeAgyModel(settings.agentModel),
+    debuggerMode: Boolean(settings.debuggerMode),
     integrations,
     curatedResources: DEFAULT_CURATED_RESOURCES,
     powerups: DEFAULT_POWERUPS,
