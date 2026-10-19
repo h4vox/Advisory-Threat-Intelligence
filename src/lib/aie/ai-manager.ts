@@ -25,6 +25,7 @@ import {
 import {
   getProviderAdapter,
   isRestApiProvider,
+  REST_PROVIDER_META,
   type LLMGenerateResult,
 } from "./providers";
 import type { ResourceClassification } from "./qualification";
@@ -164,19 +165,15 @@ function stripProviderPrefix(modelName: string): string {
   return (colonIdx >= 0 ? modelName.slice(colonIdx + 1) : modelName).trim();
 }
 
-const REST_PROVIDER_DEFAULT_MODELS: Record<string, string> = {
-  gemini_api: "gemini-2.5-flash",
-  claude_api: "claude-3-7-sonnet",
-  openai_api: "gpt-4o",
-  codex_agent: "gpt-4o",
-};
+// Defaults and model-recognition come from the provider registry (providers/index.ts), the single
+// source of truth, so adding a provider there makes it work here with no change.
+const REST_PROVIDER_DEFAULT_MODELS: Record<string, string> = Object.fromEntries(
+  Object.values(REST_PROVIDER_META).map((m) => [m.id, m.defaultModel]),
+);
 
-const REST_PROVIDER_MODEL_PATTERNS: Record<string, RegExp> = {
-  gemini_api: /^gemini[-\w.]*$/i,
-  claude_api: /^claude[-\w.]*$/i,
-  openai_api: /^(gpt|o\d|chatgpt|codex)[-\w.]*$/i,
-  codex_agent: /^(gpt|o\d|chatgpt|codex)[-\w.]*$/i,
-};
+const REST_PROVIDER_MODEL_PATTERNS: Record<string, RegExp> = Object.fromEntries(
+  Object.values(REST_PROVIDER_META).map((m) => [m.id, m.modelPattern]),
+);
 
 /** True when `model` (prefix already stripped) is a model of `providerId`. */
 function modelBelongsToProvider(providerId: string, model: string, supportedModels: string[] = []): boolean {
@@ -301,16 +298,9 @@ export async function getActiveAIProvider(): Promise<{
     const rawModel = isRestProvider ? model : stripModelPrefix(model);
     const timeoutSeconds = settings.agentTimeoutSeconds || 45;
 
-    // Resolve API key from integration config or environment variables
-    const apiKey =
-      integration?.config?.apiKey ||
-      (providerId === "gemini_api"
-        ? process.env.GEMINI_API_KEY
-        : providerId === "claude_api"
-        ? process.env.ANTHROPIC_API_KEY
-        : providerId === "openai_api" || providerId === "codex_agent"
-        ? process.env.OPENAI_API_KEY
-        : undefined);
+    // Resolve API key from integration config or the provider's environment variables (registry-driven).
+    const envKey = (REST_PROVIDER_META[providerId]?.envKeys ?? []).map((k) => process.env[k]?.trim()).find(Boolean);
+    const apiKey = integration?.config?.apiKey || envKey;
 
     const endpointUrl = integration?.endpointUrl;
     const isRest = isRestProvider;

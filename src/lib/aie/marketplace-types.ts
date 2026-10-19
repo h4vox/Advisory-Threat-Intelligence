@@ -7,6 +7,7 @@
  */
 
 export type IntegrationCategory =
+  | "AI Providers"
   | "Intelligence"
   | "Analysis"
   | "Automation"

@@ -74,7 +74,7 @@ type TabType = "home" | "curated" | "response" | "powerups" | "playbooks";
 
 function MarketplacePage() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabType>("response");
+  const [activeTab, setActiveTab] = useState<TabType>("home");
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState("");
@@ -567,7 +567,7 @@ function MarketplacePage() {
                       ariaLabel="Integration category"
                       value={categoryFilter}
                       onChange={setCategoryFilter}
-                      items={["All", "Intelligence", "Analysis", "Automation"].map((cat) => ({ value: cat, label: cat }))}
+                      items={["All", "AI Providers", "Intelligence", "Analysis", "Automation"].map((cat) => ({ value: cat, label: cat }))}
                     />
                   </>
                 }

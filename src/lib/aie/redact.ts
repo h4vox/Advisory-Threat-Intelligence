@@ -1,4 +1,4 @@
-import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
+import type { IntegrationItem, MarketplaceState } from "./marketplace-types.ts";
 
 /**
  * Secrets never leave the server. Integrations sent to the browser carry only
@@ -33,7 +33,7 @@ export function redactMarketplaceState(state: MarketplaceState): MarketplaceStat
 }
 
 /** Hosts a configured provider endpoint may point at. Extend via AIE_ALLOWED_LLM_HOSTS. */
-const DEFAULT_LLM_HOSTS = ["api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com"];
+const DEFAULT_LLM_HOSTS = ["api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com", "openrouter.ai", "api.x.ai", "api.deepseek.com"];
 
 export function isAllowedProviderEndpoint(raw: string): boolean {
   let url: URL;
