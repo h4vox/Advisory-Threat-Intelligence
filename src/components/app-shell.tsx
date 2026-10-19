@@ -32,6 +32,7 @@ import {
   Route as RouteIcon,
   ScanSearch,
   ShieldAlert,
+  ScrollText,
   UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -65,7 +66,10 @@ const NAV_GROUPS: NavGroup[] = [
   {
     id: "emulation",
     label: "Emulation",
-    items: [{ to: "/purple", label: "Purple paths", icon: RouteIcon }],
+    items: [
+      { to: "/purple", label: "Purple paths", icon: RouteIcon },
+      { to: "/advisories", label: "Advisories", icon: ScrollText },
+    ],
   },
   {
     id: "collection",
