@@ -43,7 +43,7 @@ import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
 import { useAppSession } from "@/components/auth/use-app-session";
-import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
+import { DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
   getMarketplaceData,
   installMarketplaceIntegration,
@@ -201,7 +201,9 @@ function MarketplacePage() {
 
   const integrations = marketplaceState?.integrations || [];
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
-  const activeModel = sanitizeAgyModel(marketplaceState?.activeModel);
+  // The server resolves the active model REST-aware (see active-model.ts); REST/API models must not
+  // be re-normalised here, or e.g. "gpt-4o" would be rewritten to a sandbox model.
+  const activeModel = marketplaceState?.activeModel || DEFAULT_AGY_MODEL;
 
   // Admin toggle for Debugger Mode (derivations live above, near the telemetry queries).
   const setDebuggerModeMutation = useMutation({

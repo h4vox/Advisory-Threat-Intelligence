@@ -162,7 +162,8 @@ import {
 } from "./ai-manager";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL, AGY_AVAILABLE_MODELS } from "./agent-framework/types";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
-import { getProviderAdapter } from "./providers";
+import { getProviderAdapter, isRestApiProvider } from "./providers";
+import { stripProviderPrefix } from "./active-model";
 import {
   detectSandboxRuntime,
   ensureAgentSandboxRunning,
@@ -3183,8 +3184,22 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" }).middlew
       throw new Error(`Integration ${data.id} not found`);
     }
 
-    const modelToSet = sanitizeAgyModel(data.model || selected.supportedModels[0]);
+    // REST/API providers (OpenAI, Claude, Gemini, OpenRouter, …) keep their own model id on the
+    // integration so the AI manager uses it; it must never be run through the AGY normaliser, or a
+    // model like "gpt-4o" would be rewritten to a sandbox model. AGY keeps its normalised agentModel.
+    if (isRestApiProvider(data.id)) {
+      const requested = stripProviderPrefix(data.model);
+      const model = requested || stripProviderPrefix(selected.config?.selectedModel) || selected.supportedModels[0] || "";
+      await mongoSaveMarketplaceIntegration({
+        ...selected,
+        config: { ...(selected.config || {}), selectedModel: model },
+      });
+      await mongoUpdateAppSettings({ activeAgentProvider: data.id });
+      logger.serverFn("setActiveAgentProvider", "DONE", undefined, { provider: data.id, model });
+      return { success: true, activeProviderId: data.id, activeModel: model };
+    }
 
+    const modelToSet = sanitizeAgyModel(data.model || selected.supportedModels[0]);
     await mongoUpdateAppSettings({
       activeAgentProvider: data.id,
       agentModel: modelToSet,

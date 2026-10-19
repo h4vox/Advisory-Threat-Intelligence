@@ -41,6 +41,7 @@ import {
 import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
 import { isCandidateResourceUrl } from "../aie/qualification";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "../aie/agent-framework/types";
+import { resolveActiveModel } from "../aie/active-model";
 import { excerptAround, extractExactIds, queryTerms, selectPassages } from "../aie/retrieval";
 
 let indexesEnsured = false;
@@ -3443,9 +3444,17 @@ export async function mongoGetMarketplaceState(): Promise<MarketplaceState> {
   const integrations = await mongoGetMarketplaceIntegrations();
   const settings = await mongoGetAppSettings();
 
+  const activeProviderId = settings.activeAgentProvider || "agy_agent";
+  const activeIntegration = integrations.find((x) => x.id === activeProviderId);
+
   return {
-    activeProviderId: settings.activeAgentProvider || "agy_agent",
-    activeModel: sanitizeAgyModel(settings.agentModel),
+    activeProviderId,
+    // REST/API providers keep their own model; the AGY agent path is normalised. See active-model.ts.
+    activeModel: resolveActiveModel({
+      providerId: activeProviderId,
+      agentModel: settings.agentModel,
+      selectedModel: activeIntegration?.config?.selectedModel,
+    }),
     debuggerMode: Boolean(settings.debuggerMode),
     integrations,
     curatedResources: DEFAULT_CURATED_RESOURCES,
