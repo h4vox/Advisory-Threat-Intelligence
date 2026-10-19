@@ -143,6 +143,15 @@ function MarketplacePage() {
     queryFn: () => detectLocalAgentSession(),
   });
 
+  // Debugger Mode: admin-only switch that reveals deep sandbox/diagnostics UI. Off for everyone by
+  // default, so analysts see clean status instead of container internals. Derived here (above the
+  // telemetry/log queries) so those queries poll only while an admin has the Debugger panel open.
+  const session = useAppSession();
+  const isAdmin = session.user?.method === "password" && session.user.role === "admin";
+  const debuggerMode = Boolean(marketplaceState?.debuggerMode);
+  const showDebug = isAdmin && debuggerMode;
+  const debugPanelOpen = showDebug && !!selectedIntegration;
+
   // Query isolated agent sandbox runtime status (adaptive: 10s when modal open, 45s idle)
   const { data: sandboxStatus, refetch: refetchSandbox } = useQuery({
     queryKey: ["agent_sandbox_status"],
@@ -151,19 +160,19 @@ function MarketplacePage() {
     staleTime: 10000,
   });
 
-  // Query global live sandbox diagnostics logs (only poll when logs drawer is expanded)
+  // Query global live sandbox diagnostics logs (poll only while install logs or the Debugger panel are open)
   const { data: sandboxLogsData, refetch: refetchLogs } = useQuery({
     queryKey: ["agent_sandbox_logs"],
     queryFn: () => getAgentSandboxLogs(),
-    refetchInterval: isLogsExpanded ? 3000 : false,
+    refetchInterval: isLogsExpanded || debugPanelOpen ? 3000 : false,
     staleTime: 3000,
   });
 
-  // Query live detailed container metrics & host telemetry (only poll when telemetry strip is open)
+  // Query live detailed container metrics & host telemetry (poll only while the Debugger panel is open)
   const { data: containerMetrics, refetch: refetchMetrics } = useQuery({
     queryKey: ["container_detailed_metrics"],
     queryFn: () => getContainerDetailedMetrics(),
-    refetchInterval: isLogsExpanded ? 4000 : false,
+    refetchInterval: isLogsExpanded || debugPanelOpen ? 4000 : false,
     staleTime: 4000,
   });
 
@@ -194,12 +203,7 @@ function MarketplacePage() {
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
   const activeModel = sanitizeAgyModel(marketplaceState?.activeModel);
 
-  // Debugger Mode: admin-only switch that reveals deep sandbox/diagnostics UI. Off for everyone by
-  // default, so analysts see clean status instead of container internals.
-  const session = useAppSession();
-  const isAdmin = session.user?.method === "password" && session.user.role === "admin";
-  const debuggerMode = Boolean(marketplaceState?.debuggerMode);
-  const showDebug = isAdmin && debuggerMode;
+  // Admin toggle for Debugger Mode (derivations live above, near the telemetry queries).
   const setDebuggerModeMutation = useMutation({
     mutationFn: (enabled: boolean) => setDebuggerMode({ data: { enabled } }),
     onSuccess: () => {
@@ -949,14 +953,18 @@ function MarketplacePage() {
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
-                      <div className="flex items-center justify-between text-subtle">
-                        <span>Architecture</span>
-                        <span className="font-medium text-fg">Isolated container sandbox</span>
-                      </div>
-                      <div className="flex items-center justify-between text-subtle">
-                        <span>Authentication</span>
-                        <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
-                      </div>
+                      {showDebug && (
+                        <>
+                          <div className="flex items-center justify-between text-subtle">
+                            <span>Architecture</span>
+                            <span className="font-medium text-fg">Isolated container sandbox</span>
+                          </div>
+                          <div className="flex items-center justify-between text-subtle">
+                            <span>Authentication</span>
+                            <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
+                          </div>
+                        </>
+                      )}
                       <div className="flex items-center justify-between text-subtle">
                         <span>Active model</span>
                         <span className="font-mono text-accent">
@@ -1127,6 +1135,130 @@ function MarketplacePage() {
                         activeModel={selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
                         embedded={true}
                       />
+                    </div>
+                  </div>
+                )}
+
+                {/* Admin-only Debugger panel: deep diagnostics in a compact, neat format. */}
+                {showDebug && (
+                  <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                        <Bug className="size-3.5" />
+                        <span>Debugger</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            refetchMetrics();
+                            refetchLogs();
+                          }}
+                          title="Refresh diagnostics"
+                          aria-label="Refresh diagnostics"
+                          className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg"
+                        >
+                          <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportDiagnosticBundle}
+                          title="Export diagnostic bundle (JSON)"
+                          aria-label="Export diagnostic bundle"
+                          className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg"
+                        >
+                          <Download className="size-3.5" strokeWidth={1.75} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Container & host telemetry */}
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                      <TelemetryRow label="Runtime" value={containerMetrics?.dockerAvailable ? "Docker" : "Host"} />
+                      <TelemetryRow
+                        label="Container"
+                        value={containerMetrics?.containerRunning ? "running" : "stopped"}
+                        tone={containerMetrics?.containerRunning ? "ok" : "warn"}
+                      />
+                      {containerMetrics?.uptime && <TelemetryRow label="Uptime" value={containerMetrics.uptime} />}
+                      {containerMetrics?.cpuPercent && <TelemetryRow label="CPU" value={containerMetrics.cpuPercent} />}
+                      {containerMetrics?.memoryUsage && <TelemetryRow label="Memory" value={containerMetrics.memoryUsage} />}
+                      {typeof containerMetrics?.pids === "number" && (
+                        <TelemetryRow label="PIDs" value={String(containerMetrics.pids)} />
+                      )}
+                      <TelemetryRow label="Host RSS" value={`${containerMetrics?.hostMemoryRssMb ?? "—"} MB`} />
+                      <TelemetryRow label="Heap" value={`${containerMetrics?.hostHeapUsedMb ?? "—"} MB`} />
+                      <TelemetryRow
+                        label="Platform"
+                        value={containerMetrics ? `${containerMetrics.platform}/${containerMetrics.arch}` : "—"}
+                      />
+                      <TelemetryRow label="Node" value={containerMetrics?.nodeVersion || "—"} />
+                      <TelemetryRow
+                        label="Token"
+                        value={containerMetrics?.tokenDetected ? "present" : "none"}
+                        tone={containerMetrics?.tokenDetected ? "ok" : "warn"}
+                      />
+                      <TelemetryRow
+                        label="Log lines"
+                        value={String(containerMetrics?.logCount ?? sandboxLogsData?.count ?? 0)}
+                      />
+                    </div>
+
+                    {/* Diagnostics probes */}
+                    <div>
+                      <div className="mb-1.5 text-[11px] font-medium text-subtle">Probes</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(["version", "models", "ping", "stats", "token", "help"] as const).map((cmd) => (
+                          <button
+                            key={cmd}
+                            type="button"
+                            disabled={diagnosticsCommandMutation.isPending}
+                            onClick={() => diagnosticsCommandMutation.mutate(cmd)}
+                            className="rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-[11px] text-fg transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                          >
+                            {cmd}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Recent sandbox logs */}
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-subtle">Recent logs</span>
+                        <button
+                          type="button"
+                          onClick={() => clearLogsMutation.mutate()}
+                          disabled={clearLogsMutation.isPending}
+                          className="text-[11px] text-subtle transition-colors hover:text-danger disabled:opacity-50"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-black/40 p-2 font-mono text-[10px] leading-relaxed">
+                        {sandboxLogsData?.logs && sandboxLogsData.logs.length > 0 ? (
+                          sandboxLogsData.logs.slice(-50).map((entry) => (
+                            <div key={entry.id} className="whitespace-pre-wrap break-all">
+                              <span className="text-subtle">{entry.formattedTime}</span>{" "}
+                              <span
+                                className={cn(
+                                  entry.level === "ERROR" || entry.level === "STDERR"
+                                    ? "text-danger"
+                                    : entry.level === "WARN"
+                                      ? "text-warn"
+                                      : "text-accent",
+                                )}
+                              >
+                                {entry.level}
+                              </span>{" "}
+                              <span className="text-subtle">{entry.category}</span>{" "}
+                              <span className="text-fg">{entry.message}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-subtle">No recent sandbox logs.</div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1535,6 +1667,18 @@ function IntegrationCard({
         <div>{status}</div>
         {action}
       </div>
+    </div>
+  );
+}
+
+/** One compact label/value row in the admin Debugger telemetry grid. */
+function TelemetryRow({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-subtle">{label}</span>
+      <span className={cn("truncate font-mono", tone === "ok" ? "text-sage" : tone === "warn" ? "text-warn" : "text-fg")}>
+        {value}
+      </span>
     </div>
   );
 }
