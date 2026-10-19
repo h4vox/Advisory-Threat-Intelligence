@@ -62,6 +62,11 @@ const CONFIG_CACHE_TTL_MS = 60_000;
 let cachedAppSettings: { timestamp: number; data: AppSettings } | null = null;
 const SETTINGS_CACHE_TTL_MS = 60_000;
 
+// Local fallback for app settings when MONGODB_URI is not set (mirrors memoryIntegrations). Holds
+// the active AI provider and model so the marketplace and model selection work without MongoDB;
+// resets on restart, like the rest of the no-Mongo path.
+let memoryAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS };
+
 // Active job checker registry (registered by crawler to avoid circular import)
 let jobActiveCheckFn: ((jobId: string) => boolean) | null = null;
 
@@ -1440,6 +1445,12 @@ export async function mongoGetAppSettings(): Promise<AppSettings> {
     return cachedAppSettings.data;
   }
 
+  // No MongoDB: serve the in-memory settings (seeded from defaults) so marketplace and model selection work.
+  if (!isMongoConfigured()) {
+    cachedAppSettings = { timestamp: Date.now(), data: memoryAppSettings };
+    return memoryAppSettings;
+  }
+
   const startTime = Date.now();
   const col = await getThreatIntelCollection();
   const doc = await col.findOne({ docType: "app_settings" });
@@ -1489,6 +1500,12 @@ export async function mongoGetAppSettings(): Promise<AppSettings> {
 export async function mongoUpdateAppSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
   const startTime = Date.now();
   invalidateSettingsCache();
+  // No MongoDB: update the in-memory settings (resets on restart).
+  if (!isMongoConfigured()) {
+    memoryAppSettings = { ...memoryAppSettings, ...updates, updatedAt: new Date().toISOString() };
+    cachedAppSettings = { timestamp: Date.now(), data: memoryAppSettings };
+    return memoryAppSettings;
+  }
   const col = await getThreatIntelCollection();
   const current = await mongoGetAppSettings();
   const merged = { ...current, ...updates, updatedAt: new Date().toISOString() };

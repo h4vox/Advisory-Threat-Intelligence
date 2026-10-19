@@ -31,12 +31,15 @@ import {
   isLocked,
   isWeakPassword,
   lockoutAfter,
+  looksLikeEmail,
   minutesUntil,
+  normalizeEmail,
   normalizeUsername,
   passwordError,
   releaseAttempt,
   reserveAttempt,
   usernameError,
+  usernameFromEmail,
   type AttemptWindow,
 } from "./policy";
 import {
@@ -92,6 +95,71 @@ function adminPassword(): string | undefined {
 
 export function adminConfigured(): boolean {
   return Boolean(adminPassword()) && !usernameError(adminUsername());
+}
+
+/** Temporary email + password account for development, set with DEV_USER_CRED_EMAIL / DEV_USER_CRED_PASS. */
+function devCred(): { email: string; password: string } | null {
+  const email = env("DEV_USER_CRED_EMAIL");
+  const password = process.env.DEV_USER_CRED_PASS?.trim() || undefined;
+  if (!email || !password) return null;
+  if (!looksLikeEmail(email) || password.length > PASSWORD_MAX_LENGTH) return null;
+  return { email: normalizeEmail(email), password };
+}
+
+/**
+ * Provision the dev credential account (admin role) so a teammate can sign in with the email and
+ * password from the environment before full auth is wired up. Like the admin bootstrap, changing
+ * DEV_USER_CRED_PASS resets it on the next start; the account is flagged so the UI can label it.
+ */
+async function bootstrapDevCred(store: AccountsStore): Promise<void> {
+  const cred = devCred();
+  if (!cred) return;
+  const username = usernameFromEmail(cred.email);
+  const now = new Date();
+  const existing = (await store.findUserByEmail(cred.email)) ?? (await store.findUserByUsername(username));
+  if (!existing) {
+    const [passwordHash, bootstrapHash] = await Promise.all([hashPassword(cred.password), hashPassword(cred.password)]);
+    try {
+      await store.insertUser({
+        id: newAccountId(),
+        username,
+        displayName: cred.email.split("@")[0] || username,
+        email: cred.email,
+        role: "admin",
+        passwordHash,
+        bootstrapHash,
+        weakPassword: isWeakPassword(cred.password),
+        disabled: false,
+        failedAttempts: 0,
+        lockedUntil: null,
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: null,
+        passwordChangedAt: now,
+        createdBy: "dev-credential",
+      });
+      console.info(`[accounts] dev credential account "${cred.email}" provisioned from DEV_USER_CRED_* (${store.kind})`);
+    } catch (err) {
+      if (!(err instanceof DuplicateUsernameError)) throw err;
+    }
+    return;
+  }
+  const unchanged = existing.bootstrapHash ? await verifyPassword(cred.password, existing.bootstrapHash) : false;
+  if (unchanged) return;
+  const [passwordHash, bootstrapHash] = await Promise.all([hashPassword(cred.password), hashPassword(cred.password)]);
+  await store.updateUser(existing.id, {
+    passwordHash,
+    bootstrapHash,
+    email: cred.email,
+    weakPassword: isWeakPassword(cred.password),
+    disabled: false,
+    failedAttempts: 0,
+    lockedUntil: null,
+    passwordChangedAt: now,
+  });
+  await store.deleteUserSessions(existing.id);
+  invalidateSessionCache();
+  console.info(`[accounts] dev credential account "${cred.email}" password reset from DEV_USER_CRED_* (${store.kind})`);
 }
 
 async function bootstrapAdmin(store: AccountsStore): Promise<void> {
@@ -169,16 +237,26 @@ const g = globalThis as typeof globalThis & {
  * always the current module's.
  */
 export async function ensureAccountsReady(): Promise<AccountsStore> {
-  const key = `${accountsStorage()}|${adminUsername()}|${adminPassword() ? "set" : "unset"}`;
+  const cred = devCred();
+  const key = `${accountsStorage()}|${adminUsername()}|${adminPassword() ? "set" : "unset"}|${cred ? cred.email + ":" + cred.password.length : "nodev"}`;
   if (!g.__aieAccountsReady__ || g.__aieAccountsReadyFor__ !== key) {
     g.__aieAccountsReadyFor__ = key;
-    g.__aieAccountsReady__ = bootstrapAdmin(getAccountsStore()).catch((err) => {
+    g.__aieAccountsReady__ = (async () => {
+      const store = getAccountsStore();
+      await bootstrapAdmin(store);
+      await bootstrapDevCred(store);
+    })().catch((err) => {
       g.__aieAccountsReady__ = undefined;
       throw err;
     });
   }
   await g.__aieAccountsReady__;
   return getAccountsStore();
+}
+
+/** Admin or dev credential configured in the environment — at least one account can exist. */
+function anyBootstrapConfigured(): boolean {
+  return adminConfigured() || devCred() !== null;
 }
 
 /** Shown to visitors who may not be signed in: the kind of failure, never hosts, paths or driver text (those go to the server log). */
@@ -330,22 +408,38 @@ async function devAccessAllowed(): Promise<boolean> {
   return !authConfigured && !gateIdentityEnabled();
 }
 
-/** Everything the sign-in gate needs. Never throws: an unreachable store is reported, not raised. */
+/**
+ * Everything the sign-in gate needs. Never throws: an unreachable store is reported, not raised.
+ *
+ * The gate only needs to know whether this request is signed in. When it carries no session token
+ * (a fresh browser, a signed-out visitor), that answer is "no" with certainty and no store round
+ * trip — so a slow or unreachable account store can never hold the app on "Checking session…".
+ * The bootstrap accounts are still provisioned, in the background.
+ */
 export async function describeAccountSession(embeddedToken?: string | null): Promise<AccountSessionInfo> {
   const base = {
     storage: accountsStorage(),
     adminConfigured: adminConfigured(),
     devAccess: await devAccessAllowed().catch(() => false),
   };
+  const token = requestSessionToken(embeddedToken);
+
+  // Fast path: nothing to resolve. Answer immediately; provision the admin / dev accounts off the
+  // hot path so the first sign-in still finds them.
+  if (!token) {
+    void ensureAccountsReady().catch((err) => console.warn("[accounts] background bootstrap failed:", err instanceof Error ? err.message : err));
+    if (readSessionCookie()) clearSessionCookie(); // a stale or malformed cookie
+    return { ...base, user: null, available: true, hasAccounts: anyBootstrapConfigured() };
+  }
+
+  // A session token is present: resolve it, bounded by the store timeout inside resolveSessionToken.
   try {
-    const store = await withTimeout(ensureAccountsReady(), STORE_TIMEOUT_MS, "The account store did not respond within 8 seconds.");
-    const user = await resolveRequestAccount(embeddedToken);
+    const user = await resolveRequestAccount(token);
     if (user) return { ...base, user: toPublicAccount(user), available: true, hasAccounts: true };
-    if (readSessionCookie()) clearSessionCookie(); // stale or revoked
-    const count = await withTimeout(store.countUsers(), STORE_TIMEOUT_MS, "The account store did not respond within 8 seconds.");
-    return { ...base, user: null, available: true, hasAccounts: count > 0 };
+    clearSessionCookie(); // stale or revoked
+    return { ...base, user: null, available: true, hasAccounts: anyBootstrapConfigured() };
   } catch (err) {
-    return { ...base, user: null, available: false, error: storeError(err), hasAccounts: base.adminConfigured };
+    return { ...base, user: null, available: false, error: storeError(err), hasAccounts: anyBootstrapConfigured() };
   }
 }
 
@@ -377,19 +471,21 @@ function lockedMessage(until: Date | string, now: Date, justLocked = false): str
     : `Too many failed sign-ins. This account is locked for ${minutes} more minute${minutes === 1 ? "" : "s"}.`;
 }
 
-export async function signInWithPassword(input: { username: string; password: string }): Promise<{ user: PublicAccount; token: string; expiresAt: string }> {
+export async function signInWithPassword(input: { identifier: string; password: string }): Promise<{ user: PublicAccount; token: string; expiresAt: string }> {
   const now = new Date();
   const ip = clientIp();
-  const username = normalizeUsername(input.username);
+  const raw = (input.identifier ?? "").trim();
+  const byEmail = looksLikeEmail(raw);
+  const identifier = byEmail ? normalizeEmail(raw) : normalizeUsername(raw);
   const password = input.password;
   // Reserve the attempt before any await: a burst of parallel guesses is cut off at the limit, not after it.
   const { byIp, byUser } = attemptWindows();
   if (!reserveAttempt(byIp, ip, IP_MAX_FAILURES, IP_WINDOW_MS, now.getTime())) {
     throw new AccountError(`Too many failed sign-ins from this network. Try again in ${minutesUntil(new Date(byIp.get(ip)!.resetAt), now)} minutes.`, 429);
   }
-  if (!reserveAttempt(byUser, username, LOCKOUT_MAX_FAILURES, LOCKOUT_MS, now.getTime())) {
+  if (!reserveAttempt(byUser, identifier, LOCKOUT_MAX_FAILURES, LOCKOUT_MS, now.getTime())) {
     releaseAttempt(byIp, ip);
-    throw new AccountError(lockedMessage(new Date(byUser.get(username)!.resetAt), now), 429);
+    throw new AccountError(lockedMessage(new Date(byUser.get(identifier)!.resetAt), now), 429);
   }
   if (!password || password.length > PASSWORD_MAX_LENGTH) throw new AccountError(INVALID, 401);
 
@@ -398,10 +494,10 @@ export async function signInWithPassword(input: { username: string; password: st
     store = await withTimeout(ensureAccountsReady(), STORE_TIMEOUT_MS, "The account store did not respond within 8 seconds.");
   } catch (err) {
     releaseAttempt(byIp, ip);
-    releaseAttempt(byUser, username);
+    releaseAttempt(byUser, identifier);
     throw new AccountError(storeError(err), 503);
   }
-  const user = usernameError(username) ? null : await store.findUserByUsername(username);
+  const user = byEmail ? await store.findUserByEmail(identifier) : usernameError(identifier) ? null : await store.findUserByUsername(identifier);
   if (!user) {
     await verifyPassword(password, await dummyPasswordHash());
     throw new AccountError(INVALID, 401);
@@ -418,7 +514,7 @@ export async function signInWithPassword(input: { username: string; password: st
   // Checked after the password so the account's state is not revealed to someone without it.
   if (user.disabled) throw new AccountError("This account is disabled. Ask an administrator to enable it.", 403);
   releaseAttempt(byIp, ip);
-  byUser.delete(username);
+  byUser.delete(identifier);
 
   const token = newSessionToken();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);

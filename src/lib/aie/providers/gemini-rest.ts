@@ -12,7 +12,7 @@ import type {
   LLMGenerateResult,
   LLMMessage,
   ProviderConnectionTestResult,
-} from "./types";
+} from "./types.ts";
 
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_MODEL = "gemini-2.5-flash";

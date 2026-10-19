@@ -27,7 +27,7 @@ function Login() {
   const { redirect } = Route.useSearch();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [username, setUsername] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,13 +47,13 @@ function Login() {
     e.preventDefault();
     if (submitting) return;
     setError(null);
-    if (!username.trim() || !password) {
-      setError("Enter your username and password.");
+    if (!identifier.trim() || !password) {
+      setError("Enter your email or username and password.");
       return;
     }
     setSubmitting(true);
     try {
-      const res = await passwordSignIn({ data: { username, password } });
+      const res = await passwordSignIn({ data: { identifier, password } });
       const kept = await adoptPasswordSession(queryClient, res.user, res.token, isEmbedded());
       if (!kept) {
         setError("You signed in, but this browser did not keep the session. Allow cookies for this site and try again.");
@@ -117,7 +117,7 @@ function Login() {
           <form className="mt-5 space-y-4" onSubmit={onSubmit} method="post" noValidate>
             <div className="space-y-1.5">
               <label htmlFor="login-username" className="text-sm font-medium">
-                Username
+                Email or username
               </label>
               <input
                 id="login-username"
@@ -127,8 +127,8 @@ function Login() {
                 autoCorrect="off"
                 spellCheck={false}
                 autoFocus
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
                 disabled={submitting}
                 className={field}
               />

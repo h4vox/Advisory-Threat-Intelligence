@@ -1,4 +1,4 @@
-import { isAllowedProviderEndpoint } from "../redact";
+import { isAllowedProviderEndpoint } from "../redact.ts";
 /**
  * OpenAI & Local LLM REST API Direct Adapter
  *
@@ -12,7 +12,7 @@ import type {
   LLMGenerateResult,
   LLMMessage,
   ProviderConnectionTestResult,
-} from "./types";
+} from "./types.ts";
 
 const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4o";

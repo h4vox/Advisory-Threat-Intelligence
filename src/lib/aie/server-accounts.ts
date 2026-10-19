@@ -49,7 +49,7 @@ export const getAccountSession = createServerFn({ method: "POST" })
 export const passwordSignIn = createServerFn({ method: "POST" })
   .validator(
     z.object({
-      username: z.string().trim().min(1, "Enter your username.").max(100),
+      identifier: z.string().trim().min(1, "Enter your email or username.").max(254),
       password: z.string().min(1, "Enter your password.").max(1024),
     }),
   )

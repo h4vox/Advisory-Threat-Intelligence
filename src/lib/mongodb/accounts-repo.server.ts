@@ -58,6 +58,8 @@ export interface AccountsStore {
   countUsers(): Promise<number>;
   listUsers(): Promise<UserRecord[]>;
   findUserByUsername(username: string): Promise<UserRecord | null>;
+  /** First enabled-or-disabled account with this (lowercased) email, or null. Email is not unique. */
+  findUserByEmail(email: string): Promise<UserRecord | null>;
   findUserById(id: string): Promise<UserRecord | null>;
   /** Throws DuplicateUsernameError when the username exists. */
   insertUser(user: UserRecord): Promise<void>;
@@ -130,6 +132,10 @@ const mongoStore: AccountsStore = {
   async findUserByUsername(username) {
     const { users } = await mongoCollections();
     return (await users.findOne({ username }, NO_ID)) as UserRecord | null;
+  },
+  async findUserByEmail(email) {
+    const { users } = await mongoCollections();
+    return (await users.findOne({ email }, NO_ID)) as UserRecord | null;
   },
   async findUserById(id) {
     const { users } = await mongoCollections();
@@ -338,6 +344,11 @@ const localStore: AccountsStore = {
   async findUserByUsername(username) {
     const sql = await localSql();
     const rows = await sql<UserRow>`select * from aie_users where username = ${username} limit 1`;
+    return rows[0] ? fromUserRow(rows[0]) : null;
+  },
+  async findUserByEmail(email) {
+    const sql = await localSql();
+    const rows = await sql<UserRow>`select * from aie_users where email = ${email} order by created_at limit 1`;
     return rows[0] ? fromUserRow(rows[0]) : null;
   },
   async findUserById(id) {

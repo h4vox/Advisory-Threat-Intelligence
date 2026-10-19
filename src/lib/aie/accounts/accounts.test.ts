@@ -118,3 +118,15 @@ test("session tokens: 32 random bytes, stored only as SHA-256", () => {
   assert.equal(looksLikeSessionToken(null), false);
   assert.match(newAccountId(), /^usr_[0-9a-f]{24}$/);
 });
+
+test("email detection, normalization and username derivation for dev credentials", async () => {
+  const { looksLikeEmail, normalizeEmail, usernameFromEmail } = await import("./policy.ts");
+  assert.equal(looksLikeEmail("Dev.User@Example.com"), true);
+  assert.equal(looksLikeEmail("havox"), false);
+  assert.equal(looksLikeEmail("a@b"), false);
+  assert.equal(looksLikeEmail("a @b.com"), false);
+  assert.equal(normalizeEmail("  Dev.User@Example.COM "), "dev.user@example.com");
+  assert.equal(usernameFromEmail("Jane.Doe@corp.io"), "jane.doe");
+  assert.equal(usernameFromEmail("a@corp.io"), "devuser"); // local part too short for a username
+  assert.equal(usernameFromEmail("_weird_@corp.io"), "weird");
+});
