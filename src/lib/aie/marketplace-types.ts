@@ -11,6 +11,7 @@ export type IntegrationCategory =
   | "Intelligence"
   | "Analysis"
   | "Automation"
+  | "Messaging"
   | "Playbooks";
 
 export type IntegrationType = "cli_agent" | "api_provider" | "plugin" | "feed";
@@ -53,6 +54,9 @@ export type IntegrationItem = {
   config?: {
     apiKey?: string;
     authToken?: string;
+    /** Messaging integrations: the provider webhook URL (encrypted at rest, redacted to the client). */
+    webhookUrl?: string;
+    hasWebhook?: boolean;
     customBinaryPath?: string;
     selectedModel?: string;
     installedAt?: string;
@@ -116,6 +120,8 @@ export type PlaybookBlockItem = {
 export type MarketplaceState = {
   activeProviderId: string;
   activeModel: string;
+  /** Admin-only Debugger Mode (deep diagnostics in the UI). */
+  debuggerMode: boolean;
   integrations: IntegrationItem[];
   curatedResources: CuratedResourceCatalogItem[];
   powerups: PowerupItem[];

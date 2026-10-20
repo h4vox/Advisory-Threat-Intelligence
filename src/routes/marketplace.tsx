@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Activity,
   AlertCircle,
   Bot,
+  Bug,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -40,7 +42,8 @@ import { Input } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
-import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
+import { useAppSession } from "@/components/auth/use-app-session";
+import { DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
   getMarketplaceData,
   installMarketplaceIntegration,
@@ -56,8 +59,10 @@ import {
   clearAgentSandboxLogs,
   getContainerDetailedMetrics,
   executeDiagnosticsCommand,
+  setDebuggerMode,
   type ContainerDetailedMetrics,
 } from "@/lib/aie/server";
+import { sendTestMessage } from "@/lib/aie/server-messaging";
 import type {
   CuratedResourceCatalogItem,
   IntegrationCategory,
@@ -94,6 +99,7 @@ function MarketplacePage() {
   const [isReconfigMode, setIsReconfigMode] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [authTokenInput, setAuthTokenInput] = useState("");
+  const [webhookInput, setWebhookInput] = useState("");
   const [selectedModelInput, setSelectedModelInput] = useState("");
   const [modalFeedback, setModalFeedback] = useState<string | null>(null);
   // OAuth (PKCE) is generated server-side; the client only ever sees the server's authUrl.
@@ -139,6 +145,15 @@ function MarketplacePage() {
     queryFn: () => detectLocalAgentSession(),
   });
 
+  // Debugger Mode: admin-only switch that reveals deep sandbox/diagnostics UI. Off for everyone by
+  // default, so analysts see clean status instead of container internals. Derived here (above the
+  // telemetry/log queries) so those queries poll only while an admin has the Debugger panel open.
+  const session = useAppSession();
+  const isAdmin = session.user?.method === "password" && session.user.role === "admin";
+  const debuggerMode = Boolean(marketplaceState?.debuggerMode);
+  const showDebug = isAdmin && debuggerMode;
+  const debugPanelOpen = showDebug && !!selectedIntegration;
+
   // Query isolated agent sandbox runtime status (adaptive: 10s when modal open, 45s idle)
   const { data: sandboxStatus, refetch: refetchSandbox } = useQuery({
     queryKey: ["agent_sandbox_status"],
@@ -147,19 +162,19 @@ function MarketplacePage() {
     staleTime: 10000,
   });
 
-  // Query global live sandbox diagnostics logs (only poll when logs drawer is expanded)
+  // Query global live sandbox diagnostics logs (poll only while install logs or the Debugger panel are open)
   const { data: sandboxLogsData, refetch: refetchLogs } = useQuery({
     queryKey: ["agent_sandbox_logs"],
     queryFn: () => getAgentSandboxLogs(),
-    refetchInterval: isLogsExpanded ? 3000 : false,
+    refetchInterval: isLogsExpanded || debugPanelOpen ? 3000 : false,
     staleTime: 3000,
   });
 
-  // Query live detailed container metrics & host telemetry (only poll when telemetry strip is open)
+  // Query live detailed container metrics & host telemetry (poll only while the Debugger panel is open)
   const { data: containerMetrics, refetch: refetchMetrics } = useQuery({
     queryKey: ["container_detailed_metrics"],
     queryFn: () => getContainerDetailedMetrics(),
-    refetchInterval: isLogsExpanded ? 4000 : false,
+    refetchInterval: isLogsExpanded || debugPanelOpen ? 4000 : false,
     staleTime: 4000,
   });
 
@@ -188,7 +203,34 @@ function MarketplacePage() {
 
   const integrations = marketplaceState?.integrations || [];
   const activeProviderId = marketplaceState?.activeProviderId || "agy_agent";
-  const activeModel = sanitizeAgyModel(marketplaceState?.activeModel);
+  // The server resolves the active model REST-aware (see active-model.ts); REST/API models must not
+  // be re-normalised here, or e.g. "gpt-4o" would be rewritten to a sandbox model.
+  const activeModel = marketplaceState?.activeModel || DEFAULT_AGY_MODEL;
+
+  // Admin toggle for Debugger Mode (derivations live above, near the telemetry queries).
+  const setDebuggerModeMutation = useMutation({
+    mutationFn: (enabled: boolean) => setDebuggerMode({ data: { enabled } }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
+      queryClient.invalidateQueries({ queryKey: ["app-settings"] });
+    },
+    onError: (err: any) => toast.error(err?.message || "Could not change Debugger Mode"),
+  });
+
+  // Messaging integrations: send a test message through the configured webhook.
+  const sendTestMutation = useMutation({
+    mutationFn: (id: string) => sendTestMessage({ data: { id } }),
+    onSuccess: (res) => {
+      setModalTestResult({ success: res.ok, message: res.message });
+      if (res.ok) toast.success(res.message);
+      else toast.error(res.message);
+    },
+    onError: (err: any) => {
+      const m = err?.message || "Could not send the test message";
+      setModalTestResult({ success: false, message: m });
+      toast.error(m);
+    },
+  });
 
   // Real installation mutation (executes real script, rm for reconfig, captures stdout/stderr)
   const realInstallMutation = useMutation({
@@ -315,6 +357,7 @@ function MarketplacePage() {
     // Never prefill stored secrets; the server only reports whether one exists.
     setApiKeyInput("");
     setAuthTokenInput("");
+    setWebhookInput("");
     setSelectedModelInput(item.config?.selectedModel || item.supportedModels[0] || "");
     setRealInstallLogs(item.config?.logs || []);
     setIsLogsExpanded(true);
@@ -479,54 +522,66 @@ function MarketplacePage() {
             title="Marketplace"
             description="Install, configure, and manage external AI agents, API endpoints, curated adversary feeds, and execution blocks."
             actions={
-              <div className="flex min-w-0 max-w-full flex-col gap-1.5 rounded-lg border border-border bg-bg-card px-3 py-2 text-xs">
-                {/* Agent sandbox environment indicator */}
-                <div className="flex items-center gap-2">
-                  <StatusDot
-                    tone={
-                      (sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning) || sandboxStatus?.isReady
-                        ? "success"
-                        : "warning"
-                    }
-                  >
-                    <span className="text-muted">Sandbox</span>
-                  </StatusDot>
-                  <span className="font-medium text-fg">
-                    {sandboxStatus?.runtime === "docker"
-                      ? `${sandboxStatus.containerName} (active)`
-                      : sandboxStatus?.runtime === "wsl"
-                        ? "WSL Linux bridge"
-                        : sandboxStatus?.runtime === "native"
-                          ? "Host native runtime"
-                          : "Standby"}
-                  </span>
-                  {sandboxStatus?.runtime === "docker" && <span className="text-subtle">· Isolated</span>}
-                  <button
-                    type="button"
-                    onClick={() => restartSandboxMutation.mutate()}
-                    disabled={restartSandboxMutation.isPending}
-                    title="Restart agent sandbox container"
-                    aria-label="Restart agent sandbox container"
-                    className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
-                  >
-                    {restartSandboxMutation.isPending ? (
-                      <ActivitySpinner size="xs" className="text-accent" />
-                    ) : (
-                      <RefreshCw className="size-3.5" strokeWidth={1.75} />
-                    )}
-                  </button>
-                </div>
-
-                {/* Active AI agent indicator */}
-                <div className="flex min-w-0 items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {/* Clean "active AI" indicator — the one thing analysts need to see. */}
+                <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
                   <StatusDot tone="success">
-                    <span className="text-muted">Agent</span>
+                    <span className="text-muted">Active AI</span>
                   </StatusDot>
                   <span className="truncate font-medium text-fg">
-                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous Threat Intelligence Agent"}
+                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous AI Agent"}
                   </span>
                   <span className="shrink-0 font-mono text-[11px] text-muted">{activeModel}</span>
                 </div>
+
+                {/* Admin-only Debugger Mode switch. */}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setDebuggerModeMutation.mutate(!debuggerMode)}
+                    disabled={setDebuggerModeMutation.isPending}
+                    aria-pressed={debuggerMode}
+                    title={debuggerMode ? "Debugger Mode is on — click to hide diagnostics" : "Debugger Mode — show deep diagnostics"}
+                    className={cn(
+                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+                      debuggerMode ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-bg-elevated text-muted hover:text-fg",
+                    )}
+                  >
+                    <Bug className="size-3.5" strokeWidth={1.75} />
+                    Debugger{debuggerMode ? " on" : ""}
+                  </button>
+                )}
+
+                {/* Sandbox runtime detail only in Debugger Mode. */}
+                {showDebug && (
+                  <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
+                    <StatusDot
+                      tone={(sandboxStatus?.runtime === "docker" && sandboxStatus?.containerRunning) || sandboxStatus?.isReady ? "success" : "warning"}
+                    >
+                      <span className="text-muted">Sandbox</span>
+                    </StatusDot>
+                    <span className="font-medium text-fg">
+                      {sandboxStatus?.runtime === "docker"
+                        ? `${sandboxStatus.containerName} (active)`
+                        : sandboxStatus?.runtime === "wsl"
+                          ? "WSL Linux bridge"
+                          : sandboxStatus?.runtime === "native"
+                            ? "Host native runtime"
+                            : "Standby"}
+                    </span>
+                    {sandboxStatus?.runtime === "docker" && <span className="text-subtle">· Isolated</span>}
+                    <button
+                      type="button"
+                      onClick={() => restartSandboxMutation.mutate()}
+                      disabled={restartSandboxMutation.isPending}
+                      title="Restart agent sandbox container"
+                      aria-label="Restart agent sandbox container"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
+                    >
+                      {restartSandboxMutation.isPending ? <ActivitySpinner size="xs" className="text-accent" /> : <RefreshCw className="size-3.5" strokeWidth={1.75} />}
+                    </button>
+                  </div>
+                )}
               </div>
             }
             tabs={
@@ -567,7 +622,7 @@ function MarketplacePage() {
                       ariaLabel="Integration category"
                       value={categoryFilter}
                       onChange={setCategoryFilter}
-                      items={["All", "AI Providers", "Intelligence", "Analysis", "Automation"].map((cat) => ({ value: cat, label: cat }))}
+                      items={["All", "AI Providers", "Intelligence", "Analysis", "Automation", "Messaging"].map((cat) => ({ value: cat, label: cat }))}
                     />
                   </>
                 }
@@ -918,14 +973,18 @@ function MarketplacePage() {
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
-                      <div className="flex items-center justify-between text-subtle">
-                        <span>Architecture</span>
-                        <span className="font-medium text-fg">Isolated container sandbox</span>
-                      </div>
-                      <div className="flex items-center justify-between text-subtle">
-                        <span>Authentication</span>
-                        <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
-                      </div>
+                      {showDebug && (
+                        <>
+                          <div className="flex items-center justify-between text-subtle">
+                            <span>Architecture</span>
+                            <span className="font-medium text-fg">Isolated container sandbox</span>
+                          </div>
+                          <div className="flex items-center justify-between text-subtle">
+                            <span>Authentication</span>
+                            <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
+                          </div>
+                        </>
+                      )}
                       <div className="flex items-center justify-between text-subtle">
                         <span>Active model</span>
                         <span className="font-mono text-accent">
@@ -1096,6 +1155,130 @@ function MarketplacePage() {
                         activeModel={selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
                         embedded={true}
                       />
+                    </div>
+                  </div>
+                )}
+
+                {/* Admin-only Debugger panel: deep diagnostics in a compact, neat format. */}
+                {showDebug && (
+                  <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                        <Bug className="size-3.5" />
+                        <span>Debugger</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            refetchMetrics();
+                            refetchLogs();
+                          }}
+                          title="Refresh diagnostics"
+                          aria-label="Refresh diagnostics"
+                          className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg"
+                        >
+                          <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportDiagnosticBundle}
+                          title="Export diagnostic bundle (JSON)"
+                          aria-label="Export diagnostic bundle"
+                          className="rounded-md p-1 text-subtle transition-colors hover:bg-bg-subtle hover:text-fg"
+                        >
+                          <Download className="size-3.5" strokeWidth={1.75} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Container & host telemetry */}
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                      <TelemetryRow label="Runtime" value={containerMetrics?.dockerAvailable ? "Docker" : "Host"} />
+                      <TelemetryRow
+                        label="Container"
+                        value={containerMetrics?.containerRunning ? "running" : "stopped"}
+                        tone={containerMetrics?.containerRunning ? "ok" : "warn"}
+                      />
+                      {containerMetrics?.uptime && <TelemetryRow label="Uptime" value={containerMetrics.uptime} />}
+                      {containerMetrics?.cpuPercent && <TelemetryRow label="CPU" value={containerMetrics.cpuPercent} />}
+                      {containerMetrics?.memoryUsage && <TelemetryRow label="Memory" value={containerMetrics.memoryUsage} />}
+                      {typeof containerMetrics?.pids === "number" && (
+                        <TelemetryRow label="PIDs" value={String(containerMetrics.pids)} />
+                      )}
+                      <TelemetryRow label="Host RSS" value={`${containerMetrics?.hostMemoryRssMb ?? "—"} MB`} />
+                      <TelemetryRow label="Heap" value={`${containerMetrics?.hostHeapUsedMb ?? "—"} MB`} />
+                      <TelemetryRow
+                        label="Platform"
+                        value={containerMetrics ? `${containerMetrics.platform}/${containerMetrics.arch}` : "—"}
+                      />
+                      <TelemetryRow label="Node" value={containerMetrics?.nodeVersion || "—"} />
+                      <TelemetryRow
+                        label="Token"
+                        value={containerMetrics?.tokenDetected ? "present" : "none"}
+                        tone={containerMetrics?.tokenDetected ? "ok" : "warn"}
+                      />
+                      <TelemetryRow
+                        label="Log lines"
+                        value={String(containerMetrics?.logCount ?? sandboxLogsData?.count ?? 0)}
+                      />
+                    </div>
+
+                    {/* Diagnostics probes */}
+                    <div>
+                      <div className="mb-1.5 text-[11px] font-medium text-subtle">Probes</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(["version", "models", "ping", "stats", "token", "help"] as const).map((cmd) => (
+                          <button
+                            key={cmd}
+                            type="button"
+                            disabled={diagnosticsCommandMutation.isPending}
+                            onClick={() => diagnosticsCommandMutation.mutate(cmd)}
+                            className="rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-[11px] text-fg transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                          >
+                            {cmd}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Recent sandbox logs */}
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-subtle">Recent logs</span>
+                        <button
+                          type="button"
+                          onClick={() => clearLogsMutation.mutate()}
+                          disabled={clearLogsMutation.isPending}
+                          className="text-[11px] text-subtle transition-colors hover:text-danger disabled:opacity-50"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-black/40 p-2 font-mono text-[10px] leading-relaxed">
+                        {sandboxLogsData?.logs && sandboxLogsData.logs.length > 0 ? (
+                          sandboxLogsData.logs.slice(-50).map((entry) => (
+                            <div key={entry.id} className="whitespace-pre-wrap break-all">
+                              <span className="text-subtle">{entry.formattedTime}</span>{" "}
+                              <span
+                                className={cn(
+                                  entry.level === "ERROR" || entry.level === "STDERR"
+                                    ? "text-danger"
+                                    : entry.level === "WARN"
+                                      ? "text-warn"
+                                      : "text-accent",
+                                )}
+                              >
+                                {entry.level}
+                              </span>{" "}
+                              <span className="text-subtle">{entry.category}</span>{" "}
+                              <span className="text-fg">{entry.message}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-subtle">No recent sandbox logs.</div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1383,6 +1566,48 @@ function MarketplacePage() {
                 </div>
               )}
 
+              {/* Messaging Webhook Configuration */}
+              {configModalItem.category === "Messaging" && (
+                <div className="space-y-4 text-xs">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-subtle font-medium flex items-center gap-1">
+                        <span>Webhook URL</span>
+                        <span className="text-danger font-bold">*</span>
+                      </label>
+                      {configModalItem.authUrl && (
+                        <a href={configModalItem.authUrl} target="_blank" rel="noreferrer" className="text-[11px] text-accent hover:underline flex items-center gap-1">
+                          How to get one <ExternalLink className="size-2.5" />
+                        </a>
+                      )}
+                    </div>
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      placeholder={configModalItem.config?.hasWebhook ? "•••• saved — enter a new URL to replace" : "https://…"}
+                      value={webhookInput}
+                      onChange={(e) => setWebhookInput(e.target.value)}
+                      className="font-mono text-xs bg-bg-subtle"
+                    />
+                    <p className="mt-1 text-[11px] text-subtle">{configModalItem.connectors[0]?.description}</p>
+                  </div>
+                  {configModalItem.config?.hasWebhook && (
+                    <div className="pt-1">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={sendTestMutation.isPending}
+                        onClick={() => sendTestMutation.mutate(configModalItem.id)}
+                        className="text-xs h-8 gap-1.5"
+                      >
+                        {sendTestMutation.isPending ? <ActivitySpinner size="xs" className="text-accent" /> : <RefreshCw className="size-3 text-accent" />}
+                        <span>{sendTestMutation.isPending ? "Sending…" : "Send test message"}</span>
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Modal Footer */}
               <div className="mt-6 pt-4 border-t border-border flex items-center justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setConfigModalItem(null)} className="text-xs">
@@ -1411,6 +1636,22 @@ function MarketplacePage() {
                     className="text-xs bg-accent text-white font-medium"
                   >
                     {configModalItem.status === "installed" ? "Save configuration" : "Save & activate"}
+                  </Button>
+                )}
+                {configModalItem.category === "Messaging" && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={configureMutation.isPending || (!webhookInput.trim() && !configModalItem.config?.hasWebhook)}
+                    onClick={() => {
+                      const url = webhookInput.trim();
+                      const configPayload: Record<string, unknown> = {};
+                      if (url) configPayload.webhookUrl = url;
+                      configureMutation.mutate({ id: configModalItem.id, config: configPayload });
+                    }}
+                    className="text-xs bg-accent text-white font-medium"
+                  >
+                    {configModalItem.status === "installed" ? "Save webhook" : "Save & connect"}
                   </Button>
                 )}
               </div>
@@ -1504,6 +1745,18 @@ function IntegrationCard({
         <div>{status}</div>
         {action}
       </div>
+    </div>
+  );
+}
+
+/** One compact label/value row in the admin Debugger telemetry grid. */
+function TelemetryRow({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-subtle">{label}</span>
+      <span className={cn("truncate font-mono", tone === "ok" ? "text-sage" : tone === "warn" ? "text-warn" : "text-fg")}>
+        {value}
+      </span>
     </div>
   );
 }

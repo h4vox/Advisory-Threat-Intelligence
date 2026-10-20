@@ -48,11 +48,11 @@ import {
   updateCrawlerConfig,
   getAgentStatus,
   getMarketplaceData,
+  setActiveAgentProvider,
 } from "@/lib/aie/server";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
-import { AGY_AVAILABLE_MODELS, sanitizeAgyModel } from "@/lib/aie/agent-framework/types";
 
 const settingsSearchSchema = z.object({
   tab: z.enum(["crawler", "policy", "storage", "display", "agent", "users"]).optional(),
@@ -157,6 +157,15 @@ function SettingsPage() {
   const [crawlForm, setCrawlForm] = useState<Partial<CrawlConfig>>({});
   const [appForm, setAppForm] = useState<Partial<AppSettings>>({});
   const [isDirty, setIsDirty] = useState(false);
+
+  // Central AI provider/model picker (Settings → AI agent). null = follow the saved active selection.
+  const [aiProviderPick, setAiProviderPick] = useState<string | null>(null);
+  const [aiModelPick, setAiModelPick] = useState<string | null>(null);
+  const stripModelLabel = (m?: string | null) => {
+    if (!m) return "";
+    const i = m.indexOf(":");
+    return (i >= 0 ? m.slice(i + 1) : m).trim();
+  };
 
   // Visual Theme & UI Preferences
   const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">(() => {
@@ -336,6 +345,22 @@ function SettingsPage() {
     },
   });
 
+  // Apply the central AI provider/model selection. Uses the REST-aware server fn so an API
+  // provider's model (e.g. gpt-4o) is persisted on the integration, not AGY-normalised.
+  const applyActiveAIMutation = useMutation({
+    mutationFn: (vars: { id: string; model: string }) => setActiveAgentProvider({ data: vars }),
+    onSuccess: (res) => {
+      setAiProviderPick(null);
+      setAiModelPick(null);
+      void qc.invalidateQueries({ queryKey: ["marketplace_state"] });
+      void qc.invalidateQueries({ queryKey: ["app-settings"] });
+      toast.success(`Active AI set to ${res.activeModel}`);
+    },
+    onError: (err: Error) => {
+      toast.error(`Could not set active AI: ${err.message}`);
+    },
+  });
+
   // Mutation to purge in-memory cache
   const purgeMutation = useMutation({
     mutationFn: () => purgeServerCaches(),
@@ -381,6 +406,25 @@ function SettingsPage() {
 
   const currentCrawl = { ...configQuery.data, ...crawlForm };
   const currentApp = { ...appSettingsQuery.data, ...appForm };
+
+  // Central AI selection, derived from the saved marketplace state + the local picks. Installed
+  // providers are listed first; the model list follows the chosen provider.
+  const aiIntegrations = marketplaceQuery.data?.integrations ?? [];
+  const aiSavedProvider = marketplaceQuery.data?.activeProviderId ?? "agy_agent";
+  const aiSavedModel = marketplaceQuery.data?.activeModel ?? "";
+  const aiEffProvider = aiProviderPick ?? aiSavedProvider;
+  const aiEffProviderItem = aiIntegrations.find((x) => x.id === aiEffProvider);
+  const aiEffModels = aiEffProviderItem?.supportedModels ?? [];
+  const aiDefaultModel =
+    aiEffProvider === aiSavedProvider
+      ? aiEffModels.find((m) => stripModelLabel(m) === stripModelLabel(aiSavedModel)) ?? aiEffModels[0] ?? aiSavedModel
+      : aiEffModels[0] ?? "";
+  const aiEffModel = aiModelPick ?? aiDefaultModel;
+  const aiProvidersSorted = [...aiIntegrations].sort(
+    (a, b) => (a.status === "installed" ? 0 : 1) - (b.status === "installed" ? 0 : 1),
+  );
+  const aiSelectionChanged =
+    aiEffProvider !== aiSavedProvider || stripModelLabel(aiEffModel) !== stripModelLabel(aiSavedModel);
 
   return (
     <AppShell>
@@ -2098,84 +2142,123 @@ function SettingsPage() {
                 </Link>
               </div>
 
-              {/* Active Provider Indicator */}
-              <div className="mt-3 p-3 rounded-lg bg-bg-subtle border border-border flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-subtle">Active AI agent:</span>
-                  <span className="font-semibold text-fg">
-                    {marketplaceQuery.data?.integrations.find(
-                      (x) => x.id === (appForm.activeAgentProvider || "agy_agent")
-                    )?.name || "Autonomous AI Agent Engine"}
+              <p className="mt-1 text-xs text-muted">
+                Choose which AI powers AIE and the exact model it runs. Applies to every AI feature —
+                crawling, tagging, library audit and the agent console. Set it here or in the Marketplace.
+              </p>
+
+              {/* Current active selection */}
+              <div className="mt-3 p-3 rounded-lg bg-bg-subtle border border-border flex items-center justify-between gap-3 text-xs">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="text-subtle shrink-0">Active:</span>
+                  <span className="font-semibold text-fg truncate">
+                    {aiIntegrations.find((x) => x.id === aiSavedProvider)?.name || "Autonomous AI Agent Engine"}
                   </span>
+                  <span className="shrink-0 font-mono text-[11px] text-accent">{stripModelLabel(aiSavedModel) || "—"}</span>
                 </div>
-                <StatusChip tone="success">
-                  Configured
-                </StatusChip>
+                <StatusChip tone="success">Active</StatusChip>
               </div>
 
+              {/* Provider + model picker */}
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">Agent model</label>
+                  <label className="block text-xs font-medium text-muted mb-1.5">AI provider</label>
                   <select
-                    value={sanitizeAgyModel(crawlForm.agentModel)}
+                    value={aiEffProvider}
                     onChange={(e) => {
-                      const selectedVal = e.target.value;
-                      setCrawlForm((prev) => ({ ...prev, agentModel: selectedVal }));
-                      const matchedItem = marketplaceQuery.data?.integrations.find((it) =>
-                        it.supportedModels.includes(selectedVal)
-                      );
-                      if (matchedItem) {
-                        setAppForm((prev) => ({ ...prev, activeAgentProvider: matchedItem.id }));
-                      }
-                      setIsDirty(true);
+                      setAiProviderPick(e.target.value);
+                      setAiModelPick(null);
                     }}
                     className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none"
                   >
-                    {marketplaceQuery.data?.integrations && marketplaceQuery.data.integrations.length > 0 ? (
-                      marketplaceQuery.data.integrations.map((integration) => (
-                        <optgroup
-                          key={integration.id}
-                          label={`${integration.name} (${integration.status === "installed" ? "Installed" : "Not installed"})`}
-                        >
-                          {integration.supportedModels.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))
-                    ) : (
-                      <>
-                        {AGY_AVAILABLE_MODELS.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </>
-                    )}
+                    {aiProvidersSorted.map((integration) => (
+                      <option key={integration.id} value={integration.id}>
+                        {integration.name} {integration.status === "installed" ? "· Installed" : "· Not installed"}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">
-                    Timeout (seconds): {crawlForm.agentTimeoutSeconds || 45}s
-                  </label>
-                  <input
-                    type="range"
-                    min={10}
-                    max={120}
-                    step={5}
-                    value={crawlForm.agentTimeoutSeconds || 45}
-                    onChange={(e) => {
-                      setCrawlForm((prev) => ({ ...prev, agentTimeoutSeconds: Number(e.target.value) }));
-                      setIsDirty(true);
-                    }}
-                    className="w-full accent-accent"
-                  />
-                  <div className="flex justify-between text-[10px] text-subtle mt-1">
-                    <span>10s (fast)</span>
-                    <span>120s (thorough)</span>
-                  </div>
+                  <label className="block text-xs font-medium text-muted mb-1.5">Model</label>
+                  <select
+                    value={aiEffModel}
+                    onChange={(e) => setAiModelPick(e.target.value)}
+                    disabled={aiEffModels.length === 0}
+                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
+                  >
+                    {aiEffModels.length > 0 ? (
+                      aiEffModels.map((m) => (
+                        <option key={m} value={m}>
+                          {stripModelLabel(m)}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No models — configure this provider first</option>
+                    )}
+                  </select>
                 </div>
+              </div>
+
+              {/* Not-installed hint + apply */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                <div className="text-xs">
+                  {aiEffProviderItem && aiEffProviderItem.status !== "installed" ? (
+                    <span className="flex items-center gap-1.5 text-warn">
+                      <AlertTriangle className="size-3.5 shrink-0" />
+                      Not configured yet — add its API key in the{" "}
+                      <Link to="/marketplace" className="font-medium text-accent hover:underline">
+                        Marketplace
+                      </Link>{" "}
+                      so it can run.
+                    </span>
+                  ) : aiSelectionChanged ? (
+                    <span className="flex items-center gap-1.5 text-warn">
+                      <span className="size-2 rounded-full bg-warn" />
+                      Unapplied AI selection
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-sage">
+                      <CheckCircle2 className="size-3.5" />
+                      This AI is active
+                    </span>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  className="gap-1.5"
+                  disabled={!aiSelectionChanged || !aiEffModel || applyActiveAIMutation.isPending}
+                  onClick={() => applyActiveAIMutation.mutate({ id: aiEffProvider, model: aiEffModel })}
+                >
+                  <Zap className="size-3.5" />
+                  <span>{applyActiveAIMutation.isPending ? "Applying…" : "Set as active AI"}</span>
+                </Button>
+              </div>
+
+              {/* Agent timeout (applies to the AGY sandbox agent path) */}
+              <div className="mt-4 border-t border-border pt-4">
+                <label className="block text-xs font-medium text-muted mb-1.5">
+                  Agent timeout (seconds): {crawlForm.agentTimeoutSeconds || 45}s
+                </label>
+                <input
+                  type="range"
+                  min={10}
+                  max={120}
+                  step={5}
+                  value={crawlForm.agentTimeoutSeconds || 45}
+                  onChange={(e) => {
+                    setCrawlForm((prev) => ({ ...prev, agentTimeoutSeconds: Number(e.target.value) }));
+                    setIsDirty(true);
+                  }}
+                  className="w-full accent-accent"
+                />
+                <div className="flex justify-between text-[10px] text-subtle mt-1">
+                  <span>10s (fast)</span>
+                  <span>120s (thorough)</span>
+                </div>
+                {isDirty && (
+                  <div className="mt-2 text-[11px] text-warn">Timeout change is saved with "Save AI agent settings" above.</div>
+                )}
               </div>
             </div>
 

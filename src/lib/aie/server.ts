@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { analystMiddleware } from "./access";
-import { isAllowedProviderEndpoint, redactIntegration, redactMarketplaceState } from "./redact";
+import { analystMiddleware, ForbiddenError } from "./access";
+import { isAllowedProviderEndpoint, isSafeWebhookUrl, redactIntegration, redactMarketplaceState } from "./redact";
 import { z } from "zod";
 import {
   analyzeThreatIntelligence,
@@ -162,7 +162,8 @@ import {
 } from "./ai-manager";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL, AGY_AVAILABLE_MODELS } from "./agent-framework/types";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
-import { getProviderAdapter } from "./providers";
+import { getProviderAdapter, isRestApiProvider } from "./providers";
+import { stripProviderPrefix } from "./active-model";
 import {
   detectSandboxRuntime,
   ensureAgentSandboxRunning,
@@ -2155,16 +2156,16 @@ export const getCrawlConfig = createServerFn({ method: "GET" }).middleware([anal
 export const getAppSettings = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(async (): Promise<AppSettings> => {
   const startTime = Date.now();
   logger.serverFn("getAppSettings", "START");
-  if (isMongoConfigured()) {
-    try {
-      const settings = await mongoGetAppSettings();
-      logger.serverFn("getAppSettings", "DONE", Date.now() - startTime);
-      return settings;
-    } catch (err) {
-      logger.error("SERVER-FN", "mongoGetAppSettings failed, returning defaults", err);
-    }
+  // mongoGetAppSettings falls back to in-memory settings when MongoDB is off, so the active
+  // provider, model and debugger mode persist for the session without a database.
+  try {
+    const settings = await mongoGetAppSettings();
+    logger.serverFn("getAppSettings", "DONE", Date.now() - startTime);
+    return settings;
+  } catch (err) {
+    logger.error("SERVER-FN", "mongoGetAppSettings failed, returning defaults", err);
+    return DEFAULT_APP_SETTINGS;
   }
-  return DEFAULT_APP_SETTINGS;
 });
 
 export const updateAppSettings = createServerFn({ method: "POST" }).middleware([analystMiddleware])
@@ -2197,16 +2198,31 @@ export const updateAppSettings = createServerFn({ method: "POST" }).middleware([
   .handler(async ({ data }) => {
     const startTime = Date.now();
     logger.serverFn("updateAppSettings", "START", undefined, data);
-    if (isMongoConfigured()) {
-      try {
-        const updated = await mongoUpdateAppSettings(data as any);
-        logger.serverFn("updateAppSettings", "DONE", Date.now() - startTime);
-        return { ok: true as const, settings: updated };
-      } catch (err) {
-        logger.error("SERVER-FN", "mongoUpdateAppSettings failed", err);
-      }
+    // mongoUpdateAppSettings updates in-memory settings when MongoDB is off (resets on restart).
+    try {
+      const updated = await mongoUpdateAppSettings(data as any);
+      logger.serverFn("updateAppSettings", "DONE", Date.now() - startTime);
+      return { ok: true as const, settings: updated };
+    } catch (err) {
+      logger.error("SERVER-FN", "mongoUpdateAppSettings failed", err);
+      return { ok: true as const, settings: DEFAULT_APP_SETTINGS };
     }
-    return { ok: true as const, settings: DEFAULT_APP_SETTINGS };
+  });
+
+/**
+ * Toggle admin-only Debugger Mode (deep diagnostics in the UI). Only a password admin account may
+ * change it; everyone else is refused. The flag itself is readable via getAppSettings.
+ */
+export const setDebuggerMode = createServerFn({ method: "POST" })
+  .middleware([analystMiddleware])
+  .validator(z.object({ enabled: z.boolean() }))
+  .handler(async ({ data, context }) => {
+    if (context.identity.method !== "password" || context.identity.role !== "admin") {
+      throw new ForbiddenError("Only an administrator can change Debugger Mode.");
+    }
+    const updated = await mongoUpdateAppSettings({ debuggerMode: data.enabled });
+    logger.serverFn("setDebuggerMode", "DONE", undefined, String(data.enabled));
+    return { ok: true as const, debuggerMode: Boolean(updated.debuggerMode) };
   });
 
 export const purgeServerCaches = createServerFn({ method: "POST" }).middleware([analystMiddleware]).handler(async () => {
@@ -2797,6 +2813,11 @@ const integrationConfigInput = z
       .max(500)
       .refine(isAllowedProviderEndpoint, "Endpoint must be https on an approved provider host (AIE_ALLOWED_LLM_HOSTS).")
       .optional(),
+    webhookUrl: z
+      .string()
+      .max(600)
+      .refine(isSafeWebhookUrl, "Webhook must be an https URL on a public host.")
+      .optional(),
   })
   .strict();
 
@@ -3168,8 +3189,22 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" }).middlew
       throw new Error(`Integration ${data.id} not found`);
     }
 
-    const modelToSet = sanitizeAgyModel(data.model || selected.supportedModels[0]);
+    // REST/API providers (OpenAI, Claude, Gemini, OpenRouter, …) keep their own model id on the
+    // integration so the AI manager uses it; it must never be run through the AGY normaliser, or a
+    // model like "gpt-4o" would be rewritten to a sandbox model. AGY keeps its normalised agentModel.
+    if (isRestApiProvider(data.id)) {
+      const requested = stripProviderPrefix(data.model);
+      const model = requested || stripProviderPrefix(selected.config?.selectedModel) || selected.supportedModels[0] || "";
+      await mongoSaveMarketplaceIntegration({
+        ...selected,
+        config: { ...(selected.config || {}), selectedModel: model },
+      });
+      await mongoUpdateAppSettings({ activeAgentProvider: data.id });
+      logger.serverFn("setActiveAgentProvider", "DONE", undefined, { provider: data.id, model });
+      return { success: true, activeProviderId: data.id, activeModel: model };
+    }
 
+    const modelToSet = sanitizeAgyModel(data.model || selected.supportedModels[0]);
     await mongoUpdateAppSettings({
       activeAgentProvider: data.id,
       agentModel: modelToSet,

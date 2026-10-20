@@ -865,6 +865,8 @@ export type AppSettings = {
   agentModel: string;
   agentTimeoutSeconds: number;
   activeAgentProvider?: string;
+  /** Admin-only: reveal deep backend/frontend diagnostics in the UI. Off for everyone by default. */
+  debuggerMode?: boolean;
 
   updatedAt?: string;
 };
@@ -917,6 +919,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   agentModel: "gemini-3.8-flash-low",
   agentTimeoutSeconds: 45,
   activeAgentProvider: "agy_agent",
+  debuggerMode: false,
   updatedAt: new Date().toISOString(),
 };
 

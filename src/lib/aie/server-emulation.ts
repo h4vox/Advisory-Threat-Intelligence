@@ -34,7 +34,7 @@ const PAGE = 500;
 const MAX_REPORTS = 3_000;
 const TID = /^T\d{4}(?:\.\d{3})?$/;
 
-async function loadLibrary(): Promise<ReportListItem[]> {
+export async function loadLibrary(): Promise<ReportListItem[]> {
   const out: ReportListItem[] = [];
   for (let offset = 0; offset < MAX_REPORTS; offset += PAGE) {
     const page = await listReports({ data: { limit: PAGE, offset } });
@@ -51,7 +51,7 @@ function confidenceOf(r: { sourceConfidence?: number; sourceId: string }): numbe
   return SOURCE_CONFIDENCE[reg?.confidenceClass ?? "UNKNOWN"];
 }
 
-function toEvidence(r: ReportListItem): LibraryEvidence {
+export function toEvidence(r: ReportListItem): LibraryEvidence {
   return libraryEvidenceFromReport({ id: r.id, title: r.title, publishedAt: r.publishedAt, sourceConfidence: confidenceOf(r), analysis: r.analysis });
 }
 
@@ -122,9 +122,9 @@ const BuildInput = z.object({
 });
 export type BuildPurpleInput = z.input<typeof BuildInput>;
 
-class SeedError extends Error {}
+export class SeedError extends Error {}
 
-async function resolveSeed(input: z.output<typeof BuildInput>, library: ReportListItem[], plans: CtidPlan[]): Promise<{ seed: PurpleSeed; info: PurpleSeedInfo }> {
+export async function resolveSeed(input: z.output<typeof BuildInput>, library: ReportListItem[], plans: CtidPlan[]): Promise<{ seed: PurpleSeed; info: PurpleSeedInfo }> {
   const value = input.value.trim();
   const reportsOf = (items: ReportListItem[]) => items.map((r) => ({ id: r.id, title: r.title, publishedAt: r.publishedAt }));
 
