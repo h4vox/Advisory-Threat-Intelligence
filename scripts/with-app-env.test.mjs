@@ -59,8 +59,10 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("this app ships sign-in on (no VITE_AUTH_ENABLED override)", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), {});
+test("this app ships sign-in off — email/password only (VITE_AUTH_ENABLED=false)", () => {
+  // AIE authenticates with its own password accounts (analystMiddleware), so single sign-on is
+  // shipped off: the app never redirects to Google and shows only the email/password form.
+  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
 });
 
 // What the wrapper should print for this workspace: the file value when set,
