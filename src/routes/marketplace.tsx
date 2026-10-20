@@ -62,6 +62,7 @@ import {
   setDebuggerMode,
   type ContainerDetailedMetrics,
 } from "@/lib/aie/server";
+import { sendTestMessage } from "@/lib/aie/server-messaging";
 import type {
   CuratedResourceCatalogItem,
   IntegrationCategory,
@@ -98,6 +99,7 @@ function MarketplacePage() {
   const [isReconfigMode, setIsReconfigMode] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [authTokenInput, setAuthTokenInput] = useState("");
+  const [webhookInput, setWebhookInput] = useState("");
   const [selectedModelInput, setSelectedModelInput] = useState("");
   const [modalFeedback, setModalFeedback] = useState<string | null>(null);
   // OAuth (PKCE) is generated server-side; the client only ever sees the server's authUrl.
@@ -213,6 +215,21 @@ function MarketplacePage() {
       queryClient.invalidateQueries({ queryKey: ["app-settings"] });
     },
     onError: (err: any) => toast.error(err?.message || "Could not change Debugger Mode"),
+  });
+
+  // Messaging integrations: send a test message through the configured webhook.
+  const sendTestMutation = useMutation({
+    mutationFn: (id: string) => sendTestMessage({ data: { id } }),
+    onSuccess: (res) => {
+      setModalTestResult({ success: res.ok, message: res.message });
+      if (res.ok) toast.success(res.message);
+      else toast.error(res.message);
+    },
+    onError: (err: any) => {
+      const m = err?.message || "Could not send the test message";
+      setModalTestResult({ success: false, message: m });
+      toast.error(m);
+    },
   });
 
   // Real installation mutation (executes real script, rm for reconfig, captures stdout/stderr)
@@ -340,6 +357,7 @@ function MarketplacePage() {
     // Never prefill stored secrets; the server only reports whether one exists.
     setApiKeyInput("");
     setAuthTokenInput("");
+    setWebhookInput("");
     setSelectedModelInput(item.config?.selectedModel || item.supportedModels[0] || "");
     setRealInstallLogs(item.config?.logs || []);
     setIsLogsExpanded(true);
@@ -604,7 +622,7 @@ function MarketplacePage() {
                       ariaLabel="Integration category"
                       value={categoryFilter}
                       onChange={setCategoryFilter}
-                      items={["All", "AI Providers", "Intelligence", "Analysis", "Automation"].map((cat) => ({ value: cat, label: cat }))}
+                      items={["All", "AI Providers", "Intelligence", "Analysis", "Automation", "Messaging"].map((cat) => ({ value: cat, label: cat }))}
                     />
                   </>
                 }
@@ -1548,6 +1566,48 @@ function MarketplacePage() {
                 </div>
               )}
 
+              {/* Messaging Webhook Configuration */}
+              {configModalItem.category === "Messaging" && (
+                <div className="space-y-4 text-xs">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-subtle font-medium flex items-center gap-1">
+                        <span>Webhook URL</span>
+                        <span className="text-danger font-bold">*</span>
+                      </label>
+                      {configModalItem.authUrl && (
+                        <a href={configModalItem.authUrl} target="_blank" rel="noreferrer" className="text-[11px] text-accent hover:underline flex items-center gap-1">
+                          How to get one <ExternalLink className="size-2.5" />
+                        </a>
+                      )}
+                    </div>
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      placeholder={configModalItem.config?.hasWebhook ? "•••• saved — enter a new URL to replace" : "https://…"}
+                      value={webhookInput}
+                      onChange={(e) => setWebhookInput(e.target.value)}
+                      className="font-mono text-xs bg-bg-subtle"
+                    />
+                    <p className="mt-1 text-[11px] text-subtle">{configModalItem.connectors[0]?.description}</p>
+                  </div>
+                  {configModalItem.config?.hasWebhook && (
+                    <div className="pt-1">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={sendTestMutation.isPending}
+                        onClick={() => sendTestMutation.mutate(configModalItem.id)}
+                        className="text-xs h-8 gap-1.5"
+                      >
+                        {sendTestMutation.isPending ? <ActivitySpinner size="xs" className="text-accent" /> : <RefreshCw className="size-3 text-accent" />}
+                        <span>{sendTestMutation.isPending ? "Sending…" : "Send test message"}</span>
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Modal Footer */}
               <div className="mt-6 pt-4 border-t border-border flex items-center justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setConfigModalItem(null)} className="text-xs">
@@ -1576,6 +1636,22 @@ function MarketplacePage() {
                     className="text-xs bg-accent text-white font-medium"
                   >
                     {configModalItem.status === "installed" ? "Save configuration" : "Save & activate"}
+                  </Button>
+                )}
+                {configModalItem.category === "Messaging" && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={configureMutation.isPending || (!webhookInput.trim() && !configModalItem.config?.hasWebhook)}
+                    onClick={() => {
+                      const url = webhookInput.trim();
+                      const configPayload: Record<string, unknown> = {};
+                      if (url) configPayload.webhookUrl = url;
+                      configureMutation.mutate({ id: configModalItem.id, config: configPayload });
+                    }}
+                    className="text-xs bg-accent text-white font-medium"
+                  >
+                    {configModalItem.status === "installed" ? "Save webhook" : "Save & connect"}
                   </Button>
                 )}
               </div>

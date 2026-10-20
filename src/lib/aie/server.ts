@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { analystMiddleware, ForbiddenError } from "./access";
-import { isAllowedProviderEndpoint, redactIntegration, redactMarketplaceState } from "./redact";
+import { isAllowedProviderEndpoint, isSafeWebhookUrl, redactIntegration, redactMarketplaceState } from "./redact";
 import { z } from "zod";
 import {
   analyzeThreatIntelligence,
@@ -2812,6 +2812,11 @@ const integrationConfigInput = z
       .string()
       .max(500)
       .refine(isAllowedProviderEndpoint, "Endpoint must be https on an approved provider host (AIE_ALLOWED_LLM_HOSTS).")
+      .optional(),
+    webhookUrl: z
+      .string()
+      .max(600)
+      .refine(isSafeWebhookUrl, "Webhook must be an https URL on a public host.")
       .optional(),
   })
   .strict();
