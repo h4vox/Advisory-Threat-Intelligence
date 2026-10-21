@@ -231,8 +231,13 @@ function removeElements(html: string, tags: readonly string[], attrTest?: (attrs
 }
 
 const BOILERPLATE_TAGS = ["nav", "footer", "header", "aside", "form", "svg", "iframe", "button", "dialog", "select"] as const;
+// Containers that are page chrome, not report body: "related / read more" rails, share and social
+// widgets, newsletter / subscribe boxes, download & print bars, breadcrumbs, pagination, cookie and
+// consent banners, modals, comment threads, author bios, tag lists and navigation menus. Every term
+// that could also name real CTI content (cookie, sponsored, recommended, popular, download, comment)
+// requires a chrome-shaped suffix so an article block is never stripped by accident.
 const RELATED_ATTR_RE =
-  /\b(?:class|id|data-bi-an|aria-label|data-section)\s*=\s*["'][^"']*\b(?:related|share-?(?:bar|buttons|links)|social-share|newsletter|subscribe|breadcrumbs?|cookie-?(?:banner|consent))\b[^"']*["']/i;
+  /\b(?:class|id|data-bi-an|aria-label|data-section|data-component)\s*=\s*["'][^"']*\b(?:related(?:-(?:posts?|articles?|content|reading|stories|links?))?|more-(?:stories|articles|from|like-this)|popular-(?:posts?|articles?|stories|content)|trending-(?:now|posts?|stories)|recommended-(?:posts?|articles?|reading|content|stories|for-you)|you-?may-?also|read-(?:more|also|next)|up-next|share-(?:bar|buttons?|links?|tools?|container|this|count|list|widget)|social-(?:share|links?|media|icons|buttons?|nav|bar)|share-this|sharethis|addthis|addtoany|post-share|entry-share|newsletter|subscribe|signup-(?:box|form|cta)|download-(?:pdf|links?|buttons?|bar|section)|print-(?:button|bar|link)|breadcrumbs?|back-to-top|scroll-top|skip-(?:link|to-content|to-main|nav)|pagination|pager|page-nav|post-nav|prev-next|post-navigation|site-(?:header|footer)|page-(?:header|footer)|global-(?:header|footer)|masthead|sidebar|side-bar|widget-area|cookie-(?:banner|consent|notice|bar|policy|law|settings|preferences)|gdpr|consent-(?:banner|bar|manager)|modal|popup|pop-up|overlay|lightbox|interstitial|promo-(?:box|bar|banner|cta)|advertisement|advert-(?:box|banner|bar)|ad-(?:container|banner|slot|wrapper|unit)|sponsored-(?:content|post|ad)|comments?-(?:section|list|area|wrapper|form|block|count)|post-comments|disqus|livefyre|author-(?:box|bio|card|info|meta)|byline|post-tags|entry-tags|tag-list|tags-list|table-of-contents|toc-(?:list|nav|container)|site-nav|main-menu|nav-menu|navbar|mobile-menu|offcanvas|off-canvas|menu-(?:toggle|button|wrapper)|hamburger)\b[^"']*["']/i;
 const CONTENT_ATTR_RE =
   /\b(?:class|id)\s*=\s*["'][^"']*\b(?:entry-content|post-content|article-body|article-content|article__body|post-body|story-body|blog-content|blog-post-content|main-content|content-body|single-content|rich-text)\b[^"']*["']/i;
 const CONTENT_ID_RE = /\bid\s*=\s*["'](?:content|main|main-content|article|primary)["']/i;
@@ -458,6 +463,107 @@ export function sectionAt(sections: TextSection[], offset: number): string | und
   return found?.heading;
 }
 
+// Whole-line page chrome that survives tag/container stripping as bare text: share and follow
+// widgets, copy/print/download controls, "read more / related" rails, nav labels, newsletter and
+// cookie prompts, and engagement cruft ("Was this article helpful?", "5 min read"). Matched against
+// a line with its list/heading marker removed and anchored at both ends, so ONLY a line that is
+// entirely one of these labels is dropped — a sentence that merely contains the words is kept. Verbs
+// that are also ordinary prose (download, print, save) match only alongside a chrome noun.
+const CHROME_LINE_RE = new RegExp(
+  "^(?:" +
+    [
+      // Social share / follow.
+      "share(?: this)?(?: (?:article|post|story|page|link))?\\s*:?",
+      "share (?:on|via|to|with) [a-z. ]{1,20}",
+      "(?:share|follow|tweet|post|pin) (?:on |us on |this on )?(?:facebook|twitter|x|linkedin|reddit|whatsapp|telegram|mastodon|threads|bluesky|pinterest|hacker news|email|flipboard|wechat|line)",
+      "(?:facebook|twitter|linkedin|reddit|whatsapp|telegram|mastodon|threads|bluesky|pinterest|instagram|youtube|flipboard|tiktok)",
+      "follow us(?: on [a-z ]{1,20})?",
+      "(?:connect|engage) with us",
+      // Copy / print / download controls.
+      "copy(?: link| url| to clipboard)?",
+      "(?:link|url) copied!?",
+      "copied!?(?: to clipboard)?",
+      "downloads?",
+      "download[ &a-z;]{0,30}(?:pdf|article|report|whitepaper|white paper|copy|file|now|here)",
+      "print(?: &(?:amp;)? print)?(?: (?:this |the |full ))?(?:article|page|report|story|pdf|version)",
+      "save(?: (?:article|this|for later|to pdf|to read later))",
+      // Read more / related rails.
+      "read (?:more|also|next|on)",
+      "(?:related|recommended|popular|trending|suggested|featured|latest|more|similar)(?: (?:articles?|posts?|stories|reading|content|news|topics?|now|coverage))?",
+      "(?:you (?:may|might)|readers?) (?:also )?(?:like|enjoy|be interested(?: in)?|read)",
+      "up next",
+      "more (?:from|on|like this|stories|articles|news)[a-z .]{0,30}",
+      "see (?:also|more)",
+      // Navigation.
+      "(?:skip|jump) to (?:main )?(?:content|navigation|menu)",
+      "(?:back|scroll|jump|return) to top",
+      "(?:main |mobile |primary |site )?menu",
+      "(?:toggle|open|close|show|hide)(?: (?:menu|navigation|search|sidebar|the menu))?",
+      "search(?: the site| this site| our site)?",
+      "(?:previous|next|prev|newer|older)(?: (?:article|post|page|entry))?",
+      "home",
+      "breadcrumb",
+      // Newsletter / subscribe.
+      "subscribe(?: (?:now|today|to(?: our)?(?: newsletter)?|for (?:free|updates)))?",
+      "sign ?up(?: (?:for|to)(?: our| the)?(?: newsletter| updates| free)?)?",
+      "(?:join our |get our |our |the )?newsletter",
+      "(?:get|receive) [a-z,' ]{0,50}(?:in your inbox|by email|to your inbox|straight to your inbox)",
+      "enter your email[a-z ]{0,30}",
+      // Cookies / consent / legal footers.
+      "(?:accept|manage|reject|allow|decline)(?: all)? cookies",
+      "(?:manage|cookie|privacy) (?:preferences|settings|choices)",
+      "we use cookies[^\\n]{0,160}",
+      "cookie (?:policy|notice|settings|preferences|consent)",
+      "all rights reserved[^\\n]{0,40}",
+      "(?:©|copyright)[^\\n]{0,80}",
+      "(?:terms of (?:use|service)|privacy (?:policy|notice)|legal(?: notice)?|disclaimer)",
+      // Engagement cruft.
+      "was this (?:article|page|post|information|content) helpful\\??",
+      "(?:leave|post|add|write) a (?:comment|reply)",
+      "\\d+ comments?",
+      "comments?",
+      "(?:no )?comments(?: are)?(?: closed)?",
+      "advertisement",
+      "sponsored(?: content| by [a-z ]{1,20})?",
+      "loading\\.{0,3}",
+      "\\d+ ?min(?:ute)?s? read",
+      "(?:estimated )?reading time:?[^\\n]{0,20}",
+      "(?:published|updated|posted)(?: on)?:?[^\\n]{0,40}",
+      "by [a-z.'\\- ]{2,40}",
+      "tags?:?",
+      "categories:?",
+      "in this (?:article|post|report):?",
+      "table of contents",
+      "on this page",
+    ].join("|") +
+    ")$",
+  "i",
+);
+
+/**
+ * Drop whole-line page chrome and collapse a line that repeats the one before it (duplicated nav /
+ * share labels). Runs on the already-rendered text, after container stripping, so it only removes
+ * lines that are entirely a chrome label — article prose is untouched.
+ */
+export function scrubBoilerplateLines(text: string): string {
+  const out: string[] = [];
+  let prevKept = "";
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/[ \t]+$/g, "");
+    const stripped = line.replace(/^[ \t]*(?:#{1,6}[ \t]+|[-*•][ \t]+|\d{1,3}[.)][ \t]+)?/, "").trim();
+    if (stripped) {
+      if (CHROME_LINE_RE.test(stripped)) continue;
+      if (stripped === prevKept) continue; // adjacent duplicate (menu rendered twice, etc.)
+      prevKept = stripped;
+    }
+    out.push(line);
+  }
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * Title and main-content text of an HTML page. `structured: true` renders headings, lists, tables
  * and code blocks as markdown-ish text and returns the section boundaries; the default plain
@@ -499,10 +605,11 @@ export function htmlToText(
 
   const selected = selectContentFragment(html);
   if (opts.structured) {
-    const text = selected.fragment ? fragmentToStructuredText(selected.fragment) : selected.text;
+    const rendered = selected.fragment ? fragmentToStructuredText(selected.fragment) : selected.text;
+    const text = scrubBoilerplateLines(rendered);
     return { title: rawTitle.slice(0, 240), text, sections: sectionsOf(text) };
   }
-  return { title: rawTitle.slice(0, 240), text: selected.text };
+  return { title: rawTitle.slice(0, 240), text: scrubBoilerplateLines(selected.text) };
 }
 
 export function extractHtmlMetadata(html: string): {

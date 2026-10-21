@@ -6,6 +6,7 @@ import {
   harvestIocs,
   htmlToText,
   refang,
+  scrubBoilerplateLines,
 } from "./extract.ts";
 
 const para = (n: number, word = "telemetry") =>
@@ -61,6 +62,55 @@ test("htmlToText: <format> is not treated as <form>; entities are decoded", () =
   assert.ok(text.includes("KEEP-FORMAT-TEXT"));
   assert.ok(!text.includes("FORM-MARKER"));
   assert.ok(!/&(?:amp|lt|gt|quot|#39);/.test(text));
+});
+
+test("htmlToText: strips page chrome (share / download / related rails, nav cruft) but keeps the report", () => {
+  const html = `<html><head><title>SparrowDoor backdoor analysis</title></head><body>
+    <header><nav><a href="/">Home</a></nav></header>
+    <main>
+      <article class="article-content">
+        <h1>SparrowDoor backdoor analysis</h1>
+        <ul class="share-buttons"><li>Share on Facebook</li><li>Share on Twitter</li></ul>
+        <div class="download-bar"><a>Download &amp; print article PDF</a></div>
+        <p>The actor deployed SparrowDoor and beaconed to evil-c2[.]example using T1059 command execution.</p>
+        <p>A loader performed DLL side-loading (T1574.002) for persistence via a scheduled task.</p>
+        <div class="related-posts"><h3>Related articles</h3><ul><li>Top 10 ransomware trends</li></ul></div>
+        <p>Was this article helpful?</p>
+        <p>5 min read</p>
+        <p>Copy Link</p>
+        <p>Back to top</p>
+      </article>
+    </main>
+    <footer>© 2025 Example Corp. All rights reserved.</footer>
+  </body></html>`;
+  const { text } = htmlToText(html, { structured: true });
+  for (const keep of ["SparrowDoor", "T1059", "evil-c2", "DLL side-loading", "scheduled task"]) {
+    assert.ok(text.includes(keep), `keeps "${keep}"`);
+  }
+  for (const drop of [
+    "Share on Facebook", "Download", "print article PDF", "Related articles",
+    "Was this article helpful", "min read", "Copy Link", "Back to top",
+    "All rights reserved", "Top 10 ransomware trends",
+  ]) {
+    assert.ok(!text.includes(drop), `drops "${drop}"`);
+  }
+});
+
+test("scrubBoilerplateLines: keeps prose that merely contains chrome words", () => {
+  // Whole-line chrome only — a sentence that names "print", "download", "comments", "sponsored",
+  // "recommended" or "shares" is real analysis and must survive.
+  const prose = [
+    "The actor used a print spooler vulnerability to escalate privileges.",
+    "Victims were tricked into downloading a malicious PDF report from a phishing email.",
+    "The group shares infrastructure with another cluster tracked as Home-Office APT.",
+    "Recommended mitigations include disabling macros and applying the vendor patch.",
+    "Comments in the malware's source code referenced the author's handle.",
+    "Analysts followed the money to a sponsored advertising network used for fraud.",
+  ];
+  const scrubbed = scrubBoilerplateLines(prose.join("\n"));
+  for (const line of prose) assert.ok(scrubbed.includes(line), line);
+  // Adjacent duplicate lines (e.g. a label rendered twice) collapse to one; non-adjacent repeats stay.
+  assert.equal(scrubBoilerplateLines("Acme Labs\nAcme Labs\nReal content."), "Acme Labs\nReal content.");
 });
 
 test("refang", () => {
