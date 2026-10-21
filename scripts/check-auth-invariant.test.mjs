@@ -90,8 +90,10 @@ test("only a divergence warns the smoke verdict", () => {
   }
 });
 
-test("the build side resolves this app's shipped app-env (sign-in on)", () => {
-  assert.equal(buildAuthEnabled(projectRoot(), {}), true);
+test("the build side resolves this app's shipped app-env (sign-in off)", () => {
+  // Shipped app-env turns single sign-on off: email/password only, no Google redirect.
+  assert.equal(buildAuthEnabled(projectRoot(), {}), false);
+  // A host env override still wins, so a deployment can re-enable SSO if it wants to.
   assert.equal(buildAuthEnabled(projectRoot(), { VITE_AUTH_ENABLED: "true" }), true);
 });
 

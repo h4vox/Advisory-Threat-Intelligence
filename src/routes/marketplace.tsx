@@ -1462,32 +1462,48 @@ function MarketplacePage() {
                 </div>
               )}
 
-              {/* Server-issued OAuth sign-in (PKCE verifier never leaves the server) */}
-              {configModalItem.id === "agy_agent" && (
-                <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-subtle p-3 text-xs">
-                  <span className="text-subtle">Google sign-in for {configModalItem.name}</span>
-                  {serverAuthUrl ? (
-                    <a
-                      href={serverAuthUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 font-medium text-accent hover:underline"
-                    >
-                      Open sign-in <ExternalLink className="size-3" />
-                    </a>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={realInstallMutation.isPending}
-                      onClick={() => realInstallMutation.mutate({ id: configModalItem.id })}
-                      className="h-7 text-xs"
-                    >
-                      {realInstallMutation.isPending ? "Starting…" : "Start sign-in"}
-                    </Button>
-                  )}
-                </div>
-              )}
+              {/* Server-issued OAuth sign-in (PKCE verifier never leaves the server).
+                 Shown only when a Google OAuth client is actually configured; otherwise the sign-in
+                 returns Google's "Missing required parameter: client_id" error, so we guide instead. */}
+              {configModalItem.id === "agy_agent" &&
+                (() => {
+                  const url = serverAuthUrl || configModalItem.authUrl || "";
+                  let oauthConfigured = false;
+                  try {
+                    oauthConfigured = Boolean(new URL(url).searchParams.get("client_id"));
+                  } catch {
+                    oauthConfigured = false;
+                  }
+                  if (oauthConfigured) {
+                    return (
+                      <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-subtle p-3 text-xs">
+                        <span className="text-subtle">Google sign-in for {configModalItem.name}</span>
+                        {serverAuthUrl ? (
+                          <a href={serverAuthUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-medium text-accent hover:underline">
+                            Open sign-in <ExternalLink className="size-3" />
+                          </a>
+                        ) : (
+                          <Button size="sm" variant="secondary" disabled={realInstallMutation.isPending} onClick={() => realInstallMutation.mutate({ id: configModalItem.id })} className="h-7 text-xs">
+                            {realInstallMutation.isPending ? "Starting…" : "Start sign-in"}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="mb-4 rounded-xl border border-warn/40 bg-warn/10 p-3 text-xs">
+                      <div className="flex items-center gap-1.5 font-medium text-warn">
+                        <AlertCircle className="size-3.5 shrink-0" /> Google sign-in isn&apos;t configured
+                      </div>
+                      <p className="mt-1 leading-relaxed text-muted">
+                        This agent&apos;s Google OAuth has no client ID, so sign-in returns a Google error. To use Google, set your own OAuth
+                        client in <code className="font-mono text-[11px]">AGY_OAUTH_CLIENT_ID</code>. The simpler path is to skip Google and use a
+                        direct AI provider — the <span className="font-medium text-fg">Google Gemini API</span> or{" "}
+                        <span className="font-medium text-fg">OpenAI API</span> under AI Providers need only an API key.
+                      </p>
+                    </div>
+                  );
+                })()}
 
               {/* Autonomous Agent Onboarding Pipeline (10-Step Extensible Flow) */}
               {configModalItem.type === "cli_agent" && (
