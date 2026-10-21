@@ -73,24 +73,38 @@ test("hides stubs only when the word count is known", () => {
   assert.equal(r({ title: "Update", url: "https://vendor.example/blog/update", wordCount: 40, iocCount: 1 }).verdict, "keep");
 });
 
-test("threat evidence, structured sources and analyst keeps always protect", () => {
-  const webinarHome = { title: "Join our webinar", url: "https://vendor.example/" };
-  for (const over of [
-    { techniques: 3 },
-    { cves: 1 },
-    { iocCount: 5 },
-    { attackChainSteps: 4 },
-    { entities: 1 },
-    { qualityScore: 0.82 },
-    { structured: true },
-    { keep: true },
-  ]) {
-    const v = r({ ...webinarHome, ...over });
+test("threat evidence protects an article, but not a structural non-report", () => {
+  // On a real article URL, any one piece of threat evidence keeps it.
+  const article = { title: "APT29 campaign analysis", url: "https://vendor.example/blog/apt29-campaign-analysis" };
+  for (const over of [{ techniques: 3 }, { cves: 1 }, { iocCount: 5 }, { attackChainSteps: 4 }, { entities: 1 }, { qualityScore: 0.82 }, { structured: true }, { keep: true }]) {
+    const v = r({ ...article, ...over });
     assert.equal(v.verdict, "keep", JSON.stringify(over));
     assert.ok(v.protectedBy.length > 0);
   }
-  // One stray indicator is not enough to protect a homepage.
-  assert.equal(r({ ...webinarHome, iocCount: 1 }).verdict, "reject");
+});
+
+test("a homepage / listing page is a hard reject even when its snippets name threats", () => {
+  // A listing page's fragments name actors and techniques, but it is not a report. Only an analyst
+  // Restore, a structured record, or a genuinely high quality score overrides the page-type reject.
+  const home = { title: "Join our webinar", url: "https://vendor.example/" };
+  for (const over of [{ techniques: 3 }, { cves: 2 }, { iocCount: 5 }, { attackChainSteps: 4 }, { entities: 3 }]) {
+    assert.equal(r({ ...home, ...over }).verdict, "reject", JSON.stringify(over));
+    assert.equal(r({ ...home, ...over }).rule, "page_type");
+  }
+  assert.equal(r({ ...home, structured: true }).verdict, "keep");
+  assert.equal(r({ ...home, keep: true }).verdict, "keep");
+  assert.equal(r({ ...home, qualityScore: 0.82 }).verdict, "keep");
+});
+
+test("a topic/section landing page is rejected even with a real-looking article title", () => {
+  // The WeLiveSecurity case: /en/ransomware is a section listing; its featured-article title and the
+  // T1486 + LockBit its snippets contain must not rescue it.
+  const v = r({ title: "Ransomware protection: tips to defend against data hijacking", url: "https://www.welivesecurity.com/en/ransomware", techniques: 1, entities: 1, qualityScore: 0.0 });
+  assert.equal(v.verdict, "reject");
+  assert.equal(v.rule, "page_type");
+  assert.match(v.reasons[0], /section|listing/i);
+  // A real article with a descriptive slug under the same site is kept.
+  assert.equal(r({ title: "SparrowDoor analysis", url: "https://www.welivesecurity.com/en/eset-research/sparrowdoor-backdoor-analysis", techniques: 2 }).verdict, "keep");
 });
 
 test("reason line for the library", () => {

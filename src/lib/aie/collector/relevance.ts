@@ -82,6 +82,18 @@ const INTRUSION_TERMS: Array<[RegExp, string]> = [
   [/\bvulnerabilit(?:y|ies)\b|\brce\b|\bremote code execution\b/i, "vulnerability"],
   [/\bbreach(?:ed|es)?\b|\bcompromis(?:e|ed|es)\b/i, "compromise"],
   [/\bdeep[- ]dive\b|\banalysis\b|\bdissect\w*\b|\breverse[- ]engineer\w*/i, "technical analysis"],
+  // --- Targeted TTP / tradecraft / novelty signals (high value for emulation & simulation) ---
+  [/\bnovel\b|\bnew (?:technique|method|variant|tooling|malware|loader|backdoor)\b|\bpreviously (?:un)?(?:documented|seen|reported)\b|\bnewly (?:discovered|identified|observed)\b|\bfirst (?:observed|seen|documented)\b|\bemerging\b/i, "novel technique / tradecraft"],
+  [/\bprocedures?\b|\btradecraft\b|\bmodus operandi\b|\bplaybook\b|\bhands?-on-keyboard\b/i, "procedure / tradecraft"],
+  [/\bliving[- ]off[- ]the[- ]land\b|\blol ?bins?\b|\blol ?bas\b|\blol ?scripts?\b/i, "living-off-the-land"],
+  [/\bprocess (?:injection|hollowing|doppelg(?:ä|a)nging)\b|\bdll (?:side[- ]?loading|search[- ]?order hijack\w*|injection)\b|\breflective (?:dll )?loading\b|\bshellcode\b|\bcode injection\b/i, "injection / loading technique"],
+  [/\b(?:byovd|bring your own vulnerable driver)\b|\bamsi bypass\b|\betw (?:bypass|patch\w*)\b|\bedr (?:bypass|evasion|unhook\w*)\b|\buac bypass\b|\bdirect syscalls?\b|\bunhook\w*\b|\bdefense evasion\b/i, "defence evasion / bypass"],
+  [/\b(?:cobalt strike|sliver|brute ?ratel|metasploit|meterpreter|havoc|mythic|covenant|nighthawk)\b|\bbeacons?\b|\bc2 framework\b/i, "offensive C2 tooling"],
+  [/\btoken (?:impersonation|theft)\b|\bkerberoast\w*|\bpass[- ]the[- ](?:hash|ticket)\b|\bgolden ticket\b|\bntlm relay\b|\bdcsync\b|\blsass\b|\bmimikatz\b/i, "credential-access technique"],
+  [/\bactively exploited\b|\bexploited in (?:the wild|attacks|campaigns)\b|\bin[- ]the[- ]wild\b|\bexploitation in the wild\b|\bn[- ]day\b|\bpatch bypass\b|\bproof[- ]of[- ]concept\b|\bpo[cC]\b/i, "active / in-the-wild exploitation"],
+  [/\bmalware analysis report\b|\bmar\b|\btechnical (?:analysis|report)\b|\bthreat (?:report|intelligence report)\b|\bincident report\b/i, "technical threat report"],
+  [/\bkill[- ]chain\b|\battack[- ]chain\b|\bexecution chain\b|\binfection chain\b|\bmitre att&?ck\b/i, "attack chain / ATT&CK"],
+  [/\bdetection (?:rule|logic|signatures?|content)\b|\bhunting (?:quer(?:y|ies)|hypothes[ei]s)\b|\bsnort\b|\bsuricata\b|\bsigma rule\b|\byara rule\b/i, "detection content"],
 ];
 
 const NEGATIVE_TERMS: Array<[RegExp, string, number]> = [
@@ -101,6 +113,15 @@ const NEGATIVE_TERMS: Array<[RegExp, string, number]> = [
   [/\btips\b|\bbest practices\b|\bhow to choose\b|\bbuyer'?s guide\b|\bchecklist\b|\bwhy you need\b|\bmyths?\b/i, "generic advice", 0.16],
   [/\bhow to protect (?:yourself|your(?:self| family| business| organi[sz]ation)?)\b|\bunderstanding (?:the|what|how|why)\b|\bwhat is (?:a |an )?\b|\bexplained\b|\b101\b|\bbeginner'?s guide\b/i, "awareness explainer", 0.16],
   [/\bculture\b|\bemployee spotlight\b|\bmeet the team\b|\bdiversity\b|\bcharity\b|\bholiday season\b/i, "company culture", 0.36],
+  // --- Vendor marketing collateral & opinion that is not a report (title / summary level).
+  // Listing / share / cookie chrome is handled by the extraction (boilerplate strip) and the library
+  // gate's page-type rule, not here, so a sparse feed title like "Read more" is never pre-skipped. ---
+  // "sponsored post/content" only — never bare "sponsored", which would wrongly hit "state-sponsored".
+  [/\bsponsored (?:post|content|article)\b|\bsponsor(?:ed)? content\b|\badvertisement\b|\bpromoted (?:post|content)\b|\baffiliate link\b/i, "sponsored / advertorial", 0.34],
+  [/\bultimate guide\b|\bcomplete guide\b|\beverything you need to know\b|\btop \d+ (?:tools|vendors|solutions|tips|ways|reasons)\b|\bbest \d+ (?:tools|vendors|solutions|antivirus|vpns?)\b|\bbuyer'?s guide\b|\bmagic quadrant\b|\bforrester waves? report\b/i, "buyer's guide / comparison", 0.3],
+  [/\bstate of (?:[a-z ]+ )?(?:security|ransomware|threats?|the [a-z]+) (?:report )?20\d\d\b|\bannual (?:threat )?report 20\d\d\b|\btrends to watch\b|\bpredictions for 20\d\d\b|\byear in review\b/i, "vendor trend / predictions report", 0.22],
+  [/\bop-?ed\b|\bcommentary\b|\bmy take\b|\bhot take\b/i, "opinion / commentary", 0.2],
+  [/\bdata privacy day\b|\bcyber(?:security)? awareness month\b|\bworld (?:password|backup) day\b|\bstay safe online\b|\bpassword (?:hygiene|tips)\b/i, "awareness campaign", 0.3],
 ];
 
 const URL_NEGATIVE: Array<[RegExp, string]> = [

@@ -74,7 +74,7 @@ import type {
 import { DEFAULT_APP_SETTINGS, SOURCE_CONFIDENCE } from "./types";
 import { getSql } from "@/lib/db";
 import { logger } from "./logger";
-import { isMongoConfigured, getThreatIntelCollection, getCollectionName, getDatabaseName } from "../mongodb/client.server";
+import { isMongoConfigured, isMongoRequired, getThreatIntelCollection, getCollectionName, getDatabaseName } from "../mongodb/client.server";
 import { localHiddenReasons } from "../mongodb/library-gate-repo.server";
 import { redactMongoUri } from "../mongodb/srv-fallback";
 import {
@@ -2251,6 +2251,8 @@ export const getStorageStats = createServerFn({ method: "GET" }).middleware([ana
   return {
     configured: false,
     engine: isMongoConfigured() ? "mongodb" : "local",
+    // Mandatory shared DB missing in production: the notice escalates this to a hard error.
+    ...(!isMongoConfigured() && isMongoRequired() ? { required: true } : {}),
     ...(error ? { error } : {}),
     databaseName: isMongoConfigured() ? getDatabaseName() : "local",
     collectionName: isMongoConfigured() ? getCollectionName() : "reports",

@@ -875,6 +875,11 @@ export type StorageStats = {
   configured: boolean;
   /** Where the library is read from: MongoDB (MONGODB_URI) or the built-in local database. */
   engine?: "mongodb" | "local";
+  /**
+   * The shared MongoDB is mandatory in this environment (production/deploy) but is not configured, so
+   * the app is on the private, empty local store and nothing is being saved or shared. A hard error.
+   */
+  required?: boolean;
   /** MongoDB is configured but could not be reached (credentials removed). */
   error?: string;
   databaseName: string;
