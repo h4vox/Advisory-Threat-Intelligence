@@ -35,6 +35,14 @@ export function DataSourceNotice({ className }: { className?: string }) {
 function describe(stats: StorageStats | undefined): { tone: "info" | "danger"; title: string; body: string; detail?: string } | null {
   if (!stats) return null;
   if (stats.engine === "local") {
+    // Production with no shared database: nothing is being saved or shared — a hard error, not a hint.
+    if (stats.required) {
+      return {
+        tone: "danger",
+        title: "No shared database is configured — threat intelligence is not being saved",
+        body: "AIE needs one shared MongoDB for its whole library, sources and accounts, but MONGODB_URI is not set on this deployment, so every visitor is on a private, empty store and nothing is saved or shared. Set MONGODB_URI once in the server environment (e.g. Vercel → Settings → Environment Variables) and redeploy.",
+      };
+    }
     return {
       tone: "info",
       title: "This is the built-in local database, not your MongoDB library",

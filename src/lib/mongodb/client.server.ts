@@ -47,6 +47,22 @@ export function isMongoConfigured(): boolean {
   return Boolean(uri && uri.startsWith("mongodb"));
 }
 
+/**
+ * AIE is a shared, global product: one MongoDB is the mandatory home for the whole library, sources,
+ * accounts and crawl history. In production that database MUST be configured — without it every
+ * visitor would fall back to a private, empty, in-memory store and nothing would be saved or shared.
+ * Locally (`npm run dev`) MongoDB stays optional so the app runs out of the box. The URI itself is
+ * never committed; it is supplied once through the deploy environment (see .env.example).
+ */
+export function isMongoRequired(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+/** True when the shared database is mandatory here but has not been configured — a hard deploy error. */
+export function isMongoMissingButRequired(): boolean {
+  return isMongoRequired() && !isMongoConfigured();
+}
+
 export async function getMongoClient(): Promise<MongoClient> {
   const uri = getMongoUri();
   if (!uri) {
