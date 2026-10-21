@@ -182,8 +182,10 @@ export async function ensureSeeded() {
       on conflict (id) do nothing
     `;
   }
-  const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
-  if (Number(rc[0]?.c ?? 0) === 0) {
+  // Purge any legacy demo/seed reports; AIE shows only real retrieved intelligence, never dummy data.
+  await sql`delete from reports where id like 'rpt_seed_%' or ingest_origin = 'seed'`;
+  await sql`delete from ingest_events where outcome = 'seeded'`;
+  if (SEED_REPORTS.length) {
     for (const r of SEED_REPORTS) {
       const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
       const iocs = harvestIocs(r.text);

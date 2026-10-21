@@ -303,6 +303,17 @@ function toListItem(r: ReportRow): ReportListItem {
 let hasSeeded = false;
 let seedPromise: Promise<void> | null = null;
 
+/** Fixed URLs older builds ingested with hardcoded synthetic sample text; purged once on first boot. */
+const SYNTHETIC_POOL_URLS = [
+  "https://thedfirreport.com/2026/04/22/bissa-scanner-exposed-ai-assisted-mass-exploitation-and-credential-harvesting",
+  "https://unit42.paloaltonetworks.com/threat-actor-scattered-spider-cloud-intrusion",
+  "https://cloud.google.com/blog/topics/threat-intelligence/sandworm-substations-grid-intrusion",
+  "https://center-for-threat-informed-defense.github.io/adversary-emulation-library/lockbit3",
+  "https://www.sentinelone.com/labs/stealthy-edr-evasion-and-kernel-callback-tampering",
+  "https://www.cisa.gov/news-events/cybersecurity-advisories/aa26-088a-volt-typhoon-infrastructure",
+  "https://posts.specterops.io/bloodhound-active-directory-tiering-and-attack-path-analysis",
+];
+
 async function ensureSeeded() {
   if (hasSeeded) return;
   if (seedPromise) return seedPromise;
@@ -316,9 +327,39 @@ async function ensureSeeded() {
         await ensureMongoIndexes();
         await mongoSeedSources(SOURCE_SEED);
         const col = await getThreatIntelCollection();
-        const existingCount = await col.countDocuments({ docType: "report" });
-        if (existingCount === 0) {
-          console.log("[db] Seeding initial gold-set threat reports into MongoDB Atlas...");
+        // Demo/seed reports are never shown: purge any legacy placeholder rows so the library holds
+        // only real retrieved intelligence (older builds seeded a "gold set" into Atlas on first run).
+        const purged = await col.deleteMany({
+          docType: "report",
+          $or: [{ id: { $regex: "^rpt_seed_" } }, { ingestOrigin: "seed" }, { discoveryMethod: "seed" }],
+        });
+        if (purged.deletedCount) {
+          console.log(`[db] Removed ${purged.deletedCount} legacy demo/seed report(s) from MongoDB`);
+          await col.deleteMany({ docType: "ingest_event", outcome: "seeded" }).catch(() => {});
+        }
+        // One-time removal of legacy synthetic "knowledge pool" reports: older builds ingested these
+        // fixed URLs using hardcoded sample text (fabricated IOCs). Guarded by a marker so a genuine
+        // future crawl of the same URL is never deleted.
+        try {
+          const poolMarker = await col.findOne({ docType: "maintenance", id: "synthetic_pool_purge_v1" });
+          if (!poolMarker) {
+            const poolUrls = SYNTHETIC_POOL_URLS.flatMap((u) => [u, `${u}/`]);
+            const r2 = await col.deleteMany({
+              docType: "report",
+              $or: [{ url: { $in: poolUrls } }, { canonicalUrl: { $in: poolUrls } }],
+            });
+            if (r2.deletedCount) console.log(`[db] Removed ${r2.deletedCount} legacy synthetic knowledge-pool report(s)`);
+            await col.updateOne(
+              { docType: "maintenance", id: "synthetic_pool_purge_v1" },
+              { $set: { docType: "maintenance", id: "synthetic_pool_purge_v1", done: true, at: new Date().toISOString() } },
+              { upsert: true },
+            );
+          }
+        } catch (poolErr) {
+          console.warn("[db] synthetic-pool cleanup skipped:", poolErr);
+        }
+        // SEED_REPORTS is empty by design; this loop never inserts anything now.
+        if (SEED_REPORTS.length) {
           for (const r of SEED_REPORTS) {
             const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
             const qual = qualifyContent(r.text, r.title, r.url);
@@ -427,8 +468,10 @@ async function ensureSeeded() {
           `;
         }
 
-        const rc = await sql<{ c: number }>`select count(*)::int as c from reports`;
-        if (Number(rc[0]?.c ?? 0) === 0) {
+        // Purge any legacy demo/seed reports from the local database too.
+        await sql`delete from reports where id like 'rpt_seed_%' or ingest_origin = 'seed' or discovery_method = 'seed'`;
+        await sql`delete from ingest_events where outcome = 'seeded'`;
+        if (SEED_REPORTS.length) {
           for (const r of SEED_REPORTS) {
             const { score, reasons, wordCount } = scoreQuality(r.text, r.title);
             const qual = qualifyContent(r.text, r.title, r.url);

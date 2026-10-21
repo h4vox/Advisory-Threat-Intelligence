@@ -23,7 +23,7 @@ import { prepareReport } from "./search/report-docs";
 import type { EntitySuggestion, SearchGroupKey, SearchResponse, SearchResult } from "./search/types";
 import type { DocType, EmulationOption, ReportListItem } from "./types";
 
-/** Local store: listReports seeds the gold-set reports on first use (ensureSeeded is internal to server.ts). */
+/** Local store: ensureSeeded (internal to server.ts) initializes indexes and purges any legacy demo data; only real reports are returned. */
 async function ensureSeeded(): Promise<void> {
   try {
     await listReports({ data: { limit: 1 } });
