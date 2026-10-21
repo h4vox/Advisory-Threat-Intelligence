@@ -2108,7 +2108,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware
     z.object({
       enabled: z.boolean().optional(),
       paused: z.boolean().optional(),
-      frequencyMinutes: z.number().int().min(15).max(10080).optional(),
+      frequencyMinutes: z.number().int().min(5).max(10080).optional(),
       startHour: z.string().optional(),
       maxResourcesPerRun: z.number().int().min(1).max(500).optional(),
       maxDepth: z.number().int().min(0).max(5).optional(),
@@ -2218,7 +2218,7 @@ export const updateAppSettings = createServerFn({ method: "POST" }).middleware([
       nodeId: z.string().max(200).optional(),
       defaultClassification: z.string().max(200).optional(),
       iocConfidenceThreshold: z.number().min(0).max(100).optional(),
-      evidenceRetentionDays: z.number().int().min(1).max(3650).optional(),
+      evidenceRetentionDays: z.number().int().min(0).max(3650).optional(),
       defaultExportFormat: z.enum(["json", "stix21", "csv", "pdf"]).optional(),
       cacheTtlSeconds: z.number().int().min(0).max(86400).optional(),
       dashboardCacheTtlSeconds: z.number().int().min(0).max(86400).optional(),

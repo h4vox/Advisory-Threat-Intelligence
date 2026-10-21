@@ -75,7 +75,8 @@ const SETTINGS_SECTIONS = [
 // Minimum is 15m to match the server validator (frequencyMinutes >= 15); the 5m "Test" preset was
 // removed because saving it failed validation. 15m is the shortest production cadence.
 const INTERVAL_PRESETS = [
-  { label: "15m", mins: 15, tag: "Min" },
+  { label: "5m", mins: 5, tag: "Min" },
+  { label: "15m", mins: 15 },
   { label: "30m", mins: 30 },
   { label: "1h", mins: 60 },
   { label: "2h", mins: 120 },
@@ -650,11 +651,11 @@ function SettingsPage() {
                   </div>
                   <input
                     type="range"
-                    min="15"
+                    min="5"
                     max="1440"
                     step="5"
                     value={currentCrawl.frequencyMinutes ?? 360}
-                    onChange={(e) => updateCrawlField("frequencyMinutes", Math.max(15, parseInt(e.target.value, 10) || 15))}
+                    onChange={(e) => updateCrawlField("frequencyMinutes", Math.max(5, parseInt(e.target.value, 10) || 5))}
                     className="w-full accent-accent"
                   />
                   <div className="flex flex-wrap items-center gap-1 pt-1">
