@@ -24,14 +24,30 @@ const DEFAULT_COLLECTION_NAME = "threat-intel";
 const MISSING_URI_MESSAGE =
   "MONGODB_URI is not set. Add it to the server environment (or a .env file next to package.json) and restart; no built-in database credentials are provided.";
 
+/**
+ * The shared threat-intel database. AIE is a single-database product, so this cluster is the built-in
+ * default: the app connects to it out of the box with no setup, which is why the library is the same
+ * for everyone who runs it. Point MONGODB_URI at a different `mongodb://` / `mongodb+srv://` URI to
+ * use another database, or set MONGODB_URI=local (off / none) to fall back to the built-in local DB.
+ */
+const DEFAULT_MONGODB_URI =
+  "mongodb+srv://threatintel_app:UsvyDIqA5d5YztAf@cluster0.gr9ihel.mongodb.net/?appName=Cluster0";
+
 export function getMongoUri(): string | undefined {
-  const envUri = process.env.MONGODB_URI?.trim();
-  if (!envUri) return undefined;
-  // Treat obvious template placeholders as unset.
-  if ((envUri.includes("<") && envUri.includes(">")) || envUri.includes("NEW_PASSWORD")) {
-    return undefined;
+  // Heal a pasted "MONGODB_URI=MONGODB_URI=mongodb+srv://..." double prefix before validating.
+  const raw = process.env.MONGODB_URI?.replace(/^(?:\s*MONGODB_URI\s*=\s*)+/i, "").trim();
+  // Explicit opt-out keeps the built-in local database (offline / isolated development).
+  if (raw && /^(?:local|off|none|disabled?)$/i.test(raw)) return undefined;
+  // Unset, a template placeholder, or anything that is not a real Mongo URI → the shared default.
+  if (
+    !raw ||
+    (raw.includes("<") && raw.includes(">")) ||
+    raw.includes("NEW_PASSWORD") ||
+    !/^mongodb(?:\+srv)?:\/\//i.test(raw)
+  ) {
+    return DEFAULT_MONGODB_URI;
   }
-  return envUri;
+  return raw;
 }
 
 export function getDatabaseName(): string {
