@@ -21,47 +21,239 @@ const ADVERSARY_LABELS = new Set(["observed", "inferred"]);
  * supports with observed/inferred evidence. These are starting points, not rules.
  */
 const TECHNIQUE_GUIDANCE: Array<{ ids: string[]; detection: string; hunting: string; emulation: string }> = [
+  // --- Initial Access ---
+  {
+    ids: ["T1190"],
+    detection: "Detection idea (T1190): a web/app-server or appliance process (w3wp.exe, httpd, java, node) spawning cmd/powershell/sh, or new webshell files under web roots (Sysmon 1/11)",
+    hunting: "Hunting: review edge-device and web-server logs for POSTs to known-vulnerable endpoints followed by child shells or script file writes",
+    emulation: "Atomic Test: against an isolated lab instance, run the target CVE's PoC and confirm the EDR flags the resulting child shell / webshell drop",
+  },
+  {
+    ids: ["T1566.001"],
+    detection: "Detection idea (T1566.001): Office/PDF readers (winword.exe, excel.exe, acrord32.exe) spawning script interpreters or LOLBins (Sysmon 1)",
+    hunting: "Hunting: correlate mail-gateway attachment delivery with Office apps writing to %TEMP% or launching powershell/wscript/mshta",
+    emulation: "Atomic Test: open a benign macro document in a lab that launches calc.exe and verify parent-child alerting",
+  },
+  {
+    ids: ["T1566.002"],
+    detection: "Detection idea (T1566.002): navigation to newly-registered or look-alike domains from mail/browser, then an executable or archive download (proxy/DNS)",
+    hunting: "Hunting: search proxy logs for first-seen domains opened from email, then exe/archive downloads within minutes",
+    emulation: "Atomic Test: send a lab email linking to an internal benign payload host and confirm URL-detonation / download alerting",
+  },
+  {
+    ids: ["T1078.002", "T1078.001"],
+    detection: "Detection idea (T1078): successful logons (EventID 4624) from unusual sources, impossible-travel, or service/default accounts logging on interactively",
+    hunting: "Hunting: baseline per-account logon source hosts and flag new host/geo or Logon Type changes for privileged accounts",
+    emulation: "Atomic Test: authenticate a test domain account from an unusual lab subnet and confirm the anomaly surfaces",
+  },
+  {
+    ids: ["T1133"],
+    detection: "Detection idea (T1133): VPN/Citrix/RDP-gateway authentications from new ASNs or without MFA (gateway and IdP logs)",
+    hunting: "Hunting: review external remote-access logs for successful logons from hosting-provider IPs or MFA-disabled accounts",
+    emulation: "Atomic Test: connect to the lab VPN/RDP gateway from an external test IP and verify geo/ASN alerting",
+  },
+  // --- Execution ---
   {
     ids: ["T1059.001"],
-    detection: "Detection idea (T1059.001): PowerShell process with encoded or hidden-window arguments (EventID 4688 / Sysmon 1)",
-    hunting: "Hunting: Search for powershell.exe where CommandLine contains base64 patterns or DownloadString",
+    detection: "Detection idea (T1059.001): PowerShell with encoded/hidden-window arguments, or Script Block Logging high-entropy blocks (EventID 4688/4104, Sysmon 1)",
+    hunting: "Hunting: search powershell.exe command lines for -enc/-EncodedCommand, DownloadString, FromBase64String, -w hidden",
     emulation: "Atomic Test: powershell.exe -NoP -NonI -W Hidden -Exec Bypass -Command \"Write-Host 'Emulated Execution'\"",
   },
   {
-    ids: ["T1003.001"],
-    detection: "Detection idea (T1003.001): LSASS memory access or dump creation (Sysmon EventID 10 / comsvcs MiniDump)",
-    hunting: "Hunting: Audit process handles granted to lsass.exe from untrusted binary directories",
-    emulation: "Atomic Test: rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump (LSASS PID) dump.dmp full",
+    ids: ["T1059.003"],
+    detection: "Detection idea (T1059.003): cmd.exe spawned by Office/browser/web-server parents, or chained &&/|| / for-loop command lines (EventID 4688 / Sysmon 1)",
+    hunting: "Hunting: hunt for cmd.exe /c with download, copy to ADMIN$, or for /f loops launched by non-admin parents",
+    emulation: "Atomic Test: cmd.exe /c \"echo Emulated && whoami\" (benign)",
   },
   {
-    ids: ["T1003.003"],
-    detection: "Detection idea (T1003.003): ntdsutil / shadow-copy access to NTDS.dit on domain controllers",
-    hunting: "Hunting: Query for ntdsutil.exe \"ac i ntds\" \"ifm\" or vssadmin create shadow on domain controllers",
-    emulation: "Atomic Test: ntdsutil.exe \"ac i ntds\" \"ifm\" \"create full C:\\Temp\\ntds_emulation\" q q (lab DC only)",
+    ids: ["T1059.005"],
+    detection: "Detection idea (T1059.005): wscript.exe/cscript.exe executing .vbs/.vbe, or Office spawning script hosts (Sysmon 1)",
+    hunting: "Hunting: hunt for wscript/cscript launching from %TEMP%, %APPDATA% or mounted ISO/ZIP paths",
+    emulation: "Atomic Test: cscript.exe //B //Nologo emulated.vbs where the script only shows a MsgBox (lab)",
   },
   {
-    ids: ["T1021.002", "T1021.001"],
-    detection: "Detection idea (T1021): Lateral movement via SMB admin share, PSEXESVC service creation (EventID 7045) or RDP",
-    hunting: "Hunting: Correlate EventID 4624 (Logon Type 3/10) followed by administrative file writes in ADMIN$ or C$",
-    emulation: "Atomic Test: Invoke-Command -ComputerName (Target) -ScriptBlock { whoami /all }",
+    ids: ["T1204.002"],
+    detection: "Detection idea (T1204.002): exe/LNK launched from an archive/ISO mount or Downloads folder shortly after a browser/mail download (Sysmon 1/11)",
+    hunting: "Hunting: correlate Mark-of-the-Web downloads with first execution from \\Downloads or a mounted .iso/.img",
+    emulation: "Atomic Test: mount a benign lab ISO containing a LNK that runs calc.exe and confirm detection",
   },
   {
-    ids: ["T1486", "T1490"],
-    detection: "Detection idea (T1490): Shadow copy deletion via vssadmin, wmic or bcdedit tampering (EventID 4688)",
-    hunting: "Hunting: Query for vssadmin.exe delete shadows /all /quiet or bcdedit /set recoveryenabled no",
-    emulation: "Atomic Test: vssadmin.exe list shadows (safe verification test without destructive action)",
+    ids: ["T1047"],
+    detection: "Detection idea (T1047): wmic.exe process call create, or WmiPrvSE.exe spawning shells (Sysmon 1 / WMI-Activity 5861)",
+    hunting: "Hunting: search for wmic /node: process call create and permanent WMI event-consumer subscriptions",
+    emulation: "Atomic Test: wmic.exe process call create \"calc.exe\" (lab host)",
   },
+  // --- Persistence ---
+  {
+    ids: ["T1547.001"],
+    detection: "Detection idea (T1547.001): writes to HKLM/HKCU ...\\CurrentVersion\\Run or RunOnce (Sysmon 13 / EventID 4657)",
+    hunting: "Hunting: review Run/RunOnce values pointing to %TEMP%, %APPDATA% or script interpreters",
+    emulation: "Atomic Test: reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v Emulated /d calc.exe, then delete the value (lab)",
+  },
+  {
+    ids: ["T1053.005"],
+    detection: "Detection idea (T1053.005): scheduled-task creation (EventID 4698 / schtasks.exe in Sysmon 1) with actions in user-writable paths",
+    hunting: "Hunting: search for schtasks /create with /ru SYSTEM or action binaries under %APPDATA%/%TEMP%",
+    emulation: "Atomic Test: schtasks /create /tn Emulated /tr calc.exe /sc once /st 00:00, then schtasks /delete /tn Emulated (lab)",
+  },
+  {
+    ids: ["T1543.003"],
+    detection: "Detection idea (T1543.003): service install (EventID 7045) with an image path in a user-writable directory or a short random name (PSEXESVC-like)",
+    hunting: "Hunting: review 7045 installs for cmd/powershell image paths and services created right after remote logons",
+    emulation: "Atomic Test: sc.exe create EmulatedSvc binPath= \"cmd /c echo test\", then sc delete EmulatedSvc (lab)",
+  },
+  {
+    ids: ["T1136.001"],
+    detection: "Detection idea (T1136.001): local account creation (EventID 4720) and addition to Administrators (EventID 4732)",
+    hunting: "Hunting: search for net user /add and net localgroup administrators /add outside provisioning windows",
+    emulation: "Atomic Test: net user emulated P@ssw0rd! /add, then net user emulated /del (lab host)",
+  },
+  // --- Privilege Escalation ---
+  {
+    ids: ["T1068"],
+    detection: "Detection idea (T1068): SYSTEM-level child processes from a user-context parent, or known-vulnerable / unsigned driver loads (BYOVD) (Sysmon 1/6)",
+    hunting: "Hunting: hunt for vulnerable-driver loads and token-elevation anomalies following exploit attempts",
+    emulation: "Atomic Test: in a lab, run a known LPE PoC against an unpatched build and confirm driver/exploit alerting",
+  },
+  {
+    ids: ["T1548.002"],
+    detection: "Detection idea (T1548.002): auto-elevating binaries (fodhelper.exe, eventvwr.exe, computerdefaults.exe) spawning child processes (Sysmon 1)",
+    hunting: "Hunting: search for registry writes to HKCU\\Software\\Classes\\ms-settings or \\mscfile\\shell\\open\\command",
+    emulation: "Atomic Test: the fodhelper registry-hijack to launch cmd.exe on a lab host, reverting the keys after",
+  },
+  // --- Defense Evasion ---
   {
     ids: ["T1562.001"],
-    detection: "Detection idea (T1562.001): Defender/EDR tampering such as Set-MpPreference -DisableRealtimeMonitoring",
-    hunting: "Hunting: Search for Set-MpPreference or service stop events against security products",
+    detection: "Detection idea (T1562.001): Defender/EDR tampering such as Set-MpPreference -DisableRealtimeMonitoring or security-service stop (EventID 7036/4688)",
+    hunting: "Hunting: search for Set-MpPreference, sc stop/Stop-Service, or driver-unload events against security products",
     emulation: "Atomic Test: Get-MpPreference | Select DisableRealtimeMonitoring (read-only verification)",
   },
   {
     ids: ["T1070.001"],
-    detection: "Detection idea (T1070.001): Event log cleared (Security EventID 1102 / System EventID 104)",
-    hunting: "Hunting: Search for wevtutil cl or Clear-EventLog command lines",
+    detection: "Detection idea (T1070.001): event log cleared (Security EventID 1102 / System EventID 104)",
+    hunting: "Hunting: search for wevtutil cl or Clear-EventLog command lines and 1102/104 pairs",
     emulation: "Atomic Test: wevtutil.exe cl Application (lab host only)",
+  },
+  {
+    ids: ["T1027"],
+    detection: "Detection idea (T1027): powershell -EncodedCommand, very long base64 blobs, or high-entropy script arguments (Script Block Logging 4104)",
+    hunting: "Hunting: flag command lines with base64 >500 chars, FromBase64String, char-array joins or -enc",
+    emulation: "Atomic Test: powershell -EncodedCommand <base64 of 'Write-Host Emulated'> (benign)",
+  },
+  {
+    ids: ["T1055"],
+    detection: "Detection idea (T1055): CreateRemoteThread or VirtualAllocEx+WriteProcessMemory into lsass/explorer/trusted processes (Sysmon 8/10)",
+    hunting: "Hunting: hunt for remote-thread creation into trusted processes from recently-written binaries",
+    emulation: "Atomic Test: use a lab injector (Atomic Red Team T1055) to inject a benign MessageBox into notepad.exe",
+  },
+  // --- Credential Access ---
+  {
+    ids: ["T1003.001"],
+    detection: "Detection idea (T1003.001): LSASS memory access or dump creation (Sysmon EventID 10 / comsvcs MiniDump, procdump)",
+    hunting: "Hunting: audit process handles granted to lsass.exe from untrusted binary directories",
+    emulation: "Atomic Test: rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump (LSASS PID) dump.dmp full (lab host)",
+  },
+  {
+    ids: ["T1003.003"],
+    detection: "Detection idea (T1003.003): ntdsutil / shadow-copy access to NTDS.dit on domain controllers",
+    hunting: "Hunting: query for ntdsutil.exe \"ac i ntds\" \"ifm\" or vssadmin create shadow on domain controllers",
+    emulation: "Atomic Test: ntdsutil.exe \"ac i ntds\" \"ifm\" \"create full C:\\Temp\\ntds_emulation\" q q (lab DC only)",
+  },
+  {
+    ids: ["T1558.003"],
+    detection: "Detection idea (T1558.003): bursts of Kerberos TGS requests with RC4 encryption (EventID 4769, Ticket Encryption 0x17) across many SPNs",
+    hunting: "Hunting: correlate a single account requesting many service tickets in a short window",
+    emulation: "Atomic Test: Rubeus kerberoast /stats, or Get-DomainSPNTicket in a lab domain",
+  },
+  {
+    ids: ["T1555.003"],
+    detection: "Detection idea (T1555.003): non-browser processes reading Chrome/Edge 'Login Data' / 'Local State' SQLite files (Sysmon 11 / file reads)",
+    hunting: "Hunting: hunt for access to \\User Data\\*\\Login Data by processes other than the browser",
+    emulation: "Atomic Test: copy a lab profile's 'Login Data' file with esentutl/copy and confirm file-access alerting (no decryption)",
+  },
+  // --- Discovery ---
+  {
+    ids: ["T1087.002"],
+    detection: "Detection idea (T1087.002): net.exe/AdFind/nltest enumeration of domain users and trusts shortly after initial access (Sysmon 1)",
+    hunting: "Hunting: search for net user /domain, net group \"Domain Admins\" /domain, nltest /dclist, Get-ADUser bursts",
+    emulation: "Atomic Test: net group \"Domain Admins\" /domain (read-only, lab domain)",
+  },
+  {
+    ids: ["T1018"],
+    detection: "Detection idea (T1018): ping sweeps, net view, or scanner binaries (Advanced IP Scanner) generating broad short-lived connections (NetFlow/Sysmon 3)",
+    hunting: "Hunting: flag one host connecting to many internal IPs on 445/3389 in a short window",
+    emulation: "Atomic Test: net view /all, or a bounded ping sweep of a lab /24",
+  },
+  {
+    ids: ["T1069.002"],
+    detection: "Detection idea (T1069.002): BloodHound/SharpHound collection (large LDAP bursts) or Get-ADGroupMember of privileged groups",
+    hunting: "Hunting: detect high LDAP query volumes and SharpHound output files (*.json, *_BloodHound.zip)",
+    emulation: "Atomic Test: Get-ADGroupMember \"Domain Admins\" (read-only, lab domain)",
+  },
+  // --- Lateral Movement ---
+  {
+    ids: ["T1021.002", "T1021.001"],
+    detection: "Detection idea (T1021): lateral movement via SMB admin share, PSEXESVC service creation (EventID 7045) or RDP (EventID 4624 Logon Type 3/10)",
+    hunting: "Hunting: correlate EventID 4624 (Logon Type 3/10) with administrative file writes in ADMIN$ or C$",
+    emulation: "Atomic Test: Invoke-Command -ComputerName <lab target> -ScriptBlock { whoami /all }",
+  },
+  {
+    ids: ["T1570"],
+    detection: "Detection idea (T1570): executable writes to ADMIN$/C$ shares (EventID 5145) or SMB copies of tools between hosts",
+    hunting: "Hunting: correlate remote file creation in \\\\host\\ADMIN$ with subsequent service/task creation on the target",
+    emulation: "Atomic Test: copy a benign file to \\\\labhost\\C$\\Windows\\Temp and confirm 5145 share-access logging",
+  },
+  // --- Collection ---
+  {
+    ids: ["T1560.001"],
+    detection: "Detection idea (T1560.001): 7z/WinRAR/tar creating large password-protected archives in staging directories (Sysmon 1/11)",
+    hunting: "Hunting: hunt for 7z a -p / rar a -hp with large output files just before egress",
+    emulation: "Atomic Test: 7z a -pEmulated test.7z C:\\lab\\sampledata (lab)",
+  },
+  {
+    ids: ["T1005"],
+    detection: "Detection idea (T1005): scripted enumeration and reads of document directories (dir /s, findstr, Get-ChildItem -Recurse) before archiving",
+    hunting: "Hunting: flag recursive document searches by script interpreters staging to a single folder",
+    emulation: "Atomic Test: Get-ChildItem -Recurse -Include *.docx C:\\lab | Copy-Item -Destination C:\\lab\\stage (lab)",
+  },
+  // --- Command and Control ---
+  {
+    ids: ["T1071.001"],
+    detection: "Detection idea (T1071.001): periodic beacon HTTP(S) to a single host with low jitter and uniform request sizes (proxy/NetFlow)",
+    hunting: "Hunting: hunt for regular-interval connections, rare user-agents, and long-lived sessions to newly-seen domains",
+    emulation: "Atomic Test: run a C2 framework (Sliver/Mythic) HTTP listener against a lab implant and tune beacon detection",
+  },
+  {
+    ids: ["T1572"],
+    detection: "Detection idea (T1572): tunneling tools (chisel, ngrok, cloudflared, plink) or long-lived encrypted sessions on non-standard ports (Sysmon 1/3)",
+    hunting: "Hunting: search process creation for chisel/ngrok/cloudflared and outbound SOCKS/relay connections",
+    emulation: "Atomic Test: establish a chisel or ngrok tunnel between two lab hosts and confirm tool and flow detection",
+  },
+  {
+    ids: ["T1105"],
+    detection: "Detection idea (T1105): LOLBins downloading payloads — certutil -urlcache, bitsadmin /transfer, curl, Invoke-WebRequest (Sysmon 1)",
+    hunting: "Hunting: search for certutil -urlcache -f, bitsadmin /transfer, or powershell DownloadString to external hosts",
+    emulation: "Atomic Test: certutil.exe -urlcache -split -f http://labhost/benign.txt out.txt (lab)",
+  },
+  // --- Exfiltration ---
+  {
+    ids: ["T1567.002"],
+    detection: "Detection idea (T1567.002): rclone/megacmd/MegaSync processes or large uploads to mega.nz/dropbox/drive (proxy bytes-out, Sysmon 1)",
+    hunting: "Hunting: flag rclone.exe command lines and sustained outbound volume to consumer cloud-storage domains",
+    emulation: "Atomic Test: rclone copy C:\\lab\\sampledata lab-remote: to a controlled bucket and measure egress alerting",
+  },
+  {
+    ids: ["T1048"],
+    detection: "Detection idea (T1048): bulk FTP/SFTP uploads or DNS/encrypted egress to non-corporate endpoints (NetFlow, DNS answer sizes)",
+    hunting: "Hunting: hunt for large outbound FTP/SFTP transfers and anomalous DNS volume to a single domain",
+    emulation: "Atomic Test: sftp upload of a benign file from a lab host to a controlled server and verify egress detection",
+  },
+  // --- Impact ---
+  {
+    ids: ["T1486", "T1490"],
+    detection: "Detection idea (T1486/T1490): rapid mass file modification with ransom-note writes, and shadow-copy deletion via vssadmin/wmic/bcdedit (EventID 4688)",
+    hunting: "Hunting: query for vssadmin.exe delete shadows /all /quiet, bcdedit /set recoveryenabled no, and bursts of file renames to a new extension",
+    emulation: "Atomic Test: vssadmin.exe list shadows (safe verification only — no destructive action)",
   },
 ];
 
