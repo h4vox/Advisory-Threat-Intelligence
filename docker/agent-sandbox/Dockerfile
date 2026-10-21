@@ -20,6 +20,8 @@ RUN groupadd --gid 10001 agent \
     && chown -R agent:agent /home/agent /workspace \
     && chmod 700 /home/agent /home/agent/.gemini
 
+# `agy` is the Antigravity CLI. The repo ships a graceful shim (see ./agy) so the image always builds;
+# drop the real proprietary binary here to replace it, or mount it over /usr/local/bin/agy at runtime.
 COPY agy /usr/local/bin/agy
 RUN chmod 755 /usr/local/bin/agy
 
