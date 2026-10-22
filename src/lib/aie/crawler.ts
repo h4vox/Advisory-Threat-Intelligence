@@ -3263,3 +3263,14 @@ export function startCrawlerSchedulerDaemon() {
 // Auto-register hooks and launch daemon on module load
 registerScheduleChecker(checkAndTriggerScheduledCrawl);
 startCrawlerSchedulerDaemon();
+
+// Warm the shared database + account store as soon as the server module loads, so the first
+// "Checking session…" / page load does not pay the full cold connection cost (noticeable with a
+// remote Atlas cluster), and the env-based admin / dev accounts are provisioned promptly. Backgrounded
+// and guarded; any failure is retried lazily by the normal request path.
+if (isMongoConfigured()) {
+  void import("./accounts/session.server")
+    .then((m) => m.ensureAccountsReady())
+    .then(() => console.log("[boot] account store warmed and bootstrap accounts ready"))
+    .catch((err) => console.warn("[boot] account-store warm-up failed (will retry on first request):", err instanceof Error ? err.message : err));
+}

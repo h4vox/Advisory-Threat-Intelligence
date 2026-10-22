@@ -368,7 +368,9 @@ export async function resolveSessionToken(token: string | null | undefined): Pro
   const cache = sessionCache();
   const hit = cache.get(tokenHash);
   if (hit && hit.until > now) return hit.user;
-  const store = await withTimeout(ensureAccountsReady(), STORE_TIMEOUT_MS, "The account store did not respond.");
+  // Validating an existing token only needs the store connected, not the admin/dev bootstrap writes
+  // (sign-in runs those). Skipping them keeps the "Checking session…" path off the write critical path.
+  const store = getAccountsStore();
   const session = await withTimeout(store.findSession(tokenHash), STORE_TIMEOUT_MS, "The account store did not respond.");
   if (!session || session.expiresAt.getTime() <= now) {
     cache.delete(tokenHash);
