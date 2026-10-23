@@ -23,6 +23,7 @@ import {
   agyVersionInContainer,
   buildAgentImage,
   dockerReachable,
+  ensureAgentHomeWritable,
   imageExists,
   inspectContainer,
   removeAgentContainerAndHome,
@@ -102,7 +103,10 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
     // Containers from older versions kept the home on tmpfs, which loses the CLI's sign-in on restart.
     const res = info.exists && info.running && info.homeOnVolume ? { ok: true, detail: "running" } : await startAgentContainer({ recreate: info.exists && !info.homeOnVolume });
     if (!res.ok) return { success: false, error: res.detail };
-    return (await agyVersionInContainer()) ? { success: true } : { success: false, error: "The Antigravity CLI does not start inside the sandbox." };
+    if (!(await agyVersionInContainer())) return { success: false, error: "The Antigravity CLI does not start inside the sandbox." };
+    // The CLI keeps its settings and sign-in in ~/.gemini: the home volume must be writable.
+    const home = await ensureAgentHomeWritable();
+    return home.ok ? { success: true } : { success: false, error: home.detail };
   }
 
   /**

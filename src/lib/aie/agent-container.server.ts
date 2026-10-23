@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import {
   AGENT_CONTAINER_HOME,
   AGENT_CONTAINER_NAME,
+  AGENT_CONTAINER_UID,
   AGENT_HOME_VOLUME,
   LEGACY_AGENT_VOLUME,
   appendSandboxLog,
@@ -119,6 +120,68 @@ export async function startAgentContainer(options: { recreate?: boolean } = {}):
   const created = await run(hardenedDockerRunArgs(), 60_000);
   invalidateAgyProbe();
   return created.ok ? { ok: true, detail: "created" } : { ok: false, detail: `The agent container did not start:\n${tail(created.stderr)}` };
+}
+
+/** Run as the agent user: the CLI needs to create ~/.gemini (its settings, logs and saved sign-in). */
+const HOME_PROBE = 'mkdir -p "$HOME/.gemini" "$HOME/.local/bin" && test -w "$HOME" && test -w "$HOME/.gemini" && echo writable';
+
+/**
+ * Makes the agent's home volume writable by the agent user. Docker normally copies the image's home,
+ * owner included, into a new volume; when it does not (a volume created another way, some storage
+ * drivers), the volume root stays root-owned and the CLI fails with
+ * "mkdir /home/agent/.gemini: permission denied". The repair runs a short-lived helper container as
+ * root with only the capabilities a chown needs, no network and a read-only root, and changes
+ * ownership inside this volume only.
+ */
+export async function ensureAgentHomeWritable(): Promise<{ ok: boolean; repaired: boolean; detail: string }> {
+  const probe = await run(["exec", AGENT_CONTAINER_NAME, "sh", "-c", HOME_PROBE], 15_000);
+  if (probe.ok && probe.stdout.includes("writable")) return { ok: true, repaired: false, detail: "writable" };
+
+  const id = `${AGENT_CONTAINER_UID}:${AGENT_CONTAINER_UID}`;
+  const home = AGENT_CONTAINER_HOME;
+  appendSandboxLog("WARN", "sandbox", `The agent home volume is not writable by the agent user; repairing its ownership. ${tail(probe.stderr || probe.stdout, 2)}`);
+  const repair = await run(
+    [
+      "run",
+      "--rm",
+      "--user",
+      "0:0",
+      "--cap-drop",
+      "ALL",
+      "--cap-add",
+      "CHOWN",
+      "--cap-add",
+      "FOWNER",
+      "--cap-add",
+      "DAC_OVERRIDE",
+      "--security-opt",
+      "no-new-privileges:true",
+      "--network",
+      "none",
+      "--read-only",
+      "-v",
+      `${AGENT_HOME_VOLUME}:${home}`,
+      "--entrypoint",
+      "/bin/sh",
+      AGENT_IMAGE,
+      "-c",
+      `set -e; mkdir -p ${home}/.gemini ${home}/.local/bin; chown -R ${id} ${home}; chmod 700 ${home}`,
+    ],
+    120_000,
+  );
+  invalidateAgyProbe();
+  const again = await run(["exec", AGENT_CONTAINER_NAME, "sh", "-c", HOME_PROBE], 15_000);
+  if (again.ok && again.stdout.includes("writable")) {
+    appendSandboxLog("INFO", "sandbox", "Agent home volume repaired: owned by the agent user again.");
+    return { ok: true, repaired: true, detail: "repaired" };
+  }
+  return {
+    ok: false,
+    repaired: false,
+    detail:
+      `The agent's home in the sandbox is not writable (${tail(again.stderr || again.stdout || probe.stderr, 2) || "permission denied"}), and repairing it failed` +
+      `${repair.ok ? "" : `: ${tail(repair.stderr, 3)}`}. Use Reset to remove the sandbox and its volume, then install again.`,
+  };
 }
 
 /** Removes the container and the agent's home volume: the CLI's sign-in is gone for good. */
