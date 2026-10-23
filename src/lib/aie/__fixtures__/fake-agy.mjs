@@ -20,6 +20,15 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 const STATE = process.env.FAKE_AGY_STATE || "";
+// FAKE_AGY_HOME_CHECK=1: like the real CLI, create ~/.gemini at start-up and refuse to start without it.
+if (process.env.FAKE_AGY_HOME_CHECK === "1" && !process.argv.includes("--version")) {
+  try {
+    mkdirSync(`${process.env.HOME}/.gemini`, { recursive: true });
+  } catch (err) {
+    process.stderr.write(`E1023 main.go:877] CLI failed to start - mkdir ${process.env.HOME}/.gemini: permission denied\nFailed to start: mkdir ${process.env.HOME}/.gemini: permission denied\n`);
+    process.exit(1);
+  }
+}
 const signedIn = () => Boolean(STATE) && existsSync(STATE);
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) {

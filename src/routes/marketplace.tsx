@@ -8,6 +8,7 @@ import {
   Bot,
   Bug,
   CheckCircle2,
+  Info,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -681,6 +682,8 @@ function MarketplacePage() {
                   {filteredIntegrations.map((item) => {
                     const isInstalled = item.status === "installed";
                     const isActive = activeProviderId === item.id;
+                    const setup = setupProgress(item);
+                    const managed = isInstalled || setup !== null;
                     return (
                       <IntegrationCard
                         key={item.id}
@@ -693,25 +696,58 @@ function MarketplacePage() {
                         }
                         description={item.description}
                         onOpen={() => setSelectedIntegration(item)}
-                        status={
-                          isActive ? (
-                            <StatusChip tone="success" dot>
-                              Active
-                            </StatusChip>
-                          ) : isInstalled ? (
-                            <StatusChip tone="info">Installed</StatusChip>
-                          ) : (
-                            <StatusChip>Not installed</StatusChip>
-                          )
+                        badge={
+                          isInstalled ? (
+                            <span
+                              className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-sage"
+                              title={isActive ? "Installed and the active AI provider" : "Installed"}
+                            >
+                              <CheckCircle2 className="size-4" strokeWidth={2} />
+                              {isActive ? "Active" : "Installed"}
+                            </span>
+                          ) : setup ? (
+                            <span className={cn("flex shrink-0 items-center gap-1 text-[11px] font-medium", setup.tone === "warn" ? "text-warn" : "text-info")} title={setup.label}>
+                              {setup.tone === "warn" ? <AlertCircle className="size-4" /> : <ActivitySpinner size="xs" />}
+                              {setup.label}
+                            </span>
+                          ) : null
                         }
+                        actions={
+                          managed ? (
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <Button size="sm" variant="secondary" onClick={() => setSelectedIntegration(item)} className="h-8 gap-1 px-2 text-xs">
+                                <Info className="size-3.5 shrink-0" />
+                                Details
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleOpenConfigModal(item, isInstalled)}
+                                className="h-8 gap-1 px-2 text-xs"
+                                title={isInstalled ? "Change or redo this integration's setup" : "Continue or redo the setup"}
+                              >
+                                <RefreshCw className="size-3.5 shrink-0" />
+                                {isInstalled ? "Reconfigure" : "Continue"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => setUninstallConfirmItem(item)}
+                                className="h-8 gap-1 border-danger/40 px-2 text-xs text-danger hover:bg-danger/10"
+                              >
+                                <Trash2 className="size-3.5 shrink-0" />
+                                Uninstall
+                              </Button>
+                            </div>
+                          ) : undefined
+                        }
+                        status={managed ? undefined : <StatusChip>Not installed</StatusChip>}
                         action={
-                          <ActionButton
-                            variant={isInstalled ? "outline" : "primary"}
-                            icon={isInstalled ? Settings2 : Download}
-                            onClick={() => handleOpenConfigModal(item, false)}
-                          >
-                            {isInstalled ? "Configure" : "Install"}
-                          </ActionButton>
+                          managed ? undefined : (
+                            <ActionButton variant="primary" icon={Download} onClick={() => handleOpenConfigModal(item, false)}>
+                              Install
+                            </ActionButton>
+                          )
                         }
                       />
                     );
@@ -1351,6 +1387,23 @@ function MarketplacePage() {
                       </Button>
                     </div>
                   </>
+                ) : setupProgress(selectedIntegration) ? (
+                  // Setup started but not finished: continue it, or remove what was set up so far.
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => handleOpenConfigModal(selectedIntegration, false)}
+                      className="h-8 gap-1.5 text-xs font-medium"
+                    >
+                      <RefreshCw className="size-3.5" />
+                      Continue setup
+                    </Button>
+                    <Button size="sm" variant="danger" onClick={() => setUninstallConfirmItem(selectedIntegration)} className="h-8 gap-1 text-xs">
+                      <Trash2 className="size-3" />
+                      Uninstall
+                    </Button>
+                  </div>
                 ) : (
                   <div className="flex items-center gap-2">
                     <Button
@@ -1636,8 +1689,9 @@ function MarketplacePage() {
                 <h3 className="text-base font-semibold text-fg">Uninstall {uninstallConfirmItem.name}?</h3>
               </div>
               <p className="text-xs text-subtle leading-relaxed mb-6">
-                This will remove the configuration and credentials for {uninstallConfirmItem.name}. If this was the
-                active AI provider, AIE will automatically revert back to the Autonomous Threat Intelligence Agent.
+                {uninstallConfirmItem.type === "cli_agent"
+                  ? `This signs ${uninstallConfirmItem.name} out and removes its sandbox: the container and the sign-in saved in it. You can install and sign in again at any time.`
+                  : `This removes the configuration and credentials for ${uninstallConfirmItem.name}.`}
               </p>
               <div className="flex items-center justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setUninstallConfirmItem(null)} className="text-xs">
@@ -1663,6 +1717,22 @@ function MarketplacePage() {
 
 type IconType = typeof Globe;
 
+/**
+ * An agent whose setup has started but not finished: running, waiting for the sign-in code, or
+ * stopped part-way. Null when it was never started (or is installed).
+ */
+function setupProgress(item: IntegrationItem): { label: string; tone: "info" | "warn" } | null {
+  if (item.status === "installed") return null;
+  const config = (item.config ?? {}) as Record<string, unknown>;
+  const state = config.onboardingState;
+  const step = config.onboardingStep;
+  if (state === "waiting_input") return { label: "Waiting for sign-in", tone: "info" };
+  if (state === "in_progress") return { label: "Setting up", tone: "info" };
+  if (state === "error") return { label: "Setup stopped", tone: "warn" };
+  if (typeof step === "string" && step !== "starting_environment" && step !== "agent_onboarding_completed") return { label: "Setup started", tone: "info" };
+  return null;
+}
+
 /** Hadrian-style integration card: icon + name, one-line description, one status chip, one action. */
 function IntegrationCard({
   icon: Icon,
@@ -1672,6 +1742,8 @@ function IntegrationCard({
   footnote,
   status,
   action,
+  badge,
+  actions,
   onOpen,
 }: {
   icon: IconType;
@@ -1681,6 +1753,10 @@ function IntegrationCard({
   footnote?: React.ReactNode;
   status?: React.ReactNode;
   action?: React.ReactNode;
+  /** Top-right state marker (installed / active / setting up). */
+  badge?: React.ReactNode;
+  /** Full-width footer actions; replaces the status + action row. */
+  actions?: React.ReactNode;
   onOpen?: () => void;
 }) {
   const head = (
@@ -1696,19 +1772,26 @@ function IntegrationCard({
   );
   return (
     <div className="flex flex-col rounded-xl border border-border bg-bg-card p-5">
-      {onOpen ? (
-        <button type="button" onClick={onOpen} className="group/head flex min-w-0 items-center gap-3 text-left" title="View details">
-          {head}
-        </button>
-      ) : (
-        <div className="flex min-w-0 items-center gap-3">{head}</div>
-      )}
+      <div className="flex items-start justify-between gap-2">
+        {onOpen ? (
+          <button type="button" onClick={onOpen} className="group/head flex min-w-0 items-center gap-3 text-left" title="View details">
+            {head}
+          </button>
+        ) : (
+          <div className="flex min-w-0 items-center gap-3">{head}</div>
+        )}
+        {badge}
+      </div>
       <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted">{description}</p>
       {footnote && <div className="mt-2">{footnote}</div>}
-      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5">
-        <div>{status}</div>
-        {action}
-      </div>
+      {actions ? (
+        <div className="mt-auto pt-5">{actions}</div>
+      ) : (
+        <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5">
+          <div>{status}</div>
+          {action}
+        </div>
+      )}
     </div>
   );
 }

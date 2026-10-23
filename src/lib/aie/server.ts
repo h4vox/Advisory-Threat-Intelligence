@@ -3097,7 +3097,14 @@ export const installMarketplaceIntegration = createServerFn({ method: "POST" }).
 
 export const uninstallMarketplaceIntegration = createServerFn({ method: "POST" }).middleware([analystMiddleware])
   .validator(z.object({ id: z.string() }))
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    // An agent's uninstall signs it out: its sandbox (container and saved sign-in) is removed too.
+    const existing = (await mongoGetMarketplaceIntegrations()).find((x) => x.id === data.id);
+    if (existing?.type === "cli_agent" && data.id === "agy_agent") {
+      assertCanManageAgents(context.identity);
+      const reset = await agentOnboardingOrchestrator.reset(data.id);
+      if (!reset.success) throw new Error(reset.message);
+    }
     const res = await mongoUninstallMarketplaceIntegration(data.id);
     logger.serverFn("uninstallMarketplaceIntegration", "DONE", undefined, { id: data.id });
     return res;
