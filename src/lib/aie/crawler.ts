@@ -21,6 +21,16 @@ import {
   toIsoString,
 } from "./extract";
 import { parseRssOrAtomXml } from "./feeds";
+import {
+  CRAWL_LOCK_HEARTBEAT_MS,
+  acquireCrawlLock as acquireLockDoc,
+  describeHeldLock,
+  releaseCrawlLock as releaseLockDoc,
+  renewCrawlLock,
+  type CrawlLockCollection,
+  type CrawlLockDoc,
+  type HolderJobStatus,
+} from "./crawl-lock";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { isSafeCrawlPatternString, isSafePublicUrlString, safeFetchResource, safeFetchText, validateSafePublicUrl } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
@@ -118,6 +128,8 @@ type JobControl = {
   maxRunMs: number;
   /** When an operator cancel was requested (ms), so a job that never drains can be released. */
   cancelledAt?: number;
+  /** Renews this job's crawl-lock lease while it runs (Mongo only). */
+  leaseTimer?: ReturnType<typeof setInterval>;
 };
 
 const DEFAULT_JOB_MAX_RUN_MS = 20 * 60_000;
@@ -129,31 +141,32 @@ const DEFAULT_JOB_MAX_RUN_MS = 20 * 60_000;
 // owner and one daemon per process.
 type CrawlerGlobals = typeof globalThis & {
   __aieActiveJobs?: Map<string, JobControl>;
+  __aieDrainingJobs?: Map<string, JobControl>;
   __aieCrawlLockOwner?: string;
   __aieSchedulerDaemon?: ReturnType<typeof setInterval>;
   __aieSchedulerTick?: () => Promise<unknown>;
 };
 const crawlerGlobals = globalThis as CrawlerGlobals;
 
-// Active job cancellation tokens
+// Jobs that hold the crawl slot in this process.
 const activeJobs: Map<string, JobControl> = (crawlerGlobals.__aieActiveJobs ??= new Map());
+// Cancelled jobs still winding down their in-flight requests. They no longer hold the slot: an operator
+// cancel frees it at once, so the next crawl can start while these finish.
+const drainingJobs: Map<string, JobControl> = (crawlerGlobals.__aieDrainingJobs ??= new Map());
 
 // Register memory state tracker with repository watchdog
-registerJobActiveChecker((jobId: string) => activeJobs.has(jobId));
+registerJobActiveChecker((jobId: string) => activeJobs.has(jobId) || drainingJobs.has(jobId));
 
 export function isJobActiveInMemory(jobId: string): boolean {
   return activeJobs.has(jobId);
 }
 
 // ---------------------------------------------------------------------------
-// Cross-instance crawl lock (Mongo only). One lock document with a fixed _id so
-// acquisition is a single atomic findOneAndUpdate; a duplicate-key error on the
-// upsert means another holder owns it. The lock expires so a crashed instance
-// cannot block crawling forever. Without Mongo, the in-memory activeJobs map is
-// the only guard (single instance).
+// Cross-process crawl lock (Mongo only): a short lease renewed by a heartbeat while the job runs, taken
+// over at once when its job is no longer running (see ./crawl-lock). Without Mongo, the in-memory
+// activeJobs map is the only guard (single process).
 // ---------------------------------------------------------------------------
 
-const CRAWL_LOCK_ID = "crawl_lock";
 const CRAWL_LOCK_OWNER = (crawlerGlobals.__aieCrawlLockOwner ??= `${process.pid}:${crypto.randomUUID().slice(0, 8)}`);
 export const CRAWL_ALREADY_RUNNING_MESSAGE = "A crawl is already running";
 
@@ -164,49 +177,50 @@ export class CrawlAlreadyRunningError extends Error {
   }
 }
 
-type CrawlLockDoc = {
-  _id: string;
-  docType: "crawl_lock";
-  owner: string | null;
-  jobId: string | null;
-  acquiredAt?: Date;
-  expiresAt: Date;
-};
+async function lockCollection(): Promise<CrawlLockCollection> {
+  return (await getThreatIntelCollection<CrawlLockDoc>()) as unknown as CrawlLockCollection;
+}
 
-async function acquireCrawlLock(jobId: string, expiryMs: number): Promise<{ ok: true } | { ok: false; heldBy?: string }> {
-  const col = await getThreatIntelCollection<CrawlLockDoc>();
+async function crawlJobStatus(jobId: string): Promise<HolderJobStatus> {
+  const jobsCol = await getThreatIntelCollection();
+  const job = await jobsCol.findOne({ docType: "crawl_job", id: jobId }, { projection: { status: 1 } });
+  if (!job) return "missing";
+  return job.status === "running" ? "running" : "finished";
+}
+
+/**
+ * Takes the crawl lock for `jobId`, or throws CrawlAlreadyRunningError naming the job that holds it.
+ * `staleAfterMs`: other jobs still marked "running" after this long belong to a stopped server.
+ */
+async function acquireCrawlLock(jobId: string, staleAfterMs: number): Promise<void> {
+  const res = await acquireLockDoc(await lockCollection(), {
+    jobId,
+    owner: CRAWL_LOCK_OWNER,
+    isLocalActive: (id) => activeJobs.has(id),
+    holderStatus: crawlJobStatus,
+  });
+  if (!res.ok) throw new CrawlAlreadyRunningError(describeHeldLock(res.heldBy, res.expiresInMs));
+
   const now = new Date();
-  try {
-    const res = await col.findOneAndUpdate(
-      {
-        _id: CRAWL_LOCK_ID,
-        $or: [{ jobId: null }, { expiresAt: { $lte: now } }, { expiresAt: { $exists: false } }],
-      },
-      {
-        $set: {
-          docType: "crawl_lock",
-          owner: CRAWL_LOCK_OWNER,
-          jobId,
-          acquiredAt: now,
-          expiresAt: new Date(now.getTime() + expiryMs),
-        },
-      },
-      { upsert: true, returnDocument: "after" },
-    );
-    if (!res || res.jobId !== jobId) return { ok: false };
-  } catch (err) {
-    // E11000 on upsert: the lock document exists and is held (filter did not match).
-    if ((err as { code?: number })?.code === 11000) {
-      const held = await col.findOne({ _id: CRAWL_LOCK_ID });
-      return { ok: false, heldBy: held?.jobId ?? undefined };
+  if (res.takenOverFrom) {
+    console.warn(`[crawler] crawl lock taken over from ${res.takenOverFrom.jobId} (${res.takenOverFrom.reason})`);
+    // A holder that is not running anywhere but still says "running" never finished: record that.
+    if (res.takenOverFrom.reason !== "holder_finished") {
+      try {
+        await updateJobIfRunning(res.takenOverFrom.jobId, {
+          status: "interrupted",
+          completedAt: now.toISOString(),
+          errorSummary: "Crawl job interrupted (its server stopped or reloaded before completion)",
+        });
+      } catch {
+        /* the dashboard watchdog reconciles the record */
+      }
     }
-    throw err;
   }
 
-  // We own the lock, so any other job still marked "running" past the expiry
-  // window belongs to a crashed/killed instance.
+  // We own the lock, so any other job still marked "running" past the stale window belongs to a stopped server.
   try {
-    const cutoffIso = new Date(now.getTime() - expiryMs).toISOString();
+    const cutoffIso = new Date(now.getTime() - staleAfterMs).toISOString();
     const jobsCol = await getThreatIntelCollection();
     const stale = await jobsCol.updateMany(
       { docType: "crawl_job", status: "running", id: { $ne: jobId }, startedAt: { $lt: cutoffIso } },
@@ -226,18 +240,39 @@ async function acquireCrawlLock(jobId: string, expiryMs: number): Promise<{ ok: 
   } catch (err) {
     console.warn("[crawler] failed to mark stale running jobs as interrupted:", err);
   }
-  return { ok: true };
 }
 
-async function releaseCrawlLock(jobId: string): Promise<void> {
+/** Renews the job's lease every 30 s. If the lock was taken over (its job was cancelled elsewhere), the job stops. */
+function startLockHeartbeat(jobId: string, control: JobControl): void {
+  stopLockHeartbeat(control);
+  control.leaseTimer = setInterval(() => {
+    void (async () => {
+      try {
+        const kept = await renewCrawlLock(await lockCollection(), { jobId, owner: CRAWL_LOCK_OWNER });
+        if (!kept && !control.cancel) {
+          console.warn(`[crawler] job ${jobId} lost the crawl lock (cancelled or taken over); stopping`);
+          control.cancel = true;
+          control.cancelledAt ??= Date.now();
+        }
+      } catch {
+        /* transient database error: the next beat retries; the lease outlasts several beats */
+      }
+    })();
+  }, CRAWL_LOCK_HEARTBEAT_MS);
+  control.leaseTimer.unref?.();
+}
+
+function stopLockHeartbeat(control: JobControl | undefined): void {
+  if (control?.leaseTimer) clearInterval(control.leaseTimer);
+  if (control) control.leaseTimer = undefined;
+}
+
+/** Frees the lock if `jobId` holds it. `anyOwner`: an operator cancel, which ends the job wherever it runs. */
+async function releaseCrawlLock(jobId: string, anyOwner = false): Promise<void> {
   try {
-    const col = await getThreatIntelCollection<CrawlLockDoc>();
-    await col.updateOne(
-      { _id: CRAWL_LOCK_ID, owner: CRAWL_LOCK_OWNER, jobId },
-      { $set: { owner: null, jobId: null, expiresAt: new Date(0) } },
-    );
+    await releaseLockDoc(await lockCollection(), anyOwner ? { jobId } : { jobId, owner: CRAWL_LOCK_OWNER });
   } catch (err) {
-    console.warn(`[crawler] failed to release crawl lock for ${jobId} (it will expire):`, err);
+    console.warn(`[crawler] failed to release crawl lock for ${jobId} (its lease expires on its own):`, err);
   }
 }
 
@@ -263,6 +298,7 @@ async function releaseHungJobs(now = Date.now()): Promise<string[]> {
     const reason = hungJobReason(ctl, now);
     if (!reason) continue;
     ctl.cancel = true;
+    stopLockHeartbeat(ctl);
     activeJobs.delete(id);
     released.push(id);
     const summary =
@@ -278,6 +314,10 @@ async function releaseHungJobs(now = Date.now()): Promise<string[]> {
       }
       await releaseCrawlLock(id);
     }
+  }
+  // Cancelled jobs that never finished winding down hold nothing; just forget them.
+  for (const [id, ctl] of drainingJobs) {
+    if (hungJobReason(ctl, now)) drainingJobs.delete(id);
   }
   if (released.length) invalidateCrawlerStateCache();
   return released;
@@ -517,6 +557,29 @@ export async function executeCrawlJob(
       /* ignore sql init fallback */
     }
 
+    // Discovery can take minutes (feeds, sitemaps, homepages, search, the AI agent). Report what it is doing
+    // and how much it has found as it goes, instead of showing "0 found" until it ends. Fire-and-forget,
+    // throttled; a record that is no longer "running" (cancelled elsewhere) stops the job.
+    let discoveryActivity = "Preparing discovery";
+    let lastDiscoveryReportAt = 0;
+    // Set once articles are being processed: links found then are reported with the processing progress.
+    let discoveryPhaseOver = false;
+    const reportDiscovery = (activity?: string, force = false) => {
+      if (activity) discoveryActivity = activity;
+      if (discoveryPhaseOver || !isMongoConfigured()) return;
+      const now = Date.now();
+      if (!force && now - lastDiscoveryReportAt < 2000) return;
+      lastDiscoveryReportAt = now;
+      void updateJobIfRunning(jobId, { discoveredCount, currentStage: "discovered", currentUrl: discoveryActivity }).then(
+        (stillRunning) => {
+          if (!stillRunning) jobControl.cancel = true;
+        },
+        () => {
+          /* non-critical telemetry */
+        },
+      );
+    };
+
     // Decide once whether AI can answer this run. A dead AI path (no provider key, no working sandbox)
     // is skipped up front: articles are qualified by the heuristic engine instead of each one waiting
     // out an agent timeout, which with the default AGY provider used up whole runs ("0 found").
@@ -583,7 +646,8 @@ export async function executeCrawlJob(
     const preHarvestedItems: FrontierItem[] = [];
 
     // Autonomous AI Agent Source Discovery (Adversary Emulation Intelligence Skill)
-    if (ai.usable && isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
+    if (!jobControl.cancel && ai.usable && isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
+      reportDiscovery("Asking the AI agent for new research sources", true);
       try {
         logger.agent(
           "DISCOVERY",
@@ -918,6 +982,7 @@ export async function executeCrawlJob(
       enqueuedUrls.add(item.canonicalUrl);
       frontierQueue.push(item);
       discoveredCount++;
+      reportDiscovery();
       return true;
     };
 
@@ -965,9 +1030,10 @@ export async function executeCrawlJob(
 
     // Phase A: Seed Continuous Feeds (RSS & Atom) with conditional GET (ETag / Last-Modified)
     if (config.rssDiscovery !== false) {
+      reportDiscovery(`Reading RSS/Atom feeds of ${sources.filter((x) => x.enabled).length} sources`, true);
       await Promise.allSettled(
         sources.map(async (source) => {
-          if (!source.enabled) return;
+          if (!source.enabled || jobControl.cancel) return;
           const feedTarget = source.feedUrl || `${source.homepageUrl.replace(/\/+$/, "")}/feed/`;
           // SSRF-guarded conditional fetch: DNS-validated on every hop, size-capped; 304 means nothing new.
           const res = await collector.fetchSourceDocument(source.id, feedTarget, "feed", {
@@ -990,6 +1056,7 @@ export async function executeCrawlJob(
     // Phase A2: Sitemaps (sitemap.xml / sitemap index with lastmod). Used for backfills, for sources whose
     // feed is short, missing or failing, and on wide crawls. Only entries modified since the source's last
     // crawl (or inside the backfill window) are enqueued.
+    if (!jobControl.cancel) reportDiscovery("Reading sitemaps", true);
     const sitemapSources = sources.filter((source) => {
       if (!source.enabled) return false;
       if (backfillPlan) return source.id === backfillPlan.sourceId;
@@ -999,6 +1066,7 @@ export async function executeCrawlJob(
     });
     await Promise.allSettled(
       sitemapSources.map(async (source) => {
+        if (jobControl.cancel) return;
         const roots = source.sitemapUrl ? [source.sitemapUrl] : await collector.robotsSitemaps(source.homepageUrl);
         if (roots.length === 0 && backfillPlan) roots.push(`${new URL(source.homepageUrl).origin}/sitemap.xml`);
         const sinceIso =
@@ -1057,9 +1125,10 @@ export async function executeCrawlJob(
 
     // Phase B: Seed Homepage Permalinks
     if (config.htmlDiscovery !== false) {
+      if (!jobControl.cancel) reportDiscovery("Scanning source homepages for new reports", true);
       await Promise.allSettled(
         sources.map(async (source) => {
-          if (!source.enabled) return;
+          if (!source.enabled || jobControl.cancel) return;
           try {
             const fo = feedOutcome.get(source.id);
             const feedWeak = !fo || fo.status === "error" || (fo.status === "ok" && fo.items < SHORT_FEED_ITEMS);
@@ -1279,6 +1348,7 @@ export async function executeCrawlJob(
 
     // Phase C: Real-Time Web & Graph Search Discovery
     if (config.searchDiscovery !== false || targetedQuery) {
+      if (!jobControl.cancel) reportDiscovery("Searching the web for related reports", true);
       const activeKeywords = (targetedQuery || config.keywords || "").trim();
 
       // Execute live search against CTI indices & open web if active query is present
@@ -1290,6 +1360,7 @@ export async function executeCrawlJob(
         ];
 
         for (const term of searchTerms) {
+          if (jobControl.cancel) break;
           try {
             const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
             const html = await safeFetchText(searchUrl, {
@@ -2846,6 +2917,7 @@ export async function executeCrawlJob(
     }
 
     // Persist what discovery found before processing starts, so the count survives whatever follows.
+    discoveryPhaseOver = true;
     await reportLiveProgress(true);
 
     // One article that never finishes (an AI call, a PDF parse or a request that does not answer) must
@@ -2994,7 +3066,10 @@ export async function executeCrawlJob(
       }
     }
   } finally {
-    activeJobs.delete(jobId);
+    stopLockHeartbeat(jobControl);
+    // Only this job's own entry: after a cancel or a hung-job release the id may be gone already.
+    if (activeJobs.get(jobId) === jobControl) activeJobs.delete(jobId);
+    drainingJobs.delete(jobId);
     if (isMongo) await releaseCrawlLock(jobId);
   }
 
@@ -3048,8 +3123,8 @@ export async function createAndRunCrawlJob(
           ? cfg.maxRunTimeMinutes
           : 5;
       control.maxRunMs = maxRunTimeMinutes * 60 * 1000;
-      const lock = await acquireCrawlLock(id, (maxRunTimeMinutes + 5) * 60 * 1000);
-      if (!lock.ok) throw new CrawlAlreadyRunningError(lock.heldBy);
+      await acquireCrawlLock(id, (maxRunTimeMinutes + 5) * 60 * 1000);
+      startLockHeartbeat(id, control);
     } catch (err) {
       activeJobs.delete(id);
       throw err;
@@ -3100,7 +3175,9 @@ export async function createAndRunCrawlJob(
   void executeCrawlJob(id, trigger, targetedQuery, runOptions).catch(async (err) => {
     console.error(`[crawler] job ${id} error:`, err);
     // executeCrawlJob normally cleans up in its finally; this covers a throw before its try block.
-    activeJobs.delete(id);
+    stopLockHeartbeat(control);
+    if (activeJobs.get(id) === control) activeJobs.delete(id);
+    drainingJobs.delete(id);
     if (isMongoConfigured()) await releaseCrawlLock(id);
   });
 
@@ -3108,12 +3185,18 @@ export async function createAndRunCrawlJob(
 }
 
 export async function cancelJob(jobId: string): Promise<boolean> {
-  const job = activeJobs.get(jobId);
-  // Signal the dispatcher/workers; the activeJobs entry stays until the loop
-  // exits (executeCrawlJob's finally) so no second job can start meanwhile.
+  const job = activeJobs.get(jobId) ?? drainingJobs.get(jobId);
+  // Signal the dispatcher and workers, and free the crawl slot now: the job stops taking work and only
+  // winds down requests already in flight, so it must not block the next crawl (it used to, until it
+  // fully drained, while the history already said "Cancelled").
   if (job) {
     job.cancel = true;
     job.cancelledAt ??= Date.now();
+    stopLockHeartbeat(job);
+    if (activeJobs.get(jobId) === job) {
+      activeJobs.delete(jobId);
+      drainingJobs.set(jobId, job);
+    }
   }
 
   let cancelled = Boolean(job);
@@ -3127,11 +3210,13 @@ export async function cancelJob(jobId: string): Promise<boolean> {
     try {
       // Conditional on "running": finished/unknown jobs are not rewritten. A job
       // running on another instance sees the status change in its next
-      // telemetry update and stops taking new items.
+      // telemetry update (or loses its lease) and stops taking new items.
       if (await updateJobIfRunning(jobId, cancelUpdates)) cancelled = true;
     } catch (err) {
       console.warn(`[crawler] failed to persist cancellation for ${jobId}:`, err);
     }
+    // Whoever holds the lock for this job, the job is over: free the slot.
+    await releaseCrawlLock(jobId, true);
   }
   try {
     const sql = await getSql();
