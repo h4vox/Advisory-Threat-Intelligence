@@ -402,6 +402,25 @@ export type ReportRecord = {
   versionHistory?: ReportVersionEntry[];
   attachments?: ReportAttachment[];
   relevance?: { score: number; reason: string };
+  /** Set when the report was published in another language and translated before evaluation. */
+  translation?: ReportTranslation;
+};
+
+/** A report translated into English by AI (./translation); the original stays as evidence. */
+export type ReportTranslation = {
+  /** Source language (ISO 639-1). */
+  from: string;
+  /** Provider that translated, as shown to analysts. */
+  provider: string;
+  model?: string;
+  originalTitle: string;
+  /** Original text, capped at 150,000 characters. */
+  originalText: string;
+  /** Characters of the original that were translated (less than totalChars when partial). */
+  translatedChars: number;
+  totalChars: number;
+  partial: boolean;
+  translatedAt: string;
 };
 
 export type AgentScoreBreakdown = {
@@ -610,6 +629,8 @@ export type CrawlConfig = {
   agentCrawlSourcesEnabled?: boolean;
   agentLibraryAuditEnabled?: boolean;
   agentAutoPruneJunkEnabled?: boolean;
+  /** Translate reports in other languages with AI before they are evaluated (default on). */
+  translateNonEnglish?: boolean;
   agentModel?: string;
   agentTimeoutSeconds?: number;
 };

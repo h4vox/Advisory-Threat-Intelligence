@@ -39,8 +39,20 @@ import {
   runUnifiedSourceDiscovery,
   runUnifiedResourceEvaluation,
   runUnifiedDomainResourceDiscovery,
+  runUnifiedTranslation,
   type CrawlerAiAvailability,
 } from "./ai-manager";
+import { articleProse, detectLanguage } from "./technical-depth";
+import {
+  ORIGINAL_TEXT_CAP,
+  TRANSLATIONS_PER_JOB,
+  TRANSLATION_ITEM_SHARE,
+  TRANSLATION_JOB_BUDGET_MS,
+  declaredHtmlLang,
+  findEnglishAlternate,
+  guessEnglishUrls,
+  languageName,
+} from "./translation";
 import { WORKER_DRAIN_GRACE_MS, hungJobReason, itemTimeoutMs, settleWithin } from "./crawl-guards";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
@@ -51,6 +63,7 @@ import type {
   CrawlTrigger,
   DiscoveredResource,
   ReportRecord,
+  ReportTranslation,
   SourceRecord,
 } from "./types";
 import { getSql, type Sql } from "@/lib/db";
@@ -545,6 +558,8 @@ export async function executeCrawlJob(
   let skippedCount = 0;
   let newSourcesCount = 0;
   let pdfGeneratedCount = 0;
+  let translationsThisJob = 0;
+  let translationMsThisJob = 0;
   let sources: SourceRecord[] = [];
   let jobFailed = false;
   let jobErrorSummary = "";
@@ -592,6 +607,17 @@ export async function executeCrawlJob(
         }))
       : { usable: false, sandbox: false, detail: "AI features are turned off in settings" };
     console.log(`[crawler] job ${jobId}: AI ${ai.usable ? "on" : "skipped"} (${ai.detail})`);
+    // Translation is its own setting: it needs AI even when AI scoring and discovery are off, so it
+    // checks for a provider on the first non-English report only.
+    let translationAiCheck: Promise<CrawlerAiAvailability> | null = null;
+    const translationAi = (): Promise<CrawlerAiAvailability> =>
+      aiWanted
+        ? Promise.resolve(ai)
+        : (translationAiCheck ??= resolveCrawlerAiAvailability().catch((err: unknown) => ({
+            usable: false,
+            sandbox: false,
+            detail: `AI availability check failed (${err instanceof Error ? err.message : String(err)})`,
+          })));
     if (aiWanted && !ai.usable) {
       logger.agent(
         "UNAVAILABLE",
@@ -1666,19 +1692,63 @@ export async function executeCrawlJob(
       });
       if (outcome !== "changed") return unchanged("Content unchanged (same normalised text hash)");
       // Rotating "related posts" blocks, dates or share counts change the hash but not the report.
-      const cosmetic = hammingDistance64(simhash64(normalizeForFingerprint(stored.extractedText || "")), simhash64(normalizeForFingerprint(ex.text)));
+      // A translated report is compared with its original, in the language the page is published in.
+      const published = stored.originalText ?? stored.extractedText ?? "";
+      const cosmetic = hammingDistance64(simhash64(normalizeForFingerprint(published)), simhash64(normalizeForFingerprint(ex.text)));
       if (cosmetic <= COSMETIC_CHANGE_DISTANCE) return unchanged(`Only cosmetic changes (SimHash distance ${cosmetic} ≤ ${COSMETIC_CHANGE_DISTANCE}); stored version kept`);
       const words = ex.text.split(/\s+/).filter(Boolean).length;
-      if (words < 150 || words < stored.wordCount * 0.5) {
-        return unchanged(`Fetched copy has ${words} words vs ${stored.wordCount} stored (paywall, error or partial page) — stored version kept`);
+      const storedWords = stored.originalText ? published.split(/\s+/).filter(Boolean).length : stored.wordCount;
+      if (words < 150 || words < storedWords * 0.5) {
+        return unchanged(`Fetched copy has ${words} words vs ${storedWords} stored (paywall, error or partial page) — stored version kept`);
       }
 
-      const title = ex.title && ex.title !== "Untitled report" ? ex.title : stored.title;
-      const { score, wordCount } = scoreQuality(ex.text, title);
-      const iocs = harvestIocs(ex.text, { sourceDomain: current.domain });
-      const analysis = config.autoAnalyze ? analyzeThreatIntelligence(ex.text, title, "THREAT_REPORT") : undefined;
-      const entities = analysis ? extractStructuredEntities(ex.text, title, "THREAT_REPORT", analysis) : undefined;
-      const refs = enrichAttackEntities(title, ex.text, ex.sections);
+      let title = ex.title && ex.title !== "Untitled report" ? ex.title : stored.title;
+      let text = ex.text;
+      let sections: TextSection[] | undefined = ex.sections;
+      // A new version in another language is stored only translated, like a new report.
+      let translation: ReportTranslation | null = null;
+      const language = detectLanguage(articleProse(ex.text), declaredHtmlLang(res.body));
+      if (!language.english && language.lang !== "und") {
+        const langLabel = languageName(language.lang);
+        const tai = config.translateNonEnglish === false ? null : await translationAi();
+        if (!tai?.usable || translationsThisJob >= TRANSLATIONS_PER_JOB || translationMsThisJob >= TRANSLATION_JOB_BUDGET_MS) {
+          return unchanged(`Content changed, in ${langLabel}: stored version kept until the new one can be translated`);
+        }
+        translationsThisJob++;
+        const translationStarted = Date.now();
+        const translated = await runUnifiedTranslation({
+          title: ex.title && ex.title !== "Untitled report" ? ex.title : title,
+          text: ex.text,
+          lang: language.lang,
+          model: sanitizeAgyModel(config.agentModel),
+          timeoutSeconds: config.agentTimeoutSeconds,
+          allowSandboxFallback: tai.sandbox,
+          deadlineAt: translationStarted + Math.round(itemTimeoutMs(config.agentTimeoutSeconds) * TRANSLATION_ITEM_SHARE),
+          cancelled: () => jobControl.cancel,
+        });
+        translationMsThisJob += Date.now() - translationStarted;
+        if (!translated.ok) return unchanged(`Content changed, in ${langLabel}: the translation was not usable (${translated.reason}); stored version kept`);
+        translation = {
+          from: language.lang,
+          provider: translated.provider,
+          model: translated.model,
+          originalTitle: title,
+          originalText: ex.text.slice(0, ORIGINAL_TEXT_CAP),
+          translatedChars: translated.translatedChars,
+          totalChars: translated.totalChars,
+          partial: translated.partial,
+          translatedAt: new Date().toISOString(),
+        };
+        title = translated.title;
+        text = translated.text;
+        sections = undefined;
+      }
+
+      const { score, wordCount } = scoreQuality(text, title);
+      const iocs = harvestIocs(text, { sourceDomain: current.domain });
+      const analysis = config.autoAnalyze ? analyzeThreatIntelligence(text, title, "THREAT_REPORT") : undefined;
+      const entities = analysis ? extractStructuredEntities(text, title, "THREAT_REPORT", analysis) : undefined;
+      const refs = enrichAttackEntities(title, text, sections);
       const nextVersion = stored.version + 1;
       try {
         await applyReportVersion({
@@ -1687,7 +1757,7 @@ export async function executeCrawlJob(
           previous: { version: stored.version, textHash: stored.textHash, rawHash: stored.rawHash, wordCount: stored.wordCount, replacedAt: new Date().toISOString() },
           fields: {
             title,
-            extractedText: ex.text,
+            extractedText: text,
             textHash: sha256Hex(ex.text),
             rawHash: sha256Hex(res.bytes),
             wordCount,
@@ -1695,8 +1765,9 @@ export async function executeCrawlJob(
             iocs,
             analysis,
             extractedEntities: withAttackRefs(entities, refs),
-            fingerprints: computeFingerprints({ text: ex.text, title, publisher: current.publisher || current.domain }),
+            fingerprints: computeFingerprints({ text: ex.text, title: translation?.originalTitle ?? title, publisher: current.publisher || current.domain }),
             contentType: res.contentType,
+            translation: translation ?? (stored.originalText ? null : undefined),
           },
         });
       } catch (err) {
@@ -2228,6 +2299,136 @@ export async function executeCrawlJob(
           }
         }
 
+        // 4.35 Reports in other languages are judged in English: the publisher's English version when
+        // the page links one, else an AI translation (checked part by part). Without a usable
+        // translation the report is held, not rejected; only acquired URLs are skipped by later
+        // crawls, so the next run with AI available evaluates it.
+        const sourceText = textContent;
+        let translation: ReportTranslation | undefined;
+        const language = detectLanguage(articleProse(textContent), fetchedHtmlBody ? declaredHtmlLang(fetchedHtmlBody) : null);
+        if (!language.english && language.lang !== "und") {
+          const langLabel = languageName(language.lang);
+          const held = async (reason: string) => {
+            skippedCount++;
+            logger.qualification(current.canonicalUrl, "HELD", 0, reason);
+            await recordItem(current, "HELD", reason, "evaluated", { title: docTitle });
+          };
+
+          const english = fetchedHtmlBody ? findEnglishAlternate(fetchedHtmlBody, current.canonicalUrl) : null;
+          let englishCanonical: string | null = null;
+          try {
+            englishCanonical = english ? canonicalizeUrl(english) : null;
+          } catch {
+            englishCanonical = null;
+          }
+          if (english && englishCanonical) {
+            if (storedCanonicalUrls.has(englishCanonical)) {
+              duplicateCount++;
+              collector.count(current.sourceId, "duplicate");
+              await recordItem(current, "DUPLICATE", `In ${langLabel}; the publisher's English version is already in the library: ${english}`, "duplicate", { title: docTitle });
+              return;
+            }
+            const inThisRun =
+              enqueuedUrls.has(englishCanonical) ||
+              enqueue({
+                url: english,
+                canonicalUrl: englishCanonical,
+                depth: current.depth,
+                priorityScore: Math.min(1.2, current.priorityScore + 0.2),
+                parentUrl: current.canonicalUrl,
+                parentSource: current.parentSource,
+                discoveryPath: [...current.discoveryPath, current.canonicalUrl],
+                discoveryMethod: current.discoveryMethod,
+                sourceId: current.sourceId,
+                publisher: current.publisher,
+                domain: new URL(englishCanonical).hostname,
+                title: docTitle,
+                publishedAt: current.publishedAt ?? null,
+                relevance: current.relevance,
+              });
+            if (inThisRun) {
+              skippedCount++;
+              await recordItem(current, "SKIPPED", `In ${langLabel}; the publisher's English version is evaluated instead: ${english}`, "duplicate", { title: docTitle });
+              return;
+            }
+            // The English version is outside this source's crawl scope: translate this one instead.
+          } else {
+            // Localized copies of English posts (/blog/ja/… next to /blog/…) often link no English
+            // edition. When the same path without the language segment is already in the library or
+            // in this run, this page is that report again, not new intelligence.
+            const guesses = guessEnglishUrls(current.canonicalUrl, language.lang).flatMap((u) => {
+              try {
+                return [canonicalizeUrl(u)];
+              } catch {
+                return [];
+              }
+            });
+            const inLibrary = guesses.find((u) => storedCanonicalUrls.has(u));
+            if (inLibrary) {
+              duplicateCount++;
+              collector.count(current.sourceId, "duplicate");
+              await recordItem(current, "DUPLICATE", `In ${langLabel}; the English edition is already in the library: ${inLibrary}`, "duplicate", { title: docTitle });
+              return;
+            }
+            const inRun = guesses.find((u) => enqueuedUrls.has(u));
+            if (inRun) {
+              skippedCount++;
+              await recordItem(current, "SKIPPED", `In ${langLabel}; the English edition is evaluated in this crawl: ${inRun}`, "duplicate", { title: docTitle });
+              return;
+            }
+          }
+
+          if (config.translateNonEnglish === false) {
+            await held(`In ${langLabel}: translation is turned off in crawl settings, so it waits until it is turned on.`);
+            return;
+          }
+          const tai = await translationAi();
+          if (!tai.usable) {
+            await held(`In ${langLabel}: waiting for translation. Add an AI provider in the Marketplace to translate and evaluate reports in other languages (${tai.detail}).`);
+            return;
+          }
+          if (translationsThisJob >= TRANSLATIONS_PER_JOB || translationMsThisJob >= TRANSLATION_JOB_BUDGET_MS) {
+            await held(`In ${langLabel}: this run's translation budget is used; it is translated and evaluated by the next crawl.`);
+            return;
+          }
+          translationsThisJob++;
+          const translationStarted = Date.now();
+          logger.agent("TRANSLATE", `"${docTitle.slice(0, 60)}": translating ${textContent.length.toLocaleString("en-US")} characters from ${langLabel}`);
+          const translated = await runUnifiedTranslation({
+            title: docTitle,
+            text: textContent,
+            lang: language.lang,
+            model: sanitizeAgyModel(config.agentModel),
+            timeoutSeconds: config.agentTimeoutSeconds,
+            allowSandboxFallback: tai.sandbox,
+            deadlineAt: translationStarted + Math.round(itemTimeoutMs(config.agentTimeoutSeconds) * TRANSLATION_ITEM_SHARE),
+            cancelled: () => jobControl.cancel,
+          });
+          translationMsThisJob += Date.now() - translationStarted;
+          if (!translated.ok) {
+            await held(`In ${langLabel}: the translation was not usable (${translated.reason}). Held for the next crawl.`);
+            return;
+          }
+          translation = {
+            from: language.lang,
+            provider: translated.provider,
+            model: translated.model,
+            originalTitle: docTitle,
+            originalText: textContent.slice(0, ORIGINAL_TEXT_CAP),
+            translatedChars: translated.translatedChars,
+            totalChars: translated.totalChars,
+            partial: translated.partial,
+            translatedAt: new Date().toISOString(),
+          };
+          logger.agent(
+            "TRANSLATED",
+            `"${docTitle.slice(0, 50)}" → "${translated.title.slice(0, 50)}" from ${langLabel} by ${translated.provider} (${translated.calls} part${translated.calls === 1 ? "" : "s"}${translated.partial ? ", partial" : ""})`,
+          );
+          textContent = translated.text;
+          docTitle = translated.title;
+          textSections = undefined;
+        }
+
         // 4.4 Heuristic Qualification Baseline & 5-Dimensional AI Agent Validation
         const isFeedEntry = current.discoveryMethod === "rss_feed";
         const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
@@ -2445,7 +2646,8 @@ export async function executeCrawlJob(
         const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
         const iocs = harvestIocs(textContent, { sourceDomain: current.domain });
         const rawHash = sha256Hex(rawBytes || textContent);
-        const reportSimhash = computeReportSimHash(textContent);
+        // Fingerprints stay on the published text, so a re-crawl of a translated report still matches.
+        const reportSimhash = computeReportSimHash(sourceText);
         const reportId = newId("rpt");
 
         let intelAnalysis = null;
@@ -2642,6 +2844,7 @@ export async function executeCrawlJob(
                 scoreBreakdown: agentResult?.scoreBreakdown,
                 aiTokensUsed: agentResult?.tokensUsed,
                 aiProvider: agentResult?.providerName,
+                translation,
               };
               await mongoInsertReport(reportDoc);
 

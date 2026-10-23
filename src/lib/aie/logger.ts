@@ -146,9 +146,10 @@ export const logger = {
   /**
    * Heuristic Qualification Gate Logging
    */
-  qualification(url: string, outcome: "PASS" | "REJECT", score: number, reason: string) {
+  qualification(url: string, outcome: "PASS" | "REJECT" | "HELD", score: number, reason: string) {
     const time = getTimestamp();
-    const outColor = outcome === "PASS" ? `${FG_GREEN}${BOLD}PASS${RESET}` : `${FG_RED}${BOLD}REJECT${RESET}`;
+    const outColor =
+      outcome === "PASS" ? `${FG_GREEN}${BOLD}PASS${RESET}` : outcome === "HELD" ? `${FG_YELLOW}${BOLD}HELD${RESET}` : `${FG_RED}${BOLD}REJECT${RESET}`;
     console.log(
       `${FG_GRAY}${time}${RESET} ${FG_YELLOW}[QUALIFY]${RESET} ${outColor} [Score: ${score.toFixed(2)}] ${url} ${FG_GRAY}› ${reason}${RESET}`,
     );

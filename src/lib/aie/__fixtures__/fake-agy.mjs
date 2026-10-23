@@ -60,7 +60,7 @@ if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
       return;
     }
     const prompt = String(turn?.message?.content ?? "");
-    const reply = /READY/.test(prompt) ? "READY" : `echo: ${prompt.slice(0, 80)}`;
+    const reply = /READY/.test(prompt) ? "READY" : fakeTranslation(prompt) ?? `echo: ${prompt.slice(0, 80)}`;
     emit({ event: "step_update", step_update: { text_delta: reply } });
     emit({ event: "result", result: { status: "SUCCESS", response: reply, usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } } });
   });
@@ -219,4 +219,13 @@ if (MODE === "signed_in") {
     drawMenu();
   }, MODE === "slow_menu" ? 2500 : 150);
 }
+}
+
+// A mechanical stand-in for a translation request (tests only, no model): runs of non-ASCII text
+// become English filler and everything ASCII (indicators, commands, identifiers) is kept as is, so
+// AIE's translation checks and the crawler path can be exercised end to end.
+function fakeTranslation(prompt) {
+  if (!/text below into English/.test(prompt)) return null;
+  const m = prompt.match(/<untrusted_source_content>\n([\s\S]*)\n<\/untrusted_source_content>/);
+  return m ? m[1].replace(/[^\x00-\x7F]+/g, " the text ").replace(/[ \t]{2,}/g, " ") : null;
 }

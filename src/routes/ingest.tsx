@@ -1773,6 +1773,8 @@ function IngestPage() {
                   <option value="QUALIFIED">Qualified</option>
                   <option value="DUPLICATE">Duplicate</option>
                   <option value="REJECTED">Rejected</option>
+                  <option value="HELD">Held (waiting for translation)</option>
+                  <option value="SKIPPED">Skipped</option>
                   <option value="FAILED">Failed</option>
                 </FilterSelect>
                 <FilterSelect
@@ -1999,7 +2001,7 @@ function queueTone(status?: string | null): Tone {
   const s = (status || "").toLowerCase();
   if (s === "ingested") return "success";
   if (s === "qualified") return "info";
-  if (s === "duplicate") return "warning";
+  if (s === "duplicate" || s === "held") return "warning";
   if (s === "rejected" || s === "failed") return "danger";
   return "neutral";
 }

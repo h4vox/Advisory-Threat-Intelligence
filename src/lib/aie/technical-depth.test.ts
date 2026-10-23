@@ -85,3 +85,22 @@ test("detectLanguage: English by stopwords, others by script and common words", 
   assert.equal(detectLanguage("Die Angreifer nutzen die Schwachstelle und werden nicht gestoppt, weil die Systeme mit alten Versionen und ohne Updates laufen. Die Betreiber werden aufgefordert, die Updates mit hoher Priorität einzuspielen und die Systeme nicht ungeschützt zu lassen, denn die Lücke wird mit hoher Wahrscheinlichkeit weiter ausgenutzt und die Folgen sind nicht absehbar.").lang, "de");
   assert.equal(detectLanguage("攻撃者は脆弱性を悪用して、システムに不正にアクセスしました。このキャンペーンは、複数の組織を標的にしています。").lang, "ja");
 });
+
+test("detectLanguage: an English page that is mostly an indicator table is never taken for another language", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => `| 203.0.113.${i} | per-host beacon | ${"ab".repeat(16)} | per day |`).join("\n");
+  for (const text of [`Indicators of compromise\n\n${rows}`, `${"Requests per second per host per day were logged. ".repeat(15)}${rows}`]) {
+    const d = detectLanguage(text, "en-US");
+    assert.ok(d.english || d.lang === "und", d.lang);
+  }
+});
+
+test("detectLanguage: Latin-script languages by several different function words", () => {
+  const samples: Array<[string, string]> = [
+    ["fr", "Les attaquants ont exploité une vulnérabilité dans le serveur pour obtenir un accès initial. Ils ont ensuite déployé des outils qui sont utilisés pour voler des identifiants, avec une persistance sur les machines. Cette campagne vise des organisations dans plusieurs pays et les opérateurs sont toujours actifs, car leur infrastructure n'est pas encore démantelée. Des correctifs sont disponibles pour ces produits et doivent être appliqués avec priorité."],
+    ["es", "Los atacantes explotaron una vulnerabilidad en el servidor para obtener acceso inicial. Después desplegaron herramientas que son usadas para robar credenciales, con persistencia en los equipos. Esta campaña apunta a organizaciones de varios países y los operadores siguen activos, porque su infraestructura no fue desmantelada. Las actualizaciones para estos productos están disponibles y deben aplicarse con prioridad, como recomienda el fabricante en sus avisos."],
+    ["nl", "De aanvallers hebben een kwetsbaarheid in de server misbruikt voor initiële toegang. Daarna werden hulpmiddelen ingezet die worden gebruikt voor het stelen van inloggegevens, met persistentie op de systemen. Deze campagne richt zich op organisaties in verschillende landen en de operators zijn nog actief, omdat hun infrastructuur niet is ontmanteld. Updates voor deze producten zijn beschikbaar en moeten met voorrang worden geïnstalleerd, zoals de leverancier ook adviseert bij de publicatie van het advies."],
+    ["it", "Gli aggressori hanno sfruttato una vulnerabilità del server per ottenere l'accesso iniziale. Successivamente sono stati distribuiti strumenti che vengono usati per rubare le credenziali, con persistenza sulle macchine. Questa campagna colpisce organizzazioni di diversi paesi e gli operatori sono ancora attivi, perché la loro infrastruttura non è stata smantellata. Gli aggiornamenti per questi prodotti sono disponibili e devono essere applicati con priorità, come indicato anche nella comunicazione del produttore."],
+    ["pt", "Os atacantes exploraram uma vulnerabilidade no servidor para obter acesso inicial. Depois foram implantadas ferramentas que são usadas para roubar credenciais, com persistência nas máquinas. Esta campanha visa organizações de vários países e os operadores continuam ativos, pois a infraestrutura não foi desmantelada. As atualizações para estes produtos estão disponíveis e devem ser aplicadas com prioridade, como também recomenda o fabricante nos seus avisos de segurança."],
+  ];
+  for (const [lang, text] of samples) assert.equal(detectLanguage(text).lang, lang, text.slice(0, 40));
+});

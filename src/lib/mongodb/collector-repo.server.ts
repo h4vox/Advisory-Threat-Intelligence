@@ -20,6 +20,7 @@ import type {
   ReportAttachment,
   ReportFingerprints,
   ReportMirror,
+  ReportTranslation,
   ReportVersionEntry,
 } from "../aie/types";
 
@@ -358,6 +359,8 @@ export type VersionUpdate = {
     extractedEntities?: unknown;
     fingerprints: ReportFingerprints;
     contentType: string;
+    /** The new version's translation; null when it is now in English (the old one is dropped). */
+    translation?: ReportTranslation | null;
   };
 };
 
@@ -377,7 +380,11 @@ export async function applyReportVersion(u: VersionUpdate): Promise<void> {
     };
     if (u.fields.analysis === undefined) delete $set.analysis;
     if (u.fields.extractedEntities === undefined) delete $set.extractedEntities;
-    await col.updateOne({ docType: "report", id: u.reportId }, { $set });
+    if (!u.fields.translation) delete $set.translation;
+    await col.updateOne(
+      { docType: "report", id: u.reportId },
+      u.fields.translation === null ? { $set, $unset: { translation: "" } } : { $set },
+    );
     return;
   }
   const sql = await localSql();
@@ -397,15 +404,15 @@ export async function applyReportVersion(u: VersionUpdate): Promise<void> {
 /** Report id + current hashes for a stored canonical URL (used when revalidating known URLs). */
 export async function findStoredReportByCanonical(
   canonicalUrl: string,
-): Promise<{ id: string; textHash: string; rawHash: string; version: number; wordCount: number; title: string; ingestedAt: string | null; extractedText: string; normalizedTextHash: string | null } | null> {
+): Promise<{ id: string; textHash: string; rawHash: string; version: number; wordCount: number; title: string; ingestedAt: string | null; extractedText: string; normalizedTextHash: string | null; originalText: string | null } | null> {
   if (isMongoConfigured()) {
     const col = await getThreatIntelCollection();
     const d = await col.findOne(
       { docType: "report", canonicalUrl },
-      { projection: { _id: 0, id: 1, textHash: 1, rawHash: 1, version: 1, wordCount: 1, title: 1, ingestedAt: 1, extractedText: 1, "fingerprints.normalizedTextHash": 1 } },
+      { projection: { _id: 0, id: 1, textHash: 1, rawHash: 1, version: 1, wordCount: 1, title: 1, ingestedAt: 1, extractedText: 1, "fingerprints.normalizedTextHash": 1, "translation.originalText": 1 } },
     );
     return d
-      ? { id: d.id, textHash: d.textHash, rawHash: d.rawHash, version: Number(d.version ?? 1), wordCount: Number(d.wordCount ?? 0), title: d.title, ingestedAt: d.ingestedAt ?? null, extractedText: d.extractedText ?? "", normalizedTextHash: d.fingerprints?.normalizedTextHash ?? null }
+      ? { id: d.id, textHash: d.textHash, rawHash: d.rawHash, version: Number(d.version ?? 1), wordCount: Number(d.wordCount ?? 0), title: d.title, ingestedAt: d.ingestedAt ?? null, extractedText: d.extractedText ?? "", normalizedTextHash: d.fingerprints?.normalizedTextHash ?? null, originalText: d.translation?.originalText ?? null }
       : null;
   }
   const sql = await localSql();
@@ -416,6 +423,6 @@ export async function findStoredReportByCanonical(
   `;
   const r = rows[0];
   return r
-    ? { id: r.id, textHash: r.text_hash, rawHash: r.raw_hash, version: Number(r.version), wordCount: Number(r.word_count), title: r.title, ingestedAt: r.ingested_at, extractedText: r.extracted_text ?? "", normalizedTextHash: parse<ReportCollectorMeta>(r.meta)?.fingerprints?.normalizedTextHash ?? null }
+    ? { id: r.id, textHash: r.text_hash, rawHash: r.raw_hash, version: Number(r.version), wordCount: Number(r.word_count), title: r.title, ingestedAt: r.ingested_at, extractedText: r.extracted_text ?? "", normalizedTextHash: parse<ReportCollectorMeta>(r.meta)?.fingerprints?.normalizedTextHash ?? null, originalText: null }
     : null;
 }

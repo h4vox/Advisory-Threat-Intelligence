@@ -113,15 +113,28 @@ const EN_STOPWORDS = new Set(
   "the and of to in is that for with on are as by this from was be an or which it at their they have has were been not but can its".split(" "),
 );
 
-/** Best-effort language of a text: English by stopword share, otherwise by script and diacritics. */
+/**
+ * Function words of other Latin-script languages. A language counts only when several different
+ * ones occur, more often than English function words: an English indicator table that says
+ * "per host" sixty times is not Italian.
+ */
+const LATIN_MARKERS: Array<[string, Set<string>]> = [
+  ["de", new Set("der die und nicht werden mit ist auf sich dem den eine einer wird oder auch wurde durch".split(" "))],
+  ["fr", new Set("les des est une dans pour avec sur qui sont pas cette ces leur être été aux".split(" "))],
+  ["es", new Set("los las una para con por que del como más está son sus pero fue entre".split(" "))],
+  ["nl", new Set("het een van niet voor zijn met wordt worden ook naar deze dat bij uit".split(" "))],
+  ["it", new Set("della degli delle una sono con per che del gli nella questo stato anche come".split(" "))],
+  ["pt", new Set("não para uma com dos das que pelo pela são está foram também como".split(" "))],
+];
+
+/** Best-effort language of a text: English by stopword share, otherwise by script and function words. */
 export function detectLanguage(text: string, htmlLang?: string | null): { lang: string; english: boolean } {
   const sample = text.slice(0, 20_000);
   const words = sample.toLowerCase().match(/[a-zà-ÿąćęłńóśźżčřšžůőű']+/g) ?? [];
   const declared = (htmlLang ?? "").toLowerCase().split(/[-_]/)[0] || "";
-  if (words.length >= 40) {
-    const en = words.filter((w) => EN_STOPWORDS.has(w)).length / words.length;
-    if (en >= 0.12) return { lang: "en", english: true };
-  }
+  const enHits = words.filter((w) => EN_STOPWORDS.has(w)).length;
+  if (words.length >= 40 && enHits / words.length >= 0.12) return { lang: "en", english: true };
+
   const has = (re: RegExp, min: number) => (sample.match(re) ?? []).length >= min;
   let lang = "";
   if (has(/[぀-ヿ]/g, 20)) lang = "ja";
@@ -131,13 +144,22 @@ export function detectLanguage(text: string, htmlLang?: string | null): { lang: 
   else if (has(/[؀-ۿ]/g, 40)) lang = "ar";
   else if (has(/[ąćęłńśźż]/gi, 8)) lang = "pl";
   else if (has(/[čřšžůě]/gi, 8)) lang = "cs";
-  else if (has(/\b(?:der|die|und|nicht|werden|mit)\b/gi, 12)) lang = "de";
-  else if (has(/\b(?:les|des|est|une|dans|pour|avec)\b/gi, 12)) lang = "fr";
-  else if (has(/\b(?:los|las|una|para|con|por|que)\b/gi, 14)) lang = "es";
-  else if (has(/\b(?:het|een|van|niet|voor|zijn)\b/gi, 12)) lang = "nl";
-  else if (has(/\b(?:della|degli|per|una|sono|con)\b/gi, 12)) lang = "it";
-  else if (has(/\b(?:não|para|uma|com|dos|das)\b/gi, 12)) lang = "pt";
-  if (!lang && declared && declared !== "en") lang = declared;
+  else {
+    let best = { lang: "", hits: 0 };
+    for (const [code, markers] of LATIN_MARKERS) {
+      const seen = new Set<string>();
+      let hits = 0;
+      for (const w of words) {
+        if (markers.has(w)) {
+          hits++;
+          seen.add(w);
+        }
+      }
+      if (seen.size >= 4 && hits >= 12 && hits > enHits * 1.5 && hits > best.hits) best = { lang: code, hits };
+    }
+    lang = best.lang;
+  }
+  if (!lang && declared && declared !== "en" && enHits < words.length * 0.05) lang = declared;
   if (!lang && words.length < 40) lang = declared || "und";
   if (!lang) lang = "und";
   return { lang, english: lang === "en" };

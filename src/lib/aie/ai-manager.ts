@@ -40,6 +40,7 @@ import {
   wrapUntrustedContent,
 } from "./agent-framework/types";
 import { warmAgentService } from "./warm-agent-service";
+import { translateDocument, type ChunkTranslator, type DocumentTranslation } from "./translation";
 import { sha256Hex } from "./retrieval";
 
 export type UnifiedDiscoveryParams = {
@@ -847,6 +848,69 @@ Return pure JSON only.`;
     model: agyModel,
     timeoutSeconds,
   });
+}
+
+export type UnifiedTranslationResult = DocumentTranslation & { provider: string; model: string };
+
+/**
+ * Translates a non-English report into English through the active provider (REST API, or the AGY
+ * agent in its sandbox). Each part is checked (./translation checkTranslation); a failed part fails
+ * the whole translation, and the caller holds the report instead of storing a doubtful text.
+ */
+export async function runUnifiedTranslation(params: {
+  title: string;
+  text: string;
+  lang: string;
+  model?: string;
+  timeoutSeconds?: number;
+  allowSandboxFallback?: boolean;
+  /** Epoch ms by which the whole translation must be done; parts are not started after it. */
+  deadlineAt?: number;
+  /** True once the caller no longer wants the result (a cancelled crawl). */
+  cancelled?: () => boolean;
+}): Promise<UnifiedTranslationResult> {
+  const active = await getActiveAIProvider();
+  const { restModel, agyModel } = resolveProviderModels(active, params.model);
+  // A part is up to 6,000 characters out: allow more time than a short evaluation, but never past
+  // the deadline.
+  const perCallMs = Math.max(params.timeoutSeconds || active.timeoutSeconds, 90) * 1000;
+  const callTimeout = () => (params.deadlineAt ? Math.max(15_000, Math.min(perCallMs, params.deadlineAt - Date.now())) : perCallMs);
+  const stopReason = () =>
+    params.cancelled?.()
+      ? "the crawl was cancelled"
+      : params.deadlineAt && Date.now() > params.deadlineAt - 15_000
+        ? "the translation needed more time than the crawl allows for one report"
+        : null;
+  const adapter = active.isRest && active.apiKey ? getProviderAdapter(active.providerId) : undefined;
+  let usedSandbox = !adapter;
+
+  const viaSandbox = async (prompt: string, system: string) => {
+    if (params.allowSandboxFallback === false) return { success: false, text: "", error: "the AI provider did not answer and the sandbox agent is unavailable" };
+    usedSandbox = true;
+    const res = await warmAgentService.executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: callTimeout() });
+    return { success: res.success, text: res.text, error: res.error };
+  };
+  const call: ChunkTranslator = async (prompt, system) => {
+    if (!adapter) return viaSandbox(prompt, system);
+    const res = await adapter.generate({
+      prompt,
+      systemInstruction: system,
+      model: restModel,
+      apiKey: active.apiKey,
+      endpointUrl: active.endpointUrl,
+      timeoutMs: callTimeout(),
+      temperature: 0,
+      maxTokens: 8192,
+    });
+    if (res.success || params.allowSandboxFallback === false) return { success: res.success, text: res.text, error: res.error };
+    logger.agent("FAILSAFE", `REST translation failed (${res.error ?? "no answer"}), trying the sandbox agent`);
+    return viaSandbox(prompt, system);
+  };
+
+  const result = await translateDocument({ title: params.title, text: params.text, lang: params.lang }, call, { stopReason });
+  return usedSandbox
+    ? { ...result, provider: active.isRest ? "Antigravity Agent (AGY)" : active.providerName, model: agyModel }
+    : { ...result, provider: active.providerName, model: restModel };
 }
 
 /**
