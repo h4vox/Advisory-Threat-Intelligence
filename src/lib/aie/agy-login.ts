@@ -212,6 +212,19 @@ export function isBusyScreen(text: string): boolean {
   return tail.some((l) => /^[\u2800-\u28ff]/.test(l) || /\b(?:signing in|authenticating|exchanging|verifying|please wait|loading)\b/i.test(l));
 }
 
+const SETUP_SCREEN =
+  /\b(?:choose your colou?r scheme|(?:choose|select|pick) (?:a |your )?(?:colou?r )?theme|enter\s+confirm|press enter to (?:continue|confirm)|do you trust|trust (?:this|the) (?:folder|directory|workspace|files)|get started|terms of service|usage statistics|send (?:anonymous )?(?:usage|telemetry))\b|\[\s*(?:next|continue|ok|accept)\s*\]/i;
+
+/**
+ * True when the latest screen is one of the CLI's first-run setup steps (colour scheme, folder
+ * trust, terms, telemetry): a selector or prompt that Enter accepts with its default. Never the
+ * login-method menu, which is answered by choosing Google OAuth.
+ */
+export function isSetupScreen(text: string): boolean {
+  const tail = text.split("\n").slice(-60).join("\n");
+  return SETUP_SCREEN.test(tail) && !/login method/i.test(tail);
+}
+
 /** First line that reports a sign-in error, if any. */
 export function findErrorLine(text: string): string | null {
   for (const line of text.split("\n")) {
@@ -264,6 +277,10 @@ export class AgyLoginSession {
   private signInPoll: ReturnType<typeof setInterval> | null = null;
   private codeAt = 0;
   private lastBusyAt = 0;
+  /** First-run setup screens answered with Enter: how many, when, and where the output stood. */
+  private setupPresses = 0;
+  private lastSetupPressAt = 0;
+  private setupOffset = 0;
   private keyTimers: ReturnType<typeof setTimeout>[] = [];
   /** Each verification run gets a generation; a result from an abandoned run is ignored. */
   private verifyGen = 0;
@@ -399,6 +416,8 @@ export class AgyLoginSession {
         });
         return;
       }
+      // A setup screen (first run) before or after the login menu: accept its default and keep going.
+      if ((!menu || this.menuChosen) && this.answerSetupScreen(stripTerminal(this.raw.slice(-MAX_RAW_BYTES)))) return;
       if (menu) {
         if (this.state === "verifying") this.setState("starting");
         if (!this.menuChosen) {
@@ -414,10 +433,32 @@ export class AgyLoginSession {
     if (this.state === "signing_in") this.pollSignIn();
   }
 
-  /** Output since the code was typed, with the code itself removed. */
+  /**
+   * Output since the code was typed (or since the last setup screen was answered), with the code
+   * removed. Setup screens draw sample text ("✗ error: compilation failed" in the colour-scheme
+   * preview), so what came before the last answered one is never read as a sign-in error.
+   */
   private outputSinceCode(): string {
-    const after = stripTerminal(this.raw.slice(this.codeOffset));
+    const after = stripTerminal(this.raw.slice(Math.max(this.codeOffset, this.setupOffset)));
     return this.submittedCode ? after.split(this.submittedCode).join("") : after;
+  }
+
+  /**
+   * Answers a first-run setup screen with Enter (its default), at most once per new screen and 12
+   * times in all. Returns true while a setup screen is showing, so the caller keeps waiting.
+   */
+  private answerSetupScreen(visible: string): boolean {
+    if (!isSetupScreen(visible)) return false;
+    const now = this.now();
+    if (this.setupPresses < 12 && now - this.lastSetupPressAt >= Math.max(this.t.settleMs * 3, 600) && this.raw.length > this.setupOffset) {
+      this.setupPresses++;
+      this.lastSetupPressAt = now;
+      this.setupOffset = this.raw.length;
+      if (this.state === "signing_in") this.message = "Signed in. Finishing the CLI's first-run setup…";
+      this.sendKeys([KEY_ENTER]);
+    }
+    this.lastBusyAt = now; // not settled while the CLI asks something
+    return true;
   }
 
   /** Fails on a CLI error or a return to the login screen. Returns true when it failed the session. */
@@ -441,6 +482,7 @@ export class AgyLoginSession {
   private pollSignIn() {
     if (this.state !== "signing_in") return;
     const visible = this.outputSinceCode();
+    if (this.answerSetupScreen(visible)) return;
     if (this.failOnSignInError(visible)) return;
     const now = this.now();
     if (isBusyScreen(visible)) this.lastBusyAt = now;

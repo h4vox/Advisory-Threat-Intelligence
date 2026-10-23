@@ -10,7 +10,11 @@
 // FAKE_AGY_STATE=path  file written on a successful sign-in (what the CLI would persist). When it exists,
 //                      the CLI starts signed in and `--print` answers prompts; otherwise `--print` fails
 //                      the way the real CLI does ("Print mode: not authenticated").
-// Also: `--version`, and `--print --input-format stream-json --output-format stream-json` (NDJSON turns).
+// FAKE_AGY_ONBOARDING=0  skip the first-run setup screens (colour scheme, folder trust) that the real
+//                      CLI shows after its first sign-in; they are on by default.
+// Also: `--version`, and stream-json print mode (`--input-format stream-json --output-format
+// stream-json` with `--print=` or no `--print`). Like the real CLI, `--print` takes the prompt as its
+// value: a bare `--print` followed by a flag is a usage error (exit 2).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -22,7 +26,16 @@ if (argv.includes("--version")) {
   process.stdout.write("1.4.6-fake\n");
   process.exit(0);
 }
-if (argv.includes("--print") || argv.includes("-p")) {
+const printAt = argv.findIndex((a) => a === "--print" || a === "-p");
+if (printAt >= 0 && /^-/.test(argv[printAt + 1] ?? "")) {
+  process.stderr.write(
+    `Error: --print took "${argv[printAt + 1]}" as its prompt, so the intended prompt was left as an argument and ignored.\n` +
+      "Attach the prompt to the flag (--print='your prompt') and move " + argv[printAt + 1] + " elsewhere on the command line.\n",
+  );
+  process.exit(2);
+}
+const streamJson = argv.includes("stream-json") && (printAt < 0 || argv.some((a) => a === "--print=" || a === "-p="));
+if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
   if (!signedIn()) {
     process.stderr.write("Print mode: not authenticated. Run `agy` to sign in.\n");
     process.exit(1);
@@ -83,6 +96,30 @@ function drawUrl() {
   out(` ─────────────\r\n → ${link}\r\n ─────────────\r\n\r\n If you aren't automatically redirected, paste the authorization code below:\r\n\r\n ${code || `${ESC}[2mauthorization code...${ESC}[0m`}`);
 }
 
+const ONBOARDING = process.env.FAKE_AGY_ONBOARDING !== "0";
+const onboarded = () => !ONBOARDING || (Boolean(STATE) && existsSync(`${STATE}.onboarded`));
+const themes = ["terminal", "light", "solarized light", "dark", "tokyo night"];
+let theme = 0;
+
+/** The real CLI's first-run colour-scheme step (captured), sample preview box included. */
+function drawTheme() {
+  clear();
+  out(`\r\n${ESC}[1mWelcome to Antigravity CLI!${ESC}[0m\r\n\r\nChoose your color scheme:        ╭──────────────────────────────╮\r\n`);
+  themes.forEach((t, i) => out(`${i === theme ? "  >" : "   "} ${t}\r\n`));
+  out(`│   ✗ error: compilation failed │\r\n│   ⚠ warning: deprecation warning │\r\n╰──────────────────────────────╯\r\n\r\n[Next]\r\n\r\n  ↑/↓ Navigate · enter Confirm`);
+}
+
+function drawTrust() {
+  clear();
+  out(`\r\nDo you trust the files in this folder?\r\n\r\n  > 1. Yes, proceed\r\n    2. No, exit\r\n\r\n  ↑/↓ Navigate · enter Confirm`);
+}
+
+function finishOnboarding() {
+  if (STATE) writeFileSync(`${STATE}.onboarded`, "yes");
+  screen = "chat";
+  drawChat();
+}
+
 function drawChat(note = "") {
   clear();
   out(`${LOGO}\r\n\r\n ${note}${note ? "\r\n" : ""} ${ESC}[1m>${ESC}[0m Type your message or @path/to/file\r\n`);
@@ -109,6 +146,11 @@ function signIn() {
       writeFileSync(STATE, "signed-in");
     }
     if (MODE === "exit_after_signin") process.exit(0);
+    if (!onboarded()) {
+      screen = "theme";
+      drawTheme();
+      return;
+    }
     screen = "chat";
     drawChat("Signed in as analyst@example.com");
   }, Number(process.env.FAKE_AGY_SIGNIN_MS || 1500));
@@ -117,7 +159,7 @@ function signIn() {
 process.stdin.setRawMode?.(true);
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (key) => {
-  if (key === "\x03") process.exit(130);
+  if (key.includes("\x03")) process.exit(130);
   if (screen === "menu") {
     if (key === `${ESC}[A`) selected = Math.max(0, selected - 1);
     else if (key === `${ESC}[B`) selected = Math.min(options.length - 1, selected + 1);
@@ -133,6 +175,17 @@ process.stdin.on("data", (key) => {
       return;
     }
     drawMenu();
+  } else if (screen === "theme") {
+    if (key === `${ESC}[A`) theme = Math.max(0, theme - 1);
+    else if (key === `${ESC}[B`) theme = Math.min(themes.length - 1, theme + 1);
+    else if (key.includes("\r")) {
+      screen = "trust";
+      drawTrust();
+      return;
+    }
+    drawTheme();
+  } else if (screen === "trust") {
+    if (key.includes("\r")) finishOnboarding();
   } else if (screen === "url") {
     for (const ch of key) {
       if (ch === "\r") return signIn();
@@ -144,8 +197,13 @@ process.stdin.on("data", (key) => {
 });
 
 if (MODE === "signed_in") {
-  screen = "chat";
-  drawChat();
+  if (!onboarded()) {
+    screen = "theme";
+    drawTheme();
+  } else {
+    screen = "chat";
+    drawChat();
+  }
 } else {
   setTimeout(() => {
     screen = "menu";

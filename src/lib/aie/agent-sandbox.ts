@@ -1,4 +1,5 @@
 import { execFile, execFileSync, execSync, spawn, type ChildProcess } from "node:child_process";
+import { DEFAULT_AGY_CLI_FLAVOR, agyStreamJsonArgs, nextAgyCliFlavor, type AgyCliFlavor } from "./agy-cli-flags";
 import readline from "node:readline";
 import { sanitizeAgyModel } from "./agent-framework/types";
 
@@ -603,25 +604,33 @@ export function executeInAgentSandbox(
 
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 
+// Flag form the installed CLI accepts (see ./agy-cli-flags), learnt from its usage errors, per process.
+const agyFlags = globalThis as typeof globalThis & { __aieAgyCliFlavor?: AgyCliFlavor };
+agyFlags.__aieAgyCliFlavor ??= { ...DEFAULT_AGY_CLI_FLAVOR };
+
 /**
  * Agent CLI flags for every model invocation:
- * - `--print`: non-interactive print mode.
+ * - stream-json input and output: the prompt travels over stdin, never argv.
+ * - `--print=` (last, value attached): non-interactive print mode.
  * - no `--dangerously-skip-permissions`: tool calls need interactive approval,
  *   which cannot be given in print mode, so the agent cannot run tools.
  * - `--disable-slash-commands`: no slash-command side effects.
- * - stream-json input: the prompt travels over stdin, never argv.
+ * `extra` (e.g. `--conversation <id>`) goes before the print flag.
  */
-export function buildAgentCliArgs(model: string): string[] {
-  return [
-    "--print",
-    "--disable-slash-commands",
-    "--input-format",
-    "stream-json",
-    "--output-format",
-    "stream-json",
-    "--model",
-    sanitizeAgyModel(model),
-  ];
+export function buildAgentCliArgs(model: string, extra: string[] = []): string[] {
+  return agyStreamJsonArgs(agyFlags.__aieAgyCliFlavor!, sanitizeAgyModel(model), extra);
+}
+
+/**
+ * Adapts the flags to a usage error from the CLI (exit code 2). True when they changed, so the
+ * caller can run the prompt again; false when the error is not about these flags.
+ */
+export function adaptAgentCliFlags(errorText: string): boolean {
+  const next = nextAgyCliFlavor(agyFlags.__aieAgyCliFlavor!, errorText);
+  if (!next) return false;
+  agyFlags.__aieAgyCliFlavor = next;
+  appendSandboxLog("WARN", "agent", `The agent CLI refused the previous flags; now using: agy ${agyStreamJsonArgs(next, "<model>").join(" ")}`);
+  return true;
 }
 
 /** NDJSON user turn written to the agent's stdin. */
@@ -647,7 +656,18 @@ export interface AgentPromptResult {
  * without permission bypass, and nothing ever runs on the host. Always
  * resolves (never throws); an unavailable container yields an error result.
  */
-export function runAgentPromptInSandbox(
+export async function runAgentPromptInSandbox(
+  prompt: string,
+  options: { model?: string; timeoutMs?: number; category?: LogCategory }
+): Promise<AgentPromptResult> {
+  // A usage error (exit 2) about our flags is answered once per flag form: adapt and run again.
+  for (let attempt = 0; ; attempt++) {
+    const res = await runAgentPromptOnce(prompt, options);
+    if (res.success || res.exitCode !== 2 || attempt >= 2 || !adaptAgentCliFlags(res.error || "")) return res;
+  }
+}
+
+function runAgentPromptOnce(
   prompt: string,
   options: { model?: string; timeoutMs?: number; category?: LogCategory }
 ): Promise<AgentPromptResult> {

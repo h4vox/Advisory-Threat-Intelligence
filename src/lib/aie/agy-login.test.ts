@@ -10,6 +10,7 @@ import {
   extractAuthUrl,
   findErrorLine,
   isGoogleAuthUrl,
+  isSetupScreen,
   normalizeAuthCode,
   parseLoginMenu,
   ptyChildTerminal,
@@ -70,6 +71,31 @@ test("normalizeAuthCode accepts a code or a redirect URL and refuses anything th
   for (const bad of ["4/0AVG-abc\r\x1b[Bevil", "4/0AVG-abc\nrm -rf", "short", "4/0AVG abc def", "4/0AVG-\x03abcdefg", "x".repeat(600)]) {
     assert.equal(normalizeAuthCode(bad).ok, false, JSON.stringify(bad));
   }
+});
+
+// Captured from the real CLI right after a successful sign-in (first run).
+const REAL_THEME_SCREEN = ` ⣷  Signing in...
+
+▄
+
+Welcome to Antigravity CLI!
+
+Choose your color scheme:        ╭─────────────────────────────────────────────────────────────╮│ > you: add a greeting function│
+  > terminal││
+light│   Here's the change:│
+solarized light││
+dark│   4 │
+tokyo night│   6  +      fmt.Printf("Hello, %s!\\n", name) ││   7     }││││   ▾ Thought Process││   ⚙ tool: write_file main.go││   ✗ error: compilation failed││   ⚠ warning: deprecation warning││   · dim: press Enter to continue│╰─────────────────────────────────────────────────────────────╯
+
+[Next]
+
+  ↑/↓ Navigate · enter ConfirmGemini 3.8 Flash · high`;
+
+test("isSetupScreen recognises the CLI's first-run screens, never the login menu", () => {
+  assert.equal(isSetupScreen(REAL_THEME_SCREEN), true);
+  assert.equal(isSetupScreen("Do you trust the files in this folder?\n > 1. Yes, proceed\n   2. No, exit"), true);
+  assert.equal(isSetupScreen(" Select login method:\n > 1. Google OAuth\n   2. Use a Google Cloud project\n   ↑/↓ Navigate · enter Select"), false);
+  assert.equal(isSetupScreen(" > Type your message or @path/to/file"), false);
 });
 
 test("findErrorLine reports CLI errors but not the paste prompt", () => {
@@ -158,6 +184,34 @@ test("PTY: every state change is reported once, in order, ending in signed_in", 
     assert.deepEqual(collapsed.slice(0, 2), ["choosing_method", "awaiting_code"]);
     assert.equal(changes.at(-1), "signed_in");
     assert.ok(changes.includes("signing_in") && changes.includes("verifying"), changes.join(" > "));
+  } finally {
+    cleanup();
+  }
+});
+
+test("PTY: the first-run colour-scheme and trust screens after sign-in are accepted, their sample 'error' ignored", pty, async () => {
+  const { s, cleanup, changes } = session("login");
+  try {
+    s.start();
+    await waitFor(s, ["awaiting_code", "failed"]);
+    s.submitCode(GOOD_CODE);
+    const done = await waitFor(s, ["signed_in", "failed"]);
+    assert.equal(done.state, "signed_in", done.message);
+    assert.match(done.transcript, /Choose your color scheme/, "the setup screen was shown");
+    assert.match(done.transcript, /Do you trust the files/, "and answered, reaching the next one");
+    assert.ok(!changes.includes("failed"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("PTY: a signed-in CLI that still shows its first-run screens is detected as signed in", pty, async () => {
+  const { s, cleanup } = session("signed_in");
+  try {
+    s.start();
+    const done = await waitFor(s, ["signed_in", "failed"]);
+    assert.equal(done.state, "signed_in", done.message);
+    assert.equal(done.alreadySignedIn, true);
   } finally {
     cleanup();
   }
