@@ -465,6 +465,29 @@ The crawler implements three concurrent discovery vectors to ensure both depth a
 +-----------------------------------------------------------------------------------+
 ```
 
+### 4.0 Time budgets (why a run cannot stall on discovery or on AI)
+
+The run's time limit (`maxRunTimeMinutes`, default 5) counts from the start of the job and covers
+discovery and processing. Discovery gets a third of it, between 45 s and 5 min:
+
+- **Feeds and homepages always run**, bounded by their own request timeouts (feeds at most 90 s,
+  sitemaps 60 s, homepages until the budget ends but at least 30 s).
+- **AI source discovery runs alongside them**, within half the discovery budget (at most 60 s). New
+  sources are always saved; report links it finds in time are crawled in this run.
+- **Extras use what is left**: AI link harvesting (at most 3 model calls per run, when a homepage
+  yields no links), extra listing pages, research archives and web search.
+
+During processing, AI scoring pauses for the rest of the run after 3 failures in a row (the model
+did not answer, or errored); articles are then qualified by the rules engine. A busy agent is not a
+failure: the request is refused at once and that article uses the rules.
+
+The AGY agent serves requests one at a time in two lanes (`src/lib/aie/warm-agent-service.ts`):
+chat keeps one conversation; crawler and analysis work is stateless, and its worker is recycled
+every 12 turns or 60,000 prompt characters so a crawl's article text does not pile up in the
+model's context. A request's timeout includes its time in the queue: an expired request is dropped,
+a timed-out one is not run again, at most 6 may wait, and one whose expected wait already exceeds
+its timeout is refused at once.
+
 ### 4.1 RSS 2.0 & Atom 1.0 Syndication (`src/lib/aie/feeds.ts`)
 
 The parser detects XML standards without external heavy dependencies:

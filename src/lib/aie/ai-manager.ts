@@ -39,7 +39,7 @@ import {
   UNTRUSTED_CONTENT_NOTICE,
   wrapUntrustedContent,
 } from "./agent-framework/types";
-import { warmAgentService } from "./warm-agent-service";
+import { backgroundAgentService, warmAgentService } from "./warm-agent-service";
 import { translateDocument, type ChunkTranslator, type DocumentTranslation } from "./translation";
 import { sha256Hex } from "./retrieval";
 
@@ -887,7 +887,7 @@ export async function runUnifiedTranslation(params: {
   const viaSandbox = async (prompt: string, system: string) => {
     if (params.allowSandboxFallback === false) return { success: false, text: "", error: "the AI provider did not answer and the sandbox agent is unavailable" };
     usedSandbox = true;
-    const res = await warmAgentService.executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: callTimeout() });
+    const res = await backgroundAgentService.executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: callTimeout() });
     return { success: res.success, text: res.text, error: res.error };
   };
   const call: ChunkTranslator = async (prompt, system) => {

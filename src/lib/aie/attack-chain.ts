@@ -3,7 +3,7 @@ import { getActiveAIProvider, extractJsonFromLlmText, resolveProviderModels } fr
 import { getProviderAdapter } from "./providers";
 import { runAgentPromptInSandbox } from "./agent-sandbox";
 import { UNTRUSTED_CONTENT_NOTICE, wrapUntrustedContent } from "./agent-framework/types";
-import { warmAgentService } from "./warm-agent-service";
+import { backgroundAgentService } from "./warm-agent-service";
 import { logger } from "./logger";
 import { buildEvidence, isMitigationSentence, labelSentences, PROCEDURE_RE } from "./evidence";
 import { lookupAttackTechnique } from "./mitre-matrix";
@@ -458,7 +458,9 @@ Return pure JSON only.`;
       }
     } else {
       try {
-        const warmRes = await warmAgentService.executeSkill({
+        // Stateless background lane, ahead of crawl work: an analyst asked for it.
+        const warmRes = await backgroundAgentService.executeSkill({
+          priority: "high",
           skill: "ATTACK_CHAIN",
           payload: `TITLE: ${title}\nCONTENT SNIPPET:\n${snippet}`,
           model: agyModel,
@@ -577,7 +579,8 @@ Return pure JSON only.`;
       if (res.success) output = res.text;
     } else {
       try {
-        const warmRes = await warmAgentService.executePrompt(prompt, {
+        const warmRes = await backgroundAgentService.executePrompt(prompt, {
+          priority: "high",
           model: agyModel,
           timeoutMs: 35000,
         });
@@ -676,7 +679,8 @@ Return pure JSON only.`;
       if (res.success) output = res.text;
     } else {
       try {
-        const warmRes = await warmAgentService.executePrompt(prompt, {
+        const warmRes = await backgroundAgentService.executePrompt(prompt, {
+          priority: "high",
           model: agyModel,
           timeoutMs: 35000,
         });

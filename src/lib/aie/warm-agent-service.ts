@@ -10,6 +10,15 @@
  *
  * Eliminates the 14-second cold-start penalty per prompt down to 2.0 - 2.8s pure inference latency,
  * and maintains conversational memory across multi-turn interactions.
+ *
+ * Two lanes, each with its own worker:
+ *  - interactive (chat): keeps one conversation across turns and worker restarts;
+ *  - background (crawler evaluation, harvesting, translation, attack chains): stateless. Its worker
+ *    starts without a conversation and is recycled after a bounded amount of work, so one crawl's
+ *    article text neither slows later turns nor stays in the model's context for the next page.
+ * A request's timeout covers its time in the queue: an expired request is dropped, not run, and a
+ * request that times out while running is not re-run (only a worker failure falls back to a
+ * one-shot run, within the time left).
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -39,7 +48,27 @@ interface TurnQueueItem {
   timeoutMs: number;
   resolve: (res: WarmInferenceResult) => void;
   startTime: number;
+  /** startTime + timeoutMs: the request is answered by then, queue wait included. */
+  deadlineAt: number;
+  /** An analyst is waiting: goes ahead of other queued work and is never refused as "busy". */
+  high: boolean;
 }
+
+export type AgentLane = "interactive" | "background";
+
+type LaneOptions = {
+  lane: AgentLane;
+  /** Resume the same conversation across turns and worker restarts (chat). */
+  keepConversation: boolean;
+  /** Recycle the worker after this many turns or prompt characters (bounds the model's context). */
+  maxTurnsPerWorker: number;
+  maxPromptCharsPerWorker: number;
+  /** Requests waiting beyond this are refused at once (the caller falls back), except high priority. */
+  maxQueue: number;
+};
+
+/** Less time than this left: a queued request is dropped and a failed one is not retried. */
+const MIN_USEFUL_MS = 1500;
 
 interface ActiveTurn {
   id: number;
@@ -166,6 +195,11 @@ Output pure JSON only:
 }
 
 class WarmAgentService {
+  private readonly opts: LaneOptions;
+  /** Moving average of answered turns, for the wait estimate at admission (0 until one answers). */
+  private avgTurnMs = 0;
+  private workerTurns = 0;
+  private workerPromptChars = 0;
   private proc: ChildProcessWithoutNullStreams | null = null;
   private rl: readline.Interface | null = null;
   private currentModel: string = DEFAULT_AGY_MODEL;
@@ -180,7 +214,8 @@ class WarmAgentService {
   private workerReadyResolve: (() => void) | null = null;
   private lastStderr: string = "";
 
-  constructor() {
+  constructor(opts: LaneOptions) {
+    this.opts = opts;
     this.resetIdleTimer();
   }
 
@@ -189,6 +224,7 @@ class WarmAgentService {
    */
   getStatus() {
     return {
+      lane: this.opts.lane,
       isAlive: Boolean(this.proc && !this.proc.killed),
       pid: this.proc?.pid ?? null,
       currentModel: this.currentModel,
@@ -220,7 +256,7 @@ class WarmAgentService {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       if (!this.activeTurn && this.queue.length === 0) {
-        console.log("[warm-agent] Idle timeout reached. Gracefully closing warm agent process.");
+        console.log(`[warm-agent:${this.opts.lane}] Idle timeout reached. Gracefully closing warm agent process.`);
         this.destroyProcess("idle_timeout");
       }
     }, IDLE_TIMEOUT_MS);
@@ -264,10 +300,13 @@ class WarmAgentService {
   private spawnWorker(model: string): Promise<void> {
     return new Promise((resolve) => {
       this.currentModel = model;
-      console.log(`[warm-agent] Spawning warm agent worker in ${CONTAINER_NAME} with model ${model}...`);
+      console.log(`[warm-agent:${this.opts.lane}] Spawning warm agent worker in ${CONTAINER_NAME} with model ${model}...`);
+      this.workerTurns = 0;
+      this.workerPromptChars = 0;
 
       // `--conversation` goes before the print flag (which buildAgentCliArgs keeps last).
-      const args = ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model, this.activeConversationId ? ["--conversation", this.activeConversationId] : [])];
+      const resume = this.opts.keepConversation && this.activeConversationId ? ["--conversation", this.activeConversationId] : [];
+      const args = ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model, resume)];
 
       let isSettled = false;
       let initTimer: NodeJS.Timeout | null = null;
@@ -345,8 +384,10 @@ class WarmAgentService {
     }
 
     if (data.event === "init") {
-      if (typeof data.conversation_id === "string" && data.conversation_id.length >= 8) {
-        this.activeConversationId = data.conversation_id;
+      // The id is top-level on some CLI versions and under `init` on others.
+      const conversationId = data.conversation_id ?? data.init?.conversation_id;
+      if (this.opts.keepConversation && typeof conversationId === "string" && conversationId.length >= 8) {
+        this.activeConversationId = conversationId;
       }
       this.workerReadyResolve?.();
       return;
@@ -374,6 +415,8 @@ class WarmAgentService {
           }
         : undefined;
       this.turnCount++;
+      const took = Date.now() - turn.startTime;
+      this.avgTurnMs = this.avgTurnMs ? Math.round((this.avgTurnMs + took) / 2) : took;
       this.settleTurn(turn, {
         success: result.status === "SUCCESS",
         text: finalResponse || (result.error ? `Error: ${result.error}` : "Analysis completed."),
@@ -397,12 +440,20 @@ class WarmAgentService {
       turn.timer = null;
     }
     this.activeTurn = null;
+    // Bounded context: a background worker is replaced once it has done enough work.
+    if (this.workerTurns >= this.opts.maxTurnsPerWorker || this.workerPromptChars >= this.opts.maxPromptCharsPerWorker) {
+      this.destroyProcess("recycle");
+    }
     try {
       turn.item.resolve(res);
     } finally {
       this.resetIdleTimer();
       setImmediate(() => void this.processNextInQueue());
     }
+  }
+
+  private failure(turn: ActiveTurn | null, item: TurnQueueItem, error: string): WarmInferenceResult {
+    return { success: false, text: "", latencyMs: Date.now() - (turn?.startTime ?? item.startTime), model: item.model, isWarm: false, error };
   }
 
   /**
@@ -416,8 +467,13 @@ class WarmAgentService {
       clearTimeout(turn.timer);
       turn.timer = null;
     }
-    console.warn(`[warm-agent] Warm turn failed (${reason}); running one-shot fallback in sandbox.`);
-    this.executeColdFallback(turn.item.prompt, turn.item.model, turn.item.timeoutMs)
+    const remaining = turn.item.deadlineAt - Date.now();
+    if (remaining < MIN_USEFUL_MS * 3) {
+      this.settleTurn(turn, this.failure(turn, turn.item, `The agent worker failed (${reason}) with no time left to retry.`));
+      return;
+    }
+    console.warn(`[warm-agent:${this.opts.lane}] Warm turn failed (${reason}); running one-shot fallback in sandbox.`);
+    this.executeColdFallback(turn.item.prompt, turn.item.model, remaining)
       .then((res) => this.settleTurn(turn, res))
       .catch((err: any) =>
         this.settleTurn(turn, {
@@ -438,7 +494,12 @@ class WarmAgentService {
     this.resetIdleTimer();
     if (this.activeTurn || this.queue.length === 0) return;
 
-    const item = this.queue.shift();
+    // Requests whose caller has already given up are answered, not run.
+    let item = this.queue.shift();
+    while (item && item.deadlineAt - Date.now() < MIN_USEFUL_MS) {
+      item.resolve(this.failure(null, item, `The agent was busy: the request waited ${Math.round((Date.now() - item.startTime) / 1000)}s in the queue and timed out.`));
+      item = this.queue.shift();
+    }
     if (!item) return;
 
     const turn: ActiveTurn = {
@@ -462,14 +523,18 @@ class WarmAgentService {
         throw new Error("Warm agent process is not writable");
       }
 
-      // Stall guard: recycle the worker and fail over to a one-shot run.
+      // Stall guard: the model did not answer in time. Running the same prompt again would only
+      // double the wait, so the request fails and the worker (possibly stuck) is replaced.
+      const runFor = Math.max(MIN_USEFUL_MS, item.deadlineAt - Date.now());
       turn.timer = setTimeout(() => {
         if (this.activeTurn !== turn || turn.inFallback) return;
-        console.warn(`[warm-agent] Warm stream timed out after ${item.timeoutMs}ms.`);
-        this.failoverTurn(turn, "turn_timeout");
+        console.warn(`[warm-agent:${this.opts.lane}] Turn timed out after ${Math.round((Date.now() - item.startTime) / 1000)}s.`);
+        this.settleTurn(turn, this.failure(turn, item, `The agent did not answer within ${Math.round(item.timeoutMs / 1000)}s.`));
         this.destroyProcess("turn_timeout");
-      }, item.timeoutMs);
+      }, runFor);
 
+      this.workerTurns += 1;
+      this.workerPromptChars += item.prompt.length;
       proc.stdin.write(encodeAgentUserTurn(item.prompt));
     } catch (err: any) {
       if (this.activeTurn === turn && !turn.inFallback) {
@@ -530,7 +595,7 @@ class WarmAgentService {
     const proc = this.proc;
     this.proc = null; // detach first so its exit handler is a no-op
     if (proc) {
-      console.log(`[warm-agent] Destroying process (reason: ${reason})`);
+      console.log(`[warm-agent:${this.opts.lane}] Destroying process (reason: ${reason})`);
       try {
         proc.kill("SIGKILL");
       } catch {
@@ -549,13 +614,32 @@ class WarmAgentService {
    */
   executePrompt(
     prompt: string,
-    options?: { model?: string; timeoutMs?: number }
+    options?: { model?: string; timeoutMs?: number; priority?: "high" | "normal" }
   ): Promise<WarmInferenceResult> {
     const model = sanitizeAgyModel(options?.model || this.currentModel);
     const timeoutMs = options?.timeoutMs || TURN_TIMEOUT_MS;
+    const startTime = Date.now();
+    const high = options?.priority === "high";
 
     return new Promise<WarmInferenceResult>((resolve) => {
-      this.queue.push({ prompt, model, timeoutMs, resolve, startTime: Date.now() });
+      const item: TurnQueueItem = { prompt, model, timeoutMs, startTime, deadlineAt: startTime + timeoutMs, high, resolve };
+      if (!high && this.queue.length >= this.opts.maxQueue) {
+        resolve(this.failure(null, item, `The agent is busy (${this.queue.length} requests waiting); try again shortly.`));
+        return;
+      }
+      // Refused at once when the expected wait alone would use up the caller's time: the caller
+      // moves on (the crawler uses its rules) instead of waiting for a certain timeout.
+      const ahead = this.queue.length + (this.activeTurn ? 1 : 0);
+      if (!high && ahead > 0 && this.avgTurnMs > 0 && ahead * this.avgTurnMs >= timeoutMs) {
+        resolve(this.failure(null, item, `The agent is busy: about ${Math.round((ahead * this.avgTurnMs) / 1000)}s of work ahead, more than this request's ${Math.round(timeoutMs / 1000)}s.`));
+        return;
+      }
+      if (high) {
+        const at = this.queue.findIndex((q) => !q.high);
+        this.queue.splice(at < 0 ? this.queue.length : at, 0, item);
+      } else {
+        this.queue.push(item);
+      }
       void this.processNextInQueue();
     });
   }
@@ -563,11 +647,12 @@ class WarmAgentService {
   /**
    * Skill-Based Task Dispatch on the dedicated agent.
    */
-  executeSkill(options: SkillOptions): Promise<WarmInferenceResult> {
+  executeSkill(options: SkillOptions & { priority?: "high" | "normal" }): Promise<WarmInferenceResult> {
     const prompt = buildSkillPrompt(options.skill, options.payload, options.context, options.history);
     return this.executePrompt(prompt, {
       model: options.model,
       timeoutMs: options.timeoutMs,
+      priority: options.priority,
     });
   }
 
@@ -588,5 +673,29 @@ class WarmAgentService {
   }
 }
 
-// Global Singleton Instance
-export const warmAgentService = new WarmAgentService();
+/** Chat: one conversation, resumed across worker restarts until the analyst starts a new one. */
+export const warmAgentService = new WarmAgentService({
+  lane: "interactive",
+  keepConversation: true,
+  maxTurnsPerWorker: Number.POSITIVE_INFINITY,
+  maxPromptCharsPerWorker: Number.POSITIVE_INFINITY,
+  maxQueue: 16,
+});
+
+/**
+ * Crawler and analysis work: stateless, worker recycled every 12 turns or 60,000 prompt characters,
+ * at most 6 waiting (more are refused at once and the caller uses its rules-based path).
+ */
+export const backgroundAgentService = new WarmAgentService({
+  lane: "background",
+  keepConversation: false,
+  maxTurnsPerWorker: 12,
+  maxPromptCharsPerWorker: 60_000,
+  maxQueue: 6,
+});
+
+/** Stops both workers (sign-out, reset, uninstall). */
+export function destroyAllAgentWorkers(reason: string): void {
+  warmAgentService.destroyProcess(reason);
+  backgroundAgentService.destroyProcess(reason);
+}

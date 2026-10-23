@@ -21,7 +21,7 @@ import {
   UNTRUSTED_CONTENT_NOTICE,
   wrapUntrustedContent,
 } from "./agent-framework/types";
-import { warmAgentService } from "./warm-agent-service";
+import { backgroundAgentService } from "./warm-agent-service";
 import { executeInAgentSandbox, runAgentPromptInSandbox } from "./agent-sandbox";
 
 export type DiscoveredAgentSource = {
@@ -222,6 +222,15 @@ async function runAgentPromptWithQuotaRetry(
 }
 
 /**
+ * Whether a failed agent call is worth one one-shot retry: a quota error on a non-default model,
+ * which the retry runs on the default model. A timeout or a busy agent is not: running the prompt
+ * again only adds waiting (crawls used to spend minutes per article this way).
+ */
+function worthOneShotRetry(error?: string): boolean {
+  return /quota|subscription|resource[_ ]exhausted/i.test(error ?? "");
+}
+
+/**
  * Extract clean JSON data from raw agy output (handling envelope or markdown fences)
  */
 function extractJsonPayload(text: string): any {
@@ -396,8 +405,9 @@ Return pure JSON only. No markdown fences.`;
 
   try {
     let outputText = "";
+    let warmError: string | undefined;
     try {
-      const warmRes = await warmAgentService.executeSkill({
+      const warmRes = await backgroundAgentService.executeSkill({
         skill: "SOURCE_HARVESTER",
         payload: `Discover exactly ${limit} new, distinct technical threat intelligence sources or research lab endpoints.`,
         context: knownDomains.length > 0 ? knownDomains.slice(0, 60).map((d) => `- ${d}`).join("\n") : undefined,
@@ -406,11 +416,16 @@ Return pure JSON only. No markdown fences.`;
       });
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
+      } else {
+        warmError = warmRes.error;
       }
     } catch (err) {
-      console.debug("[agy-agent] warm agent SOURCE_HARVESTER failed; falling back to one-shot prompt:", err);
+      warmError = err instanceof Error ? err.message : String(err);
     }
 
+    if (!outputText && !worthOneShotRetry(warmError)) {
+      return { sources: [], error: `Agent unavailable or failed: ${warmError ?? "no output"}` };
+    }
     if (!outputText) {
       const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
       if (!res.text) {
@@ -555,8 +570,9 @@ Return pure JSON only.`;
 
   try {
     let outputText = "";
+    let warmError: string | undefined;
     try {
-      const warmRes = await warmAgentService.executeSkill({
+      const warmRes = await backgroundAgentService.executeSkill({
         skill: "DOMAIN_HARVESTER",
         payload: `${domain} (base: ${baseUrl})`,
         context: (options.htmlSnippet || "").slice(0, 2500),
@@ -565,16 +581,16 @@ Return pure JSON only.`;
       });
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
+      } else {
+        warmError = warmRes.error;
       }
     } catch (err) {
-      console.debug("[agy-agent] warm agent call failed; falling back to one-shot prompt:", err);
+      warmError = err instanceof Error ? err.message : String(err);
     }
 
-    if (!outputText) {
-      const res = await runAgentPromptInSandbox(prompt, { model, timeoutMs: (timeoutSec + 15) * 1000 });
-      if (res.success && res.text) {
-        outputText = res.text;
-      }
+    if (!outputText && worthOneShotRetry(warmError)) {
+      const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
+      if (res.text) outputText = res.text;
     }
 
     if (outputText) {
@@ -768,8 +784,9 @@ Return pure JSON only.`;
   try {
     let outputText = "";
     const qualifierPayload = `TITLE: ${options.title}\nURL: ${options.url}\nCONTENT SNIPPET:\n${textSnippet}`;
+    let warmError: string | undefined;
     try {
-      const warmRes = await warmAgentService.executeSkill({
+      const warmRes = await backgroundAgentService.executeSkill({
         skill: "REPORT_QUALIFIER",
         payload: qualifierPayload,
         model,
@@ -777,13 +794,15 @@ Return pure JSON only.`;
       });
       if (warmRes.success && warmRes.text) {
         outputText = warmRes.text;
+      } else {
+        warmError = warmRes.error;
       }
     } catch (err) {
-      console.debug("[agy-agent] warm agent call failed; falling back to one-shot prompt:", err);
+      warmError = err instanceof Error ? err.message : String(err);
     }
 
     if (!outputText) {
-      const res = await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec);
+      const res = worthOneShotRetry(warmError) ? await runAgentPromptWithQuotaRetry(prompt, model, timeoutSec) : { text: "", error: warmError ?? "no output" };
       if (!res.text) {
         return {
           success: false,

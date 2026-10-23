@@ -15,7 +15,7 @@
 // Also: `--version`, and stream-json print mode (`--input-format stream-json --output-format
 // stream-json` with `--print=` or no `--print`). Like the real CLI, `--print` takes the prompt as its
 // value: a bare `--print` followed by a flag is a usage error (exit 2).
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -50,6 +50,8 @@ if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
     process.exit(1);
   }
   const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
+  let turns = 0;
+  let pending = Promise.resolve();
   emit({ event: "init", init: { conversation_id: "fake-conv-1" } });
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (line) => {
@@ -60,11 +62,27 @@ if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
       return;
     }
     const prompt = String(turn?.message?.content ?? "");
-    const reply = /READY/.test(prompt) ? "READY" : fakeTranslation(prompt) ?? `echo: ${prompt.slice(0, 80)}`;
-    emit({ event: "step_update", step_update: { text_delta: reply } });
-    emit({ event: "result", result: { status: "SUCCESS", response: reply, usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } } });
+    // Test hooks: [[fake-delay-ms:N]] answers after N ms (one turn at a time, like the real CLI);
+    // [[fake-argv]] answers with this worker's flags and turn number.
+    const delay = Number(prompt.match(/\[\[fake-delay-ms:(\d+)\]\]/)?.[1] ?? skillDelay(prompt));
+    turns += 1;
+    const reply = /\[\[fake-argv\]\]/.test(prompt)
+      ? JSON.stringify({ argv: argv.filter((a) => a.startsWith("--")), turn: turns, pid: process.pid })
+      : /READY/.test(prompt)
+        ? "READY"
+        : fakeTranslation(prompt) ?? `echo: ${prompt.slice(0, 80)}`;
+    pending = pending.then(
+      () =>
+        new Promise((done) =>
+          setTimeout(() => {
+            emit({ event: "step_update", step_update: { text_delta: reply } });
+            emit({ event: "result", result: { status: "SUCCESS", response: reply, usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } } });
+            done();
+          }, delay),
+        ),
+    );
   });
-  rl.on("close", () => process.exit(0));
+  rl.on("close", () => void pending.then(() => process.exit(0)));
 } else {
   interactive();
 }
@@ -228,4 +246,16 @@ function fakeTranslation(prompt) {
   if (!/text below into English/.test(prompt)) return null;
   const m = prompt.match(/<untrusted_source_content>\n([\s\S]*)\n<\/untrusted_source_content>/);
   return m ? m[1].replace(/[^\x00-\x7F]+/g, " the text ").replace(/[ \t]{2,}/g, " ") : null;
+}
+
+// Test hook: per-skill delays from ~/.gemini/fake-agy-delays.json ({"REPORT_QUALIFIER": 60000}), to
+// stand in for a slow model in crawler tests.
+function skillDelay(prompt) {
+  try {
+    const delays = JSON.parse(readFileSync(`${process.env.HOME}/.gemini/fake-agy-delays.json`, "utf8"));
+    const skill = prompt.match(/\[SKILL: ([A-Z_]+)\]/)?.[1];
+    return Number((skill && delays[skill]) ?? delays.default ?? 0);
+  } catch {
+    return 0;
+  }
 }

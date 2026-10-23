@@ -29,7 +29,7 @@ import {
   removeAgentContainerAndHome,
   startAgentContainer,
 } from "../agent-container.server";
-import { warmAgentService } from "../warm-agent-service";
+import { destroyAllAgentWorkers, warmAgentService } from "../warm-agent-service";
 
 /** How long startSignIn waits for the CLI to show its link (or report it is signed in). */
 const SIGN_IN_LINK_WAIT_MS = 45_000;
@@ -180,7 +180,7 @@ export class ContainerizedCliAgentDriver implements AgentDriver {
 
   async reset(): Promise<{ success: boolean; error?: string }> {
     cancelAgyLogin();
-    warmAgentService.destroyProcess("agent_reset");
+    destroyAllAgentWorkers("agent_reset");
     const res = await removeAgentContainerAndHome();
     return res.ok ? { success: true } : { success: false, error: res.detail };
   }
