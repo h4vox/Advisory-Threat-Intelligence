@@ -24,7 +24,14 @@ import { parseRssOrAtomXml } from "./feeds";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { isSafeCrawlPatternString, isSafePublicUrlString, safeFetchResource, safeFetchText, validateSafePublicUrl } from "./security";
 import { discoverAgentSources, evaluateResourceWithAgent, type AgentEvaluationResult } from "./agy-agent";
-import { runUnifiedSourceDiscovery, runUnifiedResourceEvaluation, runUnifiedDomainResourceDiscovery } from "./ai-manager";
+import {
+  resolveCrawlerAiAvailability,
+  runUnifiedSourceDiscovery,
+  runUnifiedResourceEvaluation,
+  runUnifiedDomainResourceDiscovery,
+  type CrawlerAiAvailability,
+} from "./ai-manager";
+import { WORKER_DRAIN_GRACE_MS, hungJobReason, itemTimeoutMs, settleWithin } from "./crawl-guards";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
   CrawlConfig,
@@ -102,8 +109,34 @@ function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
+type JobControl = {
+  cancel: boolean;
+  pause: boolean;
+  /** When the job was reserved (ms). */
+  startedAt: number;
+  /** The job's time limit (ms). Still registered well past it means the job is hung. */
+  maxRunMs: number;
+  /** When an operator cancel was requested (ms), so a job that never drains can be released. */
+  cancelledAt?: number;
+};
+
+const DEFAULT_JOB_MAX_RUN_MS = 20 * 60_000;
+
+// Crawler state is process-wide, on globalThis. In dev, Vite re-evaluates this module after an edit or
+// `git pull`; module-level state then split in two: the running job lived in the old copy, the new copy
+// (and the watchdog) could not see it, the dashboard finalized it as "orphaned" while it still held the
+// crawl lock ("A crawl is already running"), and a second scheduler daemon started. One map, one lock
+// owner and one daemon per process.
+type CrawlerGlobals = typeof globalThis & {
+  __aieActiveJobs?: Map<string, JobControl>;
+  __aieCrawlLockOwner?: string;
+  __aieSchedulerDaemon?: ReturnType<typeof setInterval>;
+  __aieSchedulerTick?: () => Promise<unknown>;
+};
+const crawlerGlobals = globalThis as CrawlerGlobals;
+
 // Active job cancellation tokens
-const activeJobs = new Map<string, { cancel: boolean; pause: boolean }>();
+const activeJobs: Map<string, JobControl> = (crawlerGlobals.__aieActiveJobs ??= new Map());
 
 // Register memory state tracker with repository watchdog
 registerJobActiveChecker((jobId: string) => activeJobs.has(jobId));
@@ -121,7 +154,7 @@ export function isJobActiveInMemory(jobId: string): boolean {
 // ---------------------------------------------------------------------------
 
 const CRAWL_LOCK_ID = "crawl_lock";
-const CRAWL_LOCK_OWNER = `${process.pid}:${crypto.randomUUID().slice(0, 8)}`;
+const CRAWL_LOCK_OWNER = (crawlerGlobals.__aieCrawlLockOwner ??= `${process.pid}:${crypto.randomUUID().slice(0, 8)}`);
 export const CRAWL_ALREADY_RUNNING_MESSAGE = "A crawl is already running";
 
 export class CrawlAlreadyRunningError extends Error {
@@ -217,6 +250,37 @@ async function updateJobIfRunning(jobId: string, updates: Partial<CrawlJob>): Pr
   );
   invalidateCrawlerStateCache();
   return res.matchedCount > 0;
+}
+
+/**
+ * Release in-memory jobs that can no longer be running normally: still registered well past their time
+ * limit, or cancelled long ago without stopping (an awaited request that never answered). Without this
+ * one hung job blocked every scheduled and manual crawl until the server restarted.
+ */
+async function releaseHungJobs(now = Date.now()): Promise<string[]> {
+  const released: string[] = [];
+  for (const [id, ctl] of activeJobs) {
+    const reason = hungJobReason(ctl, now);
+    if (!reason) continue;
+    ctl.cancel = true;
+    activeJobs.delete(id);
+    released.push(id);
+    const summary =
+      reason === "over_time"
+        ? `Crawl job stopped: still running ${Math.round((now - ctl.startedAt) / 60_000)} min after it started (limit ${Math.round(ctl.maxRunMs / 60_000)} min) because a request never answered; released automatically`
+        : "Crawl job cancelled; it did not stop in time and was released automatically";
+    console.warn(`[crawler] releasing hung job ${id}: ${summary}`);
+    if (isMongoConfigured()) {
+      try {
+        await updateJobIfRunning(id, { status: "interrupted", completedAt: new Date(now).toISOString(), errorSummary: summary });
+      } catch {
+        /* the dashboard watchdog reconciles the record */
+      }
+      await releaseCrawlLock(id);
+    }
+  }
+  if (released.length) invalidateCrawlerStateCache();
+  return released;
 }
 
 interface FrontierItem {
@@ -354,11 +418,13 @@ export async function executeCrawlJob(
   targetedQuery?: string,
   runOptions: CrawlRunOptions = {},
 ): Promise<CrawlJob> {
+  // The time limit covers the whole job, discovery included (the watchdog measures from the start too).
+  const jobStartTime = Date.now();
   const isMongo = isMongoConfigured();
   const config = isMongo ? await mongoGetCrawlConfig() : await getOrCreateCrawlConfig();
 
   // Reuse the entry reserved by createAndRunCrawlJob so an early cancel is not lost.
-  const jobControl = activeJobs.get(jobId) ?? { cancel: false, pause: false };
+  const jobControl: JobControl = activeJobs.get(jobId) ?? { cancel: false, pause: false, startedAt: jobStartTime, maxRunMs: DEFAULT_JOB_MAX_RUN_MS };
   activeJobs.set(jobId, jobControl);
 
   const breadth = config.discoveryBreadth || "balanced";
@@ -450,6 +516,25 @@ export async function executeCrawlJob(
     } catch {
       /* ignore sql init fallback */
     }
+
+    // Decide once whether AI can answer this run. A dead AI path (no provider key, no working sandbox)
+    // is skipped up front: articles are qualified by the heuristic engine instead of each one waiting
+    // out an agent timeout, which with the default AGY provider used up whole runs ("0 found").
+    const aiWanted = config.agentDiscoveryEnabled !== false || Boolean(config.agentTaggingEnabled || config.agentApprovalEnabled);
+    const ai: CrawlerAiAvailability = aiWanted
+      ? await resolveCrawlerAiAvailability().catch((err: unknown) => ({
+          usable: false,
+          sandbox: false,
+          detail: `AI availability check failed (${err instanceof Error ? err.message : String(err)})`,
+        }))
+      : { usable: false, sandbox: false, detail: "AI features are turned off in settings" };
+    console.log(`[crawler] job ${jobId}: AI ${ai.usable ? "on" : "skipped"} (${ai.detail})`);
+    if (aiWanted && !ai.usable) {
+      logger.agent(
+        "UNAVAILABLE",
+        `AI scoring skipped for this crawl: ${ai.detail}. Articles are qualified by the heuristic engine; add an AI provider API key in the Marketplace to enable AI scoring.`,
+      );
+    }
     if (isMongoConfigured()) {
       try {
         await ensureMongoIndexes();
@@ -498,7 +583,7 @@ export async function executeCrawlJob(
     const preHarvestedItems: FrontierItem[] = [];
 
     // Autonomous AI Agent Source Discovery (Adversary Emulation Intelligence Skill)
-    if (isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
+    if (ai.usable && isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
       try {
         logger.agent(
           "DISCOVERY",
@@ -532,6 +617,7 @@ export async function executeCrawlJob(
             existingDomains: Array.from(new Set(knownDomains)),
             model: sanitizeAgyModel(config.agentModel),
             timeoutSeconds: config.agentTimeoutSeconds || 45,
+            allowSandboxFallback: ai.sandbox,
           }),
           new Promise<Awaited<ReturnType<typeof runUnifiedSourceDiscovery>>>((resolve) =>
             setTimeout(() => {
@@ -591,6 +677,7 @@ export async function executeCrawlJob(
                     baseUrl: s.base_url || `https://${s.domain}`,
                     model: config.agentModel,
                     timeoutSeconds: Math.min(config.agentTimeoutSeconds || 45, 30),
+                    allowSandboxFallback: ai.sandbox,
                   });
                   if (domainHarvest.resources && domainHarvest.resources.length > 0) {
                     logger.agent("HARVEST", `Extracted ${domainHarvest.resources.length} coordinated resources from newly discovered domain ${s.domain}`);
@@ -1046,7 +1133,7 @@ export async function executeCrawlJob(
               }
 
               // Coordinated Domain Harvesting: Fallback AI extraction ONLY if standard regex extracted 0 links
-              if (config.agentDiscoveryEnabled !== false && html && discoveredLinks.length === 0) {
+              if (ai.usable && config.agentDiscoveryEnabled !== false && html && discoveredLinks.length === 0) {
                 try {
                   const sHost = new URL(source.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
                   const domainHarvest = await runUnifiedDomainResourceDiscovery({
@@ -1055,6 +1142,7 @@ export async function executeCrawlJob(
                     htmlSnippet: html.slice(0, 4500),
                     model: config.agentModel,
                     timeoutSeconds: Math.min(config.agentTimeoutSeconds || 45, 25),
+                    allowSandboxFallback: ai.sandbox,
                   });
                   if (domainHarvest.resources && domainHarvest.resources.length > 0) {
                     for (const dr of domainHarvest.resources) {
@@ -1297,13 +1385,13 @@ export async function executeCrawlJob(
       }
     }
 
-    const jobStartTime = Date.now();
     const maxRunTimeMinutes = backfillPlan
       ? backfillPlan.maxRunMinutes
       : config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0
         ? config.maxRunTimeMinutes
         : 5;
     const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
+    jobControl.maxRunMs = MAX_JOB_EXECUTION_TIME_MS;
 
     // 4. ADAPTIVE CONCURRENT WORKER POOL & HOST-AWARE DISPATCHER
     // Distributes extraction across multiple target domains concurrently while respecting polite per-host spacing
@@ -2076,6 +2164,7 @@ export async function executeCrawlJob(
         let agentResult: AgentEvaluationResult | null = null;
 
         const shouldRunAgent =
+          ai.usable &&
           (config.agentTaggingEnabled || config.agentApprovalEnabled) &&
           !qual.isIndexOrGeneric &&
           textContent.trim().length > 60;
@@ -2089,6 +2178,7 @@ export async function executeCrawlJob(
               domain: current.domain,
               timeoutSeconds: config.agentTimeoutSeconds || 45,
               model: sanitizeAgyModel(config.agentModel),
+              allowSandboxFallback: ai.sandbox,
             });
 
             if (agentResult.success && !agentResult.fallback) {
@@ -2755,6 +2845,13 @@ export async function executeCrawlJob(
       }
     }
 
+    // Persist what discovery found before processing starts, so the count survives whatever follows.
+    await reportLiveProgress(true);
+
+    // One article that never finishes (an AI call, a PDF parse or a request that does not answer) must
+    // not hold its worker forever: it gets a hard budget, then its slot (and its site) is freed.
+    const perItemTimeoutMs = itemTimeoutMs(config.agentTimeoutSeconds);
+
     // Adaptive multi-worker concurrent dispatcher loop
     while ((frontierQueue.length > 0 || activeWorkerTasks.size > 0) && evaluatedCount < configuredMax) {
       if (jobControl.cancel) {
@@ -2771,10 +2868,15 @@ export async function executeCrawlJob(
         if (!nextItem) break;
 
         const task = (async () => {
-          try {
-            await processFrontierItem(nextItem);
-          } catch (err) {
-            console.error(`[crawler] Error processing URL ${nextItem.url}:`, err);
+          const outcome = await settleWithin(processFrontierItem(nextItem), perItemTimeoutMs);
+          if (outcome.status === "rejected") {
+            console.error(`[crawler] Error processing URL ${nextItem.url}:`, outcome.reason);
+          } else if (outcome.status === "timeout") {
+            failedCount++;
+            collector.count(nextItem.sourceId, "failed");
+            currentlyProcessingUrls.delete(nextItem.url);
+            activeDomains.delete(nextItem.domain);
+            console.warn(`[crawler] job ${jobId}: gave up on ${nextItem.url} after ${Math.round(perItemTimeoutMs / 1000)}s (it never finished)`);
           }
         })();
 
@@ -2796,9 +2898,13 @@ export async function executeCrawlJob(
       await reportLiveProgress();
     }
 
-    // Await any remaining active concurrent tasks
+    // Await in-flight workers, but never forever: after the time limit or a cancel the job finalizes
+    // (and releases its lock) even if a worker is still stuck.
     if (activeWorkerTasks.size > 0) {
-      await Promise.allSettled(Array.from(activeWorkerTasks));
+      const drained = await settleWithin(Promise.allSettled(Array.from(activeWorkerTasks)), WORKER_DRAIN_GRACE_MS);
+      if (drained.status === "timeout") {
+        console.warn(`[crawler] job ${jobId}: ${activeWorkerTasks.size} worker(s) still busy after ${WORKER_DRAIN_GRACE_MS / 1000}s; finalizing without them`);
+      }
     }
     await reportLiveProgress(true);
 
@@ -2920,15 +3026,18 @@ export async function createAndRunCrawlJob(
   runOptions: CrawlRunOptions = {},
 ): Promise<CrawlJob> {
   // In-memory guard (the only guard without Mongo). A cancelled job keeps its
-  // entry until its loop has drained, so this also blocks overlap with it.
+  // entry until its loop has drained, so this also blocks overlap with it. A hung
+  // job is released first, so it cannot block crawling until a restart.
+  if (activeJobs.size > 0) await releaseHungJobs();
   if (activeJobs.size > 0) {
     throw new CrawlAlreadyRunningError(Array.from(activeJobs.keys())[0]);
   }
 
   const id = newId("job");
   const startedAt = new Date().toISOString();
-  // Reserve synchronously (before any await) so concurrent calls in this process can't both start.
-  activeJobs.set(id, { cancel: false, pause: false });
+  // Reserve synchronously (no await since the check above) so concurrent calls in this process can't both start.
+  const control: JobControl = { cancel: false, pause: false, startedAt: Date.now(), maxRunMs: DEFAULT_JOB_MAX_RUN_MS };
+  activeJobs.set(id, control);
 
   if (isMongoConfigured()) {
     try {
@@ -2938,6 +3047,7 @@ export async function createAndRunCrawlJob(
         : cfg.maxRunTimeMinutes && cfg.maxRunTimeMinutes > 0
           ? cfg.maxRunTimeMinutes
           : 5;
+      control.maxRunMs = maxRunTimeMinutes * 60 * 1000;
       const lock = await acquireCrawlLock(id, (maxRunTimeMinutes + 5) * 60 * 1000);
       if (!lock.ok) throw new CrawlAlreadyRunningError(lock.heldBy);
     } catch (err) {
@@ -3001,7 +3111,10 @@ export async function cancelJob(jobId: string): Promise<boolean> {
   const job = activeJobs.get(jobId);
   // Signal the dispatcher/workers; the activeJobs entry stays until the loop
   // exits (executeCrawlJob's finally) so no second job can start meanwhile.
-  if (job) job.cancel = true;
+  if (job) {
+    job.cancel = true;
+    job.cancelledAt ??= Date.now();
+  }
 
   let cancelled = Boolean(job);
   const cancelUpdates: Partial<CrawlJob> = {
@@ -3051,6 +3164,7 @@ export async function checkAndTriggerScheduledCrawl(): Promise<ScheduleCheckResu
     return { triggered: false, reason: "Schedule check already in progress" };
   }
 
+  if (activeJobs.size > 0) await releaseHungJobs();
   if (activeJobs.size > 0) {
     return { triggered: false, reason: "A crawl job is currently executing in server memory" };
   }
@@ -3235,28 +3349,22 @@ async function listDueSourceIds(now = Date.now()): Promise<string[]> {
 // Background Scheduler Daemon Initializer
 // ---------------------------------------------------------------------------
 
-let schedulerDaemonTimer: NodeJS.Timeout | null = null;
-
 export function startCrawlerSchedulerDaemon() {
-  if (schedulerDaemonTimer) return;
+  // One daemon per process that always runs the newest code: a dev reload swaps the tick function,
+  // it never starts a second timer.
+  crawlerGlobals.__aieSchedulerTick = checkAndTriggerScheduledCrawl;
+  if (crawlerGlobals.__aieSchedulerDaemon) return;
 
-  // Initial schedule check after a brief server startup grace delay (5s)
-  setTimeout(() => {
-    void checkAndTriggerScheduledCrawl().catch((err) => {
-      console.warn("[scheduler-daemon] Initial tick error:", err);
+  const tick = (label: string) => () => {
+    void crawlerGlobals.__aieSchedulerTick?.().catch((err) => {
+      console.warn(`[scheduler-daemon] ${label} tick error:`, err);
     });
-  }, 5_000);
-
-  // Periodic ticker every 20 seconds
-  schedulerDaemonTimer = setInterval(() => {
-    void checkAndTriggerScheduledCrawl().catch((err) => {
-      console.warn("[scheduler-daemon] Periodic tick error:", err);
-    });
-  }, 20_000);
-
-  if (typeof schedulerDaemonTimer.unref === "function") {
-    schedulerDaemonTimer.unref();
-  }
+  };
+  // Initial schedule check after a brief server startup grace delay (5s), then every 20 seconds.
+  setTimeout(tick("Initial"), 5_000).unref?.();
+  const timer = setInterval(tick("Periodic"), 20_000);
+  timer.unref?.();
+  crawlerGlobals.__aieSchedulerDaemon = timer;
   console.log("[scheduler] Autonomous crawler scheduler daemon initialized (20s interval)");
 }
 

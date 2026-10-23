@@ -1,4 +1,4 @@
-import { execFileSync, execSync, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, execSync, spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
 import { sanitizeAgyModel } from "./agent-framework/types";
 
@@ -135,6 +135,33 @@ const CACHE_TTL_MS = 15000;
 
 export function invalidateSandboxCache(): void {
   cachedRuntimeStatus = null;
+}
+
+export type AgySandboxProbe = { usable: boolean; detail: string };
+const AGY_PROBE_TTL_MS = 120_000;
+
+/**
+ * Non-blocking check that the sandbox container is running and holds a real `agy` CLI (the bundled
+ * shim prints no version). Used by the crawler to skip the agent up front instead of making every
+ * article wait out a timeout. Async `execFile`, never the synchronous probes, so a slow or missing
+ * Docker cannot freeze the server; cached per process.
+ */
+export async function probeAgySandboxUsable(): Promise<AgySandboxProbe> {
+  const g = globalThis as typeof globalThis & { __aieAgyProbe?: { at: number; result: AgySandboxProbe } };
+  if (g.__aieAgyProbe && Date.now() - g.__aieAgyProbe.at < AGY_PROBE_TTL_MS) return g.__aieAgyProbe.result;
+  const result = await new Promise<AgySandboxProbe>((resolve) => {
+    execFile("docker", ["exec", CONTAINER_NAME, "agy", "--version"], { timeout: 6000, encoding: "utf-8" }, (err, stdout) => {
+      if (err) {
+        const why = String(err.message || err).split("\n")[0].slice(0, 140);
+        resolve({ usable: false, detail: `sandbox container ${CONTAINER_NAME} is not reachable (${why})` });
+        return;
+      }
+      const version = String(stdout || "").trim();
+      resolve(version ? { usable: true, detail: `agy ${version.slice(0, 60)}` } : { usable: false, detail: "the sandbox has no real agy CLI (bundled shim)" });
+    });
+  });
+  g.__aieAgyProbe = { at: Date.now(), result };
+  return result;
 }
 
 export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): SandboxStatus {

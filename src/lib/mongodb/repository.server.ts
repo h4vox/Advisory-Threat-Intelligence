@@ -68,22 +68,37 @@ const SETTINGS_CACHE_TTL_MS = 60_000;
 // resets on restart, like the rest of the no-Mongo path.
 let memoryAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS };
 
-// Active job checker registry (registered by crawler to avoid circular import)
-let jobActiveCheckFn: ((jobId: string) => boolean) | null = null;
+// Checker registries, registered by the crawler to avoid a circular import. Kept on globalThis so a
+// dev reload of either module (Vite re-evaluates it after an edit or pull) keeps one shared view of
+// which jobs this process is running; a reset registry made the watchdog finalize live jobs.
+const registries = globalThis as typeof globalThis & {
+  __aieJobActiveCheck?: (jobId: string) => boolean;
+  __aieScheduleCheck?: () => Promise<any>;
+};
 
 export function registerJobActiveChecker(fn: (jobId: string) => boolean) {
-  jobActiveCheckFn = fn;
+  registries.__aieJobActiveCheck = fn;
 }
 
 export function isJobActive(jobId: string): boolean {
-  return jobActiveCheckFn ? jobActiveCheckFn(jobId) : false;
+  return registries.__aieJobActiveCheck ? registries.__aieJobActiveCheck(jobId) : false;
 }
 
-// Autonomous schedule checker registry (registered by crawler to avoid circular imports)
-let scheduleCheckFn: (() => Promise<any>) | null = null;
+/**
+ * Why a crawl-job record still marked "running" can be finalized by a watchdog, or null to leave it.
+ * A job this process is running is never touched: it finalizes itself (with its real counts) and the
+ * crawler releases it if it hangs. Finalizing a live job also made it cancel itself and lose its counts.
+ */
+export function staleRunningJobReason(job: { id: string; startedAt?: string | null }, nowMs: number, maxRunMs: number): "expired" | "orphaned" | null {
+  if (isJobActive(job.id)) return null;
+  const elapsedMs = nowMs - (job.startedAt ? new Date(job.startedAt).getTime() : 0);
+  if (elapsedMs > maxRunMs + 30 * 1000) return "expired";
+  if (elapsedMs > 60 * 1000) return "orphaned";
+  return null;
+}
 
 export function registerScheduleChecker(fn: () => Promise<any>) {
-  scheduleCheckFn = fn;
+  registries.__aieScheduleCheck = fn;
 }
 
 let lastScheduleCheckTimestamp = 0;
@@ -91,6 +106,7 @@ export function triggerScheduleCheck() {
   const now = Date.now();
   if (now - lastScheduleCheckTimestamp < 30_000) return;
   lastScheduleCheckTimestamp = now;
+  const scheduleCheckFn = registries.__aieScheduleCheck;
   if (scheduleCheckFn) {
     void scheduleCheckFn().catch((err) => {
       console.warn("[scheduler-hook] triggerScheduleCheck error:", err);
@@ -2467,12 +2483,12 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
         if (j.status === "running") {
           const startedMs = j.startedAt ? new Date(j.startedAt).getTime() : 0;
           const elapsedMs = nowTime - startedMs;
-          // Expired if elapsed exceeds configured time limit + 30s grace,
-          // OR orphaned if not active in server memory and older than 60s
-          const isExpired = elapsedMs > maxJobDurationMs + 30 * 1000;
-          const isOrphaned = elapsedMs > 60 * 1000 && !isJobActive(j.id);
+          // Never a job this process is running; otherwise expired past its limit, or orphaned after 60s.
+          const staleReason = staleRunningJobReason(j, nowTime, maxJobDurationMs);
+          const isExpired = staleReason === "expired";
+          const isOrphaned = staleReason === "orphaned";
 
-          if (isExpired || isOrphaned) {
+          if (staleReason) {
             logger.warn(
               "crawler-watchdog",
               `Auto-reconciling stuck crawl job ${j.id} (elapsed: ${Math.round(elapsedMs / 1000)}s, limit: ${Math.round(maxJobDurationMs / 60000)}m, expired: ${isExpired}, orphaned: ${isOrphaned})`,
@@ -2723,10 +2739,9 @@ export async function mongoGetDashboardStats(): Promise<DashboardStats> {
 
   let effectiveActiveJob = activeJob;
   if (effectiveActiveJob) {
-    const startedMs = effectiveActiveJob.startedAt ? new Date(effectiveActiveJob.startedAt).getTime() : 0;
-    const elapsedMs = Date.now() - startedMs;
     const maxJobDurationMs = (config.maxRunTimeMinutes || 5) * 60 * 1000;
-    if (elapsedMs > maxJobDurationMs + 30 * 1000 || (elapsedMs > 60 * 1000 && !isJobActive(effectiveActiveJob.id))) {
+    const watched = { id: String(effectiveActiveJob.id), startedAt: effectiveActiveJob.startedAt as string | null | undefined };
+    if (staleRunningJobReason(watched, Date.now(), maxJobDurationMs)) {
       const orphanJobId = effectiveActiveJob.id;
       effectiveActiveJob = null;
       void col.updateOne(
