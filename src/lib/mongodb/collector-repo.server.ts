@@ -95,7 +95,7 @@ export async function getFetchStates(urls: string[]): Promise<Map<string, FetchS
   if (unique.length === 0) return out;
   if (isMongoConfigured()) {
     const col = await mongoCol();
-    const docs = await col.find({ docType: "collector_fetch_state", url: { $in: unique } }).project({ _id: 0, docType: 0 }).toArray();
+    const docs = await col.find({ docType: "collector_fetch_state", url: { $in: unique } }).project({ _id: 0, docType: 0, id: 0 }).toArray();
     for (const d of docs as unknown as FetchState[]) out.set(d.url, d);
     return out;
   }
@@ -119,7 +119,9 @@ export async function putFetchStates(states: FetchState[]): Promise<void> {
       states.map((s) => ({
         updateOne: {
           filter: { docType: "collector_fetch_state", url: s.url },
-          update: { $set: { ...s, docType: "collector_fetch_state", updatedAt: new Date().toISOString() } },
+          // `id` is required: the collection's unique (docType, id) index lets only one document of a
+          // type go without one, so without it every fetch state after the first failed to save.
+          update: { $set: { ...s, docType: "collector_fetch_state", id: `fetch:${s.url}`, updatedAt: new Date().toISOString() } },
           upsert: true,
         },
       })),
@@ -154,7 +156,7 @@ export async function getSourceHealthMap(): Promise<Map<string, SourceHealth>> {
   const out = new Map<string, SourceHealth>();
   if (isMongoConfigured()) {
     const col = await mongoCol();
-    const docs = await col.find({ docType: "collector_source_health" }).project({ _id: 0, docType: 0 }).toArray();
+    const docs = await col.find({ docType: "collector_source_health" }).project({ _id: 0, docType: 0, id: 0 }).toArray();
     for (const d of docs as unknown as SourceHealth[]) out.set(d.sourceId, d);
     return out;
   }
@@ -175,7 +177,7 @@ export async function putSourceHealth(list: SourceHealth[]): Promise<void> {
       list.map((h) => ({
         updateOne: {
           filter: { docType: "collector_source_health", sourceId: h.sourceId },
-          update: { $set: { ...h, docType: "collector_source_health" } },
+          update: { $set: { ...h, docType: "collector_source_health", id: `health:${h.sourceId}` } },
           upsert: true,
         },
       })),
