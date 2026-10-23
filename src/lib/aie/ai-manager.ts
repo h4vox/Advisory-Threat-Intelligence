@@ -31,7 +31,7 @@ import {
 import type { ResourceClassification } from "./qualification";
 import type { AppSettings, ResourceKind, AgentScoreBreakdown, ReportListItem } from "./types";
 import { mongoGetAppSettings, mongoGetMarketplaceIntegrations } from "../mongodb/repository.server";
-import type { ExecutionTrace } from "./agent-sandbox";
+import { probeAgySandboxUsable, type ExecutionTrace } from "./agent-sandbox";
 import { logger } from "./logger";
 import {
   sanitizeAgyModel,
@@ -48,6 +48,8 @@ export type UnifiedDiscoveryParams = {
   model?: string;
   timeoutSeconds?: number;
   providerId?: string;
+  /** False when the caller knows the AGY sandbox cannot answer: a REST failure then returns a fallback instead of cascading into it. */
+  allowSandboxFallback?: boolean;
 };
 
 export type UnifiedDiscoveryResult = {
@@ -70,6 +72,8 @@ export type UnifiedEvaluationParams = {
   model?: string;
   timeoutSeconds?: number;
   providerId?: string;
+  /** False when the caller knows the AGY sandbox cannot answer: a REST failure then returns a fallback instead of cascading into it. */
+  allowSandboxFallback?: boolean;
 };
 
 export type UnifiedDomainHarvestParams = {
@@ -79,6 +83,8 @@ export type UnifiedDomainHarvestParams = {
   model?: string;
   timeoutSeconds?: number;
   providerId?: string;
+  /** False when the caller knows the AGY sandbox cannot answer: a REST failure then returns a fallback instead of cascading into it. */
+  allowSandboxFallback?: boolean;
 };
 
 export interface UnifiedChatParams {
@@ -328,6 +334,33 @@ export async function getActiveAIProvider(): Promise<{
   }
 }
 
+export type CrawlerAiAvailability = {
+  /** Some AI path can answer: a REST provider with a key, or a working sandbox agent. */
+  usable: boolean;
+  /** The sandbox agent can answer, so a REST failure may cascade to it. */
+  sandbox: boolean;
+  /** One line for the crawl log. */
+  detail: string;
+};
+
+/**
+ * Decided once per crawl: can AI qualification / discovery answer at all? A crawl must never stall on
+ * a dead AI path. An unconfigured provider or an unusable sandbox is skipped up front and articles are
+ * qualified by the heuristic engine, instead of every article waiting out an agent timeout (which,
+ * with the default AGY provider and no working sandbox, used up whole crawl runs).
+ */
+export async function resolveCrawlerAiAvailability(): Promise<CrawlerAiAvailability> {
+  const active = await getActiveAIProvider();
+  const restReady = active.isRest && Boolean(active.apiKey) && Boolean(getProviderAdapter(active.providerId));
+  const probe = await probeAgySandboxUsable();
+  if (restReady) {
+    return { usable: true, sandbox: probe.usable, detail: `${active.providerName} API${probe.usable ? " (sandbox fallback available)" : ""}` };
+  }
+  if (probe.usable) return { usable: true, sandbox: true, detail: `sandbox agent (${probe.detail})` };
+  const why = active.isRest ? `${active.providerName} has no API key and ${probe.detail}` : `the sandbox agent is not usable: ${probe.detail}`;
+  return { usable: false, sandbox: false, detail: why };
+}
+
 /**
  * Retrieves all available models across installed integrations
  */
@@ -470,8 +503,9 @@ Return pure JSON only.`;
     }
   }
 
-  // 2. AGY CLI Agent in Docker Sandbox
+  // 2. AGY CLI Agent in Docker Sandbox (skipped when the caller knows it cannot answer)
   try {
+    if (params.allowSandboxFallback === false) throw new Error("AGY sandbox unavailable");
     const agyRes = await discoverAgentSources({
       existingDomains: params.existingDomains,
       limit,
@@ -629,6 +663,9 @@ Return pure JSON only.`;
   }
 
   // 2. Cascade to AGY CLI / anchor heuristic extractor
+  if (params.allowSandboxFallback === false) {
+    return { success: false, domain, baseUrl, resources: [], totalExtracted: 0, error: "AI sandbox unavailable" };
+  }
   return discoverDomainResourcesWithAgent({
     domain: params.domain,
     baseUrl: params.baseUrl,
@@ -785,6 +822,23 @@ Return pure JSON only.`;
   }
 
   // 2. Cascade to AGY CLI in Docker Sandbox
+  if (params.allowSandboxFallback === false) {
+    return {
+      success: false,
+      fallback: true,
+      isRelevant: false,
+      passScore: 0,
+      recommendApproval: false,
+      classification: "OTHER",
+      resourceKind: "CAMPAIGN_INTEL",
+      threatActors: [],
+      malwareFamilies: [],
+      cves: [],
+      mitreTechniques: [],
+      rationale: "AI evaluation unavailable; heuristic qualification applies.",
+      error: "AI provider did not answer and the sandbox agent is unavailable",
+    };
+  }
   return evaluateResourceWithAgent({
     url: params.url,
     domain: params.domain,
