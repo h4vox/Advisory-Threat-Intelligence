@@ -39,8 +39,20 @@ import {
   runUnifiedSourceDiscovery,
   runUnifiedResourceEvaluation,
   runUnifiedDomainResourceDiscovery,
+  runUnifiedTranslation,
   type CrawlerAiAvailability,
 } from "./ai-manager";
+import { articleProse, detectLanguage } from "./technical-depth";
+import {
+  ORIGINAL_TEXT_CAP,
+  TRANSLATIONS_PER_JOB,
+  TRANSLATION_ITEM_SHARE,
+  TRANSLATION_JOB_BUDGET_MS,
+  declaredHtmlLang,
+  findEnglishAlternate,
+  guessEnglishUrls,
+  languageName,
+} from "./translation";
 import { WORKER_DRAIN_GRACE_MS, hungJobReason, itemTimeoutMs, settleWithin } from "./crawl-guards";
 import { isCandidateResourceUrl, matchesCrawlPattern, qualifyContent } from "./qualification";
 import type {
@@ -51,6 +63,7 @@ import type {
   CrawlTrigger,
   DiscoveredResource,
   ReportRecord,
+  ReportTranslation,
   SourceRecord,
 } from "./types";
 import { getSql, type Sql } from "@/lib/db";
@@ -484,6 +497,26 @@ export async function executeCrawlJob(
   // Collector context: schedules, backoff, fetch state, robots, relevance, multi-hash dedup, funnel.
   const collector = await CollectorRun.start(jobId, triggerType, runOptions);
   const backfillPlan = collector.backfillPlan;
+
+  // The run's time limit covers discovery and processing (it counts from the start of the job).
+  // Discovery gets a third of it, between 45 s and 5 min: unbounded, slow AI link harvesting could use
+  // a whole run and leave nothing to evaluate ("81 found, 0 ingested") or never end ("0 found").
+  const maxRunTimeMinutes = backfillPlan
+    ? backfillPlan.maxRunMinutes
+    : config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0
+      ? config.maxRunTimeMinutes
+      : 5;
+  const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
+  jobControl.maxRunMs = MAX_JOB_EXECUTION_TIME_MS;
+  const discoveryDeadline = jobStartTime + Math.min(Math.max(MAX_JOB_EXECUTION_TIME_MS / 3, 45_000), 5 * 60_000);
+  const discoveryTimeLeft = () => discoveryDeadline - Date.now();
+  // Asking the AI for an article list when a homepage yields no links costs a model call per source.
+  const AI_HARVESTS_PER_JOB = 3;
+  let aiHarvestsThisJob = 0;
+  // AI scoring pauses for the rest of the run after this many failures in a row (no answer, errors).
+  const AI_FAILURES_BEFORE_PAUSE = 3;
+  let aiEvalFailuresInARow = 0;
+  let aiEvalPaused = false;
   if (backfillPlan) {
     // A backfill walks one source's history: bounded by the plan, not the per-run caps.
     configuredMax = backfillPlan.maxArticles;
@@ -545,6 +578,8 @@ export async function executeCrawlJob(
   let skippedCount = 0;
   let newSourcesCount = 0;
   let pdfGeneratedCount = 0;
+  let translationsThisJob = 0;
+  let translationMsThisJob = 0;
   let sources: SourceRecord[] = [];
   let jobFailed = false;
   let jobErrorSummary = "";
@@ -592,6 +627,17 @@ export async function executeCrawlJob(
         }))
       : { usable: false, sandbox: false, detail: "AI features are turned off in settings" };
     console.log(`[crawler] job ${jobId}: AI ${ai.usable ? "on" : "skipped"} (${ai.detail})`);
+    // Translation is its own setting: it needs AI even when AI scoring and discovery are off, so it
+    // checks for a provider on the first non-English report only.
+    let translationAiCheck: Promise<CrawlerAiAvailability> | null = null;
+    const translationAi = (): Promise<CrawlerAiAvailability> =>
+      aiWanted
+        ? Promise.resolve(ai)
+        : (translationAiCheck ??= resolveCrawlerAiAvailability().catch((err: unknown) => ({
+            usable: false,
+            sandbox: false,
+            detail: `AI availability check failed (${err instanceof Error ? err.message : String(err)})`,
+          })));
     if (aiWanted && !ai.usable) {
       logger.agent(
         "UNAVAILABLE",
@@ -645,150 +691,162 @@ export async function executeCrawlJob(
     // Buffer for items discovered during initial source discovery before queue initialization
     const preHarvestedItems: FrontierItem[] = [];
 
-    // Autonomous AI Agent Source Discovery (Adversary Emulation Intelligence Skill)
+    // Autonomous AI source discovery runs alongside the core discovery below (feeds, sitemaps,
+    // homepages) within its own share of the discovery budget. It used to run first and, with a slow
+    // model, used the whole budget before a single feed was read. New sources are saved for later runs;
+    // report links it finds in time are crawled in this one.
+    const aiDiscoveryDeadline = jobStartTime + Math.min(60_000, (discoveryDeadline - jobStartTime) / 2);
+    let aiSourceDiscovery: Promise<void> = Promise.resolve();
     if (!jobControl.cancel && ai.usable && isMongoConfigured() && config.agentDiscoveryEnabled !== false && !runOptions.backfill && !runOptions.sourceIds?.length) {
       reportDiscovery("Asking the AI agent for new research sources", true);
-      try {
-        logger.agent(
-          "DISCOVERY",
-          "Launching autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...",
-          { model: sanitizeAgyModel(config.agentModel), timeout: `${config.agentTimeoutSeconds || 45}s` }
-        );
-        console.log(`[crawler] [AI AGENT] Running autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...`);
-
-        // Build known domain list to prevent duplicate discovery
-        const knownDomains: string[] = [];
-        for (const s of sources) {
-          try {
-            const h = new URL(s.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
-            if (h) knownDomains.push(h);
-          } catch {
-            // Source with an invalid homepage URL contributes no domain.
-          }
-        }
+      aiSourceDiscovery = (async () => {
         try {
-          const existingDiscovered = await mongoListDiscoveredSources();
-          for (const ds of existingDiscovered) {
-            if (ds.domain) knownDomains.push(ds.domain.toLowerCase());
-          }
-        } catch (err) {
-          console.warn("[crawler] could not load discovered sources for dedup; continuing with seed domains only:", err);
-        }
-
-        const agentResult = await Promise.race([
-          runUnifiedSourceDiscovery({
-            limit: 4,
-            existingDomains: Array.from(new Set(knownDomains)),
-            model: sanitizeAgyModel(config.agentModel),
-            timeoutSeconds: config.agentTimeoutSeconds || 45,
-            allowSandboxFallback: ai.sandbox,
-          }),
-          new Promise<Awaited<ReturnType<typeof runUnifiedSourceDiscovery>>>((resolve) =>
-            setTimeout(() => {
-              console.warn("[crawler] AI Agent source discovery reached safety timeout, proceeding with core crawler sources");
-              resolve({
-                success: false,
-                fallback: true,
-                providerId: "safety_timeout",
-                providerName: "Crawler Safety Watchdog",
-                sources: [],
-                error: "Discovery safety timeout exceeded",
-              });
-            }, (Math.min(config.agentTimeoutSeconds || 45, 60) + 10) * 1000)
-          ),
-        ]);
-
-        if (agentResult.sources && agentResult.sources.length > 0) {
           logger.agent(
-            "DISCOVERED",
-            `Discovered ${agentResult.sources.length} new high-value CTI research endpoints!`,
-            agentResult.sources.map((s) => s.domain).join(", ")
+            "DISCOVERY",
+            "Launching autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...",
+            { model: sanitizeAgyModel(config.agentModel), timeout: `${config.agentTimeoutSeconds || 45}s` }
           );
-          console.log(`[crawler] [AI AGENT] Discovered ${agentResult.sources.length} new high-value CTI sources!`);
-          for (const s of agentResult.sources) {
-            if (
-              !s.domain ||
-              !isSafePublicUrlString(s.domain) ||
-              (s.base_url && !isSafePublicUrlString(s.base_url)) ||
-              (s.crawl_pattern && !isSafeCrawlPatternString(s.crawl_pattern))
-            ) {
-              logger.warn("SECURITY", `Skipping agent-discovered source with unsafe domain/URL: ${String(s.domain).slice(0, 120)}`);
-              continue;
-            }
-            try {
-              const created = await mongoCreateDiscoveredSource({
-                domain: s.domain,
-                name: s.source_name,
-                homepageUrl: s.base_url || `https://${s.domain}`,
-                crawlPattern: s.crawl_pattern,
-                parentSource: "AGY Autonomous Discovery",
-                trustScore: 80,
-                origin: "agent_discovery",
-                notes: s.why_crawl,
-                whyCrawl: s.why_crawl,
-                status: "discovered",
-                enabled: true,
-              });
-              if (created) {
-                newSourcesCount++;
-                logger.agent("REGISTER", `Registered new source endpoint: ${s.source_name}`, s.base_url || s.domain);
-                console.log(`[crawler] [AI AGENT] Registered new source endpoint: ${s.source_name} (${s.base_url || s.domain})`);
+          console.log(`[crawler] [AI AGENT] Running autonomous CTI source discovery (Adversary Emulation Intelligence Skill)...`);
 
-                // Coordinated Domain Harvesting: Extract all technical report permalinks for this newly discovered domain in one pass!
-                try {
-                  const domainHarvest = await runUnifiedDomainResourceDiscovery({
-                    domain: s.domain,
-                    baseUrl: s.base_url || `https://${s.domain}`,
-                    model: config.agentModel,
-                    timeoutSeconds: Math.min(config.agentTimeoutSeconds || 45, 30),
-                    allowSandboxFallback: ai.sandbox,
-                  });
-                  if (domainHarvest.resources && domainHarvest.resources.length > 0) {
-                    logger.agent("HARVEST", `Extracted ${domainHarvest.resources.length} coordinated resources from newly discovered domain ${s.domain}`);
-                    for (const dr of domainHarvest.resources) {
-                      try {
-                        const canonical = canonicalizeUrl(dr.url);
-                        preHarvestedItems.push({
-                          url: dr.url,
-                          canonicalUrl: canonical,
-                          depth: 0,
-                          priorityScore: dr.isHighValue ? 0.98 : 0.90,
-                          parentUrl: s.base_url || `https://${s.domain}`,
-                          parentSource: s.source_name,
-                          discoveryPath: [s.base_url || `https://${s.domain}`, dr.url],
-                          discoveryMethod: "agent_discovery",
-                          sourceId: created.id || s.domain,
-                          sourceSlug: s.domain.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
-                          publisher: s.source_name,
-                          domain: s.domain,
-                          title: dr.title,
-                        });
-                      } catch {
-                        /* skip */
+          // Build known domain list to prevent duplicate discovery
+          const knownDomains: string[] = [];
+          for (const s of sources) {
+            try {
+              const h = new URL(s.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
+              if (h) knownDomains.push(h);
+            } catch {
+              // Source with an invalid homepage URL contributes no domain.
+            }
+          }
+          try {
+            const existingDiscovered = await mongoListDiscoveredSources();
+            for (const ds of existingDiscovered) {
+              if (ds.domain) knownDomains.push(ds.domain.toLowerCase());
+            }
+          } catch (err) {
+            console.warn("[crawler] could not load discovered sources for dedup; continuing with seed domains only:", err);
+          }
+
+          let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+          const agentResult = await Promise.race([
+            runUnifiedSourceDiscovery({
+              limit: 4,
+              existingDomains: Array.from(new Set(knownDomains)),
+              model: sanitizeAgyModel(config.agentModel),
+              timeoutSeconds: config.agentTimeoutSeconds || 45,
+              allowSandboxFallback: ai.sandbox,
+            }),
+            new Promise<Awaited<ReturnType<typeof runUnifiedSourceDiscovery>>>((resolve) => {
+              safetyTimer = setTimeout(() => {
+                console.warn("[crawler] AI Agent source discovery reached safety timeout, proceeding with core crawler sources");
+                resolve({
+                  success: false,
+                  fallback: true,
+                  providerId: "safety_timeout",
+                  providerName: "Crawler Safety Watchdog",
+                  sources: [],
+                  error: "Discovery safety timeout exceeded",
+                });
+              }, Math.max(5_000, aiDiscoveryDeadline - Date.now()));
+            }),
+          ]);
+          clearTimeout(safetyTimer);
+
+          if (agentResult.sources && agentResult.sources.length > 0) {
+            logger.agent(
+              "DISCOVERED",
+              `Discovered ${agentResult.sources.length} new high-value CTI research endpoints!`,
+              agentResult.sources.map((s) => s.domain).join(", ")
+            );
+            console.log(`[crawler] [AI AGENT] Discovered ${agentResult.sources.length} new high-value CTI sources!`);
+            for (const s of agentResult.sources) {
+              if (
+                !s.domain ||
+                !isSafePublicUrlString(s.domain) ||
+                (s.base_url && !isSafePublicUrlString(s.base_url)) ||
+                (s.crawl_pattern && !isSafeCrawlPatternString(s.crawl_pattern))
+              ) {
+                logger.warn("SECURITY", `Skipping agent-discovered source with unsafe domain/URL: ${String(s.domain).slice(0, 120)}`);
+                continue;
+              }
+              try {
+                const created = await mongoCreateDiscoveredSource({
+                  domain: s.domain,
+                  name: s.source_name,
+                  homepageUrl: s.base_url || `https://${s.domain}`,
+                  crawlPattern: s.crawl_pattern,
+                  parentSource: "AGY Autonomous Discovery",
+                  trustScore: 80,
+                  origin: "agent_discovery",
+                  notes: s.why_crawl,
+                  whyCrawl: s.why_crawl,
+                  status: "discovered",
+                  enabled: true,
+                });
+                if (created) {
+                  newSourcesCount++;
+                  logger.agent("REGISTER", `Registered new source endpoint: ${s.source_name}`, s.base_url || s.domain);
+                  console.log(`[crawler] [AI AGENT] Registered new source endpoint: ${s.source_name} (${s.base_url || s.domain})`);
+
+                  // Coordinated Domain Harvesting: report permalinks for the new domain, while the AI
+                  // discovery budget and the run's harvest allowance last.
+                  if (aiHarvestsThisJob >= AI_HARVESTS_PER_JOB || aiDiscoveryDeadline - Date.now() < 15_000) continue;
+                  aiHarvestsThisJob++;
+                  try {
+                    const domainHarvest = await runUnifiedDomainResourceDiscovery({
+                      domain: s.domain,
+                      baseUrl: s.base_url || `https://${s.domain}`,
+                      model: config.agentModel,
+                      timeoutSeconds: Math.max(10, Math.min(config.agentTimeoutSeconds || 45, 30, Math.floor((aiDiscoveryDeadline - Date.now()) / 1000) - 3)),
+                      allowSandboxFallback: ai.sandbox,
+                    });
+                    if (domainHarvest.resources && domainHarvest.resources.length > 0) {
+                      logger.agent("HARVEST", `Extracted ${domainHarvest.resources.length} coordinated resources from newly discovered domain ${s.domain}`);
+                      for (const dr of domainHarvest.resources) {
+                        try {
+                          const canonical = canonicalizeUrl(dr.url);
+                          preHarvestedItems.push({
+                            url: dr.url,
+                            canonicalUrl: canonical,
+                            depth: 0,
+                            priorityScore: dr.isHighValue ? 0.98 : 0.90,
+                            parentUrl: s.base_url || `https://${s.domain}`,
+                            parentSource: s.source_name,
+                            discoveryPath: [s.base_url || `https://${s.domain}`, dr.url],
+                            discoveryMethod: "agent_discovery",
+                            sourceId: created.id || s.domain,
+                            sourceSlug: s.domain.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
+                            publisher: s.source_name,
+                            domain: s.domain,
+                            title: dr.title,
+                          });
+                        } catch {
+                          /* skip */
+                        }
                       }
                     }
+                  } catch (harvestErr) {
+                    console.warn(`[crawler][agent] Domain harvest error for ${s.domain}:`, (harvestErr as Error).message);
                   }
-                } catch (harvestErr) {
-                  console.warn(`[crawler][agent] Domain harvest error for ${s.domain}:`, (harvestErr as Error).message);
                 }
+              } catch (err) {
+                logger.warn("AI AGENT", `Error saving discovered source ${s.domain}: ${(err as Error).message}`);
               }
-            } catch (err) {
-              logger.warn("AI AGENT", `Error saving discovered source ${s.domain}: ${(err as Error).message}`);
             }
+          } else if (agentResult.error) {
+            logger.agent("NOTE", `Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
+            console.log(`[crawler] [AI AGENT] Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
+          } else {
+            logger.agent(
+              "COMPLETED",
+              `Source discovery run finished — candidate domains (${agentResult.candidateDomains?.join(", ") || "none"}) already present in registry. Proceeding with crawl.`
+            );
           }
-        } else if (agentResult.error) {
-          logger.agent("NOTE", `Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
-          console.log(`[crawler] [AI AGENT] Discovery note: ${agentResult.error} — proceeding with core crawler sources.`);
-        } else {
-          logger.agent(
-            "COMPLETED",
-            `Source discovery run finished — candidate domains (${agentResult.candidateDomains?.join(", ") || "none"}) already present in registry. Proceeding with crawl.`
-          );
+        } catch (agentErr) {
+          logger.agent("FAILSAFE", `Autonomous discovery skipped (offline / timed out) — proceeding with core crawler: ${(agentErr as Error).message}`);
+          console.warn(`[crawler] [AI AGENT] Autonomous discovery skipped (offline / timed out) — proceeding with core crawler:`, (agentErr as Error).message);
         }
-      } catch (agentErr) {
-        logger.agent("FAILSAFE", `Autonomous discovery skipped (offline / timed out) — proceeding with core crawler: ${(agentErr as Error).message}`);
-        console.warn(`[crawler] [AI AGENT] Autonomous discovery skipped (offline / timed out) — proceeding with core crawler:`, (agentErr as Error).message);
-      }
+      })();
     }
 
     // Merge enabled Discovered Sources if enabled in crawl config
@@ -987,7 +1045,7 @@ export async function executeCrawlJob(
     };
 
     // Enqueue any items extracted during early autonomous source discovery
-    for (const phi of preHarvestedItems) {
+    for (const phi of preHarvestedItems.splice(0)) {
       enqueue(phi);
     }
 
@@ -1031,7 +1089,7 @@ export async function executeCrawlJob(
     // Phase A: Seed Continuous Feeds (RSS & Atom) with conditional GET (ETag / Last-Modified)
     if (config.rssDiscovery !== false) {
       reportDiscovery(`Reading RSS/Atom feeds of ${sources.filter((x) => x.enabled).length} sources`, true);
-      await Promise.allSettled(
+      await settleWithin(Promise.allSettled(
         sources.map(async (source) => {
           if (!source.enabled || jobControl.cancel) return;
           const feedTarget = source.feedUrl || `${source.homepageUrl.replace(/\/+$/, "")}/feed/`;
@@ -1050,7 +1108,7 @@ export async function executeCrawlJob(
           if (items === 0) collector.sourceReachable(source.id, true, `feed ${feedTarget.slice(0, 120)}: no RSS/Atom items`);
           enqueueFeedItems(source, feedTarget, res.body);
         }),
-      );
+      ), Math.max(20_000, Math.min(discoveryTimeLeft(), 90_000)));
     }
 
     // Phase A2: Sitemaps (sitemap.xml / sitemap index with lastmod). Used for backfills, for sources whose
@@ -1064,7 +1122,7 @@ export async function executeCrawlJob(
       const fo = feedOutcome.get(source.id);
       return breadth === "wide" || !fo || fo.status === "error" || (fo.status === "ok" && fo.items < SHORT_FEED_ITEMS);
     });
-    await Promise.allSettled(
+    await settleWithin(Promise.allSettled(
       sitemapSources.map(async (source) => {
         if (jobControl.cancel) return;
         const roots = source.sitemapUrl ? [source.sitemapUrl] : await collector.robotsSitemaps(source.homepageUrl);
@@ -1121,12 +1179,12 @@ export async function executeCrawlJob(
           }
         }
       }),
-    );
+    ), Math.max(15_000, Math.min(discoveryTimeLeft(), 60_000)));
 
     // Phase B: Seed Homepage Permalinks
     if (config.htmlDiscovery !== false) {
       if (!jobControl.cancel) reportDiscovery("Scanning source homepages for new reports", true);
-      await Promise.allSettled(
+      await settleWithin(Promise.allSettled(
         sources.map(async (source) => {
           if (!source.enabled || jobControl.cancel) return;
           try {
@@ -1202,7 +1260,15 @@ export async function executeCrawlJob(
               }
 
               // Coordinated Domain Harvesting: Fallback AI extraction ONLY if standard regex extracted 0 links
-              if (ai.usable && config.agentDiscoveryEnabled !== false && html && discoveredLinks.length === 0) {
+              if (
+                ai.usable &&
+                config.agentDiscoveryEnabled !== false &&
+                html &&
+                discoveredLinks.length === 0 &&
+                aiHarvestsThisJob < AI_HARVESTS_PER_JOB &&
+                discoveryTimeLeft() > 30_000
+              ) {
+                aiHarvestsThisJob++;
                 try {
                   const sHost = new URL(source.homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
                   const domainHarvest = await runUnifiedDomainResourceDiscovery({
@@ -1210,7 +1276,7 @@ export async function executeCrawlJob(
                     baseUrl: source.homepageUrl,
                     htmlSnippet: html.slice(0, 4500),
                     model: config.agentModel,
-                    timeoutSeconds: Math.min(config.agentTimeoutSeconds || 45, 25),
+                    timeoutSeconds: Math.max(10, Math.min(config.agentTimeoutSeconds || 45, 25, Math.floor(discoveryTimeLeft() / 1000) - 5)),
                     allowSandboxFallback: ai.sandbox,
                   });
                   if (domainHarvest.resources && domainHarvest.resources.length > 0) {
@@ -1246,6 +1312,7 @@ export async function executeCrawlJob(
               if (source.researchArchives && source.researchArchives.length > 0) {
                 for (const archiveUrl of source.researchArchives) {
                   if (archiveUrl === source.homepageUrl) continue;
+                  if (discoveryTimeLeft() <= 0) break;
                   try {
                     const archRes = await collector.fetchSourceDocument(source.id, archiveUrl, "listing", {
                       timeoutMs: 8000,
@@ -1299,7 +1366,7 @@ export async function executeCrawlJob(
                 let prevHtml = html;
                 let prevUrl = listingStart;
                 if (!pageUrl && prevHtml) pageUrl = findNextPageUrl(prevHtml, prevUrl);
-                for (let page = 2; pageUrl && page <= maxPages; page++) {
+                for (let page = 2; pageUrl && page <= maxPages && discoveryTimeLeft() > 0; page++) {
                   const pr = await collector.fetchSourceDocument(source.id, pageUrl, "listing", { timeoutMs: 8000, accept: "text/html,application/xhtml+xml,text/plain", forceFull: Boolean(backfillPlan) });
                   if (pr.status !== "ok") break;
                   collector.funnel.listingPages++;
@@ -1343,7 +1410,7 @@ export async function executeCrawlJob(
             /* silent */
           }
         }),
-      );
+      ), Math.max(30_000, discoveryTimeLeft()));
     }
 
     // Phase C: Real-Time Web & Graph Search Discovery
@@ -1360,7 +1427,7 @@ export async function executeCrawlJob(
         ];
 
         for (const term of searchTerms) {
-          if (jobControl.cancel) break;
+          if (jobControl.cancel || discoveryTimeLeft() <= 0) break;
           try {
             const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
             const html = await safeFetchText(searchUrl, {
@@ -1455,14 +1522,6 @@ export async function executeCrawlJob(
         }
       }
     }
-
-    const maxRunTimeMinutes = backfillPlan
-      ? backfillPlan.maxRunMinutes
-      : config.maxRunTimeMinutes && config.maxRunTimeMinutes > 0
-        ? config.maxRunTimeMinutes
-        : 5;
-    const MAX_JOB_EXECUTION_TIME_MS = maxRunTimeMinutes * 60 * 1000;
-    jobControl.maxRunMs = MAX_JOB_EXECUTION_TIME_MS;
 
     // 4. ADAPTIVE CONCURRENT WORKER POOL & HOST-AWARE DISPATCHER
     // Distributes extraction across multiple target domains concurrently while respecting polite per-host spacing
@@ -1666,19 +1725,63 @@ export async function executeCrawlJob(
       });
       if (outcome !== "changed") return unchanged("Content unchanged (same normalised text hash)");
       // Rotating "related posts" blocks, dates or share counts change the hash but not the report.
-      const cosmetic = hammingDistance64(simhash64(normalizeForFingerprint(stored.extractedText || "")), simhash64(normalizeForFingerprint(ex.text)));
+      // A translated report is compared with its original, in the language the page is published in.
+      const published = stored.originalText ?? stored.extractedText ?? "";
+      const cosmetic = hammingDistance64(simhash64(normalizeForFingerprint(published)), simhash64(normalizeForFingerprint(ex.text)));
       if (cosmetic <= COSMETIC_CHANGE_DISTANCE) return unchanged(`Only cosmetic changes (SimHash distance ${cosmetic} ≤ ${COSMETIC_CHANGE_DISTANCE}); stored version kept`);
       const words = ex.text.split(/\s+/).filter(Boolean).length;
-      if (words < 150 || words < stored.wordCount * 0.5) {
-        return unchanged(`Fetched copy has ${words} words vs ${stored.wordCount} stored (paywall, error or partial page) — stored version kept`);
+      const storedWords = stored.originalText ? published.split(/\s+/).filter(Boolean).length : stored.wordCount;
+      if (words < 150 || words < storedWords * 0.5) {
+        return unchanged(`Fetched copy has ${words} words vs ${storedWords} stored (paywall, error or partial page) — stored version kept`);
       }
 
-      const title = ex.title && ex.title !== "Untitled report" ? ex.title : stored.title;
-      const { score, wordCount } = scoreQuality(ex.text, title);
-      const iocs = harvestIocs(ex.text, { sourceDomain: current.domain });
-      const analysis = config.autoAnalyze ? analyzeThreatIntelligence(ex.text, title, "THREAT_REPORT") : undefined;
-      const entities = analysis ? extractStructuredEntities(ex.text, title, "THREAT_REPORT", analysis) : undefined;
-      const refs = enrichAttackEntities(title, ex.text, ex.sections);
+      let title = ex.title && ex.title !== "Untitled report" ? ex.title : stored.title;
+      let text = ex.text;
+      let sections: TextSection[] | undefined = ex.sections;
+      // A new version in another language is stored only translated, like a new report.
+      let translation: ReportTranslation | null = null;
+      const language = detectLanguage(articleProse(ex.text), declaredHtmlLang(res.body));
+      if (!language.english && language.lang !== "und") {
+        const langLabel = languageName(language.lang);
+        const tai = config.translateNonEnglish === false ? null : await translationAi();
+        if (!tai?.usable || translationsThisJob >= TRANSLATIONS_PER_JOB || translationMsThisJob >= TRANSLATION_JOB_BUDGET_MS) {
+          return unchanged(`Content changed, in ${langLabel}: stored version kept until the new one can be translated`);
+        }
+        translationsThisJob++;
+        const translationStarted = Date.now();
+        const translated = await runUnifiedTranslation({
+          title: ex.title && ex.title !== "Untitled report" ? ex.title : title,
+          text: ex.text,
+          lang: language.lang,
+          model: sanitizeAgyModel(config.agentModel),
+          timeoutSeconds: config.agentTimeoutSeconds,
+          allowSandboxFallback: tai.sandbox,
+          deadlineAt: translationStarted + Math.round(itemTimeoutMs(config.agentTimeoutSeconds) * TRANSLATION_ITEM_SHARE),
+          cancelled: () => jobControl.cancel,
+        });
+        translationMsThisJob += Date.now() - translationStarted;
+        if (!translated.ok) return unchanged(`Content changed, in ${langLabel}: the translation was not usable (${translated.reason}); stored version kept`);
+        translation = {
+          from: language.lang,
+          provider: translated.provider,
+          model: translated.model,
+          originalTitle: title,
+          originalText: ex.text.slice(0, ORIGINAL_TEXT_CAP),
+          translatedChars: translated.translatedChars,
+          totalChars: translated.totalChars,
+          partial: translated.partial,
+          translatedAt: new Date().toISOString(),
+        };
+        title = translated.title;
+        text = translated.text;
+        sections = undefined;
+      }
+
+      const { score, wordCount } = scoreQuality(text, title);
+      const iocs = harvestIocs(text, { sourceDomain: current.domain });
+      const analysis = config.autoAnalyze ? analyzeThreatIntelligence(text, title, "THREAT_REPORT") : undefined;
+      const entities = analysis ? extractStructuredEntities(text, title, "THREAT_REPORT", analysis) : undefined;
+      const refs = enrichAttackEntities(title, text, sections);
       const nextVersion = stored.version + 1;
       try {
         await applyReportVersion({
@@ -1687,7 +1790,7 @@ export async function executeCrawlJob(
           previous: { version: stored.version, textHash: stored.textHash, rawHash: stored.rawHash, wordCount: stored.wordCount, replacedAt: new Date().toISOString() },
           fields: {
             title,
-            extractedText: ex.text,
+            extractedText: text,
             textHash: sha256Hex(ex.text),
             rawHash: sha256Hex(res.bytes),
             wordCount,
@@ -1695,8 +1798,9 @@ export async function executeCrawlJob(
             iocs,
             analysis,
             extractedEntities: withAttackRefs(entities, refs),
-            fingerprints: computeFingerprints({ text: ex.text, title, publisher: current.publisher || current.domain }),
+            fingerprints: computeFingerprints({ text: ex.text, title: translation?.originalTitle ?? title, publisher: current.publisher || current.domain }),
             contentType: res.contentType,
+            translation: translation ?? (stored.originalText ? null : undefined),
           },
         });
       } catch (err) {
@@ -1716,6 +1820,20 @@ export async function executeCrawlJob(
         { title, qualityScore: score },
       );
       return true;
+    }
+
+    // A provider that keeps failing (timeouts, a busy agent, quota) would cost every remaining article
+    // its full timeout: after a few failures in a row the rest of the run uses the rules engine.
+    function noteAiEvalFailure(reason: string): void {
+      // A busy agent is working, just not for this article (it used the rules): not a reason to pause.
+      if (/\bbusy\b/i.test(reason)) return;
+      aiEvalFailuresInARow++;
+      if (aiEvalPaused || aiEvalFailuresInARow < AI_FAILURES_BEFORE_PAUSE) return;
+      aiEvalPaused = true;
+      logger.agent(
+        "PAUSED",
+        `AI scoring paused for the rest of this run: ${AI_FAILURES_BEFORE_PAUSE} requests in a row failed (last: ${reason.slice(0, 160)}). Articles are qualified by the rules engine.`,
+      );
     }
 
     async function processFrontierItem(current: FrontierItem): Promise<void> {
@@ -2228,16 +2346,152 @@ export async function executeCrawlJob(
           }
         }
 
+        // 4.35 Reports in other languages are judged in English: the publisher's English version when
+        // the page links one, else an AI translation (checked part by part). Without a usable
+        // translation the report is held, not rejected; only acquired URLs are skipped by later
+        // crawls, so the next run with AI available evaluates it.
+        const sourceText = textContent;
+        let translation: ReportTranslation | undefined;
+        const language = detectLanguage(articleProse(textContent), fetchedHtmlBody ? declaredHtmlLang(fetchedHtmlBody) : null);
+        if (!language.english && language.lang !== "und") {
+          const langLabel = languageName(language.lang);
+          const held = async (reason: string) => {
+            skippedCount++;
+            logger.qualification(current.canonicalUrl, "HELD", 0, reason);
+            await recordItem(current, "HELD", reason, "evaluated", { title: docTitle });
+          };
+
+          const english = fetchedHtmlBody ? findEnglishAlternate(fetchedHtmlBody, current.canonicalUrl) : null;
+          let englishCanonical: string | null = null;
+          try {
+            englishCanonical = english ? canonicalizeUrl(english) : null;
+          } catch {
+            englishCanonical = null;
+          }
+          if (english && englishCanonical) {
+            if (storedCanonicalUrls.has(englishCanonical)) {
+              duplicateCount++;
+              collector.count(current.sourceId, "duplicate");
+              await recordItem(current, "DUPLICATE", `In ${langLabel}; the publisher's English version is already in the library: ${english}`, "duplicate", { title: docTitle });
+              return;
+            }
+            const inThisRun =
+              enqueuedUrls.has(englishCanonical) ||
+              enqueue({
+                url: english,
+                canonicalUrl: englishCanonical,
+                depth: current.depth,
+                priorityScore: Math.min(1.2, current.priorityScore + 0.2),
+                parentUrl: current.canonicalUrl,
+                parentSource: current.parentSource,
+                discoveryPath: [...current.discoveryPath, current.canonicalUrl],
+                discoveryMethod: current.discoveryMethod,
+                sourceId: current.sourceId,
+                publisher: current.publisher,
+                domain: new URL(englishCanonical).hostname,
+                title: docTitle,
+                publishedAt: current.publishedAt ?? null,
+                relevance: current.relevance,
+              });
+            if (inThisRun) {
+              skippedCount++;
+              await recordItem(current, "SKIPPED", `In ${langLabel}; the publisher's English version is evaluated instead: ${english}`, "duplicate", { title: docTitle });
+              return;
+            }
+            // The English version is outside this source's crawl scope: translate this one instead.
+          } else {
+            // Localized copies of English posts (/blog/ja/… next to /blog/…) often link no English
+            // edition. When the same path without the language segment is already in the library or
+            // in this run, this page is that report again, not new intelligence.
+            const guesses = guessEnglishUrls(current.canonicalUrl, language.lang).flatMap((u) => {
+              try {
+                return [canonicalizeUrl(u)];
+              } catch {
+                return [];
+              }
+            });
+            const inLibrary = guesses.find((u) => storedCanonicalUrls.has(u));
+            if (inLibrary) {
+              duplicateCount++;
+              collector.count(current.sourceId, "duplicate");
+              await recordItem(current, "DUPLICATE", `In ${langLabel}; the English edition is already in the library: ${inLibrary}`, "duplicate", { title: docTitle });
+              return;
+            }
+            const inRun = guesses.find((u) => enqueuedUrls.has(u));
+            if (inRun) {
+              skippedCount++;
+              await recordItem(current, "SKIPPED", `In ${langLabel}; the English edition is evaluated in this crawl: ${inRun}`, "duplicate", { title: docTitle });
+              return;
+            }
+          }
+
+          if (config.translateNonEnglish === false) {
+            await held(`In ${langLabel}: translation is turned off in crawl settings, so it waits until it is turned on.`);
+            return;
+          }
+          const tai = await translationAi();
+          if (!tai.usable) {
+            await held(`In ${langLabel}: waiting for translation. Add an AI provider in the Marketplace to translate and evaluate reports in other languages (${tai.detail}).`);
+            return;
+          }
+          if (translationsThisJob >= TRANSLATIONS_PER_JOB || translationMsThisJob >= TRANSLATION_JOB_BUDGET_MS) {
+            await held(`In ${langLabel}: this run's translation budget is used; it is translated and evaluated by the next crawl.`);
+            return;
+          }
+          translationsThisJob++;
+          const translationStarted = Date.now();
+          logger.agent("TRANSLATE", `"${docTitle.slice(0, 60)}": translating ${textContent.length.toLocaleString("en-US")} characters from ${langLabel}`);
+          const translated = await runUnifiedTranslation({
+            title: docTitle,
+            text: textContent,
+            lang: language.lang,
+            model: sanitizeAgyModel(config.agentModel),
+            timeoutSeconds: config.agentTimeoutSeconds,
+            allowSandboxFallback: tai.sandbox,
+            deadlineAt: translationStarted + Math.round(itemTimeoutMs(config.agentTimeoutSeconds) * TRANSLATION_ITEM_SHARE),
+            cancelled: () => jobControl.cancel,
+          });
+          translationMsThisJob += Date.now() - translationStarted;
+          if (!translated.ok) {
+            await held(`In ${langLabel}: the translation was not usable (${translated.reason}). Held for the next crawl.`);
+            return;
+          }
+          translation = {
+            from: language.lang,
+            provider: translated.provider,
+            model: translated.model,
+            originalTitle: docTitle,
+            originalText: textContent.slice(0, ORIGINAL_TEXT_CAP),
+            translatedChars: translated.translatedChars,
+            totalChars: translated.totalChars,
+            partial: translated.partial,
+            translatedAt: new Date().toISOString(),
+          };
+          logger.agent(
+            "TRANSLATED",
+            `"${docTitle.slice(0, 50)}" → "${translated.title.slice(0, 50)}" from ${langLabel} by ${translated.provider} (${translated.calls} part${translated.calls === 1 ? "" : "s"}${translated.partial ? ", partial" : ""})`,
+          );
+          textContent = translated.text;
+          docTitle = translated.title;
+          textSections = undefined;
+        }
+
         // 4.4 Heuristic Qualification Baseline & 5-Dimensional AI Agent Validation
         const isFeedEntry = current.discoveryMethod === "rss_feed";
         const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
 
         let agentResult: AgentEvaluationResult | null = null;
 
+        // The AI reviews technical documents and may rescue ones the rules found too thin; it never
+        // overturns a product page, strategy / trends piece, guidance post or news item without
+        // technical detail, so those are not sent to it at all.
+        const aiMayDecide = !qual.depth || qual.depth.pass || qual.depth.kind === "thin";
         const shouldRunAgent =
           ai.usable &&
+          !aiEvalPaused &&
           (config.agentTaggingEnabled || config.agentApprovalEnabled) &&
           !qual.isIndexOrGeneric &&
+          aiMayDecide &&
           textContent.trim().length > 60;
 
         if (shouldRunAgent) {
@@ -2251,6 +2505,9 @@ export async function executeCrawlJob(
               model: sanitizeAgyModel(config.agentModel),
               allowSandboxFallback: ai.sandbox,
             });
+
+            if (agentResult.success && !agentResult.fallback) aiEvalFailuresInARow = 0;
+            else noteAiEvalFailure(agentResult.error || agentResult.rationale || "no answer");
 
             if (agentResult.success && !agentResult.fallback) {
               logger.agent(
@@ -2316,6 +2573,7 @@ export async function executeCrawlJob(
             }
           } catch (agentErr) {
             logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
+            noteAiEvalFailure((agentErr as Error).message);
             agentResult = null;
           }
         }
@@ -2440,7 +2698,8 @@ export async function executeCrawlJob(
         const { score, reasons, wordCount } = scoreQuality(textContent, docTitle);
         const iocs = harvestIocs(textContent, { sourceDomain: current.domain });
         const rawHash = sha256Hex(rawBytes || textContent);
-        const reportSimhash = computeReportSimHash(textContent);
+        // Fingerprints stay on the published text, so a re-crawl of a translated report still matches.
+        const reportSimhash = computeReportSimHash(sourceText);
         const reportId = newId("rpt");
 
         let intelAnalysis = null;
@@ -2637,6 +2896,7 @@ export async function executeCrawlJob(
                 scoreBreakdown: agentResult?.scoreBreakdown,
                 aiTokensUsed: agentResult?.tokensUsed,
                 aiProvider: agentResult?.providerName,
+                translation,
               };
               await mongoInsertReport(reportDoc);
 
@@ -2915,6 +3175,10 @@ export async function executeCrawlJob(
         await reportLiveProgress();
       }
     }
+
+    // AI source discovery gets what is left of the budget; its later results are only saved as sources.
+    await settleWithin(aiSourceDiscovery, Math.max(0, discoveryTimeLeft()));
+    for (const phi of preHarvestedItems.splice(0)) enqueue(phi);
 
     // Persist what discovery found before processing starts, so the count survives whatever follows.
     discoveryPhaseOver = true;

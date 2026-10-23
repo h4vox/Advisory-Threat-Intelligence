@@ -268,7 +268,8 @@ function LibraryPage() {
     placeholderData: (previousData) => previousData,
   });
 
-  // Library gate: hides unrelated reports (homepages, listings, webinars, product news, stubs) once
+  // Library gate: hides reports that are not technical threat intel (homepages, listings, webinars,
+  // product pages, strategy pieces, news without technical detail, stubs) once
   // per rules version; nothing is deleted. See src/lib/aie/library-gate.ts.
   const gateQuery = useQuery({
     queryKey: ["library-gate"],
@@ -1015,10 +1016,10 @@ function LibraryPage() {
               <EyeOff className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={1.75} />
               <p className="text-sm text-muted">
                 <span className="font-medium text-fg">
-                  Hid {gateQuery.data.newlyHidden.length} unrelated report{gateQuery.data.newlyHidden.length === 1 ? "" : "s"}
+                  Hid {gateQuery.data.newlyHidden.length} report{gateQuery.data.newlyHidden.length === 1 ? "" : "s"} that {gateQuery.data.newlyHidden.length === 1 ? "is" : "are"} not technical threat intelligence
                 </span>{" "}
-                (homepages, listing pages, webinars, product news, empty stubs). Nothing was deleted; reports with techniques, CVEs, indicators or known actors
-                are never hidden.
+                (product and marketing pages, strategy pieces, news without technical detail, listing pages, empty stubs). Nothing was deleted: each
+                one shows why it was hidden, and Restore brings it back for good.
               </p>
             </div>
             <div className="flex shrink-0 gap-2">

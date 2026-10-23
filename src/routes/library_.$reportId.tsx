@@ -67,6 +67,15 @@ export const Route = createFileRoute("/library_/$reportId")({
   component: ReportPage,
 });
 
+/** "pl" → "Polish" (the browser's own language names). */
+function languageLabel(code: string): string {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code.toUpperCase();
+  } catch {
+    return code.toUpperCase();
+  }
+}
+
 function Section({ title, description, actions, children }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="border-t border-border pt-8 first:border-t-0 first:pt-0">
@@ -148,6 +157,7 @@ function ReportPage() {
     void navigate({ search: (prev) => ({ ...prev, tab: t === "overview" ? undefined : t }), replace: true });
   const [expanded, setExpanded] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["report", reportId],
@@ -389,6 +399,16 @@ function ReportPage() {
                   ),
                 },
                 { label: "Words", value: <span className="tabular-nums">{data.wordCount.toLocaleString()}</span> },
+                {
+                  label: "Language",
+                  hidden: !data.translation,
+                  value: data.translation ? (
+                    <span title={`Translated ${formatDateTime(data.translation.translatedAt)}${data.translation.model ? ` with ${data.translation.model}` : ""}`}>
+                      Translated from {languageLabel(data.translation.from)} by {data.translation.provider}
+                      {data.translation.partial ? " (first part)" : ""}
+                    </span>
+                  ) : null,
+                },
                 {
                   label: "AI review",
                   value: review ? (
@@ -713,21 +733,43 @@ function ReportPage() {
           </>
         )}
 
-        {tab === "text" && (
-          <Section
-            title="Extracted text"
-            description={`${data.wordCount.toLocaleString()} words of normalized text.`}
-            actions={
-              <ActionButton icon={Copy} onClick={() => copy(data.extractedText, "extracted text")}>
-                Copy text
-              </ActionButton>
-            }
-          >
-            <pre className="select-text whitespace-pre-wrap rounded-xl border border-border bg-bg-card p-5 font-sans text-sm leading-relaxed text-muted">
-              {data.extractedText || "No extracted text stored."}
-            </pre>
-          </Section>
-        )}
+        {tab === "text" && (() => {
+          const t = data.translation;
+          const original = Boolean(t && showOriginal);
+          const shown = original && t ? t.originalText : data.extractedText;
+          const language = t ? languageLabel(t.from) : "";
+          return (
+            <Section
+              title={original ? `Original text (${language})` : "Extracted text"}
+              description={
+                t
+                  ? original
+                    ? `As published, in ${language}: ${t.totalChars.toLocaleString()} characters.`
+                    : `English translation from ${language} by ${t.provider}${t.partial ? `: the first ${t.translatedChars.toLocaleString()} of ${t.totalChars.toLocaleString()} characters, the rest follows in ${language}` : ""}. Indicators and identifiers were checked against the original.`
+                  : `${data.wordCount.toLocaleString()} words of normalized text.`
+              }
+              actions={
+                <>
+                  {t ? (
+                    <ActionButton variant="ghost" onClick={() => setShowOriginal(!original)}>
+                      {original ? "Show English translation" : `Show original (${language})`}
+                    </ActionButton>
+                  ) : null}
+                  <ActionButton icon={Copy} onClick={() => copy(shown, original ? "original text" : "extracted text")}>
+                    Copy text
+                  </ActionButton>
+                </>
+              }
+            >
+              <pre
+                lang={original && t ? t.from : undefined}
+                className="select-text whitespace-pre-wrap rounded-xl border border-border bg-bg-card p-5 font-sans text-sm leading-relaxed text-muted"
+              >
+                {shown || "No extracted text stored."}
+              </pre>
+            </Section>
+          );
+        })()}
 
         {tab === "provenance" && (
           <>

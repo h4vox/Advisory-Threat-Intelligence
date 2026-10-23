@@ -6,29 +6,38 @@
  * Library's "Hidden" view lists them, and Restore brings one back for good (`keep` override).
  *
  * Order of rules:
- *  1. Protected: anything with real threat evidence (ATT&CK techniques, CVEs, two or more
- *     indicators, an attack chain, recognised actors / malware / campaigns, high quality score) or
- *     coming from a structured source is always kept.
+ *  1. Protected: an analyst's Restore and structured-source records are always kept. With the
+ *     report text at hand, so is anything that passes the technical-depth check (./technical-depth:
+ *     ATT&CK techniques, indicators, attacker commands, described attacker activity, an exploited-CVE
+ *     advisory). Without the text, the stored counts protect (techniques, CVEs, indicators, attack
+ *     chain, known actors / malware). A quality score alone no longer protects: it measures length
+ *     and structure, and a 2,000-word product page scored 72%.
  *  2. Page type: homepages, sitemaps, index / listing pages, legal and contact pages, search
  *     results, non-CTI government service sites.
- *  3. Topic: the relevance pre-score (title, summary, URL) finds only off-topic signals — webinars,
+ *  3. Content (text at hand): product / marketing pages, strategic or trends pieces, guidance and
+ *     opinion posts, news without technical detail, and documents with no technical detail.
+ *     Non-English text is not judged here; it waits for translation.
+ *  4. Topic: the relevance pre-score (title, summary, URL) finds only off-topic signals — webinars,
  *     podcasts, product launches, earnings, hiring, marketing, events — and nothing adversarial.
- *  4. Stub: under 120 words (when the count is known) with no technical content at all.
+ *  5. Stub: under 120 words (when the count is known) with no technical content at all.
  *
  * SERVER ONLY (the topic rule uses the bundled ATT&CK knowledge through scoreRelevance).
  */
 import { RELEVANCE_SKIP_THRESHOLD, scoreRelevance } from "./collector/relevance.ts";
+import { assessTechnicalDepth } from "./technical-depth.ts";
 
 /** Bump when the rules change so stored reports are checked again. */
-export const LIBRARY_GATE_VERSION = 2;
+export const LIBRARY_GATE_VERSION = 3;
 
-export type GateRule = "page_type" | "topic" | "stub";
+export type GateRule = "page_type" | "content" | "topic" | "stub";
 
 export type GateInput = {
   title: string;
   url: string;
   /** Feed summary or the first part of the text. */
   summary?: string | null;
+  /** The stored report text, when available: the content rule and depth protection read it. */
+  text?: string | null;
   wordCount: number;
   iocCount: number;
   techniques: number;
@@ -94,18 +103,25 @@ function pageTypeReason(url: string, title: string): string | null {
 }
 
 export function evaluateLibraryReport(input: GateInput): GateVerdict {
+  const title = input.title ?? "";
+  const url = input.url ?? "";
+  // The text decides when we have it; stored counts can come from page chrome (a footer link to
+  // "Incident Response Services", a menu that names ATT&CK) and protected a product page before.
+  const depth = (input.text ?? "").length >= 300 ? assessTechnicalDepth({ title, url, text: input.text ?? "" }) : null;
+
   const protectedBy: string[] = [];
   if (input.keep) protectedBy.push("kept by an analyst");
   if (input.structured) protectedBy.push("structured source");
-  if (input.techniques > 0) protectedBy.push(`${input.techniques} ATT&CK technique${input.techniques === 1 ? "" : "s"}`);
-  if (input.cves > 0) protectedBy.push(`${input.cves} CVE${input.cves === 1 ? "" : "s"}`);
-  if (input.iocCount >= 2) protectedBy.push(`${input.iocCount} indicators`);
-  if (input.attackChainSteps > 0) protectedBy.push("attack chain");
-  if (input.entities > 0) protectedBy.push(`${input.entities} known actor / malware / campaign reference${input.entities === 1 ? "" : "s"}`);
-  if (input.qualityScore >= 0.7) protectedBy.push(`quality ${Math.round(input.qualityScore * 100)}%`);
+  if (depth) {
+    if (depth.pass) protectedBy.push(...depth.anchors);
+  } else {
+    if (input.techniques > 0) protectedBy.push(`${input.techniques} ATT&CK technique${input.techniques === 1 ? "" : "s"}`);
+    if (input.cves > 0) protectedBy.push(`${input.cves} CVE${input.cves === 1 ? "" : "s"}`);
+    if (input.iocCount >= 2) protectedBy.push(`${input.iocCount} indicators`);
+    if (input.attackChainSteps > 0) protectedBy.push("attack chain");
+    if (input.entities > 0) protectedBy.push(`${input.entities} known actor / malware / campaign reference${input.entities === 1 ? "" : "s"}`);
+  }
 
-  const title = input.title ?? "";
-  const url = input.url ?? "";
   const keep = (relevance: number | null = null): GateVerdict => ({ verdict: "keep", rule: null, reasons: [], protectedBy, relevance });
   const reject = (rule: GateRule, reasons: string[], relevance: number | null = null): GateVerdict =>
     protectedBy.length ? keep(relevance) : { verdict: "reject", rule, reasons, protectedBy, relevance };
@@ -117,12 +133,17 @@ export function evaluateLibraryReport(input: GateInput): GateVerdict {
   // record overrides this hard reject.
   const page = pageTypeReason(url, title);
   if (page) {
-    // Overridden only by an analyst Restore, a structured-source record, or a genuinely high quality
-    // score — a listing / section page's fragmented body never reaches 0.7, so this keeps a real
-    // report that was merely misclassified by its URL while still dropping listing pages whose
-    // snippets happen to name actors, CVEs or techniques.
-    if (input.keep || input.structured || input.qualityScore >= 0.7) return keep();
+    // Overridden only by an analyst Restore, a structured-source record, or hard evidence in the
+    // text (technique IDs, indicators, attacker commands): that keeps a real report misclassified by
+    // its URL, while listing pages whose snippets merely name actors or behaviours stay out. Without
+    // the text, a genuinely high quality score (a listing's fragmented body never reaches 0.7).
+    const hardEvidence = depth ? depth.stats.techniques >= 1 || depth.stats.indicators >= 2 || depth.stats.commands >= 2 : input.qualityScore >= 0.7;
+    if (input.keep || input.structured || hardEvidence) return keep();
     return { verdict: "reject", rule: "page_type", reasons: [page], protectedBy, relevance: null };
+  }
+
+  if (depth && !depth.pass && depth.kind !== "non_english") {
+    return reject("content", depth.reasons, null);
   }
 
   const rel = scoreRelevance({ title, summary: input.summary ?? "", url, sourceTier: input.sourceTier ?? null });
@@ -142,6 +163,7 @@ export function evaluateLibraryReport(input: GateInput): GateVerdict {
 }
 
 /** One line for the report card / table ("Hidden as unrelated: …"). */
-export function gateReasonLine(v: Pick<GateVerdict, "reasons">): string {
-  return `Hidden as unrelated: ${v.reasons.join(" · ")}`;
+export function gateReasonLine(v: Pick<GateVerdict, "reasons"> & { rule?: GateRule | string | null }): string {
+  const what = v.rule === "content" ? "Hidden as not technical threat intelligence" : "Hidden as unrelated";
+  return `${what}: ${v.reasons.join(" · ")}`;
 }

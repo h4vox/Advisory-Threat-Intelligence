@@ -51,23 +51,55 @@ Candidate URLs must point to a deep technical article permalink. The ingestion p
 
 ---
 
-### 2.2 Content Technical Anchor Verification (Tier 2 Gate)
+### 2.2 Technical Depth (Tier 2 Gate)
 
-A document that passes Tier 1 must possess **concrete procedural, attributional, or defensive artifacts** to qualify. A document with high word count is **rejected** if it lacks technical anchors.
+`src/lib/aie/technical-depth.ts` reads the article prose only: lines that are nothing but links
+(menus, footers, "related reports" lists) are dropped first, because a vendor footer linking to
+"Threat Intel and Incident Response Services" once passed a product page as an intrusion report.
+A document passes when it has at least one technical anchor:
 
-To pass Tier 2, the document **MUST** satisfy at least one of the following criteria:
-
-| Technical Anchor Category | Minimum Requirement | Description / Examples |
+| Anchor | Minimum | Examples |
 |---|---|---|
-| **Execution Commands** | $\ge 1$ Concrete Command | LOLBins, PowerShell, cmd, bash, API sequences (e.g. `powershell.exe -enc`, `certutil -urlcache`, `rundll32`, `vssadmin delete shadows`) |
-| **MITRE ATT&CK Mappings** | $\ge 1$ Technique Code | Explicit technique IDs (e.g. `T1059.001`, `T1055`, `T1003`, `T1547`) |
-| **Verified Technical IOCs** | $\ge 1$ Concrete IOC | SHA256/MD5 sample hashes, C2 IP addresses, defanged malicious domains |
-| **Vulnerability Advisory** | $\ge 1$ Verified CVE | CVE identifier with root cause or exploitation mechanics analysis (e.g. `CVE-2023-38831`) |
-| **System Artifacts** | $\ge 1$ Key / Path / Event | Registry keys (`HKLM\Software\...`), file paths (`AppData\Local\Temp\...`), or Event IDs (Event 4688, Sysmon 1/3/7) |
-| **In-Depth Attack Progression** | $\ge 3$ Terms + $\ge 350$ words | Sequential attack progression context (`Initial Access` $\rightarrow$ `Lateral Movement` $\rightarrow$ `Command & Control` $\rightarrow$ `Exfiltration`) |
+| **ATT&CK technique IDs** | 1 | `T1059.001`, `T1566.002` |
+| **Indicators** | 2 distinct | SHA-256/SHA-1/MD5 hashes, public IPv4 (defanged counts; private and version-like numbers do not), defanged domains, `hxxp` URLs |
+| **Attacker commands** | 2 | `powershell -enc`, `rundll32`, `vssadmin delete shadows`, `certutil -urlcache` |
+| **Described attacker activity** | named actor + 5 behaviours, or 8 behaviours | "the actor sent spear-phishing e-mails… used scheduled tasks for persistence… exfiltrated archives" |
+| **Exploited-CVE advisory** | 1 CVE with exploitation wording | only from a CERT or government publisher (cisa.gov, cyber.gov.au, ncsc.gov.uk, cert.pl, …) |
+
+Without an anchor, the document is rejected and the reason names what it is: a product or marketing
+page, a strategic or trends piece, guidance or opinion, news without technical detail (news
+publishers), or a document with no technical detail. The AI reviewer may rescue a thin document but
+is never asked to overturn the other verdicts.
+
+The Library gate (`src/lib/aie/library-gate.ts`, version 3) applies the same check to stored
+reports on the next Library visit and hides, never deletes, the ones that fail; each shows why, and
+Restore brings one back for good.
 
 > [!CAUTION]
 > General journalistic news blurbs (e.g., general reporting on ransomware victim statistics, legal lawsuits, or executive appointments) that lack any technical execution commands or IOCs are **strictly disqualified**.
+
+### 2.3 Reports in Other Languages
+
+A report is judged in English. When the crawler finds a page in another language
+(`detectLanguage`: script, diacritics, several distinct function words, never one ambiguous word):
+
+1. **The publisher's English edition.** A `hreflang="en"` alternate or a language switcher to the
+   same path under `/en/` is followed instead. A localized copy whose path without the language
+   segment (`/blog/ja/topics/x` → `/blog/topics/x`) is already in the library, or queued in the same
+   crawl, is recorded as a duplicate.
+2. **AI translation.** Otherwise the active AI provider (REST API or the AGY agent) translates the
+   text in parts of up to 6,000 characters, 24,000 per report; the rest of a longer report is kept in
+   the original so its indicator appendix is still extracted. Every part is checked: all indicators
+   and identifiers (hashes, IPs, defanged domains, CVE and ATT&CK IDs) kept, none invented, a
+   plausible length, English output. Any failed part fails the translation.
+3. **Held, not rejected.** Without AI, with translation turned off (crawl settings), when the
+   translation fails its checks, or when the run's translation budget (12 reports, 10 minutes) is
+   used, the page is recorded as *Held*. Later crawls evaluate it again.
+
+The translated report stores the English text as `extractedText` and the original title and text
+under `translation`; the report page shows "Translated from …" and the original. Dedup fingerprints
+stay on the published text, so a re-crawl matches it, and a changed page is translated again before
+its new version is stored.
 
 ---
 

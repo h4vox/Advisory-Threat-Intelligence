@@ -2025,8 +2025,14 @@ function SettingsPage() {
                     label: "Crawl discovered sources",
                     desc: "Include agent-discovered and crawler-discovered sources in crawl jobs",
                   },
+                  {
+                    key: "translateNonEnglish" as const,
+                    label: "Translate non-English reports",
+                    desc: "Reports in other languages are translated into English with the active AI provider before they are evaluated, unless the publisher has an English edition. Indicators and identifiers are checked against the original, which is kept with the report. Off: they wait until this is turned on.",
+                    defaultOn: true,
+                  },
                 ].map((toggle) => {
-                  const isChecked = Boolean(currentCrawl[toggle.key]);
+                  const isChecked = Boolean(currentCrawl[toggle.key] ?? ("defaultOn" in toggle && toggle.defaultOn));
                   return (
                     <div
                       key={toggle.key}

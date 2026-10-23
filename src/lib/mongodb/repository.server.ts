@@ -17,6 +17,7 @@ import type {
   QualityReason,
   ReportListItem,
   ReportRecord,
+  ReportTranslation,
   ResourceKind,
   SourceRecord,
   StorageStats,
@@ -375,6 +376,10 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     aiVerified: doc.aiVerified === true,
     aiQualityScore: typeof doc.aiQualityScore === "number" ? doc.aiQualityScore : undefined,
     aiAuditReason: (doc.aiAuditReason as string) || undefined,
+    translation:
+      doc.translation && typeof doc.translation === "object" && typeof doc.translation.from === "string"
+        ? (doc.translation as ReportTranslation)
+        : undefined,
   };
 }
 
@@ -1061,7 +1066,12 @@ export async function mongoInsertReport(report: ReportRecord): Promise<void> {
         aiAuditReason,
         excerpt,
         // Near-duplicate fingerprint over the same extractedText window the crawler compares against.
-        ...(report.extractedText ? { simhash: computeReportSimHash(report.extractedText) } : {}),
+        // The crawler passes its own for a translated report: the published (original-language) text.
+        ...(typeof (report as { simhash?: unknown }).simhash === "string"
+          ? {}
+          : report.extractedText
+            ? { simhash: computeReportSimHash(report.extractedText) }
+            : {}),
         updatedAt: new Date().toISOString(),
       },
     },
@@ -1317,6 +1327,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   agentCrawlSourcesEnabled: true,
   agentLibraryAuditEnabled: true,
   agentAutoPruneJunkEnabled: false,
+  translateNonEnglish: true,
   agentModel: DEFAULT_AGY_MODEL,
   agentTimeoutSeconds: 45,
 };
@@ -1382,6 +1393,7 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       agentCrawlSourcesEnabled: Boolean(doc.agentCrawlSourcesEnabled ?? true),
       agentLibraryAuditEnabled: Boolean(doc.agentLibraryAuditEnabled ?? true),
       agentAutoPruneJunkEnabled: Boolean(doc.agentAutoPruneJunkEnabled ?? false),
+      translateNonEnglish: Boolean(doc.translateNonEnglish ?? true),
       agentModel: sanitizeAgyModel(doc.agentModel),
       agentTimeoutSeconds: Number(doc.agentTimeoutSeconds ?? 45),
     };
