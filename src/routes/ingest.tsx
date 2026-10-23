@@ -308,7 +308,7 @@ function IngestPage() {
         toast.message("Crawl job is no longer running");
         return;
       }
-      toast.info("Crawl job cancelled");
+      toast.info("Crawl cancelled", { description: "In-flight requests finish in the background; you can launch a new crawl now." });
     },
   });
 
@@ -1157,9 +1157,16 @@ function IngestPage() {
                         · {humanize(activeJob.triggerType)} · stage {humanize(activeJob.currentStage || "evaluated").toLowerCase()}
                       </span>
                     </div>
-                    <p className="truncate text-sm text-muted">
-                      Current URL: <span className="font-mono text-xs text-fg">{activeJob.currentUrl || "Extracting citations and outlinks…"}</span>
-                    </p>
+                    {activeJob.currentStage === "discovered" ? (
+                      <p className="truncate text-sm text-muted">
+                        Discovering: <span className="text-fg">{activeJob.currentUrl || "Preparing discovery…"}</span>
+                        <span className="tabular-nums"> · {(activeJob.discoveredCount ?? 0).toLocaleString()} found so far</span>
+                      </p>
+                    ) : (
+                      <p className="truncate text-sm text-muted">
+                        Current URL: <span className="font-mono text-xs text-fg">{activeJob.currentUrl || "Extracting citations and outlinks…"}</span>
+                      </p>
+                    )}
                     <p className="text-xs text-subtle">
                       {activeJob.activeWorkers ?? (config.concurrency || 4)} parallel workers ·{" "}
                       {activeJob.throughputDocsPerSec ? activeJob.throughputDocsPerSec.toFixed(1) : "0.0"} docs/sec
