@@ -1,13 +1,10 @@
 #!/bin/sh
 # Fallback Antigravity CLI (`agy`) shim.
 #
-# The real `agy` is Google Antigravity's proprietary CLI and is not redistributable, so it is not
-# bundled in this repository. Without this file the sandbox image fails to build at `COPY agy ...`,
-# which blocked every agent install. This shim lets the image build and the container run; AIE then
-# uses a configured direct-provider API (Gemini / Claude / OpenAI) instead of the Antigravity path.
-#
-# To use the real Antigravity CLI, drop the genuine `agy` binary at docker/agent-sandbox/agy before
-# building (it replaces this shim), or mount it over /usr/local/bin/agy at runtime.
+# The image installs the real CLI from Google's official installer at build time (see Dockerfile).
+# This shim is what remains when that install could not run (no network while building), so the
+# image still builds and the container still starts. AIE recognises it by its empty `--version`,
+# reports the agent as not installed and rebuilds the image from the Marketplace.
 
 case "$1" in
   --version | -v | version)
@@ -18,5 +15,5 @@ esac
 
 # Any real invocation: emit a structured, parseable notice on stderr and exit non-zero so the caller
 # cleanly falls back to a direct AI provider instead of hanging.
-echo '{"error":"antigravity_cli_unavailable","message":"The Antigravity CLI (agy) is not installed in this sandbox image. Configure a direct AI provider (Gemini, Claude or OpenAI) API key in the Marketplace, or add the real agy binary at docker/agent-sandbox/agy and rebuild."}' >&2
+echo '{"error":"antigravity_cli_unavailable","message":"The Antigravity CLI (agy) is not installed in this sandbox image (the official installer could not run while the image was built). Install the agent again from the Marketplace with network access, or configure a direct AI provider (Gemini, Claude or OpenAI)."}' >&2
 exit 127

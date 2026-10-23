@@ -1,329 +1,183 @@
 /**
- * Containerized CLI Agent Driver
+ * Containerized CLI Agent Driver (Antigravity CLI, `agy`)
  *
- * Implements the AgentDriver contract for containerized CLI agents.
- * Strictly operates within the dedicated Docker container sandbox (`aie-agent-sandbox`)
- * using the isolated vault volume (`aie-agent-vault`).
- * Zero host system binary or credential dependencies.
+ * Implements the AgentDriver contract inside the dedicated Docker sandbox (`aie-agent-sandbox`).
+ * The image installs the CLI from Google's official installer; the container keeps the agent's home on
+ * the `aie-agent-home` volume, where the CLI saves its own sign-in. Sign-in is the CLI's own Google
+ * OAuth flow, driven through a pseudo-terminal (../agy-login.server): AIE relays the link and the code
+ * and never handles Google tokens. No host binaries or host credentials are used.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import type { AgentAuthOption, AgentDriver } from "./types";
+import type { AgentAuthOption, AgentDriver, AgentSignInProgress } from "./types";
+import { AGY_AVAILABLE_MODELS, DEFAULT_AGY_MODEL, sanitizeAgyModel } from "./types";
+import type { AgyLoginSnapshot } from "../agy-login";
 import {
-  AGY_AVAILABLE_MODELS,
-  DEFAULT_AGY_MODEL,
-  sanitizeAgyModel,
-} from "./types";
+  cancelAgyLogin,
+  getAgyLoginSnapshot,
+  onAgyLoginChange,
+  startAgyLogin,
+  submitAgyLoginCode,
+  verifyAgentAnswers,
+} from "../agy-login.server";
 import {
-  generateAgyOAuthSession,
-  exchangeOAuthCodeForToken,
-} from "../marketplace-registry";
-import {
-  AGENT_CONTAINER_NAME,
-  injectContainerOAuthToken,
-  checkContainerOAuthToken,
-  ensureAgentSandboxRunning,
-  invalidateSandboxCache,
-  removeContainerOAuthToken,
-  runAgentPromptInSandbox,
-} from "../agent-sandbox";
+  agyVersionInContainer,
+  buildAgentImage,
+  dockerReachable,
+  imageExists,
+  inspectContainer,
+  removeAgentContainerAndHome,
+  startAgentContainer,
+} from "../agent-container.server";
 import { warmAgentService } from "../warm-agent-service";
 
-const execFileAsync = promisify(execFile);
-const CONTAINER_NAME = AGENT_CONTAINER_NAME;
+/** How long startSignIn waits for the CLI to show its link (or report it is signed in). */
+const SIGN_IN_LINK_WAIT_MS = 45_000;
+
+function toProgress(s: AgyLoginSnapshot): AgentSignInProgress {
+  return { state: s.state, authUrl: s.authUrl, message: s.message, transcript: s.transcript, alreadySignedIn: s.alreadySignedIn };
+}
 
 export class ContainerizedCliAgentDriver implements AgentDriver {
   readonly id = "agy_agent";
-  readonly name = "Autonomous AI Agent Engine";
-  readonly providerLabel = "Google Gemini / Container Sandbox";
+  readonly name = "Antigravity Agent (AGY)";
+  readonly providerLabel = "Google Antigravity CLI · Docker sandbox";
   readonly description =
-    "Containerized autonomous threat intelligence agent running inside an isolated Docker sandbox with Google OAuth 2.0 and Vertex AI authentication.";
+    "The Antigravity CLI running in an isolated Docker sandbox, signed in with your Google account through the CLI's own sign-in.";
 
   readonly supportedAuthMethods: AgentAuthOption[] = [
     {
       id: "google_oauth",
-      name: "Google OAuth 2.0",
-      description: "Interactive single sign-on with your Google account via PKCE authorization portal.",
+      name: "Google account",
+      description: "Sign in with Google through the Antigravity CLI's own sign-in. The CLI keeps the sign-in inside the sandbox.",
       type: "oauth",
       isRecommended: true,
-    },
-    {
-      id: "vertex_api",
-      name: "Vertex AI / Gemini API Key",
-      description: "Direct API credential configuration for Google Cloud Vertex AI or Google AI Studio.",
-      type: "api_key",
-      isRecommended: false,
     },
   ];
 
   readonly defaultAuthMethod = "google_oauth";
-
   readonly supportedModels: string[] = AGY_AVAILABLE_MODELS.map((m) => m.id);
-
   readonly defaultModel = DEFAULT_AGY_MODEL;
 
-  // PKCE verifier for the current authorization attempt. Server-side only;
-  // the orchestrator also persists it as config.oauthCodeVerifier (redacted
-  // before reaching the browser). Never taken from the client.
-  private activeCodeVerifier: string | null = null;
+  /** Docker answers, and the sandbox image exists (built on first install). */
+  async startEnvironment(onProgress?: (message: string) => void): Promise<{ success: boolean; error?: string }> {
+    const docker = await dockerReachable();
+    if (!docker.ok) {
+      return { success: false, error: `${docker.detail}. The agent runs only inside its Docker sandbox; install or start Docker, then try again.` };
+    }
+    if (await imageExists()) return { success: true };
+    onProgress?.("Building the agent sandbox image. The first build downloads the Antigravity CLI and can take a few minutes…");
+    const built = await buildAgentImage();
+    return built.ok ? { success: true } : { success: false, error: built.detail };
+  }
 
   /**
-   * Step 1: Ensure execution sandbox container is running with retry backoff
+   * The real CLI is in the image. An image holding only the fallback shim (built while the installer
+   * could not be reached) is rebuilt once; if the CLI is still missing, the build's warning is reported.
    */
-  async startEnvironment(): Promise<{ success: boolean; error?: string }> {
-    const maxRetries = 3;
-    let lastError: string | undefined;
+  async ensureInstalled(onProgress?: (message: string) => void): Promise<{ success: boolean; version?: string; error?: string }> {
+    const started = await startAgentContainer();
+    if (!started.ok) return { success: false, error: started.detail };
+    let version = await agyVersionInContainer();
+    if (version) return { success: true, version };
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      invalidateSandboxCache();
-      const res = await ensureAgentSandboxRunning();
-      if (res.success) return { success: true };
-      lastError = res.message;
-      if (!res.status.dockerAvailable) break;
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, 1200 * attempt));
-      }
-    }
-
+    onProgress?.("The sandbox has no Antigravity CLI yet. Rebuilding the image to install it (a few minutes)…");
+    const built = await buildAgentImage();
+    if (!built.ok) return { success: false, error: built.detail };
+    const recreated = await startAgentContainer({ recreate: true });
+    if (!recreated.ok) return { success: false, error: recreated.detail };
+    version = await agyVersionInContainer();
+    if (version) return { success: true, version };
     return {
       success: false,
-      error: lastError || "Container sandbox failed to start after multiple attempts.",
+      error:
+        version === null
+          ? "The agent container is not answering. Check Docker and try again."
+          : `The Antigravity CLI could not be installed in the sandbox image: ${built.detail === "built" ? "the official installer did not produce a working agy binary" : built.detail}. Check that this machine can reach antigravity.google, then try again.`,
     };
   }
 
-  /**
-   * Step 2 & 3: Validate agent binary inside container
-   */
-  async ensureInstalled(): Promise<{ success: boolean; version?: string; error?: string }> {
-    try {
-      const { stdout } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "agy", "--version"], {
-        timeout: 8000,
-      });
-      const version = stdout.trim();
-      if (version) {
-        return { success: true, version };
-      }
-      return { success: false, error: "Agent binary returned empty response." };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: "Agent binary not ready inside container. Ensure container image is built.",
-      };
-    }
-  }
-
-  /**
-   * Step 4: Boot agent process verification
-   */
+  /** The container runs the current image with the agent's home on its persistent volume. */
   async startAgentProcess(): Promise<{ success: boolean; error?: string }> {
-    try {
-      const { stdout } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "which", "agy"], {
-        timeout: 5000,
-      });
-      if (stdout.trim().includes("agy")) {
-        return { success: true };
-      }
-      return { success: false, error: "Agent executable not located in system path." };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: "Agent process initialization failed inside sandbox.",
-      };
-    }
+    const info = await inspectContainer();
+    // Containers from older versions kept the home on tmpfs, which loses the CLI's sign-in on restart.
+    const res = info.exists && info.running && info.homeOnVolume ? { ok: true, detail: "running" } : await startAgentContainer({ recreate: info.exists && !info.homeOnVolume });
+    if (!res.ok) return { success: false, error: res.detail };
+    return (await agyVersionInContainer()) ? { success: true } : { success: false, error: "The Antigravity CLI does not start inside the sandbox." };
   }
 
   /**
-   * Step 5 & 6: Generate authentication session / link
+   * Starts the CLI's sign-in. A CLI that already answers a prompt is signed in, so no terminal is
+   * needed; otherwise the CLI runs in a pseudo-terminal and picks "Google OAuth", and this resolves
+   * once its sign-in link is on screen.
    */
-  async generateAuthSession(methodId: string): Promise<{
-    authUrl: string;
-    state?: string;
-    codeVerifier?: string;
-    error?: string;
-  }> {
-    if (methodId === "google_oauth") {
-      const session = generateAgyOAuthSession();
-      this.activeCodeVerifier = session.codeVerifier;
-      return {
-        authUrl: session.authUrl,
-        state: session.state,
-        codeVerifier: session.codeVerifier,
-      };
+  async startSignIn(_methodId: string): Promise<AgentSignInProgress> {
+    const current = getAgyLoginSnapshot();
+    if (current && (current.state === "awaiting_code" || current.state === "signing_in" || current.state === "verifying")) return toProgress(current);
+
+    const probe = await verifyAgentAnswers();
+    if (probe.ok) {
+      return { state: "signed_in", authUrl: null, message: "Already signed in. The agent is ready.", transcript: "", alreadySignedIn: true };
     }
 
-    if (methodId === "vertex_api") {
-      return {
-        authUrl: "https://console.cloud.google.com/apis/credentials",
-        state: "vertex_manual_key",
-      };
-    }
-
-    return {
-      authUrl: "",
-      error: `Unsupported authentication method: ${methodId}`,
-    };
-  }
-
-  /**
-   * Step 8: Submit code or API key to finalize authentication
-   */
-  async submitAuthCode(
-    codeOrKey: string,
-    options?: { codeVerifier?: string; methodId?: string }
-  ): Promise<{ success: boolean; error?: string }> {
-    const trimmed = (codeOrKey || "").trim();
-    if (!trimmed) {
-      return { success: false, error: "Authorization credential cannot be empty." };
-    }
-
-    const methodId = options?.methodId || this.defaultAuthMethod;
-
-    // Google OAuth authorization code (4/0... or a callback URL containing code=)
-    if (methodId === "google_oauth" || trimmed.startsWith("4/") || trimmed.includes("code=")) {
-      // options.codeVerifier is supplied by the orchestrator from server-side
-      // state (config.oauthCodeVerifier), never from the client request.
-      const verifier = options?.codeVerifier || this.activeCodeVerifier;
-      if (!verifier) {
+    await startAgyLogin({ restart: true });
+    const end = Date.now() + SIGN_IN_LINK_WAIT_MS;
+    for (;;) {
+      const snap = getAgyLoginSnapshot();
+      if (!snap) break;
+      if (snap.state === "awaiting_code" || snap.state === "signed_in" || snap.state === "failed" || snap.state === "cancelled") return toProgress(snap);
+      if (Date.now() > end) {
+        cancelAgyLogin();
+        const tailLines = snap.transcript.trim().split("\n").filter(Boolean).slice(-3).join(" · ");
         return {
-          success: false,
-          error: "No pending authorization session. Generate a new sign-in link and try again.",
+          state: "failed",
+          authUrl: null,
+          message: `The Antigravity CLI did not show its sign-in link within ${SIGN_IN_LINK_WAIT_MS / 1000} s.${tailLines ? ` Last output: ${tailLines}` : ""}`,
+          transcript: snap.transcript,
+          alreadySignedIn: false,
         };
       }
-      const exchangeRes = await exchangeOAuthCodeForToken(trimmed, verifier);
-      if (!exchangeRes.success || !exchangeRes.token) {
-        // Never store the raw authorization code as a credential.
-        return {
-          success: false,
-          error: exchangeRes.error || "Failed to exchange authorization code with Google OAuth.",
-        };
-      }
-
-      const injectRes = injectContainerOAuthToken(exchangeRes.token);
-      if (!injectRes.success) {
-        return { success: false, error: injectRes.message };
-      }
-      this.activeCodeVerifier = null;
-      return { success: true };
+      await new Promise((r) => setTimeout(r, 250));
     }
-
-    // Vertex AI / Gemini API key (or a JSON credential payload)
-    if (methodId === "vertex_api") {
-      let payload: any;
-      try {
-        payload = JSON.parse(trimmed);
-      } catch {
-        payload = {
-          token: {
-            access_token: trimmed,
-            token_type: "Bearer",
-            refresh_token: "",
-            expiry: new Date(Date.now() + 86400000).toISOString(),
-          },
-          auth_method: "vertex",
-        };
-      }
-      const injectRes = injectContainerOAuthToken(payload);
-      return { success: injectRes.success, error: injectRes.success ? undefined : injectRes.message };
-    }
-
-    return { success: false, error: `Unsupported authentication method: ${methodId}` };
+    return { state: "failed", authUrl: null, message: "The sign-in did not start.", transcript: "", alreadySignedIn: false };
   }
 
-  /**
-   * Step 9: Validate connection with a lightweight probe
-   */
-  async testConnection(): Promise<{
-    success: boolean;
-    latencyMs?: number;
-    version?: string;
-    error?: string;
-  }> {
-    const startTime = Date.now();
-    try {
-      // First verify binary and version
-      const { stdout: vOut } = await execFileAsync("docker", ["exec", CONTAINER_NAME, "agy", "--version"], {
-        timeout: 6000,
-      });
-      const version = vOut.trim();
-
-      // Check credentials file in vault
-      const tokenStatus = checkContainerOAuthToken();
-      if (!tokenStatus.exists) {
-        return {
-          success: false,
-          latencyMs: Date.now() - startTime,
-          version,
-          error: "Agent is installed but requires authentication.",
-        };
-      }
-
-      // Dispatch a tiny probe (print mode, stdin, no tools) to verify inference
-      const probe = await runAgentPromptInSandbox("Reply with the single word: pong", {
-        timeoutMs: 20000,
-        category: "auth",
-      });
-      if (!probe.success && /auth/i.test(probe.error || "")) {
-        return {
-          success: false,
-          latencyMs: Date.now() - startTime,
-          version,
-          error: "Authentication expired or invalid. Please re-authenticate.",
-        };
-      }
-
-      const latencyMs = Date.now() - startTime;
-      return {
-        success: true,
-        latencyMs,
-        version,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        latencyMs: Date.now() - startTime,
-        error: err?.message || "Connection to agent container failed.",
-      };
-    }
+  getSignIn(): AgentSignInProgress | null {
+    const snap = getAgyLoginSnapshot();
+    return snap ? toProgress(snap) : null;
   }
 
-  /**
-   * Check if credentials currently exist in container vault
-   */
-  async checkCredentials(): Promise<{
-    hasCredentials: boolean;
-    tokenPreview?: string;
-    expiry?: string;
-  }> {
-    const status = checkContainerOAuthToken();
-    return {
-      hasCredentials: status.exists,
-      tokenPreview: status.tokenPreview,
-      expiry: status.expiry,
-    };
+  submitSignInCode(code: string): { success: boolean; error?: string } {
+    const res = submitAgyLoginCode(code);
+    return res.ok ? { success: true } : { success: false, error: res.error };
   }
 
-  /**
-   * Execute prompt or inference via warm container agent session
-   */
-  async executeInference(
-    prompt: string,
-    model?: string
-  ): Promise<{ text: string; latencyMs: number; error?: string }> {
-    const targetModel = sanitizeAgyModel(model || this.defaultModel);
-    const result = await warmAgentService.executePrompt(prompt, { model: targetModel });
-    return {
-      text: result.text,
-      latencyMs: result.latencyMs,
-      error: result.error,
-    };
+  cancelSignIn(): void {
+    cancelAgyLogin();
   }
 
-  /**
-   * Reset credentials and container vault
-   */
+  onSignInChange(listener: (progress: AgentSignInProgress) => void): () => void {
+    return onAgyLoginChange((snap) => listener(toProgress(snap)));
+  }
+
+  /** A real prompt through the agent (print mode, no tools). */
+  async testConnection(): Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }> {
+    const version = (await agyVersionInContainer()) || undefined;
+    if (!version) return { success: false, error: "The Antigravity CLI is not available in the sandbox." };
+    const res = await verifyAgentAnswers();
+    return res.ok
+      ? { success: true, latencyMs: res.latencyMs, version }
+      : { success: false, latencyMs: res.latencyMs, version, error: res.detail === "the CLI is not signed in" ? "The agent is not signed in. Sign in again." : `The agent did not answer: ${res.detail}` };
+  }
+
+  async executeInference(prompt: string, model?: string): Promise<{ text: string; latencyMs: number; error?: string }> {
+    const result = await warmAgentService.executePrompt(prompt, { model: sanitizeAgyModel(model || this.defaultModel) });
+    return { text: result.text, latencyMs: result.latencyMs, error: result.error };
+  }
+
   async reset(): Promise<{ success: boolean; error?: string }> {
-    this.activeCodeVerifier = null;
-    return removeContainerOAuthToken();
+    cancelAgyLogin();
+    warmAgentService.destroyProcess("agent_reset");
+    const res = await removeAgentContainerAndHome();
+    return res.ok ? { success: true } : { success: false, error: res.detail };
   }
 }

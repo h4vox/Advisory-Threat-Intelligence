@@ -47,7 +47,6 @@ import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
-import { generateAgyOAuthSession, exchangeOAuthCodeForToken } from "./marketplace-registry";
 import { agentOnboardingOrchestrator } from "./agent-framework/server";
 import type {
   AppSettings,
@@ -168,8 +167,6 @@ import {
   detectSandboxRuntime,
   ensureAgentSandboxRunning,
   executeInAgentSandbox,
-  injectContainerOAuthToken,
-  checkContainerOAuthToken,
   appendSandboxLog,
   getRecentSandboxLogs,
   clearSandboxLogs,
@@ -2882,7 +2879,7 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
       selectedModel: z.string().optional(),
     })
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
     const integrations = await mongoGetMarketplaceIntegrations();
     const existing = integrations.find((x) => x.id === data.id);
     if (!existing) {
@@ -2903,98 +2900,28 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
     };
 
     let rawLogs = "";
-    // PKCE verifier lives server-side only (config.oauthCodeVerifier is redacted
-    // before integrations reach the browser). Starting a new sign-in mints a new
-    // verifier; submitting a code reuses the one minted for that attempt.
-    const storedVerifier: string | undefined = existing.config?.oauthCodeVerifier;
-    let pendingVerifier = storedVerifier;
-    let authUrl = existing.config?.authUrl || existing.authUrl || "";
-    if (data.id === "agy_agent" && (!data.authToken || !storedVerifier)) {
-      const session = generateAgyOAuthSession();
-      authUrl = session.authUrl;
-      pendingVerifier = session.codeVerifier;
+    const authUrl = existing.config?.authUrl || existing.authUrl || "";
+
+    // The Antigravity agent installs and signs in through the onboarding pipeline: the CLI in the
+    // sandbox runs its own Google sign-in. Nothing here builds OAuth links or stores tokens.
+    if (data.id === "agy_agent") {
+      assertCanManageAgents(context.identity);
+      addLog("INFO", "system", `Starting the install and sign-in of ${existing.name}...`);
+      const status = await agentOnboardingOrchestrator.startOrAdvance("agy_agent");
+      addLog(status.state === "error" ? "ERROR" : "INFO", "system", status.error || status.message);
+      const refreshed = (await mongoGetMarketplaceIntegrations()).find((x) => x.id === data.id) ?? existing;
+      return {
+        success: status.state !== "error",
+        id: data.id,
+        reconfigured: Boolean(data.reconfig),
+        logs,
+        rawLogs: logs.join("\n"),
+        authUrl: "",
+        integration: redactIntegration(refreshed),
+      };
     }
 
-    if (data.id === "agy_agent") {
-
-      addLog("INFO", "system", `Starting containerized agent onboarding for ${existing.name}...`);
-
-      const sandboxInfo = detectSandboxRuntime({ forceRefresh: true });
-      addLog("INFO", "sandbox", `Runtime environment: [${sandboxInfo.runtime.toUpperCase()}], Container=${sandboxInfo.containerName}, Running=${sandboxInfo.containerRunning}`);
-
-      if (!sandboxInfo.containerRunning) {
-        addLog("INFO", "sandbox", `Starting container '${sandboxInfo.containerName}'...`);
-        try {
-          const spawnRes = await ensureAgentSandboxRunning();
-          addLog("INFO", "sandbox", `Container initialization result: ${spawnRes.message}`);
-        } catch (e: any) {
-          addLog("WARN", "sandbox", `Container launch warning: ${e?.message || "Using fallback"}`);
-        }
-      } else {
-        addLog("INFO", "sandbox", `Container '${sandboxInfo.containerName}' is running and verified.`);
-      }
-
-      // Probe binary installed directly in container
-      try {
-        const { execSync } = await import("node:child_process");
-        const vProbe = execSync("docker exec aie-agent-sandbox agy --version", { encoding: "utf-8", timeout: 8000 }).trim();
-        addLog("INFO", "agent", `Container binary operational: /usr/local/bin/agy v${vProbe} (installed inside container image).`);
-      } catch (err: any) {
-        addLog("WARN", "agent", `Container binary probe: ${err?.message || "Binary awaiting session initialization"}`);
-      }
-
-      // Check if user submitted an auth token or authorization code
-      if (data.authToken) {
-        const trimmed = data.authToken.trim();
-        addLog("AUTH", "auth", `Processing credential input (${trimmed.length} characters)...`);
-
-        if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
-          addLog("AUTH", "auth", `Detected Google OAuth authorization code. Exchanging with Google OAuth token service...`);
-          const exchangeRes = await exchangeOAuthCodeForToken(trimmed, storedVerifier);
-          if (exchangeRes.success && exchangeRes.token) {
-            addLog("AUTH", "auth", `Google OAuth token exchange succeeded.`);
-            const injectRes = injectContainerOAuthToken(exchangeRes.token);
-            addLog("INFO", "auth", injectRes.message);
-            pendingVerifier = undefined;
-          } else {
-            addLog("ERROR", "auth", `OAuth code exchange failed: ${exchangeRes.error || "Invalid authorization code"}. Start sign-in again.`);
-          }
-        } else {
-          try {
-            const parsed = JSON.parse(trimmed);
-            const injectRes = injectContainerOAuthToken(parsed);
-            addLog("INFO", "auth", `Parsed JSON token and saved to container vault: ${injectRes.message}`);
-          } catch {
-            const tokenPayload = {
-              token: { access_token: trimmed, token_type: "Bearer", refresh_token: "", expiry: new Date(Date.now() + 86400000).toISOString() },
-              auth_method: "consumer",
-            };
-            const injectRes = injectContainerOAuthToken(tokenPayload);
-            addLog("INFO", "auth", `Saved bearer token to container vault: ${injectRes.message}`);
-          }
-        }
-      }
-
-      // Check container vault token
-      const tokenCheck = checkContainerOAuthToken();
-      if (tokenCheck.exists) {
-        addLog("INFO", "auth", `OAuth credentials verified in container vault (/home/agent/.gemini/antigravity-cli/antigravity-oauth-token).`);
-        try {
-          addLog("EXEC", "agent", `Running container verification probe: agy -p "ping"`);
-          const { execSync } = await import("node:child_process");
-          const pingOut = execSync('docker exec -i aie-agent-sandbox agy -p "ping"', { encoding: "utf-8", timeout: 15000 }).trim();
-          addLog("INFO", "agent", `Agent ping response: "${pingOut.slice(0, 100)}..."`);
-          addLog("INFO", "system", `Autonomous AI Agent Engine is online and operational!`);
-        } catch (probeErr: any) {
-          addLog("INFO", "agent", `Agent container ready for incoming tasks.`);
-        }
-      } else {
-        addLog("WARN", "auth", `Container awaiting OAuth authorization code. Click the Google OAuth portal link to get your code.`);
-      }
-
-      addLog("INFO", "system", `Onboarding sequence completed. Agent state set to INSTALLED.`);
-      rawLogs = logs.join("\n");
-    } else if (data.id === "claude_code_agent") {
+    if (data.id === "claude_code_agent") {
       addLog("INFO", "system", `Initiating agent onboarding sequence for ${existing.name} (${existing.version})...`);
       addLog("DEBUG", "system", `Host environment: Node ${process.version} on ${process.platform}/${process.arch}`);
 
@@ -3098,17 +3025,16 @@ export const executeRealIntegrationInstall = createServerFn({ method: "POST" }).
     const updated: IntegrationItem = {
       ...existing,
       status: "installed",
-      authUrl: data.id === "agy_agent" ? authUrl : (existing.authUrl || authUrl),
+      authUrl: existing.authUrl || authUrl,
       config: {
         ...existing.config,
         apiKey: data.apiKey || existing.config?.apiKey,
-        authToken: data.id === "agy_agent" ? undefined : data.authToken || existing.config?.authToken,
+        authToken: data.authToken || existing.config?.authToken,
         selectedModel: data.selectedModel || existing.config?.selectedModel || existing.supportedModels[0],
         installedAt: existing.config?.installedAt || new Date().toISOString(),
         lastReconfiguredAt: data.reconfig ? new Date().toISOString() : existing.config?.lastReconfiguredAt,
         isConfigured: true,
-        authUrl: data.id === "agy_agent" ? authUrl : existing.config?.authUrl,
-        oauthCodeVerifier: pendingVerifier,
+        authUrl: existing.config?.authUrl,
         logs,
       },
     };
@@ -3191,29 +3117,20 @@ export const configureMarketplaceIntegration = createServerFn({ method: "POST" }
       throw new Error(`Integration with ID ${data.id} not found.`);
     }
 
+    // Agents sign in through their own CLI in the install steps; they never take pasted tokens, and
+    // saving settings does not mark them installed (only a verified sign-in does).
+    if (existing.type === "cli_agent" && data.config?.authToken) {
+      throw new Error(`${existing.name} signs in through the install steps (Marketplace → ${existing.name} → Install and sign in). Tokens are not accepted here.`);
+    }
     const updated: IntegrationItem = {
       ...existing,
-      status: "installed",
+      status: existing.type === "cli_agent" ? existing.status : "installed",
       config: {
         ...existing.config,
         ...data.config,
-        isConfigured: true,
+        isConfigured: existing.type === "cli_agent" ? Boolean(existing.config?.isConfigured) : true,
       },
     };
-
-    if (data.config?.authToken && (data.id === "agy_agent" || existing.type === "cli_agent")) {
-      const trimmed = String(data.config.authToken).trim();
-      if (trimmed.startsWith("4/") || trimmed.includes("code=")) {
-        const ex = await exchangeOAuthCodeForToken(trimmed, existing.config?.oauthCodeVerifier);
-        if (!ex.success || !ex.token) {
-          throw new Error(`OAuth code exchange failed: ${ex.error || "invalid code"}. Start sign-in again.`);
-        }
-        injectContainerOAuthToken(ex.token);
-        if (updated.config) updated.config.oauthCodeVerifier = undefined;
-      } else {
-        injectContainerOAuthToken(trimmed);
-      }
-    }
 
     await mongoSaveMarketplaceIntegration(updated);
     logger.serverFn("configureMarketplaceIntegration", "DONE", undefined, { id: data.id });
@@ -3287,12 +3204,10 @@ export const testIntegrationConnection = createServerFn({ method: "POST" }).midd
       addAuditLog("DEBUG", "sandbox", `Runtime status: [${sandboxInfo.runtime.toUpperCase()}], Container=${sandboxInfo.containerName}, Running=${sandboxInfo.containerRunning}`);
       addAuditLog("DEBUG", "sandbox", `Host Platform: ${sandboxInfo.hostPlatform}, Target Binary=${sandboxInfo.binaryPath}`);
 
-      // Check OAuth token presence in container vault
-      const tokenCheck = checkContainerOAuthToken();
-      if (tokenCheck.exists) {
-        addAuditLog("INFO", "auth", `OAuth credentials file verified in container vault (/home/agent/.gemini/antigravity-cli/antigravity-oauth-token)`);
+      if (integration.config?.signedInAt) {
+        addAuditLog("INFO", "auth", `Agent CLI signed in (verified ${integration.config.signedInAt}); the sign-in is kept in the sandbox home volume.`);
       } else {
-        addAuditLog("WARN", "auth", `OAuth credentials not found in container vault. Authenticate via Google OAuth.`);
+        addAuditLog("WARN", "auth", `The agent CLI is not signed in yet. Use Install and sign in.`);
       }
 
       addAuditLog("EXEC", "agent", `Dispatching binary probe: agy --version`);
@@ -3469,13 +3384,13 @@ export const clearAgentSandboxLogs = createServerFn({ method: "POST" }).middlewa
 export const detectLocalAgentSession = createServerFn({ method: "GET" }).middleware([analystMiddleware]).handler(
   async () => {
     try {
-      const containerToken = checkContainerOAuthToken();
-      if (containerToken.exists) {
+      const signIn = await agentCliSignIn();
+      if (signIn.signedIn) {
         return {
           available: true,
-          tokenType: "Bearer (Container Vault)",
-          tokenPreview: "present",
-          expiry: containerToken.expiry,
+          tokenType: "Antigravity CLI sign-in (kept in the sandbox)",
+          tokenPreview: "signed in",
+          expiry: undefined,
           fullToken: undefined,
         };
       }
@@ -3841,12 +3756,7 @@ export const getContainerDetailedMetrics = createServerFn({ method: "GET" }).mid
       console.debug("[sandbox-status] child_process unavailable:", err);
     }
 
-    let tokenDetected = false;
-    try {
-      tokenDetected = checkContainerOAuthToken().exists;
-    } catch {
-      // Token probe failure means no token detected.
-    }
+    const tokenDetected = (await agentCliSignIn().catch(() => ({ signedIn: false }))).signedIn;
 
     const mem = process.memoryUsage();
     const logs = getRecentSandboxLogs({ limit: 1 });
@@ -3936,17 +3846,17 @@ export const executeDiagnosticsCommand = createServerFn({ method: "POST" }).midd
       }
 
       if (data.command === "token") {
-        // Never reveal token material; report presence and expiry only.
-        const check = checkContainerOAuthToken();
-        const out = check.exists
-          ? `OAuth credential present in the agent container vault.\n• Expiry: ${check.expiry || "not reported"}`
-          : "No OAuth credential in the agent container vault.";
+        // The CLI keeps its own credentials in the sandbox home; AIE never reads them.
+        const signIn = await agentCliSignIn();
+        const out = signIn.signedIn
+          ? `The agent CLI is signed in (verified ${signIn.at}).\n• Its credentials stay in the sandbox home volume; AIE does not read them.`
+          : "The agent CLI is not signed in. Use Install and sign in in the Marketplace.";
         appendSandboxLog("INFO", "auth", out);
         return {
-          command: "vault token audit",
+          command: "sign-in audit",
           output: out,
           latencyMs: Date.now() - startTime,
-          success: check.exists,
+          success: signIn.signedIn,
           logs: [`[${new Date().toISOString()}] [AUTH] ${out}`],
         };
       }
@@ -3978,60 +3888,67 @@ export const executeDiagnosticsCommand = createServerFn({ method: "POST" }).midd
 // Generic & Extensible Agent Onboarding Pipeline (10-Step Lifecycle)
 // ---------------------------------------------------------------------------
 
+/**
+ * Who may install the agent, sign it in or sign it out: an administrator (password sign-in), or the
+ * local workspace user of a development server. The sign-in binds the whole workspace's agent to one
+ * Google account, so analysts can watch the status but not change it.
+ */
+/** The agent CLI's sign-in as last verified by the onboarding (a real prompt answered). */
+async function agentCliSignIn(agentId = "agy_agent"): Promise<{ signedIn: boolean; at?: string }> {
+  const integration = (await mongoGetMarketplaceIntegrations()).find((x) => x.id === agentId);
+  const at = integration?.status === "installed" ? integration.config?.signedInAt : undefined;
+  return typeof at === "string" && at ? { signedIn: true, at } : { signedIn: false };
+}
+
+function canManageAgents(identity: { method: string; role?: string }): boolean {
+  if (identity.method === "password") return identity.role === "admin";
+  return identity.method === "dev" && process.env.NODE_ENV !== "production";
+}
+
+function assertCanManageAgents(identity: { method: string; role?: string }): void {
+  if (!canManageAgents(identity)) throw new ForbiddenError("Only an administrator can install, sign in or reset the agent.");
+}
+
+const agentIdSchema = z.string().max(64).regex(/^[a-z0-9_]+$/);
+
 export const getAgentOnboardingStatus = createServerFn({ method: "GET" }).middleware([analystMiddleware])
-  .validator(
-    z
-      .object({
-        agentId: z.string().optional(),
-      })
-      .optional()
-  )
-  .handler(async ({ data }) => {
-    return agentOnboardingOrchestrator.getStatus(data?.agentId || "agy_agent");
+  .validator(z.object({ agentId: agentIdSchema.optional() }).optional())
+  .handler(async ({ data, context }) => {
+    return agentOnboardingOrchestrator.getStatus(data?.agentId || "agy_agent", { canManage: canManageAgents(context.identity) });
   });
 
 export const advanceAgentOnboarding = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      agentId: z.string(),
-      authMethod: z.string().optional(),
-    })
-  )
-  .handler(async ({ data }) => {
+  .validator(z.object({ agentId: agentIdSchema, authMethod: z.string().max(64).optional() }))
+  .handler(async ({ data, context }) => {
+    assertCanManageAgents(context.identity);
     return agentOnboardingOrchestrator.startOrAdvance(data.agentId, data.authMethod);
   });
 
 export const submitAgentOnboardingCode = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      agentId: z.string(),
-      code: z.string().max(4000),
-      methodId: z.string().max(100).optional(),
-    })
-  )
-  .handler(async ({ data }) => {
-    return agentOnboardingOrchestrator.submitAuthCode(data.agentId, data.code, {
-      methodId: data.methodId,
-    });
+  .validator(z.object({ agentId: agentIdSchema, code: z.string().min(1).max(2048) }))
+  .handler(async ({ data, context }) => {
+    assertCanManageAgents(context.identity);
+    // The code is typed into the CLI and never stored or logged.
+    return agentOnboardingOrchestrator.submitAuthCode(data.agentId, data.code);
+  });
+
+export const cancelAgentOnboardingSignIn = createServerFn({ method: "POST" }).middleware([analystMiddleware])
+  .validator(z.object({ agentId: agentIdSchema }))
+  .handler(async ({ data, context }) => {
+    assertCanManageAgents(context.identity);
+    return agentOnboardingOrchestrator.cancelSignIn(data.agentId);
   });
 
 export const testAgentOnboardingConnection = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      agentId: z.string(),
-    })
-  )
+  .validator(z.object({ agentId: agentIdSchema }))
   .handler(async ({ data }) => {
     return agentOnboardingOrchestrator.testConnection(data.agentId);
   });
 
 export const resetAgentOnboarding = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      agentId: z.string(),
-    })
-  )
-  .handler(async ({ data }) => {
+  .validator(z.object({ agentId: agentIdSchema }))
+  .handler(async ({ data, context }) => {
+    assertCanManageAgents(context.identity);
     return agentOnboardingOrchestrator.reset(data.agentId);
   });
 
