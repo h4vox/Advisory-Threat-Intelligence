@@ -98,12 +98,9 @@ function MarketplacePage() {
   const [configModalItem, setConfigModalItem] = useState<IntegrationItem | null>(null);
   const [isReconfigMode, setIsReconfigMode] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
-  const [authTokenInput, setAuthTokenInput] = useState("");
   const [webhookInput, setWebhookInput] = useState("");
   const [selectedModelInput, setSelectedModelInput] = useState("");
   const [modalFeedback, setModalFeedback] = useState<string | null>(null);
-  // OAuth (PKCE) is generated server-side; the client only ever sees the server's authUrl.
-  const [serverAuthUrl, setServerAuthUrl] = useState<string | null>(null);
 
   // Live execution logs state
   const [realInstallLogs, setRealInstallLogs] = useState<string[]>([]);
@@ -242,12 +239,6 @@ function MarketplacePage() {
       selectedModel?: string;
     }) => executeRealIntegrationInstall({ data }),
     onSuccess: (res) => {
-      const returnedAuthUrl =
-        (res as { authUrl?: unknown }).authUrl ??
-        (res as { integration?: { config?: { authUrl?: unknown } } }).integration?.config?.authUrl;
-      if (typeof returnedAuthUrl === "string" && returnedAuthUrl) {
-        setServerAuthUrl(returnedAuthUrl);
-      }
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
       queryClient.invalidateQueries({ queryKey: ["app_settings"] });
       queryClient.invalidateQueries({ queryKey: ["detected_local_agent_session"] });
@@ -356,14 +347,12 @@ function MarketplacePage() {
     setIsReconfigMode(reconfig);
     // Never prefill stored secrets; the server only reports whether one exists.
     setApiKeyInput("");
-    setAuthTokenInput("");
     setWebhookInput("");
     setSelectedModelInput(item.config?.selectedModel || item.supportedModels[0] || "");
     setRealInstallLogs(item.config?.logs || []);
     setIsLogsExpanded(true);
     setModalFeedback(null);
     setModalTestResult(null);
-    setServerAuthUrl(typeof item.config?.authUrl === "string" ? item.config.authUrl : null);
   };
 
   // Filter active logs for the terminal viewer
@@ -506,12 +495,6 @@ function MarketplacePage() {
     return matchesSearch && matchesCategory && matchesStatus;
   });
 
-  // Check if mandatory token is missing for install or re-config
-  const isMandatoryAuthMissing =
-    (isReconfigMode || configModalItem?.status !== "installed") &&
-    authTokenInput.trim() === "" &&
-    (configModalItem?.type === "cli_agent" || configModalItem?.id === "agy_agent");
-
   return (
     <AppShell flush>
       <div className="h-full flex flex-col overflow-hidden bg-bg text-fg">
@@ -524,15 +507,23 @@ function MarketplacePage() {
             actions={
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {/* Clean "active AI" indicator — the one thing analysts need to see. */}
-                <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
-                  <StatusDot tone="success">
-                    <span className="text-muted">Active AI</span>
-                  </StatusDot>
-                  <span className="truncate font-medium text-fg">
-                    {integrations.find((x) => x.id === activeProviderId)?.name || "Autonomous AI Agent"}
-                  </span>
-                  <span className="shrink-0 font-mono text-[11px] text-muted">{activeModel}</span>
-                </div>
+                {(() => {
+                  const active = integrations.find((x) => x.id === activeProviderId);
+                  const ready = active?.status === "installed";
+                  return (
+                    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs">
+                      <StatusDot tone={ready ? "success" : "warning"}>
+                        <span className="text-muted">Active AI</span>
+                      </StatusDot>
+                      <span className="truncate font-medium text-fg">{active?.name || "None"}</span>
+                      {ready ? (
+                        <span className="shrink-0 font-mono text-[11px] text-muted">{activeModel}</span>
+                      ) : (
+                        <span className="shrink-0 text-[11px] text-warn">not set up</span>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Admin-only Debugger Mode switch. */}
                 {isAdmin && (
@@ -981,7 +972,7 @@ function MarketplacePage() {
                           </div>
                           <div className="flex items-center justify-between text-subtle">
                             <span>Authentication</span>
-                            <span className="font-medium text-fg">Google OAuth 2.0 / Vertex API</span>
+                            <span className="font-medium text-fg">Google account (the CLI&apos;s own sign-in)</span>
                           </div>
                         </>
                       )}
@@ -1462,50 +1453,7 @@ function MarketplacePage() {
                 </div>
               )}
 
-              {/* Server-issued OAuth sign-in (PKCE verifier never leaves the server).
-                 Shown only when a Google OAuth client is actually configured; otherwise the sign-in
-                 returns Google's "Missing required parameter: client_id" error, so we guide instead. */}
-              {configModalItem.id === "agy_agent" &&
-                (() => {
-                  const url = serverAuthUrl || configModalItem.authUrl || "";
-                  let oauthConfigured = false;
-                  try {
-                    oauthConfigured = Boolean(new URL(url).searchParams.get("client_id"));
-                  } catch {
-                    oauthConfigured = false;
-                  }
-                  if (oauthConfigured) {
-                    return (
-                      <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-subtle p-3 text-xs">
-                        <span className="text-subtle">Google sign-in for {configModalItem.name}</span>
-                        {serverAuthUrl ? (
-                          <a href={serverAuthUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-medium text-accent hover:underline">
-                            Open sign-in <ExternalLink className="size-3" />
-                          </a>
-                        ) : (
-                          <Button size="sm" variant="secondary" disabled={realInstallMutation.isPending} onClick={() => realInstallMutation.mutate({ id: configModalItem.id })} className="h-7 text-xs">
-                            {realInstallMutation.isPending ? "Starting…" : "Start sign-in"}
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="mb-4 rounded-xl border border-warn/40 bg-warn/10 p-3 text-xs">
-                      <div className="flex items-center gap-1.5 font-medium text-warn">
-                        <AlertCircle className="size-3.5 shrink-0" /> Google sign-in isn&apos;t configured
-                      </div>
-                      <p className="mt-1 leading-relaxed text-muted">
-                        This agent&apos;s Google OAuth has no client ID, so sign-in returns a Google error. To use Google, set your own OAuth
-                        client in <code className="font-mono text-[11px]">AGY_OAUTH_CLIENT_ID</code>. The simpler path is to skip Google and use a
-                        direct AI provider — the <span className="font-medium text-fg">Google Gemini API</span> or{" "}
-                        <span className="font-medium text-fg">OpenAI API</span> under AI Providers need only an API key.
-                      </p>
-                    </div>
-                  );
-                })()}
-
-              {/* Autonomous Agent Onboarding Pipeline (10-Step Extensible Flow) */}
+              {/* Agent install and sign-in (the agent CLI's own Google sign-in, relayed by the server) */}
               {configModalItem.type === "cli_agent" && (
                 <AgentOnboardingStepper
                   agentId={configModalItem.id}

@@ -1,13 +1,15 @@
 # Isolated sandbox for the agent CLI (agy).
 # - Runs as an unprivileged user with every Linux capability dropped.
-# - Root filesystem is read-only; scratch space is tmpfs.
-# - Only the dedicated credential volume is mounted; no host directories.
+# - Root filesystem is read-only; /tmp and /workspace are tmpfs scratch space.
+# - The agent's home is the dedicated `aie-agent-home` volume, so the CLI's sign-in (it signs in
+#   through AIE's Marketplace) and its settings survive restarts. No host directories are mounted.
+# - The image installs the Antigravity CLI from Google's official installer at build time
+#   (docker/agent-sandbox/Dockerfile); AIE rebuilds it when it finds only the fallback shim.
 # - Network access is intentionally kept: the agent must reach the model API.
 #   It is not otherwise restricted, so the agent runs print-only with tools
 #   disabled (no --dangerously-skip-permissions) from the application side.
-# Upgrading from the old root-based image: the existing `aie-agent-vault`
-# volume is owned by root. Remove it (`docker volume rm aie-agent-vault`) and
-# re-authenticate, or chown it to 10001:10001.
+# Older versions mounted only `aie-agent-vault` at ~/.gemini; it is no longer used and can be
+# removed with `docker volume rm aie-agent-vault`.
 services:
   aie-agent-sandbox:
     container_name: aie-agent-sandbox
@@ -29,10 +31,9 @@ services:
     cpus: 1.5
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
-      - /home/agent:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
       - /workspace:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001
     volumes:
-      - aie-agent-vault:/home/agent/.gemini
+      - aie-agent-home:/home/agent
     environment:
       - AGENT_ENV=isolated_sandbox
       - PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
@@ -40,5 +41,5 @@ services:
     network_mode: bridge
 
 volumes:
-  aie-agent-vault:
-    name: aie-agent-vault
+  aie-agent-home:
+    name: aie-agent-home

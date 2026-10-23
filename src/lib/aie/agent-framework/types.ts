@@ -31,62 +31,62 @@ export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
     id: "starting_environment",
     stepNumber: 1,
     title: "Starting agent environment",
-    description: "Initializing dedicated container sandbox runtime and isolating resource namespaces.",
+    description: "Checking Docker and preparing the isolated sandbox container.",
   },
   {
     id: "installing_agent",
     stepNumber: 2,
     title: "Installing agent",
-    description: "Verifying containerized agent binary, execution environment, and permissions.",
+    description: "Installing the agent CLI in the sandbox image (the first install can take a few minutes).",
   },
   {
     id: "installation_completed",
     stepNumber: 3,
     title: "Agent installation completed",
-    description: "Agent environment and execution runtime successfully validated.",
+    description: "The agent CLI is installed in the sandbox.",
   },
   {
     id: "starting_agent",
     stepNumber: 4,
     title: "Starting agent",
-    description: "Booting autonomous agent process within isolated execution sandbox.",
+    description: "Starting the agent CLI inside the sandbox.",
   },
   {
     id: "selecting_auth_method",
     stepNumber: 5,
     title: "Selecting authentication method",
-    description: "Configuring authentication provider (Google OAuth 2.0 or Vertex API).",
+    description: "Choosing Google sign-in in the agent CLI.",
   },
   {
     id: "generating_auth_link",
     stepNumber: 6,
     title: "Generating authentication link",
-    description: "Generating secure dynamic OAuth authorization session with cryptographic challenge.",
+    description: "The agent CLI is preparing its Google sign-in link.",
   },
   {
     id: "waiting_for_auth",
     stepNumber: 7,
     title: "Waiting for authentication",
-    description: "Please sign in via the authorization portal and paste the resulting authorization code.",
+    description: "Open the sign-in link, approve access and paste the authorization code Google shows.",
     isInteractive: true,
   },
   {
     id: "authentication_successful",
     stepNumber: 8,
     title: "Authentication successful",
-    description: "Authorization code verified and credentials securely stored in agent vault.",
+    description: "The agent CLI accepted the sign-in and saved it in the sandbox.",
   },
   {
     id: "testing_agent_connection",
     stepNumber: 9,
     title: "Testing agent connection",
-    description: "Sending diagnostic probe to verify bidirectional agent communication and inference readiness.",
+    description: "Sending a real prompt to confirm the agent answers.",
   },
   {
     id: "agent_onboarding_completed",
     stepNumber: 10,
     title: "Agent onboarding completed",
-    description: "Agent engine is fully operational and ready for threat intelligence tasks.",
+    description: "The agent is signed in and ready for threat intelligence tasks.",
   },
 ];
 
@@ -107,8 +107,8 @@ export interface AgentOnboardingStatus {
   totalSteps: number;
   state: "idle" | "in_progress" | "waiting_input" | "success" | "error";
   message: string;
+  /** Sign-in link printed by the agent CLI, while it waits for the authorization code. */
   authUrl?: string;
-  authState?: string;
   selectedAuthMethod: string;
   supportedAuthMethods: AgentAuthOption[];
   supportedModels: string[];
@@ -116,6 +116,15 @@ export interface AgentOnboardingStatus {
   latencyMs?: number;
   version?: string;
   error?: string;
+  /** Live state of the agent CLI's own sign-in, while one is running or just finished. */
+  signIn?: {
+    state: AgentSignInState;
+    message: string;
+    /** CLI output (escape codes removed, authorization code redacted). Administrators only. */
+    transcript?: string;
+  };
+  /** The caller may start, sign in, reset (administrators). */
+  canManage: boolean;
   updatedAt: string;
   history: Array<{
     step: AgentOnboardingStepId;
@@ -126,6 +135,31 @@ export interface AgentOnboardingStatus {
   }>;
 }
 
+export type AgentSignInState =
+  | "starting"
+  | "choosing_method"
+  | "awaiting_code"
+  | "signing_in"
+  | "verifying"
+  | "signed_in"
+  | "failed"
+  | "cancelled";
+
+/** The agent CLI's own sign-in, as the onboarding sees it. */
+export interface AgentSignInProgress {
+  state: AgentSignInState;
+  /** Sign-in link printed by the agent CLI (validated), while it waits for a code. */
+  authUrl: string | null;
+  message: string;
+  transcript: string;
+  alreadySignedIn: boolean;
+}
+
+/**
+ * Contract between the onboarding pipeline and one agent. The agent CLI runs in its sandbox and owns
+ * its sign-in: the driver relays the link the CLI prints and the code the user pastes back; it never
+ * builds OAuth URLs or handles tokens itself.
+ */
 export interface AgentDriver {
   id: string;
   name: string;
@@ -136,69 +170,38 @@ export interface AgentDriver {
   supportedModels: string[];
   defaultModel: string;
 
-  /**
-   * Step 1: Ensure execution sandbox/container is running
-   */
-  startEnvironment(): Promise<{ success: boolean; error?: string }>;
+  /** Step 1: Docker is reachable and the sandbox image exists (building it if missing). */
+  startEnvironment(onProgress?: (message: string) => void): Promise<{ success: boolean; error?: string }>;
 
-  /**
-   * Step 2 & 3: Validate or complete installation of the agent inside the runtime
-   */
-  ensureInstalled(): Promise<{ success: boolean; version?: string; error?: string }>;
+  /** Steps 2-3: the real agent CLI is in the image (rebuilding a shim-only image). */
+  ensureInstalled(onProgress?: (message: string) => void): Promise<{ success: boolean; version?: string; error?: string }>;
 
-  /**
-   * Step 4: Boot agent process / driver session
-   */
+  /** Step 4: the sandbox container runs the current image with its persistent home. */
   startAgentProcess(): Promise<{ success: boolean; error?: string }>;
 
   /**
-   * Step 5 & 6: Generate authentication session / link
+   * Steps 5-6: start the CLI's sign-in. Resolves once the CLI shows its sign-in link, reports that it
+   * is already signed in, or fails.
    */
-  generateAuthSession(methodId: string): Promise<{
-    authUrl: string;
-    state?: string;
-    codeVerifier?: string;
-    error?: string;
-  }>;
+  startSignIn(methodId: string): Promise<AgentSignInProgress>;
 
-  /**
-   * Step 8: Submit code or API key to finalize authentication
-   */
-  submitAuthCode(
-    codeOrKey: string,
-    options?: { codeVerifier?: string; methodId?: string }
-  ): Promise<{ success: boolean; error?: string }>;
+  /** The current sign-in, or null when none ran in this server process. */
+  getSignIn(): AgentSignInProgress | null;
 
-  /**
-   * Step 9: Validate connection with a lightweight probe
-   */
-  testConnection(): Promise<{
-    success: boolean;
-    latencyMs?: number;
-    version?: string;
-    error?: string;
-  }>;
+  /** Step 7: type the user's authorization code into the CLI. Completion is reported through onSignInChange. */
+  submitSignInCode(code: string): { success: boolean; error?: string };
 
-  /**
-   * Check if credentials currently exist and are valid
-   */
-  checkCredentials(): Promise<{
-    hasCredentials: boolean;
-    tokenPreview?: string;
-    expiry?: string;
-  }>;
+  cancelSignIn(): void;
 
-  /**
-   * Execute threat intelligence prompt or inference
-   */
-  executeInference(
-    prompt: string,
-    model?: string
-  ): Promise<{ text: string; latencyMs: number; error?: string }>;
+  /** Subscribe to sign-in state changes; returns the unsubscribe function. */
+  onSignInChange(listener: (progress: AgentSignInProgress) => void): () => void;
 
-  /**
-   * Clean up credentials and reset runtime
-   */
+  /** Step 9: a real prompt through the agent. */
+  testConnection(): Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
+
+  executeInference(prompt: string, model?: string): Promise<{ text: string; latencyMs: number; error?: string }>;
+
+  /** Sign out completely: remove the sandbox container and the agent's home (its saved sign-in). */
   reset(): Promise<{ success: boolean; error?: string }>;
 }
 

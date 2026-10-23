@@ -63,8 +63,6 @@ export const AGENT_CONTAINER_NAME = CONTAINER_NAME;
 /** Non-root user inside the sandbox image (see docker/agent-sandbox/Dockerfile). */
 export const AGENT_CONTAINER_UID = 10001;
 export const AGENT_CONTAINER_HOME = "/home/agent";
-const AGENT_TOKEN_DIR = `${AGENT_CONTAINER_HOME}/.gemini/antigravity-cli`;
-export const AGENT_TOKEN_PATH = `${AGENT_TOKEN_DIR}/antigravity-oauth-token`;
 
 // ---------------------------------------------------------------------------
 // In-Memory Ring Buffer for High-Detail Diagnostics & Telemetry
@@ -139,6 +137,12 @@ export function invalidateSandboxCache(): void {
 
 export type AgySandboxProbe = { usable: boolean; detail: string };
 const AGY_PROBE_TTL_MS = 120_000;
+
+/** Forgets the cached agent probe and runtime status (after an install, a rebuild or a sign-in). */
+export function invalidateAgyProbe(): void {
+  (globalThis as typeof globalThis & { __aieAgyProbe?: unknown }).__aieAgyProbe = undefined;
+  invalidateSandboxCache();
+}
 
 /**
  * Non-blocking check that the sandbox container is running and holds a real `agy` CLI (the bundled
@@ -260,18 +264,24 @@ export function detectSandboxRuntime(options?: { forceRefresh?: boolean }): Sand
 // ---------------------------------------------------------------------------
 // Container hardening (mirrors docker-compose.agent-sandbox.yml)
 // ---------------------------------------------------------------------------
+/** Persistent volume holding the agent's home: the CLI's own sign-in and settings live there. */
+export const AGENT_HOME_VOLUME = "aie-agent-home";
+/** Volume used by older versions (mounted at ~/.gemini only). */
+export const LEGACY_AGENT_VOLUME = "aie-agent-vault";
+
 /**
  * `docker run` arguments used when compose is unavailable. Kept in sync with
  * docker-compose.agent-sandbox.yml: non-root user, all capabilities dropped,
  * no-new-privileges, read-only root fs with tmpfs scratch space, resource
- * limits, and only the dedicated credential volume (never a host home dir).
+ * limits, and only the dedicated home volume (never a host directory).
  * Network access is kept because the agent must reach the model API.
  */
-function hardenedDockerRunArgs(): string[] {
+export function hardenedDockerRunArgs(): string[] {
   const uidGid = `${AGENT_CONTAINER_UID}:${AGENT_CONTAINER_UID}`;
   return [
     "run",
     "-d",
+    "--init",
     "--name",
     CONTAINER_NAME,
     "--restart",
@@ -286,8 +296,6 @@ function hardenedDockerRunArgs(): string[] {
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,nodev,size=64m",
     "--tmpfs",
-    `${AGENT_CONTAINER_HOME}:rw,nosuid,nodev,size=128m,uid=${AGENT_CONTAINER_UID},gid=${AGENT_CONTAINER_UID},mode=0700`,
-    "--tmpfs",
     `/workspace:rw,noexec,nosuid,nodev,size=32m,uid=${AGENT_CONTAINER_UID},gid=${AGENT_CONTAINER_UID}`,
     "--pids-limit",
     "256",
@@ -296,7 +304,7 @@ function hardenedDockerRunArgs(): string[] {
     "--cpus",
     "1.5",
     "-v",
-    `aie-agent-vault:${AGENT_CONTAINER_HOME}/.gemini`,
+    `${AGENT_HOME_VOLUME}:${AGENT_CONTAINER_HOME}`,
     "-e",
     "AGENT_ENV=isolated_sandbox",
     "-e",
@@ -394,81 +402,8 @@ export async function ensureAgentSandboxRunning(): Promise<{
   }
 }
 
-// ---------------------------------------------------------------------------
-// Credential vault (inside the container volume only — never the host)
-// ---------------------------------------------------------------------------
-export function injectContainerOAuthToken(tokenData: any): { success: boolean; message: string } {
-  try {
-    const raw = typeof tokenData === "string" ? tokenData : JSON.stringify(tokenData, null, 2);
-    // Token is passed via stdin; the shell script inside the container is a constant.
-    execFileSync(
-      "docker",
-      [
-        "exec",
-        "-i",
-        CONTAINER_NAME,
-        "sh",
-        "-c",
-        `umask 077 && mkdir -p "${AGENT_TOKEN_DIR}" && cat > "${AGENT_TOKEN_PATH}" && chmod 600 "${AGENT_TOKEN_PATH}"`,
-      ],
-      {
-        input: raw,
-        encoding: "utf-8",
-        timeout: 10000,
-      }
-    );
-    appendSandboxLog("AUTH", "auth", `OAuth credentials successfully written to container vault.`);
-    return { success: true, message: "Token stored in container vault." };
-  } catch (err: any) {
-    appendSandboxLog("ERROR", "auth", `Failed to write token into container: ${err?.message}`);
-    return { success: false, message: "Failed to write token into container vault." };
-  }
-}
-
-export function removeContainerOAuthToken(): { success: boolean; error?: string } {
-  try {
-    execFileSync("docker", ["exec", CONTAINER_NAME, "rm", "-f", AGENT_TOKEN_PATH], {
-      encoding: "utf-8",
-      timeout: 6000,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err?.message || "Failed to reset credentials." };
-  }
-}
-
-export function checkContainerOAuthToken(): {
-  exists: boolean;
-  tokenPreview?: string;
-  expiry?: string;
-  hasRefreshToken?: boolean;
-} {
-  try {
-    const out = execFileSync("docker", ["exec", CONTAINER_NAME, "cat", AGENT_TOKEN_PATH], {
-      encoding: "utf-8",
-      timeout: 4000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (out) {
-      // Never expose any part of the credential itself.
-      try {
-        const parsed = JSON.parse(out);
-        return {
-          exists: true,
-          tokenPreview: "present",
-          expiry: parsed?.token?.expiry,
-          hasRefreshToken: Boolean(parsed?.token?.refresh_token),
-        };
-      } catch {
-        return { exists: true, tokenPreview: "present" };
-      }
-    }
-  } catch {
-    /* container not running or token file missing */
-  }
-  return { exists: false };
-}
+// Credentials: the agent CLI keeps its own Google sign-in in its home (the `aie-agent-home` volume).
+// AIE never writes, reads or exports them; sign-in runs through the CLI (see ./agy-login.server).
 
 // ---------------------------------------------------------------------------
 // Process execution helpers
