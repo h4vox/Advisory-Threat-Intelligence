@@ -3,7 +3,7 @@
  *
  * Maintains a persistent, warm NDJSON streaming process inside the isolated
  * Docker sandbox (`aie-agent-sandbox`) using
- * `agy --print --input-format stream-json --output-format stream-json`.
+ * `agy --input-format stream-json --output-format stream-json --print=` (see buildAgentCliArgs).
  * The agent runs print-only without permission bypass (no tools), prompts are
  * sent over stdin, and nothing ever runs on the host. Conversation state is
  * kept in memory only.
@@ -22,6 +22,7 @@ import {
 } from "./agent-framework/types";
 import {
   AGENT_CONTAINER_NAME,
+  adaptAgentCliFlags,
   buildAgentCliArgs,
   detectSandboxRuntime,
   encodeAgentUserTurn,
@@ -265,10 +266,8 @@ class WarmAgentService {
       this.currentModel = model;
       console.log(`[warm-agent] Spawning warm agent worker in ${CONTAINER_NAME} with model ${model}...`);
 
-      const args = ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model)];
-      if (this.activeConversationId) {
-        args.push("--conversation", this.activeConversationId);
-      }
+      // `--conversation` goes before the print flag (which buildAgentCliArgs keeps last).
+      const args = ["exec", "-i", CONTAINER_NAME, "agy", ...buildAgentCliArgs(model, this.activeConversationId ? ["--conversation", this.activeConversationId] : [])];
 
       let isSettled = false;
       let initTimer: NodeJS.Timeout | null = null;
@@ -321,6 +320,8 @@ class WarmAgentService {
 
       child.on("exit", (code, signal) => {
         settleReady();
+        // A usage error about our flags: the next worker starts with the form the CLI accepts.
+        if (code === 2) adaptAgentCliFlags(this.lastStderr);
         if (this.proc === child) {
           console.log(`[warm-agent] Process exited with code ${code}, signal ${signal}`);
           this.destroyProcess(`process_exit_${code ?? signal}`);
