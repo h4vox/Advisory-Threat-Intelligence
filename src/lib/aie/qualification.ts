@@ -1,4 +1,5 @@
 import type { CrawlConfig, ResourceKind } from "./types";
+import { articleProse, assessTechnicalDepth, type DepthVerdict } from "./technical-depth.ts";
 
 export type ResourceClassification =
   | "ADVERSARY_EMULATION"
@@ -38,6 +39,8 @@ export type QualificationResult = {
     filePaths: string[];
     eventIds: string[];
   };
+  /** Technical-depth verdict (./technical-depth); absent when the URL was rejected first. */
+  depth?: DepthVerdict;
 };
 
 // Non-CTI hosts (government immigration/administrative portals or pure non-technical portals)
@@ -496,6 +499,18 @@ const HIGH_SIGNAL_TECHNICAL_TERMS = [
   "sha256",
 ];
 
+const TERM_RE_CACHE = new Map<string, RegExp>();
+/** Whole-word match for a technical term ("cve-" is a prefix, matched as such). */
+function termRegex(term: string): RegExp {
+  let re = TERM_RE_CACHE.get(term);
+  if (!re) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    re = new RegExp(`(?:^|[^a-z0-9])${escaped}${term.endsWith("-") ? "" : "(?![a-z0-9])"}`, "i");
+    TERM_RE_CACHE.set(term, re);
+  }
+  return re;
+}
+
 export function qualifyContent(
   text: string,
   title: string,
@@ -504,7 +519,11 @@ export function qualifyContent(
   isFromFeed = false,
 ): QualificationResult {
   const reasons: string[] = [];
-  const fullText = `${title}\n${text}`.toLowerCase();
+  // Signals are read from the article prose only: menus, footers and related-link lists (link-only
+  // lines) are not content, and a vendor footer ("Threat Intel and Incident Response Services")
+  // used to pass a product page as an intrusion report.
+  const prose = articleProse(`${title}\n${text}`);
+  const fullText = prose.toLowerCase();
   const wordCount = text.split(/\s+/).filter(Boolean).length;
 
   const minScore = config?.minQualityScore ?? 0.40;
@@ -531,9 +550,31 @@ export function qualifyContent(
     };
   }
 
-  // 2. Extract technical evidence details
-  const evidence = extractTechnicalEvidence(text, title);
-  const matchedTerms = HIGH_SIGNAL_TECHNICAL_TERMS.filter((term) => fullText.includes(term));
+  // 1b. Technical depth: only documents that describe adversary activity in technical detail
+  // (techniques, indicators, attacker commands, attacker behaviour, exploited-CVE advisories) go on.
+  const depth = assessTechnicalDepth({ title, url, text });
+  if (!depth.pass) {
+    return {
+      qualified: false,
+      score: Math.min(0.3, Math.round((depth.score / 100) * 100) / 100),
+      simulationScore: 0.05,
+      procedureDensity: 0,
+      evidenceScore: 0,
+      isEmergingTechnique: false,
+      noiseClusterScore: depth.stats.marketing.length,
+      classification: depth.kind === "product_marketing" || depth.kind === "news" ? "GENERIC_NEWS" : "OTHER",
+      resourceKind: "CAMPAIGN_INTEL",
+      reasons: depth.reasons,
+      rejectionReason: `REJECTED: ${depth.reasons[0]}`,
+      isIndexOrGeneric: depth.kind === "product_marketing",
+      evidenceDetails: { commands: [], registryKeys: [], filePaths: [], eventIds: [] },
+      depth,
+    };
+  }
+
+  // 2. Extract technical evidence details (prose only; whole words, so "apt" is not "adapts")
+  const evidence = extractTechnicalEvidence(prose, "");
+  const matchedTerms = HIGH_SIGNAL_TECHNICAL_TERMS.filter((term) => termRegex(term).test(fullText));
   const emerging = detectEmergingTechniques(text);
   const marketing = detectMarketingNoiseCluster(text, title);
 
@@ -561,6 +602,7 @@ export function qualifyContent(
       rejectionReason: `REJECTED: Document too short (<${minWords} words) with zero technical evidence`,
       isIndexOrGeneric: false,
       evidenceDetails: evidence,
+      depth,
     };
   }
 
@@ -580,6 +622,7 @@ export function qualifyContent(
       rejectionReason: `REJECTED: Commercial sales/marketing page with zero technical evidence`,
       isIndexOrGeneric: false,
       evidenceDetails: evidence,
+      depth,
     };
   }
 
@@ -728,6 +771,7 @@ export function qualifyContent(
       rejectionReason: "REJECTED: Lacks actionable adversary emulation procedures, attack chains, or technical artifacts",
       isIndexOrGeneric: false,
       evidenceDetails: evidence,
+      depth,
     };
   }
 
@@ -778,6 +822,7 @@ export function qualifyContent(
         rejectionReason: `REJECTED: Resource kind ${resourceKind} is not in target resource types whitelist`,
         isIndexOrGeneric: false,
         evidenceDetails: evidence,
+        depth,
       };
     }
   }
@@ -799,5 +844,6 @@ export function qualifyContent(
       : `REJECTED: Quality (${Math.round(score * 100)}%) and simulation score (${Math.round(simulationScore * 100)}%) below threshold (${Math.round(minScore * 100)}%)`,
     isIndexOrGeneric: false,
     evidenceDetails: evidence,
+    depth,
   };
 }

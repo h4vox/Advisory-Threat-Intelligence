@@ -52,6 +52,9 @@ function gateFields(v: GateVerdict, at: string): Record<string, unknown> {
   };
 }
 
+/** How much of each stored report's text the gate reads. */
+const GATE_TEXT_CHARS = 150_000;
+
 const TIERS = new Set([1, 2, 3, 4]);
 const tierOf = (v: unknown): GateInput["sourceTier"] => (TIERS.has(Number(v)) ? (Number(v) as 1 | 2 | 3 | 4) : null);
 
@@ -81,6 +84,8 @@ async function mongoPass(): Promise<GatePassResult> {
           summary: {
             $substrCP: [{ $cond: [{ $gt: [{ $strLenCP: text("$summary") }, 0] }, text("$summary"), text("$extractedText")] }, 0, 800],
           },
+          // The content rule reads the text; the cap keeps a giant appendix from slowing the pass.
+          body: { $substrCP: [text("$extractedText"), 0, GATE_TEXT_CHARS] },
           structured: { $cond: [{ $ifNull: ["$structured", false] }, true, false] },
           keep: { $eq: ["$gate.override", "keep"] },
           iocCount: size("$iocs"),
@@ -112,6 +117,7 @@ async function mongoPass(): Promise<GatePassResult> {
       title: String(d.title ?? ""),
       url: String(d.url ?? ""),
       summary: String(d.summary ?? ""),
+      text: String(d.body ?? ""),
       wordCount: Number(d.wordCount ?? 0) || 0,
       iocCount: d.iocCount,
       techniques: d.techniques,
@@ -213,7 +219,7 @@ function parseJson<T>(raw: string | null, fallback: T): T {
 async function localPass(): Promise<GatePassResult> {
   const sql = await localSql();
   const rows = await sql<LocalRow>`
-    select r.id, r.title, r.url, r.status, r.word_count, r.quality_score, left(coalesce(r.extracted_text, ''), 20000) as extracted_text,
+    select r.id, r.title, r.url, r.status, r.word_count, r.quality_score, left(coalesce(r.extracted_text, ''), ${GATE_TEXT_CHARS}) as extracted_text,
       r.iocs_json, r.analysis_json, r.discovery_method, lg.override
     from reports r left join library_gate lg on lg.report_id = r.id
     where coalesce(r.status, '') <> 'duplicate' and (lg.version is null or lg.version <> ${LIBRARY_GATE_VERSION})
@@ -227,6 +233,7 @@ async function localPass(): Promise<GatePassResult> {
       title: r.title ?? "",
       url: r.url ?? "",
       summary: body.slice(0, 800),
+      text: body,
       wordCount: Number(r.word_count ?? 0) || 0,
       iocCount: len(parseJson<unknown[]>(r.iocs_json, [])),
       techniques: Math.max(len(analysis?.techniques), new Set(body.match(/\bT1\d{3}(?:\.\d{3})?\b/g) ?? []).size),
@@ -290,12 +297,12 @@ export async function localHiddenReasons(): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (isMongoConfigured()) return out;
   const sql = await localSql();
-  const rows = await sql<{ report_id: string; reasons: string; override: string | null; hidden_by: string | null }>`
-    select report_id, reasons, override, hidden_by from library_gate where verdict = 'reject'
+  const rows = await sql<{ report_id: string; rule: string | null; reasons: string; override: string | null; hidden_by: string | null }>`
+    select report_id, rule, reasons, override, hidden_by from library_gate where verdict = 'reject'
   `;
   for (const r of rows) {
     const reasons = parseJson<string[]>(r.reasons, []);
-    out.set(r.report_id, r.override === "hide" ? `Hidden by ${r.hidden_by ?? "an analyst"}` : gateReasonLine({ reasons }));
+    out.set(r.report_id, r.override === "hide" ? `Hidden by ${r.hidden_by ?? "an analyst"}` : gateReasonLine({ rule: r.rule, reasons }));
   }
   return out;
 }

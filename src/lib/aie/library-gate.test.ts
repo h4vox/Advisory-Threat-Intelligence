@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evaluateLibraryReport, gateReasonLine, type GateInput } from "./library-gate.ts";
+import { CAMPAIGN_SUMMARY, GOVERNMENT_ADVISORY, NON_ENGLISH, PRODUCT_PAGE, STRATEGIC_ASSESSMENT } from "./__fixtures__/depth-samples.ts";
 
 const base: GateInput = {
   title: "",
@@ -76,11 +77,34 @@ test("hides stubs only when the word count is known", () => {
 test("threat evidence protects an article, but not a structural non-report", () => {
   // On a real article URL, any one piece of threat evidence keeps it.
   const article = { title: "APT29 campaign analysis", url: "https://vendor.example/blog/apt29-campaign-analysis" };
-  for (const over of [{ techniques: 3 }, { cves: 1 }, { iocCount: 5 }, { attackChainSteps: 4 }, { entities: 1 }, { qualityScore: 0.82 }, { structured: true }, { keep: true }]) {
+  for (const over of [{ techniques: 3 }, { cves: 1 }, { iocCount: 5 }, { attackChainSteps: 4 }, { entities: 1 }, { structured: true }, { keep: true }]) {
     const v = r({ ...article, ...over });
     assert.equal(v.verdict, "keep", JSON.stringify(over));
     assert.ok(v.protectedBy.length > 0);
   }
+  // A quality score measures length and structure, not threat content: it protects nothing alone.
+  assert.deepEqual(r({ ...article, qualityScore: 0.82 }).protectedBy, []);
+});
+
+test("with the text at hand, the content decides: product, strategy and news pages are hidden", () => {
+  // The reported page: its footer and menus gave it stored counts that used to protect it.
+  const product = r({ ...PRODUCT_PAGE, text: PRODUCT_PAGE.text, techniques: 2, entities: 3, attackChainSteps: 2, qualityScore: 0.72 });
+  assert.equal(product.verdict, "reject");
+  assert.equal(product.rule, "content");
+  assert.match(gateReasonLine(product), /^Hidden as not technical threat intelligence: Product or marketing page/);
+
+  const strategic = r({ ...STRATEGIC_ASSESSMENT, text: STRATEGIC_ASSESSMENT.text, entities: 2 });
+  assert.equal(strategic.verdict, "reject");
+  assert.equal(strategic.rule, "content");
+
+  // Real technical reports are kept, and say why.
+  for (const sample of [CAMPAIGN_SUMMARY, GOVERNMENT_ADVISORY]) {
+    const v = r({ ...sample, text: sample.text });
+    assert.equal(v.verdict, "keep", `${sample.title}: ${v.reasons.join("; ")}`);
+    assert.ok(v.protectedBy.length > 0, sample.title);
+  }
+  // Non-English text waits for translation instead of being hidden.
+  assert.equal(r({ ...NON_ENGLISH, text: NON_ENGLISH.text }).verdict, "keep");
 });
 
 test("a homepage / listing page is a hard reject even when its snippets name threats", () => {

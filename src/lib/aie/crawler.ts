@@ -2234,10 +2234,15 @@ export async function executeCrawlJob(
 
         let agentResult: AgentEvaluationResult | null = null;
 
+        // The AI reviews technical documents and may rescue ones the rules found too thin; it never
+        // overturns a product page, strategy / trends piece, guidance post or news item without
+        // technical detail, so those are not sent to it at all.
+        const aiMayDecide = !qual.depth || qual.depth.pass || qual.depth.kind === "thin";
         const shouldRunAgent =
           ai.usable &&
           (config.agentTaggingEnabled || config.agentApprovalEnabled) &&
           !qual.isIndexOrGeneric &&
+          aiMayDecide &&
           textContent.trim().length > 60;
 
         if (shouldRunAgent) {
