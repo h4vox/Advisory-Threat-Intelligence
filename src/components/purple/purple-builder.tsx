@@ -5,6 +5,7 @@ import { suggestPurpleSeeds, type PurpleSuggestion } from "@/lib/aie/server-emul
 import { PURPLE_PLATFORMS, type PurplePlatform } from "@/lib/aie/purple/types";
 import { SegmentedTabs } from "@/components/layout/page";
 import { EntityIcon } from "@/components/ui/entity";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 
 export type BuilderKind = "actor" | "report" | "campaign" | "custom";
@@ -286,17 +287,18 @@ export function PurpleBuilder({
             </label>
             <label className="inline-flex items-center gap-2 text-sm text-fg">
               Max steps
-              <select
-                value={state.maxSteps}
-                onChange={(e) => onChange({ ...state, maxSteps: Number(e.target.value) })}
-                className="h-8 rounded-md border border-border bg-bg-elevated px-2 text-sm text-fg"
+              <Select
+                size="sm"
+                value={String(state.maxSteps)}
+                onValueChange={(v) => onChange({ ...state, maxSteps: Number(v) })}
+                className="rounded-md"
               >
                 {[6, 8, 10, 12, 16, 20, 30, 40].map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           </div>
         </div>

@@ -27,6 +27,7 @@ import { AppShell } from "@/components/app-shell";
 import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { getReportPdf, listReports } from "@/lib/aie/server";
 import {
@@ -424,72 +425,72 @@ function MatrixPage() {
             </div>
 
             {/* Tactic Phase Selector */}
-            <select
+            <Select
               value={selectedTactic}
-              onChange={(e) => setSelectedTactic(e.target.value)}
-              className={selectCls}
+              onValueChange={(v) => setSelectedTactic(v)}
               title="Filter by MITRE ATT&CK Tactic Phase"
+              aria-label="Filter by MITRE ATT&CK Tactic Phase"
             >
               {TACTIC_OPTIONS.map((t) => (
                 <option key={t} value={t}>
                   Tactic: {t}
                 </option>
               ))}
-            </select>
+            </Select>
 
             {/* Threat Actor Selector */}
-            <select
+            <Select
               value={selectedActor}
-              onChange={(e) => setSelectedActor(e.target.value)}
-              className={selectCls}
+              onValueChange={(v) => setSelectedActor(v)}
               title="Filter by Associated Adversary Group"
+              aria-label="Filter by Associated Adversary Group"
             >
               {THREAT_ACTORS.map((a) => (
                 <option key={a} value={a}>
                   Adversary: {a}
                 </option>
               ))}
-            </select>
+            </Select>
 
             {/* Tool / Malware Selector */}
-            <select
+            <Select
               value={selectedTool}
-              onChange={(e) => setSelectedTool(e.target.value)}
-              className={selectCls}
+              onValueChange={(v) => setSelectedTool(v)}
               title="Filter by Associated Tool or Malware"
+              aria-label="Filter by Associated Tool or Malware"
             >
               {OFFENSIVE_TOOLS.map((m) => (
                 <option key={m} value={m}>
                   Tool: {m}
                 </option>
               ))}
-            </select>
+            </Select>
 
             {/* Platform Filter */}
-            <select
+            <Select
               value={selectedPlatform}
-              onChange={(e) => setSelectedPlatform(e.target.value)}
-              className={selectCls}
+              onValueChange={(v) => setSelectedPlatform(v)}
               title="Filter by Operating System / Platform"
+              aria-label="Filter by Operating System / Platform"
             >
               {PLATFORMS.map((p) => (
                 <option key={p} value={p}>
                   Platform: {p}
                 </option>
               ))}
-            </select>
+            </Select>
 
             {/* Coverage Status Filter */}
-            <select
+            <Select
               value={coverageStatus}
-              onChange={(e) => setCoverageStatus(e.target.value as "all" | "covered" | "uncovered")}
-              className={selectCls}
+              onValueChange={(v) => setCoverageStatus(v as "all" | "covered" | "uncovered")}
               title="Filter by Library Intelligence Mapping Status"
+              aria-label="Filter by Library Intelligence Mapping Status"
             >
               <option value="all">Coverage: All ({stats.totalTechniques})</option>
               <option value="covered">Coverage: Mapped in Library ({stats.coveredTechniques})</option>
               <option value="uncovered">Coverage: Gaps / Unmapped ({stats.totalTechniques - stats.coveredTechniques})</option>
-            </select>
+            </Select>
 
             {/* Sub-Techniques Global Toggle Button */}
             <button
@@ -1114,8 +1115,6 @@ function MatrixPage() {
   );
 }
 
-const selectCls =
-  "h-9 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent";
 const filterChipCls =
   "inline-flex items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-0.5 text-xs text-muted hover:bg-bg-subtle hover:text-fg";
 

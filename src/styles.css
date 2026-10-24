@@ -646,6 +646,20 @@ body,
   box-shadow: 0 24px 60px -8px rgba(0, 0, 0, 0.85), inset 1px 1px 1px 0 rgba(255, 255, 255, 0.45) !important;
 }
 
+/* Select (components/ui/select.tsx). Triggers are bg-bg-elevated buttons: keep them still on
+   hover in Liquid glass, like the native selects they replace. The option list keeps the glass
+   sheen and border but sits on an opaque base: the backdrop blur does not reach content inside
+   the (themselves blurred) glass cards, so a translucent list would show text through it. */
+[data-style="liquid-glass"] [data-slot="select-trigger"]:hover,
+.theme-liquid-glass [data-slot="select-trigger"]:hover {
+  transform: none !important;
+}
+
+[data-style="liquid-glass"] .select-content.dropdown-liquid-glass,
+.theme-liquid-glass .select-content.dropdown-liquid-glass {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 100%), var(--color-bg-elevated) !important;
+}
+
 [data-theme="light"][data-style="liquid-glass"] .dropdown-liquid-glass,
 .light.theme-liquid-glass .dropdown-liquid-glass,
 .light[data-style="liquid-glass"] .dropdown-liquid-glass {
