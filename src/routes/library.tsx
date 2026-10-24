@@ -34,7 +34,8 @@ import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
 import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
 import { searchLibrary } from "@/lib/aie/server-search";
-import { runLibraryGate, setReportVisibility } from "@/lib/aie/server-library";
+import { labelLibraryResearch, runLibraryGate, setReportVisibility } from "@/lib/aie/server-library";
+import { researchCategory } from "@/lib/aie/research-taxonomy";
 import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { cn } from "@/lib/cn";
 import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
@@ -69,6 +70,8 @@ const librarySearchSchema = z.object({
   highlight: z.string().optional(),
   pdf: z.string().optional(),
   tag: z.string().optional(),
+  /** A research category id (research-taxonomy), e.g. from the coverage view. */
+  research: z.string().optional(),
   sort: z.enum(["newest", "quality", "iocs", "words", "rejected"]).optional(),
 });
 
@@ -97,6 +100,7 @@ type Derived = {
   cves: string[];
   emulation: boolean;
   published: number;
+  research: string[];
 };
 
 function derive(r: ReportListItem): Derived {
@@ -111,6 +115,7 @@ function derive(r: ReportListItem): Derived {
     cves: cvesOf(r),
     emulation: hasEmulationContent(r),
     published: dateValue(r.publishedAt),
+    research: (r.research?.labels ?? []).map((l) => l.id),
   };
 }
 
@@ -156,6 +161,11 @@ function LibraryPage() {
   const [selMalware, setSelMalware] = useState<string[]>([]);
   const [selTactics, setSelTactics] = useState<string[]>([]);
   const [selTags, setSelTags] = useState<string[]>(searchParams.tag ? [searchParams.tag] : []);
+  const [selResearch, setSelResearch] = useState<string[]>(searchParams.research && researchCategory(searchParams.research) ? [searchParams.research] : []);
+  // A link to /library?research=… while the Library is already open selects that category too.
+  useEffect(() => {
+    if (searchParams.research && researchCategory(searchParams.research)) setSelResearch([searchParams.research]);
+  }, [searchParams.research]);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [minQuality, setMinQuality] = useState<number>(0);
@@ -278,13 +288,34 @@ function LibraryPage() {
   });
   const [gateNoticeDismissed, setGateNoticeDismissed] = useState(false);
   const refreshLibrary = useCallback(() => {
-    for (const key of ["reports-all", "reports-search", "intel-coverage", "nav-counts", "dashboard"]) {
+    for (const key of ["reports-all", "reports-search", "intel-coverage", "nav-counts", "dashboard", "research-coverage"]) {
       void queryClient.invalidateQueries({ queryKey: [key] });
     }
   }, [queryClient]);
   useEffect(() => {
     if (gateQuery.data?.newlyHidden.length) refreshLibrary();
   }, [gateQuery.data, refreshLibrary]);
+
+  // Research labels (research-taxonomy) for reports stored before labelling or under an older
+  // labeller: a few batches on open, then the Library reloads with the "Research type" facet filled.
+  const labelQuery = useQuery({
+    queryKey: ["library-research-labels"],
+    queryFn: async () => {
+      let labelled = 0;
+      for (let i = 0; i < 10; i++) {
+        const r = await labelLibraryResearch();
+        labelled += r.labelled;
+        if (r.remaining === 0 || r.labelled === 0) break;
+      }
+      return { labelled };
+    },
+    staleTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  useEffect(() => {
+    if (labelQuery.data?.labelled) refreshLibrary();
+  }, [labelQuery.data, refreshLibrary]);
 
   const changeVisibility = useCallback(
     async (ids: string[], action: "hide" | "restore") => {
@@ -518,6 +549,10 @@ function LibraryPage() {
         label: <span style={{ color: "var(--color-cat-malware)" }}>{o.value}</span>,
       })),
       tactics: countBy(basePool.map((r) => d(r).tactics)),
+      research: countBy(basePool.map((r) => d(r).research)).map((o) => {
+        const c = researchCategory(o.value);
+        return { ...o, label: <span title={c?.label}>{c?.short ?? o.value}{c?.scope === "bas" ? <span className="text-subtle"> · BAS</span> : null}</span>, text: c?.short ?? o.value };
+      }),
       tags: countBy(basePool.map((r) => r.tags ?? [])),
       withIocs: basePool.filter((r) => (r.iocCount || 0) > 0).length,
       withEmulation: basePool.filter((r) => d(r).emulation).length,
@@ -542,6 +577,7 @@ function LibraryPage() {
       if (!anyMatch(selMalware, x.malware)) return false;
       if (!anyMatch(selTactics, x.tactics)) return false;
       if (!anyMatch(selTags, r.tags ?? [])) return false;
+      if (!anyMatch(selResearch, x.research)) return false;
       if (fromTs !== null && (!x.published || x.published < fromTs)) return false;
       if (toTs !== null && (!x.published || x.published > toTs)) return false;
       if (minQuality > 0 && r.qualityScore < minQuality) return false;
@@ -583,6 +619,7 @@ function LibraryPage() {
     selMalware,
     selTactics,
     selTags,
+    selResearch,
     fromTs,
     toTs,
     minQuality,
@@ -615,6 +652,7 @@ function LibraryPage() {
     ...selMalware.map((v) => ({ label: `Malware: ${v}`, clear: () => setSelMalware((s) => s.filter((x) => x !== v)) })),
     ...selTactics.map((v) => ({ label: `Tactic: ${v}`, clear: () => setSelTactics((s) => s.filter((x) => x !== v)) })),
     ...selTags.map((v) => ({ label: `Tag: ${v}`, clear: () => setSelTags((s) => s.filter((x) => x !== v)) })),
+    ...selResearch.map((v) => ({ label: `Research: ${researchCategory(v)?.short ?? v}`, clear: () => setSelResearch((s) => s.filter((x) => x !== v)) })),
     ...(dateFrom ? [{ label: `From ${dateFrom}`, clear: () => setDateFrom("") }] : []),
     ...(dateTo ? [{ label: `To ${dateTo}`, clear: () => setDateTo("") }] : []),
     ...(minQuality > 0 ? [{ label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) }] : []),
@@ -636,6 +674,7 @@ function LibraryPage() {
     selMalware,
     selTactics,
     selTags,
+    selResearch,
     dateFrom,
     dateTo,
     minQuality,
@@ -700,6 +739,7 @@ function LibraryPage() {
     setSelMalware([]);
     setSelTactics([]);
     setSelTags([]);
+    setSelResearch([]);
     setDateFrom("");
     setDateTo("");
     setMinQuality(0);
@@ -827,6 +867,14 @@ function LibraryPage() {
         selected={selDocTypes}
         onToggle={(v) => setSelDocTypes((s) => toggle(s, v))}
         onClear={() => setSelDocTypes([])}
+      />
+      <FacetGroup
+        title="Research type"
+        options={facets.research}
+        selected={selResearch}
+        onToggle={(v) => setSelResearch((s) => toggle(s, v))}
+        onClear={() => setSelResearch([])}
+        emptyText={labelQuery.isFetching ? "Labelling reports…" : "No labelled reports yet"}
       />
       <FacetGroup
         title="Source tier"
@@ -1047,11 +1095,12 @@ function LibraryPage() {
             <div className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded-xl">{sidebar}</div>
           </aside>
 
-          <div className="min-w-0">
-            {/* Results toolbar */}
-            <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <div className="relative w-full sm:w-72 2xl:w-80">
+          <div className="@container min-w-0">
+            {/* Results toolbar. Breakpoints follow the width of this column (container queries), not
+                the window: the filter sidebar takes 280px at xl, so the window size says little. */}
+            <div className="mb-3 flex flex-col gap-2 @min-[40rem]:flex-row @min-[40rem]:items-center @min-[40rem]:justify-between">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <div className="relative w-full @lg:w-auto @lg:min-w-48 @lg:max-w-80 @lg:flex-1">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" />
                   <input
                     value={q}
@@ -1088,7 +1137,7 @@ function LibraryPage() {
                     </span>
                   )}
                 </button>
-                <span className="text-sm text-muted">
+                <span className="whitespace-nowrap text-sm text-muted">
                   <span className="tabular-nums text-fg">{sortedReports.length}</span> {sortedReports.length === 1 ? "result" : "results"}
                   {isDeepSearchActive && (
                     <span className="text-subtle" title="Ranked by the hybrid search engine: aliases, technique names and field syntax are understood">
@@ -1098,7 +1147,7 @@ function LibraryPage() {
                   )}
                 </span>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 @min-[40rem]:flex-nowrap">
                 {showRejected && sortedReports.length > 0 && (
                   <ActionButton
                     icon={Undo2}
@@ -1108,8 +1157,8 @@ function LibraryPage() {
                     Restore {Math.min(sortedReports.length, 500)} shown
                   </ActionButton>
                 )}
-                <label className="flex items-center gap-2 text-sm text-muted">
-                  <span className="hidden sm:inline">Sort</span>
+                <label className="flex shrink-0 items-center gap-2 text-sm text-muted">
+                  <span className="hidden @xl:inline">Sort</span>
                   <Select
                     value={orderBy}
                     onValueChange={(v) => {
@@ -1117,7 +1166,7 @@ function LibraryPage() {
                       setColSort(null);
                     }}
                     aria-label="Sort results"
-                    className="px-2.5"
+                    className="w-44 shrink-0 px-2.5"
                   >
                     {isDeepSearchActive && <option value="relevance">Relevance</option>}
                     <option value="newest">Newest ingested</option>
@@ -1130,10 +1179,11 @@ function LibraryPage() {
                 </label>
                 <SegmentedTabs<ViewMode>
                   ariaLabel="Result view"
+                  size="sm"
                   items={[
-                    { value: "cards", label: <span className="max-sm:sr-only">Cards</span>, icon: LayoutGrid },
-                    { value: "list", label: <span className="max-sm:sr-only">List</span>, icon: List },
-                    { value: "table", label: <span className="max-sm:sr-only">Table</span>, icon: Table2 },
+                    { value: "cards", label: <span className="@max-4xl:sr-only">Cards</span>, title: "Cards", icon: LayoutGrid },
+                    { value: "list", label: <span className="@max-4xl:sr-only">List</span>, title: "List", icon: List },
+                    { value: "table", label: <span className="@max-4xl:sr-only">Table</span>, title: "Table", icon: Table2 },
                   ]}
                   value={view}
                   onChange={setView}

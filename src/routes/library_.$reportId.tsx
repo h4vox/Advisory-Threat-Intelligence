@@ -41,6 +41,7 @@ import { AttackCoverageStrip } from "@/components/library/attack-coverage";
 import { StructuredPanel } from "@/components/library/structured-panel";
 import { ReportEmulation } from "@/components/library/report-emulation";
 import { CollectionRecord } from "@/components/library/collection-record";
+import { ReportTelemetry, ResearchTypeChips } from "@/components/library/report-research";
 import { TIER_META, actorsOf, cvesOf, docTypesOf, malwareOf, techniquesOf, tierOf } from "@/components/library/intel-taxonomy";
 import { DOC_TYPE_META } from "@/components/ui/entity";
 
@@ -373,6 +374,10 @@ function ReportPage() {
                   value: docTypes.map((t) => DOC_TYPE_META[t]?.label ?? t).join(", "),
                 },
                 {
+                  label: "Research types",
+                  value: <ResearchTypeChips research={data.research} />,
+                },
+                {
                   label: "Source tier",
                   value: tier ? TIER_META[tier].label : <span className="text-subtle">Unrated (not a registry source)</span>,
                 },
@@ -680,6 +685,13 @@ function ReportPage() {
 
         {tab === "detections" && (
           <>
+            <Section
+              title="Telemetry the report names"
+              description="Event IDs, log sources and detection content stated in the report itself, each with the sentence that states it: the expected telemetry for a simulation of this activity."
+            >
+              <ReportTelemetry telemetry={data.telemetry} />
+            </Section>
+
             <Section
               title="Detection ideas"
               description="Sigma-style drafts generated for the procedure in this report; not tested rules. Validate against your telemetry before deploying."
