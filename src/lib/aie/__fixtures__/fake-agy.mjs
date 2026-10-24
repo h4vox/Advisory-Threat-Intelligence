@@ -70,7 +70,7 @@ if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
       ? JSON.stringify({ argv: argv.filter((a) => a.startsWith("--")), turn: turns, pid: process.pid })
       : /READY/.test(prompt)
         ? "READY"
-        : fakeTranslation(prompt) ?? `echo: ${prompt.slice(0, 80)}`;
+        : fakeTranslation(prompt) ?? fakeAnalyst(prompt) ?? `echo: ${prompt.slice(0, 80)}`;
     pending = pending.then(
       () =>
         new Promise((done) =>
@@ -258,4 +258,24 @@ function skillDelay(prompt) {
   } catch {
     return 0;
   }
+}
+
+// A scripted stand-in for the AIE Analyst model (tests only): asks for list_reports on "latest" /
+// "this week" questions, proposes start_crawl on crawl requests, otherwise answers citing [S1].
+function fakeAnalyst(prompt) {
+  const q = prompt.match(/\nANALYST: ([^\n]*)/)?.[1];
+  if (!q) return null;
+  const today = prompt.match(/Today is (\d{4}-\d{2}-\d{2})/)?.[1] ?? "2026-01-01";
+  const done = (tool) => prompt.includes(`→ ${tool}(`);
+  if (/\bcrawl\b/i.test(q) && !done("start_crawl")) {
+    return JSON.stringify({ tool_calls: [{ name: "start_crawl", arguments: { query: "ransomware" } }] });
+  }
+  if (/latest|this week|recent/i.test(q) && !done("list_reports")) {
+    const since = new Date(Date.parse(today) - 30 * 86400000).toISOString().slice(0, 10);
+    return JSON.stringify({ tool_calls: [{ name: "list_reports", arguments: { since, limit: 3 } }] });
+  }
+  if (done("start_crawl")) return "A crawl focused on ransomware is ready: confirm it with the button below.";
+  const ev = [...prompt.matchAll(/\n\[(S\d+)\] ([^\n]*?) —/g)];
+  if (!ev.length) return "Hello, I am the AIE Analyst. Ask me about reports, actors, techniques or the crawler.";
+  return ev.slice(0, 3).map(([, id, title]) => `- ${title} [${id}]`).join("\n");
 }

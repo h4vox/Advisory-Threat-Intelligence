@@ -21,6 +21,7 @@ import { DataTable, type DataTableColumnMeta } from "@/components/ui/data-table"
 import { EntityIcon } from "@/components/ui/entity";
 import { EmptyState, StatusChip } from "@/components/ui/primitives";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { Select } from "@/components/ui/select";
 import { ActorCard } from "@/components/actors/actor-card";
 import { KpiStrip } from "@/components/actors/kpi-strip";
 import { EmulationCell, TechniqueBarLegend, TechniqueMiniBar } from "@/components/actors/actor-ui";
@@ -50,9 +51,6 @@ export const Route = createFileRoute("/actors")({
 });
 
 const PAGE_SIZE = 25;
-const selectCls =
-  "h-9 rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]";
-
 function ActorsPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: "/actors" });
@@ -330,18 +328,18 @@ function ActorsPage() {
               </button>
               <label className="inline-flex items-center gap-2 text-sm text-muted">
                 <span className="hidden sm:inline">Sort</span>
-                <select
+                <Select
                   value={sort}
-                  onChange={(e) => update({ sort: e.target.value as ActorSort, page: undefined })}
+                  onValueChange={(v) => update({ sort: v as ActorSort, page: undefined })}
                   aria-label="Sort actors"
-                  className={selectCls}
+                  className="px-2.5"
                 >
                   {SORTS.map((s) => (
                     <option key={s.value} value={s.value}>
                       {s.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             </>
           }

@@ -1,782 +1,944 @@
-import { useState, useRef, useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  AlertTriangle,
   Bot,
-  Send,
-  X,
-  RefreshCw,
-  Zap,
-  Trash2,
-  ChevronDown,
-  Copy,
   Check,
-  FileText,
+  ChevronDown,
+  CircleCheck,
+  CircleX,
+  Copy,
   ExternalLink,
-  PlusCircle,
-  Clock,
-  Database,
+  FileText,
+  History,
   Maximize2,
   Minimize2,
-  AlertTriangle,
-  SearchX,
+  Pencil,
+  Play,
+  Plus,
+  RotateCcw,
+  Search,
+  Send,
+  Sparkles,
+  Trash2,
+  Wrench,
+  X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { MarkdownView } from "./ui/markdown-view";
 import { ActivitySpinner } from "./ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import {
-  chatWithAgyAgent,
-  getAgentChatSessionMessages,
-  clearAgentChatSession,
-  listAgentChatSessions,
-} from "@/lib/aie/server";
-import {
-  DEFAULT_AGY_MODEL,
-  sanitizeAgyModel,
-} from "@/lib/aie/agent-framework/types";
+  decideAgentAction,
+  deleteAgentSession,
+  getAgentInfo,
+  getAgentProgress,
+  getAgentSession,
+  listAgentSessions,
+  renameAgentSession,
+  sendAgentMessage,
+} from "@/lib/aie/server-agent";
 
-/**
- * A cited passage ("S1") returned by the grounded copilot. Messages saved
- * before grounded retrieval carry whole-report sources (`snippet`, no
- * `reportId` / `quote`), which still render.
- */
-interface ChatSource {
+// ---------------------------------------------------------------------------
+// Types (as stored by the server)
+// ---------------------------------------------------------------------------
+
+type Activity = { kind: "tool" | "model" | "info"; label: string; detail?: string; ms?: number; ok?: boolean; running?: boolean };
+type Action = {
   id: string;
+  tool: string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed" | "dismissed";
+  result?: string;
+  link?: { label: string; href: string };
+};
+type Source = {
+  id: string;
+  kind?: "passage" | "report";
   reportId?: string;
-  formattedId: string;
+  formattedId?: string;
   title: string;
   publisher: string;
   url: string;
   publishedAt?: string | null;
   quote?: string;
-  start?: number;
-  end?: number;
-  score?: number;
-  classification?: string;
-  resourceKind?: string;
   snippet?: string;
-}
-
-function formatSourceDate(value?: string | null): string {
-  if (!value) return "Undated";
-  const d = new Date(value);
-  return Number.isNaN(d.getTime())
-    ? value.slice(0, 10)
-    : d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
-}
-
-interface ChatMessage {
+};
+type Message = {
   id: string;
   sender: "user" | "agent";
   text: string;
+  timestamp: string;
   latencyMs?: number;
   model?: string;
-  providerName?: string;
-  timestamp: string;
-  isError?: boolean;
-  sources?: ChatSource[];
-  groundedCount?: number;
-  /** Reply has factual sentences without an [S#] citation. */
+  modelLabel?: string;
+  provider?: string;
+  sources?: Source[];
   uncitedClaims?: boolean;
-  /** Reply is the evidence-gap message: nothing in the library matched. */
   evidenceGap?: boolean;
+  isError?: boolean;
+  replyTo?: string;
+  activity?: Activity[];
+  actions?: Action[];
+  /** Client-only: sent, waiting for the answer. */
+  pending?: boolean;
+};
+
+const SESSION_KEY = "aie_chat_session_id";
+const WIDTH_KEY = "aie_chat_drawer_width";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function readLocal(key: string): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
-const DEFAULT_PROMPTS = [
-  "Summarize active nation-state campaigns in our platform",
-  "Extract MITRE TTPs and command lines for PowerShell execution",
-  "What are the highest risk CVEs recorded in the local library?",
-  "Audit ingestion sources and recommend high-value adversary labs",
-];
+function writeLocal(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    /* storage blocked */
+  }
+}
 
-const INITIAL_GREETING: ChatMessage = {
-  id: "greeting",
-  sender: "agent",
-  text: "Autonomous Threat Intelligence Copilot online. Connected to the local platform intelligence repository and persistent warm execution daemon. How can I assist your adversary emulation or threat hunting analysis?",
-  timestamp: "Ready",
-};
+function clockTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function relativeTime(iso: string): string {
+  const d = new Date(iso);
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (Number.isNaN(s)) return "";
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 172800) return "yesterday";
+  return d.toLocaleDateString([], { day: "numeric", month: "short", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+}
+
+function duration(ms?: number): string {
+  if (!ms && ms !== 0) return "";
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+function sourceDate(value?: string | null): string {
+  if (!value) return "undated";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value.slice(0, 10) : d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+}
+
+const newRequestId = () => `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+/** Questions that fit the page the analyst is on; general ones elsewhere. */
+function quickActions(path: string): Array<{ label: string; prompt: string }> {
+  if (/^\/library\/[\w-]+/.test(path)) {
+    return [
+      { label: "Summarize this report", prompt: "Summarize this report: the actor, the attack chain step by step and the key techniques." },
+      { label: "Indicators", prompt: "List the indicators of compromise in this report, grouped by type." },
+      { label: "ATT&CK mapping", prompt: "Map this report to MITRE ATT&CK techniques, ordered by tactic." },
+      { label: "Detection ideas", prompt: "What should we hunt for or detect, based on this report?" },
+      { label: "Purple path", prompt: "Plan a purple-team emulation path from this report." },
+    ];
+  }
+  if (/^\/actors\/[\w.-]+/.test(path)) {
+    return [
+      { label: "Profile this actor", prompt: "Profile this threat actor: who they target, how they operate and their main techniques." },
+      { label: "Latest reports", prompt: "What are the latest library reports about this actor?" },
+      { label: "Purple path", prompt: "Plan a purple-team emulation path for this actor." },
+    ];
+  }
+  if (/^\/advisories\/[\w-]+/.test(path)) {
+    return [
+      { label: "Summarize this advisory", prompt: "Summarize this advisory and its recommended actions." },
+      { label: "Scope", prompt: "Which techniques does this advisory cover, and what evidence supports each?" },
+    ];
+  }
+  if (/^\/ingest/.test(path) || /^\/sources/.test(path)) {
+    return [
+      { label: "Crawler status", prompt: "What is the crawler doing, and how did the last runs go?" },
+      { label: "Failing sources", prompt: "Which sources are failing and why?" },
+      { label: "What came in today", prompt: "Which reports were added to the library today?" },
+    ];
+  }
+  return [
+    { label: "What's new this week", prompt: "What technical threat reports were published this week? Group them by theme." },
+    { label: "Latest ransomware", prompt: "Show the latest ransomware reports in the library." },
+    { label: "Active actors", prompt: "Which threat actors are most active in our library recently?" },
+    { label: "Nation-state campaigns", prompt: "Summarize active nation-state campaigns in our library." },
+    { label: "Look up an indicator", prompt: "Look up this indicator in the library: " },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 interface AieAgentChatDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  activeModel?: string;
-  embedded?: boolean;
 }
 
-export function AieAgentChatDrawer({
-  isOpen,
-  onClose,
-  activeModel = DEFAULT_AGY_MODEL,
-  embedded = false,
-}: AieAgentChatDrawerProps) {
+export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps) {
   const queryClient = useQueryClient();
-  const [sessionId, setSessionId] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("aie_chat_session_id");
-      if (saved) return saved;
-    }
-    return "active-investigation";
-  });
-  const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_GREETING]);
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const [sessionId, setSessionId] = useState<string | null>(() => readLocal(SESSION_KEY));
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [title, setTitle] = useState<string>("");
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
-  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
-  const [isSessionDropdownOpen, setIsSessionDropdownOpen] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState<{ requestId: string; startedAt: number } | null>(null);
+  const [liveSteps, setLiveSteps] = useState<Activity[]>([]);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const cleanModel = sanitizeAgyModel(activeModel);
-
-  const [drawerWidth, setDrawerWidth] = useState<number>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("aie_chat_drawer_width");
-      if (saved) {
-        const parsed = parseInt(saved, 10);
-        const maxAllowed = Math.round(window.innerWidth * 0.5);
-        if (!isNaN(parsed) && parsed >= 340 && parsed <= maxAllowed) {
-          return parsed;
-        }
-      }
-      return Math.max(380, Math.min(460, Math.round(window.innerWidth * 0.28)));
-    }
-    return 420;
+  const [width, setWidth] = useState<number>(() => {
+    const saved = Number(readLocal(WIDTH_KEY));
+    if (typeof window === "undefined") return 440;
+    const max = Math.round(window.innerWidth * 0.6);
+    return saved >= 340 && saved <= max ? saved : Math.max(400, Math.min(480, Math.round(window.innerWidth * 0.3)));
   });
-  const [isDragging, setIsDragging] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
-  // Drag-to-resize listener with 50% viewport cap
-  useEffect(() => {
-    if (!isDragging) return;
+  const info = useQuery({ queryKey: ["agent-info"], queryFn: () => getAgentInfo(), enabled: isOpen, staleTime: 30_000, refetchInterval: (q) => (q.state.data?.developer ? 5000 : false) });
+  const developer = Boolean(info.data?.developer);
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = window.innerWidth - e.clientX;
-      const minW = 340;
-      const maxW = Math.round(window.innerWidth * 0.5);
-      const clamped = Math.max(minW, Math.min(maxW, newWidth));
-      setDrawerWidth(clamped);
-      setIsExpanded(clamped >= maxW - 15);
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.body.style.cursor = "ew-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isDragging]);
-
-  // Persist width when not dragging
-  useEffect(() => {
-    if (typeof window !== "undefined" && !isDragging) {
-      localStorage.setItem("aie_chat_drawer_width", String(drawerWidth));
-    }
-  }, [drawerWidth, isDragging]);
-
-  const toggleExpand = () => {
-    if (isExpanded) {
-      setIsExpanded(false);
-      const standard = Math.max(380, Math.min(460, Math.round(window.innerWidth * 0.28)));
-      setDrawerWidth(standard);
-    } else {
-      setIsExpanded(true);
-      setDrawerWidth(Math.round(window.innerWidth * 0.5));
-    }
-  };
-
-  // Initialize session ID from localStorage if available
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("aie_chat_session_id");
-      if (saved) setSessionId(saved);
-    }
-  }, []);
-
-  // Fetch session history from MongoDB
-  const { data: sessionData } = useQuery({
-    queryKey: ["agent_chat_messages", sessionId],
-    queryFn: () => getAgentChatSessionMessages({ data: { sessionId } }),
+  const sessions = useQuery({ queryKey: ["agent-sessions"], queryFn: () => listAgentSessions(), enabled: isOpen });
+  const session = useQuery({
+    queryKey: ["agent-session", sessionId],
+    queryFn: () => getAgentSession({ data: { sessionId: sessionId! } }),
     enabled: isOpen && Boolean(sessionId),
   });
 
-  // Fetch list of active investigations
-  const { data: sessionsList } = useQuery({
-    queryKey: ["agent_chat_sessions_list"],
-    queryFn: () => listAgentChatSessions(),
-    enabled: isOpen,
-  });
-
-  // Sync loaded history
+  // Take the server's copy only when a fetch brings new data, never over messages added since.
+  const syncedAt = useRef(0);
   useEffect(() => {
-    if (sessionData?.messages && sessionData.messages.length > 0) {
-      const mapped: ChatMessage[] = sessionData.messages.map((m) => ({
-        id: m.id,
-        sender: m.sender,
-        text: m.text,
-        model: m.model,
-        latencyMs: m.latencyMs,
-        sources: m.sources,
-        uncitedClaims: m.uncitedClaims,
-        evidenceGap: m.evidenceGap,
-        timestamp: new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      }));
-      setMessages(mapped);
-    } else if (sessionData?.messages && sessionData.messages.length === 0) {
-      setMessages([INITIAL_GREETING]);
-    }
-  }, [sessionData]);
-
-  const toggleSource = (msgId: string) => {
-    setExpandedSources((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
-  };
-
-  const handleCopy = (id: string, text: string) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      setCopiedMsgId(id);
-      setTimeout(() => setCopiedMsgId(null), 2000);
-    }
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+    if (!session.data || session.dataUpdatedAt === syncedAt.current) return;
+    syncedAt.current = session.dataUpdatedAt;
+    setMessages(session.data.messages as Message[]);
+    setTitle(session.data.title);
+  }, [session.data, session.dataUpdatedAt]);
 
   useEffect(() => {
-    if (isOpen) {
-      scrollToBottom();
+    if (!sessionId) {
+      setMessages([]);
+      setTitle("");
     }
-  }, [isOpen, messages]);
+  }, [sessionId]);
 
-  const switchSession = (newId: string) => {
-    setSessionId(newId);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("aie_chat_session_id", newId);
-    }
-    setIsSessionDropdownOpen(false);
-  };
-
-  const handleStartNewSession = () => {
-    const newId = `investigation-${Date.now().toString(36)}`;
-    switchSession(newId);
-    setMessages([INITIAL_GREETING]);
-  };
-
-  const handleClearSession = async () => {
-    try {
-      await clearAgentChatSession({ data: { sessionId } });
-      setMessages([INITIAL_GREETING]);
-      queryClient.invalidateQueries({ queryKey: ["agent_chat_messages", sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["agent_chat_sessions_list"] });
-    } catch (err) {
-      console.warn("Failed to clear session:", err);
-    }
-  };
-
-  const handleSend = async (promptToSend?: string) => {
-    const text = (promptToSend || input).trim();
-    if (!text || isLoading) return;
-
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      sender: "user",
-      text,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  // Live activity while a turn runs.
+  useEffect(() => {
+    if (!busy) return;
+    const tick = setInterval(() => setNow(Date.now()), 500);
+    const poll = setInterval(async () => {
+      try {
+        const p = await getAgentProgress({ data: { requestId: busy.requestId } });
+        setLiveSteps(p.steps as Activity[]);
+      } catch {
+        /* next poll */
+      }
+    }, 800);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
     };
+  }, [busy]);
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
-    setIsLoading(true);
+  useEffect(() => {
+    if (isOpen) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [isOpen, messages.length, liveSteps.length, busy]);
 
+  // Drag to resize (340 px to 60% of the viewport).
+  useEffect(() => {
+    if (!dragging) return;
+    const move = (e: MouseEvent) => setWidth(Math.max(340, Math.min(Math.round(window.innerWidth * 0.6), window.innerWidth - e.clientX)));
+    const up = () => {
+      setDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, [dragging]);
+  useEffect(() => {
+    if (!dragging) writeLocal(WIDTH_KEY, String(width));
+  }, [width, dragging]);
+
+  const wide = typeof window !== "undefined" && width >= Math.round(window.innerWidth * 0.5) - 10;
+  const toggleWide = () => setWidth(wide ? Math.max(400, Math.min(480, Math.round(window.innerWidth * 0.3))) : Math.round(window.innerWidth * 0.55));
+
+  const openSession = (id: string | null) => {
+    setSessionId(id);
+    writeLocal(SESSION_KEY, id);
+    setSessionsOpen(false);
+    setRenaming(false);
+    setLiveSteps([]);
+  };
+
+  const send = async (text: string, opts: { retryOf?: string } = {}) => {
+    const question = text.trim();
+    if (!question || busy) return;
+    const requestId = newRequestId();
+    const nowIso = new Date().toISOString();
+    if (opts.retryOf) {
+      setMessages((prev) => prev.filter((m) => m.id !== opts.retryOf));
+    } else {
+      setMessages((prev) => [...prev, { id: `local-${requestId}`, sender: "user", text: question, timestamp: nowIso, pending: true }]);
+      setInput("");
+    }
+    setLiveSteps([]);
+    setBusy({ requestId, startedAt: Date.now() });
     try {
-      const res = await chatWithAgyAgent({
+      const res = await sendAgentMessage({
         data: {
-          message: text,
-          model: cleanModel,
-          sessionId,
+          message: question,
+          sessionId: sessionId ?? undefined,
+          requestId,
+          page: { path },
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          retryOf: opts.retryOf,
         },
       });
-
-      const replyText = res?.reply || (res as any)?.error || "Agent response unavailable. Please retry.";
-      const agentMsg: ChatMessage = {
-        id: `agent-${Date.now()}`,
-        sender: "agent",
-        text: replyText,
-        latencyMs: res?.latencyMs,
-        model: res?.model,
-        providerName: "Threat Intelligence Copilot",
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        isError: !res?.success,
-        sources: res?.sources,
-        groundedCount: res?.groundedReportCount,
-        uncitedClaims: res?.uncitedClaims,
-        evidenceGap: res?.evidenceGap,
-      };
-
-      setMessages((prev) => [...prev, agentMsg]);
-      queryClient.invalidateQueries({ queryKey: ["agent_chat_sessions_list"] });
-    } catch (err: any) {
-      const errorMsg: ChatMessage = {
-        id: `err-${Date.now()}`,
-        sender: "agent",
-        text: `Analysis unavailable: ${err?.message || "Autonomous agent connection error"}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        isError: true,
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      if (res.sessionId !== sessionId) {
+        setSessionId(res.sessionId);
+        writeLocal(SESSION_KEY, res.sessionId);
+      }
+      setTitle(res.title);
+      setMessages((prev) => {
+        const next = [...prev.map((m) => (m.id === `local-${requestId}` ? { ...m, id: res.userMessageId ?? m.id, pending: false } : m)), res.message as Message];
+        // Keep the cached session in step, so reopening it shows the same conversation.
+        queryClient.setQueryData(["agent-session", res.sessionId], { sessionId: res.sessionId, title: res.title, messages: next });
+        syncedAt.current = queryClient.getQueryState(["agent-session", res.sessionId])?.dataUpdatedAt ?? syncedAt.current;
+        return next;
+      });
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : "the request did not reach the server";
+      setMessages((prev) => [
+        ...prev.map((m) => (m.id === `local-${requestId}` ? { ...m, pending: false } : m)),
+        { id: `local-err-${requestId}`, sender: "agent", text: `I could not answer: ${why}.`, timestamp: new Date().toISOString(), isError: true, replyTo: `local-${requestId}` },
+      ]);
     } finally {
-      setIsLoading(false);
+      setBusy(null);
+      setLiveSteps([]);
+      setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
+
+  const retry = (m: Message) => {
+    if (m.id.startsWith("local-err-")) {
+      // Never reached the server: ask again as a new message.
+      const asked = messages.find((x) => x.id === m.replyTo || x.id === m.replyTo?.replace("local-", ""));
+      setMessages((prev) => prev.filter((x) => x.id !== m.id && x.id !== asked?.id));
+      if (asked) void send(asked.text);
+      return;
+    }
+    const asked = messages.find((x) => x.id === m.replyTo) ?? [...messages.slice(0, messages.indexOf(m))].reverse().find((x) => x.sender === "user");
+    void send(asked?.text ?? "Please answer again.", { retryOf: m.id });
+  };
+
+  const copy = (text: string) => {
+    void navigator.clipboard?.writeText(text).then(
+      () => toast.success("Copied"),
+      () => toast.error("Copy failed"),
+    );
+  };
+
+  const decide = useMutation({
+    mutationFn: (v: { messageId: string; actionId: string; decision: "run" | "dismiss" }) => decideAgentAction({ data: v }),
+    onMutate: (v) => setMessages((prev) => prev.map((m) => (m.id === v.messageId ? { ...m, actions: m.actions?.map((a) => (a.id === v.actionId && v.decision === "run" ? { ...a, status: "running" } : a)) } : m))),
+    onSuccess: (res, v) => {
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === v.messageId ? { ...m, actions: m.actions?.map((a) => (a.id === v.actionId ? (res.action as Action) : a)) } : m));
+        if (sessionId) {
+          queryClient.setQueryData(["agent-session", sessionId], (old: { sessionId: string; title: string } | undefined) => (old ? { ...old, messages: next } : old));
+          syncedAt.current = queryClient.getQueryState(["agent-session", sessionId])?.dataUpdatedAt ?? syncedAt.current;
+        }
+        return next;
+      });
+      if (res.action.status === "done") toast.success(res.action.result ?? "Done");
+      if (res.action.status === "failed") toast.error(res.action.result ?? "The action failed");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "The action failed"),
+  });
+
+  const rename = useMutation({
+    mutationFn: (t: string) => renameAgentSession({ data: { sessionId: sessionId!, title: t } }),
+    onSuccess: (res) => {
+      setTitle(res.title);
+      setRenaming(false);
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteAgentSession({ data: { sessionId: id } }),
+    onSuccess: (_r, id) => {
+      if (id === sessionId) openSession(null);
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+      toast.success("Investigation deleted");
+    },
+  });
+
+  const actionsHere = useMemo(() => quickActions(path), [path]);
 
   if (!isOpen) return null;
 
-  const content = (
-    <div className="flex flex-col h-full bg-transparent text-fg select-text">
-      {/* Copilot Header */}
-      <div className="p-3.5 flex items-center justify-between shrink-0 drawer-section-header">
-        <div className="flex items-center gap-2.5 min-w-0">
+  const modelLine = info.data ? `${info.data.providerName} · ${info.data.modelLabel}` : "Connecting…";
+  const elapsed = busy ? Math.max(0, Math.round((now - busy.startedAt) / 1000)) : 0;
+
+  const body = (
+    <div className="flex h-full min-h-0 flex-col bg-transparent text-fg">
+      {/* Header */}
+      <div className="drawer-section-header flex shrink-0 items-center justify-between gap-2 p-3">
+        <div className="flex min-w-0 items-center gap-2.5">
           <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg">
             <Bot className="size-[18px]" strokeWidth={1.75} />
-            <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-sage ring-2 ring-bg-card" />
+            <span className={cn("absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-bg-card", info.isError ? "bg-danger" : info.data ? "bg-sage" : "bg-subtle")} />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-medium text-fg">CTI analyst copilot</h3>
-            <div className="flex max-w-[260px] items-center gap-1.5 truncate font-mono text-[11px] text-subtle">
-              <Database className="size-3 shrink-0" />
-              <span className="truncate">{cleanModel}</span>
-            </div>
+            <h3 className="text-sm font-medium text-fg">AIE Analyst</h3>
+            <Link to="/settings" title="The model is chosen in Settings → AI agent" className="block max-w-[260px] truncate text-[11px] text-subtle hover:text-fg">
+              {modelLine}
+            </Link>
           </div>
         </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* New Investigation Thread Trigger */}
-          <button
-            type="button"
-            onClick={handleStartNewSession}
-            title="Start new investigation thread"
-            aria-label="Start new investigation thread"
-            className={iconBtn}
-          >
-            <PlusCircle className="size-3.5" />
+        <div className="flex shrink-0 items-center gap-1">
+          <button type="button" onClick={() => openSession(null)} title="New investigation" aria-label="New investigation" className={iconBtn}>
+            <Plus className="size-4" />
           </button>
-
-          {/* Active Investigations Popout Trigger */}
-          <button
-            type="button"
-            onClick={() => setIsSessionDropdownOpen((p) => !p)}
-            title="Active investigation threads"
-            aria-label="Active investigation threads"
-            className={cn(
-              iconBtn,
-              isSessionDropdownOpen && "bg-bg-subtle text-fg"
-            )}
-          >
-            <Clock className="size-3.5" />
+          <button type="button" onClick={() => setSessionsOpen((v) => !v)} title="Investigations" aria-label="Investigations" aria-expanded={sessionsOpen} className={cn(iconBtn, sessionsOpen && "bg-bg-subtle text-fg")}>
+            <History className="size-4" />
           </button>
-
-          {/* Maximize / Reset Width Toggle */}
-          <button
-            type="button"
-            onClick={toggleExpand}
-            title={isExpanded ? "Restore default width (28vw)" : "Expand to 50% viewport width"}
-            className={iconBtn}
-          >
-            {isExpanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          <button type="button" onClick={toggleWide} title={wide ? "Narrower" : "Wider"} aria-label={wide ? "Narrower" : "Wider"} className={cn(iconBtn, "hidden sm:flex")}>
+            {wide ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
           </button>
-
-          {/* Clear Current History */}
-          <button
-            type="button"
-            onClick={handleClearSession}
-            title="Clear current thread"
-            aria-label="Clear current thread"
-            className={iconBtn}
-          >
-            <Trash2 className="size-3.5" />
+          <button type="button" onClick={onClose} aria-label="Close" className={iconBtn}>
+            <X className="size-4" />
           </button>
+        </div>
+      </div>
 
-          {!embedded && (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close copilot"
-              className={iconBtn}
-            >
-              <X className="size-4" />
+      {/* Current investigation */}
+      <div className="drawer-section-subbar flex shrink-0 items-center gap-2 px-3 py-2">
+        {renaming && sessionId ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const t = new FormData(e.currentTarget).get("title");
+              if (typeof t === "string" && t.trim()) rename.mutate(t.trim());
+            }}
+          >
+            <input
+              name="title"
+              defaultValue={title}
+              autoFocus
+              maxLength={80}
+              aria-label="Investigation name"
+              className="h-7 min-w-0 flex-1 rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg focus:border-accent focus:outline-none"
+              onKeyDown={(e) => e.key === "Escape" && setRenaming(false)}
+            />
+            <button type="submit" className={iconBtnSm} aria-label="Save name">
+              <Check className="size-3.5" />
             </button>
-          )}
-        </div>
+          </form>
+        ) : (
+          <>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg" title={title || "New investigation"}>
+              {title || "New investigation"}
+            </span>
+            {sessionId && (
+              <button type="button" onClick={() => setRenaming(true)} className={iconBtnSm} title="Rename" aria-label="Rename investigation">
+                <Pencil className="size-3" />
+              </button>
+            )}
+          </>
+        )}
       </div>
 
-      {/* Suggested Threat Hunting Queries (Frosted Pill Chips) */}
-      <div className="px-3 py-2 drawer-section-subbar overflow-x-auto shrink-0 flex items-center gap-1.5 no-scrollbar">
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
-          <Zap className="size-3.5" strokeWidth={1.75} />
-          Try
-        </span>
-        {DEFAULT_PROMPTS.map((prompt, i) => (
-          <button
-            key={i}
-            type="button"
-            disabled={isLoading}
-            onClick={() => handleSend(prompt)}
-            className="pill-liquid-glass shrink-0 cursor-pointer whitespace-nowrap rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-xs text-muted transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
-          >
-            {prompt}
-          </button>
-        ))}
-      </div>
+      {/* Investigations panel */}
+      {sessionsOpen && (
+        <SessionsPanel
+          current={sessionId}
+          loading={sessions.isLoading}
+          rows={sessions.data?.sessions ?? []}
+          onOpen={(id) => openSession(id)}
+          onNew={() => openSession(null)}
+          onDelete={(id) => remove.mutate(id)}
+          onClose={() => setSessionsOpen(false)}
+        />
+      )}
 
-      {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-3.5 space-y-4">
-        {messages.map((msg) => {
-          const hasSources = Boolean(msg.sources && msg.sources.length > 0);
-          const isSourceOpen = expandedSources[msg.id] !== false; // Default expanded
-
-          return (
-            <div
-              key={msg.id}
-              className={cn(
-                "flex flex-col max-w-[94%] w-full min-w-0 overflow-x-hidden",
-                msg.sender === "user" ? "ml-auto items-end" : "mr-auto items-start"
-              )}
-            >
-              {/* Message Header */}
-              <div className="flex items-center gap-1.5 mb-1 px-1">
-                <span className="text-[11px] font-medium text-muted">
-                  {msg.sender === "user" ? "Analyst" : "Copilot"}
-                </span>
-                {msg.model && msg.sender !== "user" && (
-                  <span className="max-w-[140px] truncate font-mono text-[10px] text-subtle" title={msg.model}>
-                    ({msg.model})
-                  </span>
-                )}
-                <span className="text-[10px] text-subtle">·</span>
-                <span className="text-[10px] text-subtle">{msg.timestamp}</span>
-                {msg.latencyMs && (
-                  <span className="text-[10px] text-subtle tabular-nums">
-                    · {msg.latencyMs < 1000 ? `${msg.latencyMs} ms` : `${(msg.latencyMs / 1000).toFixed(1)} s`}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleCopy(msg.id, msg.text)}
-                  className="text-subtle hover:text-fg p-0.5 rounded cursor-pointer transition-colors"
-                  title="Copy response"
-                >
-                  {copiedMsgId === msg.id ? (
-                    <Check className="size-3 text-sage" />
-                  ) : (
-                    <Copy className="size-3" />
-                  )}
-                </button>
-              </div>
-
-              {/* Message Bubble */}
-              {msg.sender === "user" ? (
-                <div className="max-w-full select-text overflow-hidden break-words rounded-xl rounded-br-sm bg-accent p-3 text-xs leading-relaxed text-accent-fg">
-                  {msg.text}
-                </div>
-              ) : msg.isError ? (
-                <div className="max-w-full select-text overflow-hidden break-words rounded-xl rounded-bl-sm border border-danger/50 bg-danger/10 p-3.5 text-xs leading-relaxed text-danger">
-                  {msg.text}
-                </div>
-              ) : (
-                <div className="card-liquid-glass w-full max-w-full select-text overflow-hidden break-words rounded-xl rounded-bl-sm border border-border bg-bg-card p-3.5 text-xs leading-relaxed text-fg">
-                  <MarkdownView content={msg.text} />
-                </div>
-              )}
-
-              {/* Grounding notices */}
-              {msg.sender === "agent" && msg.evidenceGap && (
-                <div className="mt-2 flex w-full items-start gap-2 rounded-lg border border-border bg-bg-subtle px-2.5 py-2 text-[11px] text-muted">
-                  <SearchX className="size-3.5 shrink-0 mt-px" />
-                  <span>No library passage matched this question closely enough to cite, so no answer was generated from model knowledge.</span>
-                </div>
-              )}
-              {msg.sender === "agent" && msg.uncitedClaims && (
-                <div className="mt-2 flex w-full items-start gap-2 rounded-lg border border-warn/40 bg-warn/10 px-2.5 py-2 text-[11px] text-warn">
-                  <AlertTriangle className="size-3.5 shrink-0 mt-px" />
-                  <span>Some statements are not backed by a cited passage. Treat uncited sentences as unverified.</span>
-                </div>
-              )}
-
-              {/* Cited evidence (only passages the reply actually cites) */}
-              {hasSources && (
-                <div className="mt-2 w-full space-y-1.5">
-                  <button
-                    type="button"
-                    onClick={() => toggleSource(msg.id)}
-                    className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-border bg-bg-elevated px-2.5 py-1.5 text-[11px] font-medium text-fg transition-colors hover:bg-bg-subtle"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <FileText className="size-3.5 text-muted" strokeWidth={1.75} />
-                      <span>
-                        Cited evidence ({msg.sources?.length} passage{msg.sources?.length === 1 ? "" : "s"})
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 text-[11px] text-muted">
-                      <span>{isSourceOpen ? "Collapse" : "Expand"}</span>
-                      <ChevronDown
-                        className={cn(
-                          "size-3 transition-transform duration-200",
-                          isSourceOpen && "rotate-180"
-                        )}
-                      />
-                    </div>
-                  </button>
-
-                  {isSourceOpen && (
-                    <div className="space-y-1.5 pt-0.5">
-                      {msg.sources?.map((s) => {
-                        const reportId = s.reportId || s.id;
-                        const quote = s.quote || s.snippet;
-                        const isPassage = Boolean(s.reportId);
-                        return (
-                          <div
-                            key={`${s.id}-${reportId}`}
-                            className="card-liquid-glass space-y-1.5 rounded-lg border border-border bg-bg-card p-2.5"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <Link
-                                to="/library/$reportId"
-                                params={{ reportId }}
-                                className="line-clamp-2 min-w-0 text-xs font-medium text-fg transition-colors hover:text-accent"
-                              >
-                                {s.title}
-                              </Link>
-                              <span className="shrink-0 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">
-                                {isPassage ? s.id : s.formattedId || reportId.slice(0, 10)}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-2 text-[10px] text-subtle">
-                              <span className="truncate min-w-0">
-                                {s.publisher}
-                                {isPassage ? ` · ${formatSourceDate(s.publishedAt)}` : s.classification ? ` · ${s.classification}` : ""}
-                                {s.formattedId ? ` · ${s.formattedId}` : ""}
-                              </span>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <Link
-                                  to="/library/$reportId"
-                                  params={{ reportId }}
-                                  className="text-accent flex items-center gap-1 hover:underline font-medium"
-                                >
-                                  <span>Open report</span>
-                                </Link>
-                                {s.url && (
-                                  <a
-                                    href={s.url}
-                                    target="_blank"
-                                    rel="noreferrer noopener"
-                                    title="Original publication"
-                                    className="text-subtle hover:text-accent"
-                                  >
-                                    <ExternalLink className="size-3" />
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                            {quote && (
-                              <blockquote className="whitespace-pre-line break-words border-l-2 border-border pl-2 text-[11px] leading-relaxed text-muted">
-                                {quote}
-                              </blockquote>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {isLoading && (
-          <div className="card-liquid-glass mr-auto flex max-w-[85%] items-center gap-2.5 rounded-xl border border-border bg-bg-card p-3 text-xs text-muted">
-            <ActivitySpinner size="sm" className="text-accent shrink-0" />
-            <span>Analyzing threat data & formulating a response…</span>
-          </div>
+      {/* Messages */}
+      <div className={cn("min-h-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden p-3.5", sessionsOpen && "hidden")}>
+        {messages.length === 0 && !busy && (
+          <Welcome actions={actionsHere} onPick={(p) => (p.endsWith(": ") ? (setInput(p), inputRef.current?.focus()) : void send(p))} loading={session.isLoading && Boolean(sessionId)} />
         )}
 
-        <div ref={messagesEndRef} />
+        {messages.map((m) =>
+          m.sender === "user" ? (
+            <UserBubble key={m.id} m={m} onCopy={copy} />
+          ) : (
+            <AgentBubble
+              key={m.id}
+              m={m}
+              developer={developer}
+              busy={Boolean(busy)}
+              onCopy={copy}
+              onRetry={() => retry(m)}
+              onAction={(actionId, decision) => decide.mutate({ messageId: m.id, actionId, decision })}
+            />
+          ),
+        )}
+
+        {busy && <LiveActivity steps={liveSteps} elapsed={elapsed} developer={developer} />}
+        <div ref={endRef} />
       </div>
 
-      {/* Input Form */}
-      <div className="p-3 drawer-section-footer">
+      {/* Suggestions when the conversation has started */}
+      {messages.length > 0 && !sessionsOpen && (
+        <div className="no-scrollbar flex shrink-0 items-center gap-1.5 overflow-x-auto px-3 pb-1.5">
+          {actionsHere.slice(0, 4).map((a) => (
+            <button
+              key={a.label}
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={() => (a.prompt.endsWith(": ") ? (setInput(a.prompt), inputRef.current?.focus()) : void send(a.prompt))}
+              className="pill-liquid-glass shrink-0 whitespace-nowrap rounded-md border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-muted transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-50"
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Composer */}
+      <div className="drawer-section-footer shrink-0 p-3">
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            handleSend();
+            void send(input);
           }}
-          className="flex items-center gap-2"
+          className="flex items-end gap-2"
         >
-          <div className="relative grow">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about threats, TTPs, CVEs, or campaigns…"
-              disabled={isLoading}
-              className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 pr-9 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-            />
-            {input && (
-              <button
-                type="button"
-                onClick={() => setInput("")}
-                aria-label="Clear input"
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-subtle hover:text-fg p-0.5 cursor-pointer"
-              >
-                <X className="size-3" />
-              </button>
-            )}
-          </div>
-
-          <Button
-            type="submit"
-            size="sm"
-            variant="primary"
-            disabled={!input.trim() || isLoading}
-            className="h-9 shrink-0 cursor-pointer gap-1.5 rounded-lg px-3.5 text-sm font-medium"
-          >
-            {isLoading ? (
-              <ActivitySpinner size="xs" />
-            ) : (
-              <>
-                <Send className="size-3.5" />
-                <span className="hidden sm:inline">Send</span>
-              </>
-            )}
+          <textarea
+            ref={inputRef}
+            value={input}
+            rows={1}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send(input);
+              }
+            }}
+            placeholder="Ask the AIE Analyst…"
+            aria-label="Message the AIE Analyst"
+            className="max-h-40 min-h-9 w-full grow resize-none rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm leading-snug text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+          <Button type="submit" size="sm" variant="primary" disabled={!input.trim() || Boolean(busy)} className="h-9 shrink-0 gap-1.5 rounded-lg px-3.5 text-sm font-medium" aria-label="Send">
+            {busy ? <ActivitySpinner size="xs" /> : <Send className="size-3.5" />}
           </Button>
         </form>
-
-        {/* Structured Session & Sandbox Status Footer */}
-        <div className="mt-2.5 flex select-none items-center justify-between gap-2 border-t border-border pt-2 text-[11px]">
-          <div className="flex items-center gap-1.5 min-w-0 flex-1">
-            <span className="shrink-0 text-subtle">Session</span>
-            <span className="truncate font-mono text-muted" title={sessionId}>
-              {sessionId ? (sessionId.length > 20 ? `${sessionId.slice(0, 10)}…${sessionId.slice(-6)}` : sessionId) : "New thread"}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0 pl-1.5">
-            <span className="size-1.5 shrink-0 rounded-full bg-sage" />
-            <span className="whitespace-nowrap text-muted">Daemon active</span>
-          </div>
-        </div>
+        <p className="mt-1.5 text-[10px] text-subtle">Answers cite library evidence as [S#]. Actions run only when you confirm them.</p>
+        {developer && info.data?.workers && <WorkerStatus workers={info.data.workers} />}
       </div>
     </div>
   );
 
-  if (embedded) {
-    return <div className="card-liquid-glass flex h-96 flex-col overflow-hidden rounded-xl border border-border">{content}</div>;
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity"
-        onClick={onClose}
-      />
-
-      {/* Slide-over Drawer with Left Anchored Dock and Resizer Handle */}
-      <div
-        style={{ width: `${drawerWidth}px` }}
-        className="relative z-10 max-w-[92vw] h-full shadow-2xl drawer-liquid-glass animate-in slide-in-from-right duration-200 flex flex-col"
-      >
-        {/* Expansion Handle / Drag affordance on center-left edge with vertical 3-dot affordance */}
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-xs" onClick={onClose} />
+      <div style={{ width: `${width}px` }} className="drawer-liquid-glass relative z-10 flex h-full max-w-[100vw] flex-col shadow-2xl animate-in slide-in-from-right duration-200">
         <div
           onMouseDown={(e) => {
             e.preventDefault();
-            setIsDragging(true);
+            setDragging(true);
           }}
-          onClick={() => {
-            if (!isDragging) {
-              toggleExpand();
-            }
-          }}
-          className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-28 flex items-center justify-center cursor-ew-resize group z-30 select-none"
-          title="Click to toggle 50% expansion, or drag to resize"
+          className="group absolute -left-3 top-1/2 z-30 hidden h-28 w-6 -translate-y-1/2 cursor-ew-resize items-center justify-center sm:flex"
+          title="Drag to resize"
         >
-          <div className="w-1.5 h-14 rounded-full bg-border/80 group-hover:bg-accent group-hover:w-2 transition-all flex flex-col items-center justify-center gap-1 shadow-md border border-border/40 backdrop-blur-md">
-            <span className="size-1 rounded-full bg-fg/70 group-hover:bg-accent-fg transition-colors" />
-            <span className="size-1 rounded-full bg-fg/70 group-hover:bg-accent-fg transition-colors" />
-            <span className="size-1 rounded-full bg-fg/70 group-hover:bg-accent-fg transition-colors" />
-          </div>
+          <div className="h-14 w-1.5 rounded-full border border-border/40 bg-border/80 transition-all group-hover:w-2 group-hover:bg-accent" />
         </div>
-
-        {/* Session Switcher Pop-out Panel (Anchored to Left of Drawer) */}
-        {isSessionDropdownOpen && (
-          <div className="dropdown-liquid-glass absolute right-full top-3 z-40 mr-2 w-80 space-y-2.5 rounded-xl border border-border bg-bg-card p-3.5 shadow-2xl animate-in fade-in-0 slide-in-from-right-2 duration-150">
-            <div className="flex items-center justify-between px-1 pb-2 border-b border-border/60">
-              <div className="flex items-center gap-1.5">
-                <Clock className="size-4 text-muted" strokeWidth={1.75} />
-                <span className="text-sm font-medium text-fg">Active investigations</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted tabular-nums">{sessionsList?.sessions?.length || 0} threads</span>
-                <button
-                  type="button"
-                  onClick={() => setIsSessionDropdownOpen(false)}
-                  className="p-1 rounded-lg text-subtle hover:text-fg hover:bg-bg-subtle cursor-pointer"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            </div>
-
-            {/* Quick Start New Thread Button inside popout */}
-            <button
-              type="button"
-              onClick={handleStartNewSession}
-              className="flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle"
-            >
-              <PlusCircle className="size-3.5" />
-              <span>Start new investigation thread</span>
-            </button>
-
-            {/* Threads List */}
-            <div className="max-h-72 overflow-y-auto space-y-1.5 pr-0.5">
-              {(sessionsList?.sessions || []).map((s) => (
-                <button
-                  key={s.sessionId}
-                  type="button"
-                  onClick={() => switchSession(s.sessionId)}
-                  className={cn(
-                    "flex w-full cursor-pointer flex-col gap-1 rounded-lg p-2.5 text-left text-xs transition-colors",
-                    s.sessionId === sessionId ? "bg-bg-subtle text-fg" : "text-muted hover:bg-bg-subtle hover:text-fg"
-                  )}
-                >
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-mono truncate">{s.sessionId}</span>
-                    <span className="shrink-0 text-[10px] text-subtle tabular-nums">
-                      {s.messageCount} messages
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-subtle truncate">{s.lastMessage || "Empty thread"}</p>
-                </button>
-              ))}
-              {(!sessionsList?.sessions || sessionsList.sessions.length === 0) && (
-                <p className="text-xs text-subtle p-3 text-center">No prior investigations saved.</p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {content}
+        {body}
       </div>
     </div>
   );
 }
 
-const iconBtn =
-  "flex size-8 cursor-pointer items-center justify-center rounded-lg text-subtle transition-colors hover:bg-bg-subtle hover:text-fg";
+// ---------------------------------------------------------------------------
+// Parts
+// ---------------------------------------------------------------------------
+
+function Welcome({ actions, onPick, loading }: { actions: Array<{ label: string; prompt: string }>; onPick: (prompt: string) => void; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 p-2 text-xs text-muted">
+        <ActivitySpinner size="xs" /> Loading the investigation…
+      </div>
+    );
+  }
+  return (
+    <div className="card-liquid-glass space-y-3 rounded-xl border border-border bg-bg-card p-4">
+      <div className="flex items-center gap-2 text-sm font-medium text-fg">
+        <Sparkles className="size-4 text-accent" strokeWidth={1.75} />
+        How can I help with your investigation?
+      </div>
+      <p className="text-xs leading-relaxed text-muted">
+        I work with the whole console: I search and read library reports, look up indicators, profile threat actors, map ATT&amp;CK techniques, check the crawler and sources, and
+        plan purple-team paths. I can also start crawls, ingest a URL, hide reports or draft an advisory, each only after you confirm.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {actions.map((a) => (
+          <button
+            key={a.label}
+            type="button"
+            onClick={() => onPick(a.prompt)}
+            className="pill-liquid-glass rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-xs text-muted transition-colors hover:bg-bg-subtle hover:text-fg"
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserBubble({ m, onCopy }: { m: Message; onCopy: (t: string) => void }) {
+  return (
+    <div className="group ml-auto flex w-full max-w-[92%] flex-col items-end">
+      <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] text-subtle">
+        <span className="font-medium text-muted">You</span>
+        <span>{clockTime(m.timestamp)}</span>
+        <button type="button" onClick={() => onCopy(m.text)} className={cn(iconBtnXs, "opacity-0 group-hover:opacity-100 focus:opacity-100")} title="Copy" aria-label="Copy message">
+          <Copy className="size-3" />
+        </button>
+      </div>
+      <div className={cn("max-w-full whitespace-pre-wrap break-words rounded-xl rounded-br-sm bg-accent px-3 py-2 text-xs leading-relaxed text-accent-fg", m.pending && "opacity-80")}>{m.text}</div>
+    </div>
+  );
+}
+
+function AgentBubble({
+  m,
+  developer,
+  busy,
+  onCopy,
+  onRetry,
+  onAction,
+}: {
+  m: Message;
+  developer: boolean;
+  busy: boolean;
+  onCopy: (t: string) => void;
+  onRetry: () => void;
+  onAction: (actionId: string, decision: "run" | "dismiss") => void;
+}) {
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const tools = (m.activity ?? []).filter((a) => a.kind === "tool");
+  const sources = m.sources ?? [];
+  return (
+    <div className="mr-auto flex w-full max-w-[96%] min-w-0 flex-col items-start">
+      <div className="mb-1 flex w-full items-center gap-1.5 px-1 text-[10px] text-subtle">
+        <span className="shrink-0 whitespace-nowrap font-medium text-muted">AIE Analyst</span>
+        <span className="shrink-0 whitespace-nowrap">{clockTime(m.timestamp)}</span>
+        {m.latencyMs ? <span className="shrink-0 whitespace-nowrap tabular-nums">· {duration(m.latencyMs)}</span> : null}
+        {developer && (m.modelLabel || m.model) && (
+          <span className="min-w-0 truncate font-mono" title={`${m.provider ?? ""} ${m.model ?? ""}`}>
+            · {m.provider ? `${m.provider} · ` : ""}
+            {m.modelLabel ?? m.model}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          <button type="button" onClick={() => onCopy(m.text)} className={iconBtnXs} title="Copy answer" aria-label="Copy answer">
+            <Copy className="size-3" />
+          </button>
+          <button type="button" onClick={onRetry} disabled={busy} className={iconBtnXs} title="Ask again" aria-label="Ask again">
+            <RotateCcw className="size-3" />
+          </button>
+        </span>
+      </div>
+
+      {m.isError ? (
+        <div className="w-full rounded-xl rounded-bl-sm border border-danger/40 bg-danger/10 p-3 text-xs leading-relaxed text-danger">
+          <p className="break-words">{m.text}</p>
+          <div className="mt-2 flex gap-1.5">
+            <button type="button" onClick={onRetry} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-danger/40 px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/10 disabled:opacity-50">
+              <RotateCcw className="size-3" /> Retry
+            </button>
+            <button type="button" onClick={() => onCopy(m.text)} className="inline-flex items-center gap-1 rounded-md border border-danger/40 px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/10">
+              <Copy className="size-3" /> Copy error
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="card-liquid-glass w-full min-w-0 overflow-hidden break-words rounded-xl rounded-bl-sm border border-border bg-bg-card p-3.5 text-xs leading-relaxed text-fg">
+          <MarkdownView content={m.text} />
+        </div>
+      )}
+
+      {/* What the agent did */}
+      {tools.length > 0 && (
+        <div className="mt-1.5 w-full">
+          <button type="button" onClick={() => setStepsOpen((v) => !v)} className="flex max-w-full items-center gap-1.5 px-1 text-[11px] text-subtle hover:text-fg">
+            <Wrench className="size-3 shrink-0" />
+            <span className="truncate">{stepsOpen ? "What I did" : tools.map((t) => t.label).join(" · ")}</span>
+            <ChevronDown className={cn("size-3 shrink-0 transition-transform", stepsOpen && "rotate-180")} />
+          </button>
+          {stepsOpen && <Steps steps={developer ? m.activity ?? [] : tools} developer={developer} />}
+        </div>
+      )}
+
+      {/* Proposed actions */}
+      {(m.actions ?? []).map((a) => (
+        <ActionCard key={a.id} a={a} disabled={busy} onRun={() => onAction(a.id, "run")} onDismiss={() => onAction(a.id, "dismiss")} />
+      ))}
+
+      {m.uncitedClaims && (
+        <div className="mt-2 flex w-full items-start gap-2 rounded-lg border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-[11px] text-warn">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>Some statements have no citation. Treat uncited sentences as unverified.</span>
+        </div>
+      )}
+
+      {sources.length > 0 && (
+        <div className="mt-2 w-full">
+          <button
+            type="button"
+            onClick={() => setSourcesOpen((v) => !v)}
+            className="flex w-full items-center justify-between rounded-lg border border-border bg-bg-elevated px-2.5 py-1.5 text-[11px] font-medium text-fg transition-colors hover:bg-bg-subtle"
+          >
+            <span className="flex items-center gap-1.5">
+              <FileText className="size-3.5 text-muted" strokeWidth={1.75} />
+              Evidence · {sources.length} cited
+            </span>
+            <ChevronDown className={cn("size-3 text-muted transition-transform", sourcesOpen && "rotate-180")} />
+          </button>
+          {sourcesOpen && (
+            <div className="mt-1.5 space-y-1.5">
+              {sources.map((s) => {
+                const reportId = s.reportId || s.id;
+                const quote = s.quote || s.snippet;
+                return (
+                  <div key={`${s.id}-${reportId}`} className="card-liquid-glass space-y-1 rounded-lg border border-border bg-bg-card p-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <Link to="/library/$reportId" params={{ reportId }} className="line-clamp-2 min-w-0 text-xs font-medium text-fg hover:text-accent">
+                        {s.title}
+                      </Link>
+                      <span className="shrink-0 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">{s.id}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-[10px] text-subtle">
+                      <span className="min-w-0 truncate">
+                        {s.publisher || "Unknown publisher"} · {sourceDate(s.publishedAt)}
+                        {s.formattedId ? ` · ${s.formattedId}` : ""}
+                      </span>
+                      {s.url && (
+                        <a href={s.url} target="_blank" rel="noreferrer noopener" title="Original publication" className="shrink-0 hover:text-accent">
+                          <ExternalLink className="size-3" />
+                        </a>
+                      )}
+                    </div>
+                    {quote && <blockquote className="line-clamp-6 whitespace-pre-line break-words border-l-2 border-border pl-2 text-[11px] leading-relaxed text-muted">{quote}</blockquote>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Steps({ steps, developer }: { steps: Activity[]; developer: boolean }) {
+  return (
+    <ol className="mt-1 space-y-1 rounded-lg border border-border bg-bg-elevated p-2 text-[11px]">
+      {steps.map((s, i) => (
+        <li key={i} className="flex items-start gap-1.5">
+          {s.running ? (
+            <ActivitySpinner size="xs" className="mt-0.5 shrink-0 text-accent" />
+          ) : s.ok === false ? (
+            <CircleX className="mt-0.5 size-3 shrink-0 text-danger" />
+          ) : (
+            <CircleCheck className="mt-0.5 size-3 shrink-0 text-sage" />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className={cn(s.ok === false ? "text-danger" : "text-fg")}>{s.label}</span>
+            {s.ms !== undefined && !s.running && <span className="ml-1 tabular-nums text-subtle">{duration(s.ms)}</span>}
+            {developer && s.detail && <span className="mt-0.5 block break-all font-mono text-[10px] text-subtle">{s.detail}</span>}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function LiveActivity({ steps, elapsed, developer }: { steps: Activity[]; elapsed: number; developer: boolean }) {
+  const visible = developer ? steps : steps.filter((s) => s.kind === "tool" || s.running);
+  const current = [...steps].reverse().find((s) => s.running);
+  return (
+    <div className="card-liquid-glass mr-auto w-full max-w-[96%] rounded-xl border border-border bg-bg-card p-3 text-xs" aria-live="polite">
+      <div className="flex items-center gap-2 text-muted">
+        <ActivitySpinner size="sm" className="shrink-0 text-accent" />
+        <span className="min-w-0 flex-1 truncate">{current ? (current.kind === "model" ? (steps.some((s) => s.kind === "tool") ? "Reading the results and writing the answer" : "Thinking") : current.label) : "Starting"}…</span>
+        <span className="shrink-0 tabular-nums text-subtle">{elapsed}s</span>
+      </div>
+      {visible.length > 0 && <Steps steps={visible} developer={developer} />}
+    </div>
+  );
+}
+
+function ActionCard({ a, disabled, onRun, onDismiss }: { a: Action; disabled: boolean; onRun: () => void; onDismiss: () => void }) {
+  return (
+    <div
+      className={cn(
+        "mt-2 w-full rounded-lg border p-2.5 text-xs",
+        a.status === "done" ? "border-sage/40 bg-sage/10" : a.status === "failed" ? "border-danger/40 bg-danger/10" : a.status === "dismissed" ? "border-border bg-bg-subtle opacity-70" : "border-accent/40 bg-accent/5",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <Play className="mt-0.5 size-3.5 shrink-0 text-muted" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-fg">{a.label}</p>
+          {a.status === "pending" && <p className="mt-0.5 text-[11px] text-muted">Proposed by the analyst agent. Nothing has run yet.</p>}
+          {a.status === "running" && <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted"><ActivitySpinner size="xs" /> Running…</div>}
+          {a.status === "dismissed" && <p className="mt-0.5 text-[11px] text-muted">Dismissed.</p>}
+          {(a.status === "done" || a.status === "failed") && <p className={cn("mt-0.5 text-[11px]", a.status === "done" ? "text-sage" : "text-danger")}>{a.result}</p>}
+          {a.link && (
+            <a href={a.link.href} className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline">
+              {a.link.label}
+            </a>
+          )}
+        </div>
+      </div>
+      {a.status === "pending" && (
+        <div className="mt-2 flex gap-1.5 pl-5">
+          <Button type="button" size="sm" variant="primary" disabled={disabled} onClick={onRun} className="h-7 gap-1 px-2.5 text-[11px]">
+            <Play className="size-3" /> Run
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={onDismiss} className="h-7 px-2.5 text-[11px]">
+            Dismiss
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionsPanel({
+  current,
+  rows,
+  loading,
+  onOpen,
+  onNew,
+  onDelete,
+  onClose,
+}: {
+  current: string | null;
+  rows: Array<{ sessionId: string; title: string; messageCount: number; updatedAt: string; preview: string }>;
+  loading: boolean;
+  onOpen: (id: string) => void;
+  onNew: () => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const shown = rows.filter((r) => !q.trim() || `${r.title} ${r.preview}`.toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-fg">Investigations</span>
+        <button type="button" onClick={onClose} className={iconBtnSm} aria-label="Back to the conversation">
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-subtle" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Find an investigation"
+            aria-label="Find an investigation"
+            className="h-8 w-full rounded-lg border border-border bg-bg-elevated pl-8 pr-2 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
+          />
+        </div>
+        <Button type="button" size="sm" variant="primary" onClick={onNew} className="h-8 gap-1 px-2.5 text-xs">
+          <Plus className="size-3.5" /> New
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+        {loading && <p className="p-3 text-center text-xs text-subtle">Loading…</p>}
+        {!loading && shown.length === 0 && <p className="p-3 text-center text-xs text-subtle">{rows.length ? "No investigation matches." : "No investigations yet. Ask a question to start one."}</p>}
+        {shown.map((r) => (
+          <div key={r.sessionId} className={cn("group flex items-start gap-1 rounded-lg p-2 transition-colors", r.sessionId === current ? "bg-bg-subtle" : "hover:bg-bg-subtle")}>
+            <button type="button" onClick={() => onOpen(r.sessionId)} className="min-w-0 flex-1 text-left">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-xs font-medium text-fg">{r.title}</span>
+                <span className="shrink-0 text-[10px] text-subtle">{relativeTime(r.updatedAt)}</span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-subtle">
+                {r.messageCount} message{r.messageCount === 1 ? "" : "s"} · {r.preview}
+              </p>
+            </button>
+            {confirmId === r.sessionId ? (
+              <span className="flex shrink-0 items-center gap-1">
+                <button type="button" onClick={() => (onDelete(r.sessionId), setConfirmId(null))} className="rounded-md bg-danger/15 px-1.5 py-0.5 text-[10px] font-medium text-danger">
+                  Delete
+                </button>
+                <button type="button" onClick={() => setConfirmId(null)} className="rounded-md px-1.5 py-0.5 text-[10px] text-muted hover:text-fg">
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => setConfirmId(r.sessionId)} className={cn(iconBtnXs, "opacity-0 group-hover:opacity-100 focus:opacity-100")} title="Delete" aria-label={`Delete ${r.title}`}>
+                <Trash2 className="size-3" />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkerStatus({ workers }: { workers: { interactive: WorkerInfo; background: WorkerInfo; chatSessions: Array<WorkerInfo & { session: string }> } }) {
+  const line = (label: string, w: WorkerInfo) => (
+    <span key={label} className="whitespace-nowrap">
+      <span className={cn("mr-1 inline-block size-1.5 rounded-full", w.isAlive ? "bg-sage" : "bg-subtle")} />
+      {label} {w.isAlive ? `pid ${w.pid ?? "?"}` : "idle"} · {w.turnCount} turns{w.queueLength ? ` · ${w.queueLength} queued` : ""}
+    </span>
+  );
+  return (
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 font-mono text-[10px] text-subtle" title="Developer mode: agent workers in the sandbox">
+      {line("background", workers.background)}
+      {workers.chatSessions.map((w) => line(`chat ${w.session.slice(-6)}`, w))}
+    </div>
+  );
+}
+
+type WorkerInfo = { isAlive: boolean; pid: number | null; turnCount: number; queueLength: number };
+
+const iconBtn = "flex size-8 items-center justify-center rounded-lg text-subtle transition-colors hover:bg-bg-subtle hover:text-fg";
+const iconBtnSm = "flex size-6 shrink-0 items-center justify-center rounded-md text-subtle transition-colors hover:bg-bg-subtle hover:text-fg";
+const iconBtnXs = "flex size-5 items-center justify-center rounded text-subtle transition-colors hover:bg-bg-subtle hover:text-fg disabled:opacity-40";

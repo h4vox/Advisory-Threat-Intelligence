@@ -694,8 +694,51 @@ export const backgroundAgentService = new WarmAgentService({
   maxQueue: 6,
 });
 
-/** Stops both workers (sign-out, reset, uninstall). */
+/**
+ * Chat sessions each get their own worker, so one analyst's conversation never reaches another
+ * session's context. The chat sends its own history with each prompt, so a worker needs no
+ * conversation id and a session whose worker was evicted (at most 3 live, least recently used out)
+ * simply starts a fresh one.
+ */
+const CHAT_POOL_MAX = 3;
+const chatPool = new Map<string, WarmAgentService>();
+
+export function chatAgentFor(sessionKey: string): WarmAgentService {
+  const existing = chatPool.get(sessionKey);
+  if (existing) {
+    chatPool.delete(sessionKey);
+    chatPool.set(sessionKey, existing);
+    return existing;
+  }
+  while (chatPool.size >= CHAT_POOL_MAX) {
+    const [oldestKey, oldest] = chatPool.entries().next().value as [string, WarmAgentService];
+    chatPool.delete(oldestKey);
+    oldest.destroyProcess("chat_pool_evict");
+  }
+  const svc = new WarmAgentService({
+    lane: "interactive",
+    keepConversation: false,
+    maxTurnsPerWorker: 24,
+    maxPromptCharsPerWorker: 240_000,
+    maxQueue: 4,
+  });
+  chatPool.set(sessionKey, svc);
+  return svc;
+}
+
+/** Live workers, for the developer view. */
+export function agentWorkerStatus() {
+  return {
+    interactive: warmAgentService.getStatus(),
+    background: backgroundAgentService.getStatus(),
+    chatSessions: [...chatPool.entries()].map(([key, svc]) => ({ session: key.split(":").pop() ?? key, ...svc.getStatus() })),
+  };
+}
+
+/** Stops every worker (sign-out, reset, uninstall). */
 export function destroyAllAgentWorkers(reason: string): void {
   warmAgentService.destroyProcess(reason);
   backgroundAgentService.destroyProcess(reason);
+  for (const svc of chatPool.values()) svc.destroyProcess(reason);
+  chatPool.clear();
 }

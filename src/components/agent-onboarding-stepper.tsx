@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { StatusChip } from "@/components/ui/primitives";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
@@ -426,12 +427,12 @@ export function AgentOnboardingStepper({ agentId = "agy_agent", onCompleted, cla
                 <Sparkles className="size-3.5" strokeWidth={1.75} />
                 <span>Model</span>
               </label>
-              <select
+              <Select
                 id="agent-model"
                 value={activeModel}
-                onChange={(e) => setModel.mutate(e.target.value)}
+                onValueChange={(v) => setModel.mutate(v)}
                 disabled={setModel.isPending}
-                className="h-9 max-w-sm rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none"
+                className="max-w-sm"
               >
                 {AGY_AVAILABLE_MODELS.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -439,7 +440,7 @@ export function AgentOnboardingStepper({ agentId = "agy_agent", onCompleted, cla
                     {m.isFast ? " (fastest)" : ""}
                   </option>
                 ))}
-              </select>
+              </Select>
               {setModel.isPending && (
                 <span className="flex items-center gap-1 text-[11px] text-muted">
                   <ActivitySpinner size="xs" />

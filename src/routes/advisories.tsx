@@ -8,6 +8,7 @@ import { ActionButton, PageHeader, Toolbar } from "@/components/layout/page";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { EmptyState, StatusChip, type Tone } from "@/components/ui/primitives";
 import { cn } from "@/lib/cn";
 import { createAdvisory, listAdvisories } from "@/lib/aie/server-advisories";
@@ -243,12 +244,12 @@ function CreateAdvisoryModal({ onClose, onCreated }: { onClose: () => void; onCr
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted">TLP</label>
-              <select value={tlp} onChange={(e) => setTlp(e.target.value as Tlp)} className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none">
+              <label htmlFor="new-advisory-tlp" className="mb-1.5 block text-xs font-medium text-muted">TLP</label>
+              <Select id="new-advisory-tlp" value={tlp} onValueChange={(v) => setTlp(v as Tlp)} className="w-full">
                 {TLPS.map((t) => (
                   <option key={t} value={t}>TLP:{t}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted">Max simulation steps: {maxSteps}</label>

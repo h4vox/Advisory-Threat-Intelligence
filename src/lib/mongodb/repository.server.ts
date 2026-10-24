@@ -3523,6 +3523,45 @@ export interface AgentChatMessageRecord {
   /** Retrieval trace for reproducing the answer (no prompt text, no secrets). */
   retrieval?: ChatRetrievalTrace;
   timestamp: string;
+  /** The answer failed (provider error, timeout): the UI offers Retry. */
+  isError?: boolean;
+  /** Agent message: the user message it answers (Retry re-asks it). */
+  replyTo?: string;
+  /** Provider that answered, for the message header ("Antigravity", "Gemini API"). */
+  provider?: string;
+  /** Readable model name ("Gemini 3.8 Flash (High)"). */
+  modelLabel?: string;
+  /** What the agent did, in order (tool calls, model rounds), for the activity line and developer view. */
+  activity?: Array<{ kind: "tool" | "model" | "info"; label: string; detail?: string; ms?: number; ok?: boolean }>;
+  /** Actions the agent proposed; each runs only after the analyst confirms. */
+  actions?: AgentActionRecord[];
+}
+
+/** A tool argument (JSON). */
+export type AgentActionArg = string | number | boolean | null | string[];
+
+export interface AgentActionRecord {
+  id: string;
+  tool: string;
+  args: Record<string, AgentActionArg>;
+  /** Button text, e.g. "Start a crawl focused on “LockBit”". */
+  label: string;
+  status: "pending" | "running" | "done" | "failed" | "dismissed";
+  result?: string;
+  link?: { label: string; href: string };
+  decidedAt?: string;
+  decidedBy?: string;
+}
+
+/** A named chat session; one per (user, sessionId). */
+export interface AgentChatSessionRecord {
+  userId: string;
+  sessionId: string;
+  title: string;
+  /** Set from the first question; replaced when the analyst renames it. */
+  autoTitle: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export async function mongoSaveChatMessage(message: AgentChatMessageRecord): Promise<void> {
@@ -3568,11 +3607,145 @@ export async function mongoGetChatSessionMessages(
       evidenceGap: d.evidenceGap,
       retrievedCount: d.retrievedCount,
       timestamp: d.timestamp || d.createdAt?.toISOString?.() || new Date().toISOString(),
+      isError: d.isError,
+      replyTo: d.replyTo,
+      provider: d.provider,
+      modelLabel: d.modelLabel,
+      activity: d.activity,
+      actions: d.actions,
     }));
   } catch (err) {
     console.warn("[chat-repo] Failed to get session messages:", err);
     return [];
   }
+}
+
+/** One message of the user's, or null. */
+export async function mongoGetChatMessage(userId: string, id: string): Promise<AgentChatMessageRecord | null> {
+  if (!isMongoConfigured()) return null;
+  const col = await getThreatIntelCollection();
+  const d = await col.findOne({ docType: "agent_chat_message", userId, id }, { projection: { _id: 0, retrieval: 0 } });
+  return (d as unknown as AgentChatMessageRecord) ?? null;
+}
+
+/**
+ * Replaces one proposed action of a message. With `onlyIfPending`, only while it is still pending,
+ * atomically: false when another request decided it first (a double click, a second tab).
+ */
+export async function mongoSetChatAction(userId: string, messageId: string, next: AgentActionRecord, onlyIfPending = false): Promise<boolean> {
+  if (!isMongoConfigured()) return false;
+  const col = await getThreatIntelCollection();
+  const r = await col.updateOne(
+    { docType: "agent_chat_message", userId, id: messageId, actions: { $elemMatch: { id: next.id, ...(onlyIfPending ? { status: "pending" } : {}) } } },
+    { $set: { "actions.$": next } },
+  );
+  return r.modifiedCount === 1;
+}
+
+export async function mongoDeleteChatMessage(userId: string, id: string): Promise<void> {
+  if (!isMongoConfigured()) return;
+  const col = await getThreatIntelCollection();
+  await col.deleteOne({ docType: "agent_chat_message", userId, id });
+}
+
+const sessionDocId = (userId: string, sessionId: string) => `chat_session:${userId}:${sessionId}`;
+
+export async function mongoGetChatSession(userId: string, sessionId: string): Promise<AgentChatSessionRecord | null> {
+  if (!isMongoConfigured()) return null;
+  const col = await getThreatIntelCollection();
+  const d = await col.findOne({ docType: "agent_chat_session", id: sessionDocId(userId, sessionId) }, { projection: { _id: 0, docType: 0, id: 0 } });
+  return (d as unknown as AgentChatSessionRecord) ?? null;
+}
+
+/** Creates the session or updates it; `title` only replaces an automatic title unless `rename`. */
+export async function mongoUpsertChatSession(
+  userId: string,
+  sessionId: string,
+  opts: { title?: string; rename?: boolean } = {},
+): Promise<AgentChatSessionRecord | null> {
+  if (!isMongoConfigured()) return null;
+  const col = await getThreatIntelCollection();
+  const now = new Date().toISOString();
+  const existing = await mongoGetChatSession(userId, sessionId);
+  const set: Record<string, unknown> = { updatedAt: now };
+  if (opts.title && (opts.rename || !existing || existing.autoTitle)) {
+    set.title = opts.title;
+    set.autoTitle = !opts.rename;
+  }
+  await col.updateOne(
+    { docType: "agent_chat_session", id: sessionDocId(userId, sessionId) },
+    {
+      $set: set,
+      $setOnInsert: {
+        docType: "agent_chat_session",
+        id: sessionDocId(userId, sessionId),
+        userId,
+        sessionId,
+        createdAt: now,
+        ...(set.title ? {} : { title: opts.title ?? "New investigation", autoTitle: true }),
+      },
+    },
+    { upsert: true },
+  );
+  return mongoGetChatSession(userId, sessionId);
+}
+
+export async function mongoDeleteChatSession(userId: string, sessionId: string): Promise<void> {
+  if (!isMongoConfigured()) return;
+  const col = await getThreatIntelCollection();
+  await col.deleteMany({ docType: "agent_chat_message", userId, sessionId });
+  await col.deleteOne({ docType: "agent_chat_session", id: sessionDocId(userId, sessionId) });
+}
+
+/**
+ * The user's sessions, newest activity first: titled session records, plus older sessions that only
+ * have messages (titled from their first question).
+ */
+export async function mongoListChatSessionsDetailed(
+  userId: string,
+  titleFrom: (firstQuestion: string) => string,
+  limit = 50,
+): Promise<Array<{ sessionId: string; title: string; messageCount: number; updatedAt: string; createdAt: string; preview: string }>> {
+  if (!isMongoConfigured()) return [];
+  const col = await getThreatIntelCollection();
+  const grouped = await col
+    .aggregate([
+      { $match: { docType: "agent_chat_message", userId } },
+      { $sort: { createdAt: 1 } },
+      {
+        $group: {
+          _id: "$sessionId",
+          messageCount: { $sum: 1 },
+          firstAt: { $first: "$createdAt" },
+          lastAt: { $last: "$createdAt" },
+          users: { $push: { $cond: [{ $eq: ["$sender", "user"] }, "$text", "$$REMOVE"] } },
+          lastText: { $last: "$text" },
+        },
+      },
+      { $sort: { lastAt: -1 } },
+      { $limit: limit },
+    ])
+    .toArray();
+  const sessions = await col
+    .find({ docType: "agent_chat_session", userId })
+    .project({ _id: 0, sessionId: 1, title: 1, updatedAt: 1, createdAt: 1 })
+    .toArray();
+  const meta = new Map(sessions.map((x) => [x.sessionId as string, x]));
+  const iso = (d: unknown) => (d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString());
+  const rows = grouped.map((g) => {
+    const m = meta.get(g._id as string);
+    const firstQuestion = (g.users as string[]).find((u) => titleFrom(u) !== titleFrom("")) ?? (g.users as string[])[0] ?? "";
+    return {
+      sessionId: g._id as string,
+      title: (m?.title as string | undefined) && m?.title !== "New investigation" ? (m!.title as string) : titleFrom(firstQuestion),
+      messageCount: g.messageCount as number,
+      updatedAt: iso(g.lastAt),
+      createdAt: (m?.createdAt as string | undefined) ?? iso(g.firstAt),
+      preview: String(g.lastText ?? "").replace(/\s+/g, " ").slice(0, 120),
+    };
+  });
+  // Sessions created but still empty (a new thread the analyst has not used yet) are left out.
+  return rows;
 }
 
 export async function mongoClearChatSession(sessionId: string, userId: string): Promise<void> {

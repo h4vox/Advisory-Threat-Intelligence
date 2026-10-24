@@ -19,6 +19,7 @@ import { PageHeader, SectionCard } from "@/components/layout/page";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { EmptyState, StatusChip, type Tone } from "@/components/ui/primitives";
 import { cn } from "@/lib/cn";
 import {
@@ -162,15 +163,15 @@ function AdvisoryDetailPage() {
           <StatusChip tone={SEVERITY_TONE[severity]}>{severity}</StatusChip>
           <label className="flex items-center gap-1.5 text-subtle">
             Status
-            <select value={record.status} onChange={(e) => updateMutation.mutate({ id: advisoryId, status: e.target.value as AdvisoryStatus })} className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-xs text-fg focus:border-accent focus:outline-none">
+            <Select size="sm" value={record.status} onValueChange={(v) => updateMutation.mutate({ id: advisoryId, status: v as AdvisoryStatus })} className="text-xs">
               {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="flex items-center gap-1.5 text-subtle">
             TLP
-            <select value={record.tlp} onChange={(e) => updateMutation.mutate({ id: advisoryId, tlp: e.target.value as Tlp })} className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-xs text-fg focus:border-accent focus:outline-none">
+            <Select size="sm" value={record.tlp} onValueChange={(v) => updateMutation.mutate({ id: advisoryId, tlp: v as Tlp })} className="text-xs">
               {TLPS.map((t) => <option key={t} value={t}>TLP:{t}</option>)}
-            </select>
+            </Select>
           </label>
           <span className="ml-auto text-subtle">Updated {fmtDate(record.updatedAt)}{record.updatedBy ? ` by ${record.updatedBy}` : ""}</span>
         </div>
@@ -315,11 +316,11 @@ function OverridesEditor({ record, onSave, saving }: { record: AdvisoryRecord; o
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1 block text-[11px] text-subtle">Severity override</label>
-          <select value={severity} onChange={(e) => setSeverity(e.target.value as AdvisorySeverity | "")} className="h-9 w-full rounded-lg border border-border bg-bg-card px-2 text-sm text-fg focus:border-accent focus:outline-none">
+          <label htmlFor="advisory-severity-override" className="mb-1 block text-[11px] text-subtle">Severity override</label>
+          <Select id="advisory-severity-override" value={severity} onValueChange={(v) => setSeverity(v as AdvisorySeverity | "")} className="w-full bg-bg-card px-2">
             <option value="">(generated: {record.content.severity})</option>
             {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          </Select>
         </div>
         <div>
           <label className="mb-1 block text-[11px] text-subtle">Severity note</label>

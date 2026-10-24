@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { Select, type SelectOption } from "@/components/ui/select";
 
 /** Shared list controls for the Ingest and Sources pages (search, select filter, pager, section heading). */
 
@@ -52,21 +53,14 @@ export function FilterSelect({
   value: string | number;
   onChange: (v: string) => void;
   label: string;
+  /** Native-style `<option>` / `<optgroup>` elements. */
   children: ReactNode;
   className?: string;
 }) {
   return (
-    <select
-      value={value}
-      aria-label={label}
-      onChange={(e) => onChange(e.target.value)}
-      className={cn(
-        "h-9 max-w-[200px] truncate rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:border-accent focus:outline-none",
-        className,
-      )}
-    >
+    <Select value={String(value)} onValueChange={onChange} aria-label={label} className={cn("max-w-[200px] px-2.5", className)}>
       {children}
-    </select>
+    </Select>
   );
 }
 
@@ -90,6 +84,11 @@ export function SectionHeading({
     </div>
   );
 }
+
+const PAGE_SIZE_OPTIONS: SelectOption[] = [
+  ...[10, 25, 50, 100].map((n) => ({ value: String(n), label: String(n) })),
+  { value: "all", label: "All" },
+];
 
 const PAGER_BTN =
   "flex size-8 items-center justify-center rounded-lg border border-border bg-bg-elevated text-muted transition-colors hover:bg-bg-subtle hover:text-fg disabled:pointer-events-none disabled:opacity-40";
@@ -124,23 +123,16 @@ export function PaginationControls({
         </span>
         <label className="flex items-center gap-2">
           <span className="text-subtle">Rows</span>
-          <select
+          <Select
+            size="sm"
             value={String(pageSize)}
             aria-label="Rows per page"
-            onChange={(e) => {
-              const v = e.target.value;
+            onValueChange={(v) => {
               onPageSizeChange(v === "all" ? "all" : Number(v));
               onPageChange(1);
             }}
-            className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-sm text-fg focus:border-accent focus:outline-none"
-          >
-            {[10, 25, 50, 100].map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-            <option value="all">All</option>
-          </select>
+            options={PAGE_SIZE_OPTIONS}
+          />
         </label>
       </div>
       {totalPages > 1 && (

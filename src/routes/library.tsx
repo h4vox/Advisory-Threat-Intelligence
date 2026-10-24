@@ -28,6 +28,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/ui/primitives";
 import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
@@ -84,9 +85,6 @@ const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
 type ViewMode = "cards" | "table" | "list";
 const VIEW_KEY = "aie_library_view";
 type OrderBy = "relevance" | "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
-
-const selectCls =
-  "h-9 rounded-lg border border-border bg-bg-elevated px-2.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]";
 
 type Derived = {
   types: DocType[];
@@ -933,11 +931,11 @@ function LibraryPage() {
         />
         <label className="flex items-center justify-between gap-3 px-1.5 pt-2 text-sm text-muted">
           Minimum quality
-          <select value={minQuality} onChange={(e) => setMinQuality(parseFloat(e.target.value))} className={cn(selectCls, "h-8 text-xs")}>
+          <Select size="sm" value={String(minQuality)} onValueChange={(v) => setMinQuality(parseFloat(v))} className="px-2.5 text-xs">
             <option value={0}>Any</option>
             <option value={0.6}>≥ 60%</option>
             <option value={0.8}>≥ 80%</option>
-          </select>
+          </Select>
         </label>
       </section>
     </FacetPanel>
@@ -1112,14 +1110,14 @@ function LibraryPage() {
                 )}
                 <label className="flex items-center gap-2 text-sm text-muted">
                   <span className="hidden sm:inline">Sort</span>
-                  <select
+                  <Select
                     value={orderBy}
-                    onChange={(e) => {
-                      setOrderBy(e.target.value as OrderBy);
+                    onValueChange={(v) => {
+                      setOrderBy(v as OrderBy);
                       setColSort(null);
                     }}
                     aria-label="Sort results"
-                    className={selectCls}
+                    className="px-2.5"
                   >
                     {isDeepSearchActive && <option value="relevance">Relevance</option>}
                     <option value="newest">Newest ingested</option>
@@ -1128,7 +1126,7 @@ function LibraryPage() {
                     <option value="techniques">Most techniques</option>
                     <option value="iocs">Most IOCs</option>
                     <option value="words">Longest</option>
-                  </select>
+                  </Select>
                 </label>
                 <SegmentedTabs<ViewMode>
                   ariaLabel="Result view"
@@ -1220,21 +1218,20 @@ function LibraryPage() {
               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <label className="flex items-center gap-2 text-sm text-muted">
                   Per page
-                  <select
+                  <Select
+                    size="sm"
                     value={String(pageSize)}
-                    onChange={(e) => {
-                      const v = e.target.value;
+                    onValueChange={(v) => {
                       setPageSize(v === "all" ? "all" : (Number(v) as PageSize));
                       setCurrentPage(1);
                     }}
-                    className="h-8 rounded-lg border border-border bg-bg-elevated px-2 text-sm text-fg"
                   >
                     {PAGE_SIZES.map((s) => (
                       <option key={s} value={String(s)}>
                         {s === "all" ? "All" : s}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <div className="sm:min-w-[320px]">
                   <Pagination
