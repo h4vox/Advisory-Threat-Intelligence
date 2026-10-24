@@ -104,3 +104,55 @@ test("detectLanguage: Latin-script languages by several different function words
   ];
   for (const [lang, text] of samples) assert.equal(detectLanguage(text).lang, lang, text.slice(0, 40));
 });
+
+const DETECTION_POST = {
+  title: "Detecting LSASS memory access with Sigma",
+  url: "https://example-research.org/blog/lsass-access-detection",
+  text: [
+    "This post explains how to detect credential dumping from LSASS on Windows endpoints.",
+    "The rule below fires when a process opens LSASS with read access. It relies on Sysmon process access events.",
+    "",
+    "title: LSASS memory access by an unusual process",
+    "status: experimental",
+    "tags:",
+    "  - attack.credential_access",
+    "  - attack.t1003.001",
+    "logsource:",
+    "  product: windows",
+    "  category: process_access",
+    "detection:",
+    "  selection:",
+    "    TargetImage|endswith: '\\lsass.exe'",
+    "    GrantedAccess: '0x1010'",
+    "  condition: selection",
+    "falsepositives:",
+    "  - Backup and monitoring agents",
+    "",
+    "Tune the rule for your environment before enabling it in production. Expect a few false positives from monitoring agents.",
+  ].join("\n"),
+};
+
+test("detection research with a published rule passes, and Sigma's lowercase tags count as technique IDs", () => {
+  const v = assessTechnicalDepth(DETECTION_POST);
+  assert.equal(v.pass, true, v.reasons.join("; "));
+  assert.equal(v.stats.techniques, 1);
+  assert.equal(v.stats.detectionRules, 1);
+  assert.ok(v.anchors.some((a) => /detection rule/.test(a)), v.anchors.join("; "));
+});
+
+test("hunting queries count only when there are several real ones; talking about rules does not", () => {
+  const twoQueries = assessTechnicalDepth({
+    title: "Hunting for suspicious service creation",
+    url: "https://example-research.org/blog/hunt-services",
+    text: "Use these queries to hunt for new services installed from temporary folders.\nDeviceProcessEvents\n| where FileName =~ \"sc.exe\"\n| where ProcessCommandLine has \"create\"\n\nDeviceRegistryEvents\n| where RegistryKey has @\"SYSTEM\\CurrentControlSet\\Services\"\n| project Timestamp, DeviceName",
+  });
+  assert.equal(twoQueries.stats.detectionQueries, 2);
+  assert.equal(twoQueries.pass, true, twoQueries.reasons.join("; "));
+  const talk = assessTechnicalDepth({
+    title: "Why detection engineering matters",
+    url: "https://example-research.org/blog/why-detection",
+    text: "Organizations should write Sigma rules and YARA rules. We recommend best practices for detection rules, governance and maturity. Security leaders should invest in detection engineering roadmaps. ".repeat(4),
+  });
+  assert.equal(talk.pass, false);
+  assert.equal(talk.stats.detectionRules + talk.stats.detectionQueries, 0);
+});

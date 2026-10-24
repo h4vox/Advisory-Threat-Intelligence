@@ -1,3 +1,6 @@
+import type { ResearchDiscoveryConfig, ResearchLabels } from "./research-taxonomy.ts";
+import type { TelemetryRefs } from "./telemetry-refs.ts";
+
 export type TrustLevel = "high" | "official" | "community" | "reputable" | "unverified";
 
 export type SourceRecord = {
@@ -404,6 +407,10 @@ export type ReportRecord = {
   relevance?: { score: number; reason: string };
   /** Set when the report was published in another language and translated before evaluation. */
   translation?: ReportTranslation;
+  /** Research categories the report supports (./research-taxonomy), with the matching terms. */
+  research?: ResearchLabels;
+  /** Event IDs, log sources and detection content the report itself names (./telemetry-refs). */
+  telemetry?: TelemetryRefs;
 };
 
 /** A report translated into English by AI (./translation); the original stays as evidence. */
@@ -631,6 +638,8 @@ export type CrawlConfig = {
   agentAutoPruneJunkEnabled?: boolean;
   /** Translate reports in other languages with AI before they are evaluated (default on). */
   translateNonEnglish?: boolean;
+  /** Web-search discovery across the research taxonomy (./research-taxonomy). */
+  researchDiscovery?: ResearchDiscoveryConfig;
   agentModel?: string;
   agentTimeoutSeconds?: number;
 };

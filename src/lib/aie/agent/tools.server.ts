@@ -24,7 +24,8 @@ import { searchLibrary } from "../server-search";
 import { getActorProfile, listActors } from "../server-actors";
 import { createAdvisory, getAdvisory, listAdvisories } from "../server-advisories";
 import { buildPurplePath } from "../server-emulation";
-import { setReportVisibility } from "../server-library";
+import { getResearchCoverage, setReportVisibility } from "../server-library";
+import { RESEARCH_CATEGORY_IDS, researchCategory } from "../research-taxonomy";
 import { getCollectorOverview } from "../server-collector";
 import { getTechnique, mitigationsForTechniques } from "../attack-knowledge";
 import { retrieveForChat } from "../search/corpus.server";
@@ -148,6 +149,7 @@ const listReportsTool = defineRead({
     actor: { type: "string", description: "threat actor name" },
     malware: { type: "string", description: "malware family" },
     has_iocs: { type: "boolean", description: "only reports with indicators" },
+    research: { type: "string", description: "research type of the report", enum: RESEARCH_CATEGORY_IDS },
     limit: { type: "integer", description: "1-25 (default 10)" },
   },
   schema: z.object({
@@ -158,14 +160,24 @@ const listReportsTool = defineRead({
     actor: z.string().trim().max(120).optional(),
     malware: z.string().trim().max(120).optional(),
     has_iocs: z.boolean().optional(),
+    research: z.string().trim().max(40).optional(),
     limit: clampInt(1, 25, 10),
   }),
   async run(args, ctx) {
+    // An unknown research type is said, not silently dropped (listing everything would mislead).
+    if (args.research && !researchCategory(args.research)) {
+      return {
+        text: `Unknown research type "${shortText(args.research, 40)}". Use one of: ${RESEARCH_CATEGORY_IDS.join(", ")}.`,
+        summary: `Unknown research type "${shortText(args.research, 40)}"`,
+      };
+    }
     const rows = await listReports({
       data: { q: args.query || undefined, actor: args.actor || undefined, malware: args.malware || undefined, hasIocs: args.has_iocs || undefined, limit: 500, offset: 0 },
     });
     const dateOf = (r: ReportListItem) => (args.date_field === "ingested" ? r.ingestedAt : r.publishedAt || r.ingestedAt) || "";
-    const visible = rows.filter((r) => r.status !== "rejected" && r.status !== "duplicate");
+    const visible = rows.filter(
+      (r) => r.status !== "rejected" && r.status !== "duplicate" && (!args.research || (r.research?.labels ?? []).some((l) => l.id === args.research)),
+    );
     const inRange = visible
       .filter((r) => {
         const d = dateOf(r).slice(0, 10);
@@ -175,7 +187,9 @@ const listReportsTool = defineRead({
       })
       .sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
     const range = [args.since && `since ${args.since}`, args.until && `until ${args.until}`].filter(Boolean).join(" ");
-    const what = [args.query && `“${shortText(args.query, 40)}”`, args.actor, args.malware].filter(Boolean).join(", ");
+    const what = [args.query && `“${shortText(args.query, 40)}”`, args.actor, args.malware, args.research && researchCategory(args.research)?.short]
+      .filter(Boolean)
+      .join(", ");
     if (!inRange.length) {
       return {
         text: `No report matches (${[what, range, `by ${args.date_field} date`].filter(Boolean).join("; ")}). The library has ${visible.length} matching reports outside that range.`,
@@ -222,6 +236,10 @@ const getReportTool = defineRead({
       techs.length ? `ATT&CK techniques (${ents?.techniques?.length}): ${techs.join("; ")}` : "",
       chain.length ? `Attack chain:\n${chain.join("\n")}` : "",
       iocs.length ? `Indicators (${r.iocs.length}, first ${iocs.length}): ${iocs.join("; ")}` : "No indicators extracted.",
+      r.research?.labels.length ? `Research types: ${r.research.labels.map((l) => researchCategory(l.id)?.short ?? l.id).join(", ")}` : "",
+      r.telemetry?.events.length ? `Event IDs named in the report: ${r.telemetry.events.slice(0, 12).map((ev) => `${ev.id} (${ev.log}${ev.meaning ? `: ${ev.meaning}` : ""})`).join("; ")}` : "",
+      r.telemetry?.sources.length ? `Log sources named in the report: ${r.telemetry.sources.slice(0, 10).map((x) => x.name).join(", ")}` : "",
+      r.telemetry?.content.length ? `Detection content published in the report: ${r.telemetry.content.map((c) => `${c.count} ${c.kind.toUpperCase()}`).join(", ")}` : "",
     ].filter(Boolean);
     return { text: `${evidenceLine(id, e)}\n${facts.join("\n")}`, summary: `Read report ${formatReportId(r.id)} “${shortText(r.title, 60)}”` };
   },
@@ -349,17 +367,21 @@ const getTechniqueTool = defineRead({
 
 const libraryOverviewTool = defineRead({
   name: "library_overview",
-  summary: "Counts and recent activity: reports, sources, indicators, most-reported actors, ATT&CK tactic distribution, latest ingests, crawler status.",
+  summary: "Counts and recent activity: reports, sources, indicators, most-reported actors, ATT&CK tactic distribution, research coverage per research type, latest ingests, crawler status.",
   params: {},
   schema: z.object({}).passthrough(),
   async run(_args, ctx) {
-    const d = await getDashboard();
+    const [d, coverage] = await Promise.all([getDashboard(), getResearchCoverage().catch(() => null)]);
     const recent = d.recent.slice(0, 6).map((r) => reportEvidence(ctx, r));
+    const byCategory = coverage
+      ? RESEARCH_CATEGORY_IDS.map((id) => `${researchCategory(id)?.short ?? id} ${coverage.counts[id] ?? 0}`).join(", ")
+      : "";
     const text = [
       `${d.reportCount} reports (${d.acquiredCount} in the library) · ${d.sourceCount} sources (${d.enabledSources} enabled) · ${d.iocCount} indicators · average quality ${Math.round(d.avgQuality * 100)}%`,
       `Crawler: ${d.crawlerStatus}${d.lastCrawlAt ? ` · last run ${d.lastCrawlAt}` : ""}${d.nextCrawlAt ? ` · next ${d.nextCrawlAt}` : ""}`,
       d.topThreatActors?.length ? `Most-reported actors: ${d.topThreatActors.slice(0, 8).map((a) => `${a.name} (${a.reportCount})`).join(", ")}` : "",
       d.tacticDistribution?.length ? `Tactics: ${d.tacticDistribution.slice(0, 12).map((t) => `${(t as { tactic?: string; name?: string }).tactic ?? (t as { name?: string }).name} ${(t as { count?: number }).count ?? ""}`).join(", ")}` : "",
+      byCategory ? `Research coverage (reports per research type; the crawler searches the thinnest first): ${byCategory}` : "",
       recent.length ? `Latest ingests:\n${recent.join("\n")}` : "",
     ].filter(Boolean);
     return { text: text.join("\n"), summary: "Read the library overview" };
