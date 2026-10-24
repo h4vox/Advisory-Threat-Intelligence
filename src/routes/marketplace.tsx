@@ -35,16 +35,16 @@ import {
   FileText,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { getAgentInfo } from "@/lib/aie/server-agent";
 import { ActionButton, PageHeader, SegmentedTabs, Toolbar } from "@/components/layout/page";
 import { EmptyState, StatusChip, StatusDot } from "@/components/ui/primitives";
-import { AieAgentChatDrawer } from "@/components/aie-agent-chat-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/cn";
 import { AgentOnboardingStepper } from "@/components/agent-onboarding-stepper";
-import { useAppSession } from "@/components/auth/use-app-session";
-import { DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
+import { AGY_AVAILABLE_MODELS, DEFAULT_AGY_MODEL } from "@/lib/aie/agent-framework/types";
 import {
   getMarketplaceData,
   installMarketplaceIntegration,
@@ -122,6 +122,7 @@ function MarketplacePage() {
     message: string;
     latencyMs?: number;
     success: boolean;
+    checks?: Array<{ label: string; ok: boolean | null; detail: string; ms?: number }>;
   } | null>(null);
 
   // Modal-specific connection test result
@@ -129,6 +130,7 @@ function MarketplacePage() {
     message: string;
     latencyMs?: number;
     success: boolean;
+    checks?: Array<{ label: string; ok: boolean | null; detail: string; ms?: number }>;
   } | null>(null);
 
   // Query marketplace state
@@ -146,8 +148,15 @@ function MarketplacePage() {
   // Debugger Mode: admin-only switch that reveals deep sandbox/diagnostics UI. Off for everyone by
   // default, so analysts see clean status instead of container internals. Derived here (above the
   // telemetry/log queries) so those queries poll only while an admin has the Debugger panel open.
-  const session = useAppSession();
-  const isAdmin = session.user?.method === "password" && session.user.role === "admin";
+  // Who may use it is decided by the server (administrators; the dev identity outside production).
+  const agentInfo = useQuery({ queryKey: ["agent-info"], queryFn: () => getAgentInfo(), staleTime: 30_000 });
+  const isAdmin = Boolean(agentInfo.data?.canUseDeveloperMode);
+  // The model the console actually uses for the active provider (chosen in Settings), readable.
+  const modelLabelFor = (item: IntegrationItem) => {
+    if (agentInfo.data && agentInfo.data.providerId === item.id) return agentInfo.data.modelLabel;
+    const m = item.config?.selectedModel || item.supportedModels[0] || "";
+    return AGY_AVAILABLE_MODELS.find((x) => x.id === m)?.name ?? m;
+  };
   const debuggerMode = Boolean(marketplaceState?.debuggerMode);
   const showDebug = isAdmin && debuggerMode;
   const debugPanelOpen = showDebug && !!selectedIntegration;
@@ -211,8 +220,9 @@ function MarketplacePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
       queryClient.invalidateQueries({ queryKey: ["app-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["agent-info"] });
     },
-    onError: (err: any) => toast.error(err?.message || "Could not change Debugger Mode"),
+    onError: (err: any) => toast.error(err?.message || "Could not change Developer mode"),
   });
 
   // Messaging integrations: send a test message through the configured webhook.
@@ -309,17 +319,21 @@ function MarketplacePage() {
   // Test connection mutation (for drawer)
   const testConnectionMutation = useMutation({
     mutationFn: (id: string) => testIntegrationConnection({ data: { id } }),
+    onMutate: () => setTestResult(null),
     onSuccess: (res) => {
       setTestResult(res);
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
       queryClient.invalidateQueries({ queryKey: ["agent_sandbox_logs"] });
-      setTimeout(() => setTestResult(null), 6000);
     },
+    onError: (err, id) => setTestResult({ id, success: false, message: err instanceof Error ? err.message : "The test could not run." }),
   });
 
   // Test connection mutation (for modal)
+  // Tests what is in the dialog (a key typed but not saved yet, the chosen model).
   const modalTestConnectionMutation = useMutation({
-    mutationFn: (id: string) => testIntegrationConnection({ data: { id } }),
+    mutationFn: (id: string) =>
+      testIntegrationConnection({ data: { id, apiKey: apiKeyInput.trim() || undefined, selectedModel: selectedModelInput || undefined } }),
+    onMutate: () => setModalTestResult(null),
     onSuccess: (res) => {
       setModalTestResult(res);
       if (res.logs && res.logs.length > 0) {
@@ -328,8 +342,8 @@ function MarketplacePage() {
       }
       queryClient.invalidateQueries({ queryKey: ["marketplace_state"] });
       queryClient.invalidateQueries({ queryKey: ["agent_sandbox_logs"] });
-      setTimeout(() => setModalTestResult(null), 6000);
     },
+    onError: (err) => setModalTestResult({ success: false, message: err instanceof Error ? err.message : "The test could not run." }),
   });
 
   // Restart agent sandbox mutation
@@ -526,21 +540,21 @@ function MarketplacePage() {
                   );
                 })()}
 
-                {/* Admin-only Debugger Mode switch. */}
+                {/* Admin-only Developer mode switch (also at the top of Settings). */}
                 {isAdmin && (
                   <button
                     type="button"
                     onClick={() => setDebuggerModeMutation.mutate(!debuggerMode)}
                     disabled={setDebuggerModeMutation.isPending}
                     aria-pressed={debuggerMode}
-                    title={debuggerMode ? "Debugger Mode is on — click to hide diagnostics" : "Debugger Mode — show deep diagnostics"}
+                    title={debuggerMode ? "Developer mode is on: click to hide diagnostics" : "Developer mode: show diagnostics"}
                     className={cn(
                       "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
                       debuggerMode ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-bg-elevated text-muted hover:text-fg",
                     )}
                   >
                     <Bug className="size-3.5" strokeWidth={1.75} />
-                    Debugger{debuggerMode ? " on" : ""}
+                    Developer{debuggerMode ? " on" : ""}
                   </button>
                 )}
 
@@ -653,7 +667,7 @@ function MarketplacePage() {
 
             {/* Scrollable cards grid */}
             <div className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-10 md:pb-8">
-              {testResult && (
+              {testResult && !selectedIntegration && (
                 <div
                   className={cn(
                     "mb-4 flex items-center justify-between gap-3 rounded-xl border bg-bg-card p-3.5 text-sm",
@@ -1013,9 +1027,9 @@ function MarketplacePage() {
                         </>
                       )}
                       <div className="flex items-center justify-between text-subtle">
-                        <span>Active model</span>
-                        <span className="font-mono text-accent">
-                          {selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
+                        <span>{agentInfo.data?.providerId === selectedIntegration.id ? "Active model" : "Model"}</span>
+                        <span className="truncate pl-2 text-accent" title="Chosen in Settings">
+                          {modelLabelFor(selectedIntegration)}
                         </span>
                       </div>
                       {selectedIntegration.config?.lastLatencyMs && (
@@ -1156,33 +1170,6 @@ function MarketplacePage() {
                         Reconfigured: {new Date(selectedIntegration.config.lastReconfiguredAt).toLocaleString()}
                       </div>
                     )}
-                  </div>
-                )}
-
-                {/* Agent Interactive Test & Prompt Debug Section (Very bottom of details) */}
-                {selectedIntegration.id === "agy_agent" && selectedIntegration.status === "installed" && (
-                  <div className="rounded-xl card-liquid-glass overflow-hidden space-y-2.5 p-3.5 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold text-fg flex items-center gap-1.5 text-xs">
-                        <Terminal className="size-3.5 text-accent" />
-                        <span>Interactive agent test console</span>
-                      </div>
-                      <StatusChip tone="success">
-                        print-only · sandboxed
-                      </StatusChip>
-                    </div>
-                    <p className="text-[11px] text-muted leading-relaxed">
-                      Test real-time IPC communication and cognitive responses with the local Antigravity CLI agent.
-                    </p>
-
-                    <div className="pt-1">
-                      <AieAgentChatDrawer
-                        isOpen={true}
-                        onClose={() => {}}
-                        activeModel={selectedIntegration.config?.selectedModel || selectedIntegration.supportedModels[0]}
-                        embedded={true}
-                      />
-                    </div>
                   </div>
                 )}
 
@@ -1352,6 +1339,10 @@ function MarketplacePage() {
                       </Button>
                     </div>
 
+                    {(testConnectionMutation.isPending || testResult?.id === selectedIntegration.id) && (
+                      <ConnectionTestResult pending={testConnectionMutation.isPending} result={testResult?.id === selectedIntegration.id ? testResult : null} onClose={() => setTestResult(null)} />
+                    )}
+
                     <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-border/60">
                       {/* RE-CONFIG BUTTON: Uninstalls first then reruns install */}
                       <Button
@@ -1480,32 +1471,6 @@ function MarketplacePage() {
                 </div>
               )}
 
-              {/* Modal Connection Test Feedback */}
-              {modalTestResult && (
-                <div
-                  className={cn(
-                    "mb-4 p-3 rounded-xl border text-xs flex items-center justify-between transition-all",
-                    modalTestResult.success
-                      ? "bg-sage/10 border-sage/40 text-sage"
-                      : "bg-danger/10 border-danger/50 text-danger"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    {modalTestResult.success ? (
-                      <CheckCircle2 className="size-4 shrink-0 text-sage" />
-                    ) : (
-                      <AlertCircle className="size-4 shrink-0 text-danger" />
-                    )}
-                    <span>{modalTestResult.message}</span>
-                  </div>
-                  {modalTestResult.latencyMs && (
-                    <StatusChip tone="success">
-                      {modalTestResult.latencyMs}ms
-                    </StatusChip>
-                  )}
-                </div>
-              )}
-
               {/* Agent install and sign-in (the agent CLI's own Google sign-in, relayed by the server) */}
               {configModalItem.type === "cli_agent" && (
                 <AgentOnboardingStepper
@@ -1550,18 +1515,20 @@ function MarketplacePage() {
                   </div>
 
                   <div>
-                    <label className="block text-subtle font-medium mb-1">Target model</label>
-                    <select
+                    <label htmlFor="marketplace-target-model" className="block text-subtle font-medium mb-1">Target model</label>
+                    <Select
+                      id="marketplace-target-model"
+                      size="sm"
                       value={selectedModelInput || configModalItem.supportedModels[0]}
-                      onChange={(e) => setSelectedModelInput(e.target.value)}
-                      className="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs text-fg focus:border-accent focus:outline-none"
+                      onValueChange={(v) => setSelectedModelInput(v)}
+                      className="w-full rounded-md bg-bg-subtle px-3 text-xs"
                     >
                       {configModalItem.supportedModels.map((m) => (
                         <option key={m} value={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
 
                   <div className="pt-1">
@@ -1622,6 +1589,13 @@ function MarketplacePage() {
                       </Button>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Test result, next to the test buttons */}
+              {(modalTestConnectionMutation.isPending || modalTestResult) && (
+                <div className="mt-3">
+                  <ConnectionTestResult pending={modalTestConnectionMutation.isPending} result={modalTestResult} onClose={() => setModalTestResult(null)} />
                 </div>
               )}
 
@@ -1816,6 +1790,55 @@ function TabIntro({ title, description, aside }: { title: string; description: s
         <p className="mt-1 text-sm text-muted">{description}</p>
       </div>
       {aside}
+    </div>
+  );
+}
+
+/** Test connection, step by step, shown in the drawer where it was started. */
+function ConnectionTestResult({
+  pending,
+  result,
+  onClose,
+}: {
+  pending: boolean;
+  result: { success: boolean; message: string; checks?: Array<{ label: string; ok: boolean | null; detail: string; ms?: number }> } | null;
+  onClose: () => void;
+}) {
+  if (pending || !result) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated p-2.5 text-xs text-muted" aria-live="polite">
+        <ActivitySpinner size="xs" className="text-accent" /> Checking the connection step by step…
+      </div>
+    );
+  }
+  return (
+    <div className={cn("rounded-lg border p-2.5 text-xs", result.success ? "border-sage/40 bg-sage/5" : "border-danger/40 bg-danger/5")} aria-live="polite">
+      <div className="flex items-start justify-between gap-2">
+        <p className={cn("font-medium", result.success ? "text-sage" : "text-danger")}>{result.message}</p>
+        <button type="button" onClick={onClose} aria-label="Close test result" className="shrink-0 rounded p-0.5 text-subtle hover:text-fg">
+          <X className="size-3" />
+        </button>
+      </div>
+      {result.checks && result.checks.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {result.checks.map((c) => (
+            <li key={c.label} className="flex items-start gap-1.5">
+              {c.ok === null ? (
+                <span className="mt-1 size-2 shrink-0 rounded-full border border-subtle" />
+              ) : c.ok ? (
+                <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-sage" />
+              ) : (
+                <AlertCircle className="mt-0.5 size-3 shrink-0 text-danger" />
+              )}
+              <span className="min-w-0">
+                <span className="text-fg">{c.label}</span>
+                <span className="text-muted"> · {c.detail}</span>
+                {c.ms !== undefined && <span className="tabular-nums text-subtle"> · {c.ms} ms</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

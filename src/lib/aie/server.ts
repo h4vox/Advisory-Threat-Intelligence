@@ -45,6 +45,7 @@ import {
 import { isAgentAvailable } from "./agy-agent";
 import { qualifyContent } from "./qualification";
 import { formatReportId } from "./ids";
+import { runAgentConnectionChecks } from "./integration-checks.server";
 import { SEED_REPORTS } from "./seed-reports";
 import { computeDashboardAnalytics } from "./dashboard-analytics";
 import { agentOnboardingOrchestrator } from "./agent-framework/server";
@@ -162,6 +163,7 @@ import {
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL, AGY_AVAILABLE_MODELS } from "./agent-framework/types";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
 import { getProviderAdapter, isRestApiProvider } from "./providers";
+import type { ProviderConnectionTestResult } from "./providers/types";
 import { stripProviderPrefix } from "./active-model";
 import {
   detectSandboxRuntime,
@@ -2257,8 +2259,8 @@ export const setDebuggerMode = createServerFn({ method: "POST" })
   .middleware([analystMiddleware])
   .validator(z.object({ enabled: z.boolean() }))
   .handler(async ({ data, context }) => {
-    if (context.identity.method !== "password" || context.identity.role !== "admin") {
-      throw new ForbiddenError("Only an administrator can change Debugger Mode.");
+    if (!canManageAgents(context.identity)) {
+      throw new ForbiddenError("Only an administrator can change Developer mode.");
     }
     const updated = await mongoUpdateAppSettings({ debuggerMode: data.enabled });
     logger.serverFn("setDebuggerMode", "DONE", undefined, String(data.enabled));
@@ -3184,7 +3186,15 @@ export const setActiveAgentProvider = createServerFn({ method: "POST" }).middlew
   });
 
 export const testIntegrationConnection = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(z.object({ id: z.string() }))
+  .validator(
+    z.object({
+      id: z.string(),
+      // From the configure dialog: test what was typed before it is saved. Used for this one
+      // probe only; never stored or logged.
+      apiKey: z.string().trim().max(512).optional(),
+      selectedModel: z.string().trim().max(200).optional(),
+    }),
+  )
   .handler(async ({ data }) => {
     const startTime = Date.now();
     const integrations = await mongoGetMarketplaceIntegrations();
@@ -3194,140 +3204,101 @@ export const testIntegrationConnection = createServerFn({ method: "POST" }).midd
     }
 
     if (data.id === "agy_agent") {
-      const getTimestamp = () => {
-        const now = new Date();
-        const pad = (n: number, s = 2) => n.toString().padStart(s, "0");
-        return `[${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}]`;
-      };
-
-      const auditLogs: string[] = [];
-      const addAuditLog = (level: LogLevel, category: LogCategory, msg: string) => {
-        const entry = appendSandboxLog(level, category, msg, { integrationId: data.id, action: "test_connection" });
-        auditLogs.push(`${getTimestamp()} [${level.padEnd(5)}] [${category.toUpperCase()}] ${msg}`);
-      };
-
-      addAuditLog("INFO", "system", `Starting comprehensive diagnostics & connection test for ${integration.name}...`);
-      const sandboxInfo = detectSandboxRuntime();
-      addAuditLog("DEBUG", "sandbox", `Runtime status: [${sandboxInfo.runtime.toUpperCase()}], Container=${sandboxInfo.containerName}, Running=${sandboxInfo.containerRunning}`);
-      addAuditLog("DEBUG", "sandbox", `Host Platform: ${sandboxInfo.hostPlatform}, Target Binary=${sandboxInfo.binaryPath}`);
-
-      if (integration.config?.signedInAt) {
-        addAuditLog("INFO", "auth", `Agent CLI signed in (verified ${integration.config.signedInAt}); the sign-in is kept in the sandbox home volume.`);
-      } else {
-        addAuditLog("WARN", "auth", `The agent CLI is not signed in yet. Use Install and sign in.`);
-      }
-
-      addAuditLog("EXEC", "agent", `Dispatching binary probe: agy --version`);
-      const res = await executeInAgentSandbox(["--version"], { timeoutMs: 8000, category: "sandbox" });
-
-      const mergedLogs = [...auditLogs, ...(res.logs || [])];
-
-      const updated: IntegrationItem = {
+      appendSandboxLog("INFO", "system", `Test connection: ${integration.name}`, { integrationId: data.id, action: "test_connection" });
+      const result = await runAgentConnectionChecks();
+      const logs = result.checks.map((c) => `[${c.ok === null ? "SKIP" : c.ok ? " OK " : "FAIL"}] ${c.label}: ${c.detail}${c.ms !== undefined ? ` (${c.ms} ms)` : ""}`);
+      for (const line of logs) appendSandboxLog(result.ok ? "INFO" : "WARN", "agent", line, { integrationId: data.id, action: "test_connection" });
+      await mongoSaveMarketplaceIntegration({
         ...integration,
-        config: {
-          ...integration.config,
-          lastTestedAt: new Date().toISOString(),
-          logs: mergedLogs,
-        },
-      };
-      await mongoSaveMarketplaceIntegration(updated);
-
-      if (res.success && res.output) {
-        addAuditLog("INFO", "agent", `Probe response received: Antigravity CLI v${res.output} (Latency: ${res.latencyMs}ms, ExitCode: 0)`);
-        addAuditLog("INFO", "system", `Connection audit PASSED. Agent is operational and ready for inference.`);
-        return {
-          success: true,
-          id: data.id,
-          name: integration.name,
-          status: "healthy",
-          latencyMs: res.latencyMs,
-          message: `Test Passed: Connected to Antigravity CLI (v${res.output}). Runtime mode: [${res.runtime.toUpperCase()} SANDBOX].`,
-          testedAt: new Date().toISOString(),
-          trace: res.trace,
-          logs: [...mergedLogs, `${getTimestamp()} [INFO ] [SYSTEM] Connection audit PASSED. Status: HEALTHY`],
-        };
-      }
-
-      addAuditLog("WARN", "agent", `Probe warning: ${res.error || "Agent sandbox awaiting initialization."}`);
+        config: { ...integration.config, lastTestedAt: new Date().toISOString(), logs, ...(result.latencyMs ? { lastLatencyMs: result.latencyMs } : {}) },
+      });
       return {
-        success: false,
+        success: result.ok,
         id: data.id,
         name: integration.name,
-        status: "unreachable",
-        latencyMs: res.latencyMs,
-        message: `Test Notice: ${res.error || "Agent sandbox awaiting initialization."} (Runtime: ${sandboxInfo.runtime})`,
+        status: result.ok ? "healthy" : "unreachable",
+        latencyMs: result.latencyMs ?? Date.now() - startTime,
+        message: result.message,
+        checks: result.checks,
         testedAt: new Date().toISOString(),
-        trace: res.trace,
-        logs: [...mergedLogs, `${getTimestamp()} [WARN ] [SYSTEM] Connection audit completed with status: UNREACHABLE`],
+        logs,
       };
     }
 
     const adapter = getProviderAdapter(data.id);
     if (adapter) {
-      const realResult = await adapter.testConnection(integration.config?.apiKey, integration.config);
-      const updated: IntegrationItem = {
-        ...integration,
-        config: {
-          ...integration.config,
-          lastTestedAt: realResult.testedAt,
-          logs: realResult.logs,
-        },
-      };
-      await mongoSaveMarketplaceIntegration(updated);
+      const draftKey = data.apiKey || undefined;
+      const draft = Boolean(draftKey) || (data.selectedModel !== undefined && data.selectedModel !== integration.config?.selectedModel);
+      const config = { ...integration.config, ...(data.selectedModel ? { selectedModel: data.selectedModel } : {}) };
+      const realResult = await adapter.testConnection(draftKey || integration.config?.apiKey, config).catch(
+        (err): ProviderConnectionTestResult => ({
+          success: false,
+          providerId: data.id,
+          providerName: integration.name,
+          status: "error",
+          latencyMs: Date.now() - startTime,
+          message: err instanceof Error ? err.message : "The test could not run.",
+          testedAt: new Date().toISOString(),
+          logs: [],
+        }),
+      );
+      // A test of unsaved settings says nothing about the saved ones: leave the record alone.
+      if (!draft) {
+        await mongoSaveMarketplaceIntegration({
+          ...integration,
+          config: { ...integration.config, lastTestedAt: realResult.testedAt, logs: realResult.logs },
+        });
+      }
 
+      const hasKey = Boolean(integration.config?.apiKey);
+      const outcome: Record<ProviderConnectionTestResult["status"], string> = {
+        healthy: `answered a test prompt${realResult.modelTested ? ` (${realResult.modelTested})` : ""}`,
+        invalid_key: "rejected the key",
+        rate_limited: "rate limited: try again shortly",
+        unreachable: "did not answer (reason above)",
+        error: "did not answer (reason above)",
+      };
       return {
         success: realResult.success,
         id: data.id,
         name: integration.name,
         status: realResult.status,
         latencyMs: realResult.latencyMs,
-        message: realResult.message,
+        message: realResult.success ? `Connected: ${integration.name} answered in ${realResult.latencyMs} ms.` : realResult.message,
+        checks: [
+          {
+            label: "API key",
+            ok: Boolean(draftKey) || hasKey,
+            detail: draftKey ? "entered, not saved yet" : hasKey ? "saved (encrypted)" : "missing: add it in Configure",
+          },
+          { label: `${integration.name} answers`, ok: realResult.success, detail: outcome[realResult.status] ?? outcome.error, ms: realResult.latencyMs },
+        ],
         testedAt: realResult.testedAt,
         details: realResult.details,
         logs: realResult.logs,
       };
     }
 
-    const getTimestamp = () => {
-      const now = new Date();
-      const pad = (n: number, s = 2) => n.toString().padStart(s, "0");
-      return `[${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}]`;
-    };
-
-    const auditLogs: string[] = [];
-    const addLog = (level: LogLevel, category: LogCategory, msg: string) => {
-      appendSandboxLog(level, category, msg, { integrationId: data.id, action: "test_connection" });
-      auditLogs.push(`${getTimestamp()} [${level.padEnd(5)}] [${category.toUpperCase()}] ${msg}`);
-    };
-
-    addLog("INFO", "system", `Starting connection diagnostics audit for ${integration.name} (${integration.version})...`);
-    addLog("DEBUG", "network", `Target Endpoint: ${integration.endpointUrl || "Cloud Native REST API"}`);
-
-    const latencyMs = Math.floor(Math.random() * 35) + 22;
-    await new Promise((r) => setTimeout(r, latencyMs));
-
-    addLog("INFO", "system", `Connection audit PASSED. Latency: ${latencyMs}ms, Status: HEALTHY`);
-
-    const updated: IntegrationItem = {
-      ...integration,
-      config: {
-        ...integration.config,
-        lastTestedAt: new Date().toISOString(),
-        logs: auditLogs,
-      },
-    };
-    await mongoSaveMarketplaceIntegration(updated);
-
+    // No live test for this integration type (a test message would post to the real channel):
+    // check what is saved, and say so instead of reporting a connection that was never made.
+    const configured = integration.status === "installed" && Object.values(integration.config ?? {}).some((v) => typeof v === "string" && v.trim().length > 0);
+    const message = configured
+      ? `${integration.name} is configured. AIE does not send a live test for this integration, because it would post a real message.`
+      : `${integration.name} is not configured yet.`;
+    await mongoSaveMarketplaceIntegration({ ...integration, config: { ...integration.config, lastTestedAt: new Date().toISOString(), logs: [message] } });
     return {
-      success: true,
+      success: configured,
       id: data.id,
       name: integration.name,
-      status: "healthy",
+      status: configured ? "healthy" : "unreachable",
       latencyMs: Date.now() - startTime,
-      message: `Test Passed: Successfully connected to ${integration.name} (${integration.version}). Protocol verified.`,
+      message,
+      checks: [
+        { label: "Configuration saved", ok: configured, detail: configured ? "required settings are present" : "Install or Reconfigure to add them" },
+        { label: "Live test", ok: null, detail: "not available for this integration" },
+      ],
       testedAt: new Date().toISOString(),
-      trace: undefined,
-      logs: auditLogs,
+      logs: [message],
     };
   });
 
@@ -3414,275 +3385,7 @@ export const detectLocalAgentSession = createServerFn({ method: "GET" }).middlew
   }
 );
 
-/** A cited passage returned with a grounded chat reply. */
-export interface GroundedChatSource {
-  /** Citation id used in the reply, e.g. "S1". */
-  id: string;
-  reportId: string;
-  formattedId: string;
-  title: string;
-  publisher: string;
-  url: string;
-  publishedAt: string | null;
-  /** Exact passage text (trimmed to ≤600 chars for display). */
-  quote: string;
-  /** Character offsets of the passage in the report's extracted text. */
-  start: number;
-  end: number;
-  score: number;
-}
-
-/** Per-user default thread; sessions are always scoped by the caller's userId. */
-const DEFAULT_CHAT_SESSION_ID = "active-investigation";
-
-export const chatWithAgyAgent = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      message: z.string().trim().min(1).max(4000),
-      model: z.string().max(200).optional(),
-      sessionId: z.string().max(100).optional(),
-    })
-  )
-  .handler(async ({ data, context }) => {
-    const userId = context.userId;
-    const model = sanitizeAgyModel(data.model);
-    const userMsg = data.message.trim();
-    const sessionId = data.sessionId || DEFAULT_CHAT_SESSION_ID;
-    const startedAt = Date.now();
-
-    // Prior turns are read BEFORE the new message is stored so the current
-    // question is not duplicated in the prompt. The server owns history.
-    let priorHistory: Array<{ sender: "user" | "agent"; text: string }> = [];
-    try {
-      const prior = await mongoGetChatSessionMessages(sessionId, userId, { limit: 12 });
-      priorHistory = prior.map((m) => ({ sender: m.sender, text: m.text }));
-    } catch {
-      // History is best-effort; answer without it.
-    }
-
-    await mongoSaveChatMessage({
-      id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      sessionId,
-      userId,
-      sender: "user",
-      text: userMsg,
-      timestamp: new Date().toISOString(),
-    });
-
-    // 1. Greetings / thanks / questions about the assistant skip retrieval.
-    //    Every substantive question retrieves.
-    const conversational = isConversationalTurn(userMsg);
-
-    // Short follow-ups ("what about its persistence?") borrow the previous
-    // question's terms for retrieval; the model still sees the original text.
-    let retrievalQuery = userMsg;
-    if (!conversational && queryTerms(userMsg).filter((t) => !isLowSignal(t)).length < 2) {
-      const lastUser = [...priorHistory].reverse().find((h) => h.sender === "user");
-      if (lastUser) retrievalQuery = `${userMsg}\n${lastUser.text}`.slice(0, 1000);
-    }
-    const queryTokens = conversational ? [] : queryTerms(retrievalQuery);
-
-    // 2. Hybrid retrieval: interpret the question (aliases, technique names), rank library
-    //    reports (Mongo candidates or the local store), then BM25 passages from the top reports.
-    //    Falls back to the previous $text + exact-id path if the hybrid retriever fails.
-    let libraryAvailable = isMongoConfigured();
-    let candidates: ReportSearchCandidate[] = [];
-    let passages: Passage[] = [];
-    let hybrid: Awaited<ReturnType<typeof retrieveForChat>> | null = null;
-    if (!conversational) {
-      try {
-        hybrid = await retrieveForChat(retrievalQuery, { ensureLocal: ensureSeeded, k: 8, perDoc: 2 });
-        candidates = hybrid.candidates;
-        passages = hybrid.passages;
-        libraryAvailable = true;
-      } catch (err) {
-        logger.warn("RETRIEVAL", `Hybrid retrieval failed, using $text candidates: ${(err as Error)?.message}`);
-      }
-    }
-    if (!conversational && !hybrid && libraryAvailable) {
-      try {
-        candidates = await mongoSearchReportCandidates(retrievalQuery, { limit: 25 });
-      } catch (err) {
-        logger.warn("RETRIEVAL", `Candidate search failed: ${(err as Error)?.message}`);
-      }
-      passages = selectPassages(
-        candidates.map((c) => ({
-          id: c.id,
-          title: c.title,
-          text: c.extractedText,
-          meta: { publisher: c.publisher || c.sourceName, publishedAt: c.publishedAt ?? "" },
-        })),
-        retrievalQuery,
-        { k: 8, perDoc: 2 },
-      );
-    }
-
-    // 3. Answer: grounded prompt, conversational reply, or explicit evidence gap.
-    let evidenceGap = false;
-    let chatRes: Awaited<ReturnType<typeof chatWithUnifiedAgent>>;
-    if (!conversational && passages.length === 0) {
-      evidenceGap = true;
-      chatRes = {
-        success: true,
-        reply: buildEvidenceGapReply(userMsg, {
-          terms: queryTokens,
-          candidateCount: candidates.length,
-          libraryAvailable,
-        }),
-        model: "retrieval-only",
-        providerId: "retrieval",
-        latencyMs: Date.now() - startedAt,
-      };
-    } else {
-      try {
-        chatRes = await chatWithUnifiedAgent({
-          userMessage: userMsg,
-          history: priorHistory,
-          groundedPrompt:
-            passages.length > 0 ? buildGroundedPrompt(userMsg, passages, { history: priorHistory }) : undefined,
-          model,
-          timeoutSeconds: 65,
-        });
-      } catch (err: any) {
-        console.error("[chatWithAgyAgent] Unified agent error:", err);
-        chatRes = {
-          success: false,
-          reply: `Autonomous agent analysis encountered an issue: ${err?.message || "Execution error"}. Please retry.`,
-          model,
-          providerId: "agy_agent",
-          latencyMs: 0,
-          error: err?.message,
-        };
-      }
-    }
-
-    // 4. Citations: only passages the reply actually cites are returned.
-    const sids = passages.map((_, i) => sourceId(i));
-    const citations =
-      passages.length > 0 && chatRes.success ? parseCitations(chatRes.reply, sids) : { used: [], unknown: [] };
-    const candidateById = new Map(candidates.map((c) => [c.id, c]));
-    const sources: GroundedChatSource[] = citations.used.map((sid) => {
-      const p = passages[Number(sid.slice(1)) - 1];
-      const c = candidateById.get(p.docId);
-      const quote = p.text.replace(/\s+/g, " ").trim();
-      return {
-        id: sid,
-        reportId: p.docId,
-        formattedId: formatReportId(p.docId),
-        title: p.title,
-        publisher: c?.publisher || c?.sourceName || "Unknown publisher",
-        url: c?.canonicalUrl || c?.url || "",
-        publishedAt: c?.publishedAt ?? null,
-        quote: quote.length > 600 ? `${quote.slice(0, 597)}…` : quote,
-        start: p.start,
-        end: p.end,
-        score: p.score,
-      };
-    });
-    const uncitedClaims =
-      !evidenceGap && passages.length > 0 && chatRes.success ? hasUncitedClaims(chatRes.reply) : false;
-
-    const passageWhy = new Map((hybrid?.why ?? []).map((w) => [w.sid, w]));
-    const retrievalTrace: ChatRetrievalTrace & {
-      ranker?: "hybrid" | "text";
-      interpreted?: { summary: string; chips: string[]; expansion: string };
-      passages: Array<ChatRetrievalTrace["passages"][number] & { why?: string; matchedEntities?: Array<{ name: string; id: string; via: string }> }>;
-    } = {
-      ranker: hybrid ? "hybrid" : "text",
-      interpreted: hybrid?.interpreted,
-      query: retrievalQuery,
-      tokens: queryTokens,
-      conversational,
-      candidates: candidates.map((c) => ({
-        reportId: c.id,
-        score: Math.round(c.score * 1000) / 1000,
-        matchedBy: c.matchedBy,
-      })),
-      passages: passages.map((p, i) => ({
-        sid: sids[i],
-        reportId: p.docId,
-        start: p.start,
-        end: p.end,
-        score: p.score,
-        ...(passageWhy.get(sids[i]) ? { why: passageWhy.get(sids[i])!.reason, matchedEntities: passageWhy.get(sids[i])!.matchedEntities } : {}),
-      })),
-      cited: citations.used,
-      unknownCitations: citations.unknown,
-      evidenceGap,
-      promptSha256: chatRes.promptSha256 ?? null,
-      model: chatRes.model,
-      at: new Date().toISOString(),
-    };
-    logger.agent("RETRIEVAL", `chat retrieval for session ${sessionId}`, {
-      query: retrievalQuery.slice(0, 200),
-      tokens: queryTokens.slice(0, 20).join(" "),
-      ranker: retrievalTrace.ranker,
-      interpreted: retrievalTrace.interpreted?.summary ?? "",
-      conversational,
-      candidates: candidates.length,
-      passages: retrievalTrace.passages.map((p) => `${p.sid}:${p.reportId}@${p.start}-${p.end}`).join(","),
-      cited: citations.used.join(","),
-      unknownCitations: citations.unknown.join(","),
-      uncitedClaims,
-      evidenceGap,
-      promptSha256: retrievalTrace.promptSha256,
-      model: chatRes.model,
-    });
-
-    await mongoSaveChatMessage({
-      id: `agent-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      sessionId,
-      userId,
-      sender: "agent",
-      text: chatRes.reply,
-      model: chatRes.model,
-      latencyMs: chatRes.latencyMs,
-      sources,
-      uncitedClaims,
-      evidenceGap,
-      retrievedCount: passages.length,
-      retrieval: retrievalTrace,
-      timestamp: new Date().toISOString(),
-    });
-
-    return {
-      success: chatRes.success,
-      reply: chatRes.reply,
-      latencyMs: chatRes.latencyMs,
-      model: chatRes.model,
-      providerId: chatRes.providerId,
-      sessionId,
-      timestamp: new Date().toISOString(),
-      error: chatRes.error,
-      trace: { ...(chatRes.trace ?? {}), retrieval: retrievalTrace },
-      tokens: chatRes.tokens,
-      sources,
-      uncitedClaims,
-      evidenceGap,
-      retrievedCount: passages.length,
-      groundedReportCount: new Set(sources.map((s) => s.reportId)).size,
-    };
-  });
-
-export const getAgentChatSessionMessages = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(z.object({ sessionId: z.string().min(1).max(100) }))
-  .handler(async ({ data, context }) => {
-    const messages = await mongoGetChatSessionMessages(data.sessionId, context.userId);
-    return { success: true, messages };
-  });
-
-export const clearAgentChatSession = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(z.object({ sessionId: z.string().min(1).max(100) }))
-  .handler(async ({ data, context }) => {
-    await mongoClearChatSession(data.sessionId, context.userId);
-    return { success: true };
-  });
-
-export const listAgentChatSessions = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .handler(async ({ context }) => {
-    const sessions = await mongoListChatSessions(context.userId);
-    return { success: true, sessions };
-  });
+// The AIE Analyst chat (sessions, tools, actions) lives in ./server-agent.
 
 export interface ContainerDetailedMetrics {
   dockerAvailable: boolean;

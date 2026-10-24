@@ -29,6 +29,7 @@ import {
   Trash2,
   UsersRound,
   Zap,
+  Code2,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { UsersPanel } from "@/components/settings/users-panel";
@@ -38,6 +39,7 @@ import { StatusChip } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { Select } from "@/components/ui/select";
 import {
   checkCrawlerSchedule,
   getAppSettings,
@@ -49,7 +51,10 @@ import {
   getAgentStatus,
   getMarketplaceData,
   setActiveAgentProvider,
+  setDebuggerMode,
 } from "@/lib/aie/server";
+import { getAgentInfo } from "@/lib/aie/server-agent";
+import { AGY_AVAILABLE_MODELS } from "@/lib/aie/agent-framework/types";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
@@ -514,6 +519,8 @@ function SettingsPage() {
           </div>
         )}
 
+        <DeveloperModeCard />
+
         <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[256px_minmax(0,1fr)] lg:items-start">
         {/* ========================================================================= */}
         {/* SECTION NAVIGATION: tabs on mobile, left rail on desktop                  */}
@@ -885,16 +892,17 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-border">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Discovery breadth</label>
-                  <select
+                  <label htmlFor="crawl-discovery-breadth" className="text-xs font-medium block">Discovery breadth</label>
+                  <Select
+                    id="crawl-discovery-breadth"
                     value={currentCrawl.discoveryBreadth || "balanced"}
-                    onChange={(e) => updateCrawlField("discoveryBreadth", e.target.value as any)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateCrawlField("discoveryBreadth", v as any)}
+                    className="w-full"
                   >
                     <option value="focused">Focused (seeds + 1-hop citations only)</option>
                     <option value="balanced">Balanced (recommended 2-hop graph expansion)</option>
                     <option value="wide">Wide (aggressive multi-hop graph traversal)</option>
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="flex items-center pt-4">
@@ -979,18 +987,19 @@ function SettingsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
-                    <label className="font-medium text-fg">Strictness mode</label>
+                    <label htmlFor="crawl-strictness-mode" className="font-medium text-fg">Strictness mode</label>
                     <span className="capitalize text-muted">{currentCrawl.strictnessMode || "balanced"}</span>
                   </div>
-                  <select
+                  <Select
+                    id="crawl-strictness-mode"
                     value={currentCrawl.strictnessMode || "balanced"}
-                    onChange={(e) => updateCrawlField("strictnessMode", e.target.value as any)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateCrawlField("strictnessMode", v as any)}
+                    className="w-full"
                   >
                     <option value="permissive">Permissive (Include brief advisories)</option>
                     <option value="balanced">Balanced (Recommended standard)</option>
                     <option value="strict">Strict (High TTP & IOC density required)</option>
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1100,17 +1109,18 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Deduplication method</label>
-                  <select
+                  <label htmlFor="crawl-dedup-method" className="text-xs font-medium block">Deduplication method</label>
+                  <Select
+                    id="crawl-dedup-method"
                     value={currentCrawl.dedupMethod || "smart_hybrid"}
-                    onChange={(e) => updateCrawlField("dedupMethod", e.target.value as any)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateCrawlField("dedupMethod", v as any)}
+                    className="w-full"
                   >
                     <option value="smart_hybrid">Smart hybrid (normalized URL + 64-bit SimHash)</option>
                     <option value="both">Both (strict URL & exact content hash)</option>
                     <option value="canonical_url">Canonical URL Only</option>
                     <option value="content_hash">Content hash only</option>
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1235,18 +1245,19 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Default classification</label>
-                  <select
+                  <label htmlFor="app-default-classification" className="text-xs font-medium block">Default classification</label>
+                  <Select
+                    id="app-default-classification"
                     value={currentApp.defaultClassification || "INTRUSION_REPORT"}
-                    onChange={(e) => updateAppField("defaultClassification", e.target.value)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateAppField("defaultClassification", v)}
+                    className="w-full"
                   >
                     <option value="INTRUSION_REPORT">Intrusion report</option>
                     <option value="CAMPAIGN_INTEL">Campaign intelligence</option>
                     <option value="PROCEDURE_DEEPDIVE">Procedure deep-dive</option>
                     <option value="MALWARE_ANALYSIS">Malware analysis</option>
                     <option value="THREAT_REPORT">General threat report</option>
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1270,38 +1281,40 @@ function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block text-muted">Evidence retention period</label>
-                  <select
+                  <label htmlFor="app-evidence-retention" className="text-xs font-medium block text-muted">Evidence retention period</label>
+                  <Select
+                    id="app-evidence-retention"
                     disabled
                     title="Not active yet: evidence is never purged automatically"
                     value={String(currentApp.evidenceRetentionDays ?? 365)}
-                    onChange={(e) => updateAppField("evidenceRetentionDays", parseInt(e.target.value, 10))}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    onValueChange={(v) => updateAppField("evidenceRetentionDays", parseInt(v, 10))}
+                    className="w-full"
                   >
                     <option value="90">90 days (quarterly audit)</option>
                     <option value="180">180 Days (Semi-Annual)</option>
                     <option value="365">365 days (1 year standard)</option>
                     <option value="0">Indefinite (never auto-purge)</option>
-                  </select>
+                  </Select>
                   <p className="text-[11px] text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
 
               <div className="pt-3 border-t border-border">
                 <div className="space-y-1.5 max-w-sm">
-                  <label className="text-xs font-medium block text-muted">Default export standard</label>
-                  <select
+                  <label htmlFor="app-default-export" className="text-xs font-medium block text-muted">Default export standard</label>
+                  <Select
+                    id="app-default-export"
                     disabled
                     title="Not active yet: exports do not read this default"
                     value={currentApp.defaultExportFormat || "stix21"}
-                    onChange={(e) => updateAppField("defaultExportFormat", e.target.value as any)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    onValueChange={(v) => updateAppField("defaultExportFormat", v as any)}
+                    className="w-full"
                   >
                     <option value="stix21">STIX 2.1 JSON Bundle (OASIS Standard)</option>
                     <option value="json">Raw engine JSON (evidence-preserving)</option>
                     <option value="csv">CSV IOC Table (Firewall / SIEM Ingest)</option>
                     <option value="pdf">Structured PDF Dossier</option>
-                  </select>
+                  </Select>
                   <p className="text-[11px] text-subtle">Not active yet · saved, but no pipeline step applies it</p>
                 </div>
               </div>
@@ -1886,29 +1899,31 @@ function SettingsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Default ATT&CK matrix column width</label>
-                  <select
+                  <label htmlFor="app-matrix-layout" className="text-xs font-medium block">Default ATT&CK matrix column width</label>
+                  <Select
+                    id="app-matrix-layout"
                     value={currentApp.defaultMatrixLayout || "standard"}
-                    onChange={(e) => updateAppField("defaultMatrixLayout", e.target.value as any)}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateAppField("defaultMatrixLayout", v as any)}
+                    className="w-full"
                   >
                     <option value="standard">Standard (224px columns — full name & counts)</option>
                     <option value="compact">Compact (176px columns — high viewport density)</option>
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium block">Live dashboard refresh interval</label>
-                  <select
+                  <label htmlFor="app-polling-interval" className="text-xs font-medium block">Live dashboard refresh interval</label>
+                  <Select
+                    id="app-polling-interval"
                     value={String(currentApp.pollingIntervalSeconds ?? 12)}
-                    onChange={(e) => updateAppField("pollingIntervalSeconds", parseInt(e.target.value, 10))}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                    onValueChange={(v) => updateAppField("pollingIntervalSeconds", parseInt(v, 10))}
+                    className="w-full"
                   >
                     <option value="8">8 seconds (high frequency SOC stream)</option>
                     <option value="12">12 seconds (recommended standard)</option>
                     <option value="30">30 seconds (low bandwidth)</option>
                     <option value="60">60 Seconds (Manual / Background)</option>
-                  </select>
+                  </Select>
                 </div>
               </div>
 
@@ -2170,40 +2185,42 @@ function SettingsPage() {
               {/* Provider + model picker */}
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">AI provider</label>
-                  <select
+                  <label htmlFor="ai-provider" className="block text-xs font-medium text-muted mb-1.5">AI provider</label>
+                  <Select
+                    id="ai-provider"
                     value={aiEffProvider}
-                    onChange={(e) => {
-                      setAiProviderPick(e.target.value);
+                    onValueChange={(v) => {
+                      setAiProviderPick(v);
                       setAiModelPick(null);
                     }}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none"
+                    className="w-full"
                   >
                     {aiProvidersSorted.map((integration) => (
                       <option key={integration.id} value={integration.id}>
                         {integration.name} {integration.status === "installed" ? "· Installed" : "· Not installed"}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">Model</label>
-                  <select
+                  <label htmlFor="ai-model" className="block text-xs font-medium text-muted mb-1.5">Model</label>
+                  <Select
+                    id="ai-model"
                     value={aiEffModel}
-                    onChange={(e) => setAiModelPick(e.target.value)}
+                    onValueChange={(v) => setAiModelPick(v)}
                     disabled={aiEffModels.length === 0}
-                    className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
+                    className="w-full"
                   >
                     {aiEffModels.length > 0 ? (
                       aiEffModels.map((m) => (
                         <option key={m} value={m}>
-                          {stripModelLabel(m)}
+                          {AGY_AVAILABLE_MODELS.find((x) => x.id === stripModelLabel(m))?.name ?? stripModelLabel(m)}
                         </option>
                       ))
                     ) : (
                       <option value="">No models — configure this provider first</option>
                     )}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
@@ -2301,3 +2318,51 @@ function SettingsPage() {
 /** Native checkbox styled as a switch (keeps the checkbox semantics and handlers). */
 const switchCls =
   "peer relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full border border-border bg-bg-subtle transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-3.5 before:rounded-full before:bg-muted before:transition-transform before:content-[''] checked:border-accent checked:bg-accent checked:before:translate-x-4 checked:before:bg-accent-fg disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * Developer mode, for administrators: shows the technical details behind the console (agent workers
+ * and CLI output, the tools the AIE Analyst called with their arguments and timings, the provider and
+ * model on each answer, Marketplace diagnostics). Off, analysts see only what they need.
+ */
+function DeveloperModeCard() {
+  const qc = useQueryClient();
+  const info = useQuery({ queryKey: ["agent-info"], queryFn: () => getAgentInfo(), staleTime: 30_000 });
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => setDebuggerMode({ data: { enabled } }),
+    onSuccess: (res) => {
+      toast.success(res.debuggerMode ? "Developer mode on" : "Developer mode off");
+      for (const key of [["agent-info"], ["app-settings"], ["app_settings"], ["marketplace_state"]]) void qc.invalidateQueries({ queryKey: key });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not change Developer mode"),
+  });
+  if (!info.data?.canUseDeveloperMode) return null;
+  const on = Boolean(info.data.developer);
+  return (
+    <div className="card-liquid-glass mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-bg-card px-4 py-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <Code2 className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={1.75} />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-fg">Developer mode</p>
+          <p className="mt-0.5 text-xs text-muted">
+            Shows technical details: agent workers and CLI output, the tools the AIE Analyst used with their arguments and timings, the provider and model on each answer, and
+            Marketplace diagnostics. Only administrators see this switch.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Developer mode"
+        disabled={toggle.isPending}
+        onClick={() => toggle.mutate(!on)}
+        className={cn(
+          "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-60",
+          on ? "bg-sage" : "border border-neutral-700 bg-neutral-800",
+        )}
+      >
+        <span className={cn("inline-block size-5 rounded-full bg-white shadow-sm transition-transform", on ? "translate-x-5" : "translate-x-0")} />
+      </button>
+    </div>
+  );
+}
