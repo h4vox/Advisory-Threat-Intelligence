@@ -58,6 +58,7 @@ import { AGY_AVAILABLE_MODELS } from "@/lib/aie/agent-framework/types";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
+import { RESEARCH_CATEGORIES, normalizeResearchDiscovery, type ResearchDiscoveryConfig } from "@/lib/aie/research-taxonomy";
 
 const settingsSearchSchema = z.object({
   tab: z.enum(["crawler", "policy", "storage", "display", "agent", "users"]).optional(),
@@ -1191,7 +1192,9 @@ function SettingsPage() {
 
               <div className="pt-2 border-t border-border">
                 <label className="text-xs font-medium block">Targeted threat keywords & query patterns</label>
-                <p className="text-[11px] text-muted">Comma-separated terms used to seed search discovery vectors.</p>
+                <p className="text-[11px] text-muted">
+                  Comma-separated phrases. Each run searches two of them, rotating, on top of the research coverage searches below.
+                </p>
                 <Textarea
                   rows={3}
                   value={currentCrawl.keywords || ""}
@@ -1199,6 +1202,12 @@ function SettingsPage() {
                   className="mt-1.5 rounded-lg border-border bg-bg-elevated font-mono text-xs"
                 />
               </div>
+
+              <ResearchDiscoverySettings
+                value={normalizeResearchDiscovery(currentCrawl.researchDiscovery)}
+                onChange={(v) => updateCrawlField("researchDiscovery", v)}
+                searchEnabled={currentCrawl.searchDiscovery !== false}
+              />
             </div>
           </div>
         )}
@@ -2324,6 +2333,103 @@ const switchCls =
  * and CLI output, the tools the AIE Analyst called with their arguments and timings, the provider and
  * model on each answer, Marketplace diagnostics). Off, analysts see only what they need.
  */
+/** Taxonomy discovery: which research categories the crawler searches for, and how many searches a run makes. */
+function ResearchDiscoverySettings({
+  value,
+  onChange,
+  searchEnabled,
+}: {
+  value: ResearchDiscoveryConfig;
+  onChange: (v: ResearchDiscoveryConfig) => void;
+  searchEnabled: boolean;
+}) {
+  const core = RESEARCH_CATEGORIES.filter((c) => c.scope === "core");
+  const bas = RESEARCH_CATEGORIES.filter((c) => c.scope === "bas");
+  const off = !searchEnabled || !value.enabled;
+  return (
+    <div className="space-y-3 border-t border-border pt-3" aria-labelledby="research-discovery-title">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <span id="research-discovery-title" className="block text-xs font-medium">
+            Research coverage searches
+          </span>
+          <p className="text-[11px] text-muted">
+            Each run searches the web across the research taxonomy, the categories with the fewest reports first, so every kind of attack research
+            is looked for over time. What is found still has to pass the technical quality gate.
+          </p>
+          {!searchEnabled && <p className="mt-1 text-[11px] text-warn">Turn on search-driven discovery above to use these searches.</p>}
+        </div>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="Research coverage searches"
+          checked={value.enabled}
+          disabled={!searchEnabled}
+          onChange={(e) => onChange({ ...value, enabled: e.target.checked })}
+          className={switchCls}
+        />
+      </div>
+
+      <div className={cn("space-y-3", off && "opacity-60")}>
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="research-queries-per-run" className="text-xs text-muted">
+            Searches per run
+          </label>
+          <Select
+            id="research-queries-per-run"
+            size="sm"
+            value={String(value.queriesPerRun)}
+            onValueChange={(v) => onChange({ ...value, queriesPerRun: Number(v) })}
+            disabled={off}
+            className="w-20"
+          >
+            {[2, 4, 6, 8, 10, 12].map((n) => (
+              <option key={n} value={String(n)}>
+                {n}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-subtle">Always searched</span>
+          <div className="flex flex-wrap gap-1.5">
+            {core.map((c) => (
+              <span key={c.id} title={`${c.label}: ${c.types.join(", ")}`} className="rounded-md border border-border bg-bg-subtle/60 px-2 py-0.5 text-[11px] text-muted">
+                {c.short}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-subtle">Optional: detection and emulation (BAS)</span>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {bas.map((c) => {
+              const on = value.bas.includes(c.id);
+              return (
+                <label key={c.id} className={cn("flex cursor-pointer items-start gap-2 rounded-lg border p-2.5 text-xs", on ? "border-accent/50 bg-accent/5" : "border-border bg-bg-subtle/40")}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={off}
+                    onChange={(e) => onChange({ ...value, bas: e.target.checked ? [...value.bas, c.id] : value.bas.filter((x) => x !== c.id) })}
+                    className="mt-0.5 accent-[var(--color-primary)]"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-medium text-fg">{c.short}</span>
+                    <span className="block text-[11px] text-muted">{c.purpose}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DeveloperModeCard() {
   const qc = useQueryClient();
   const info = useQuery({ queryKey: ["agent-info"], queryFn: () => getAgentInfo(), staleTime: 30_000 });

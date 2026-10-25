@@ -98,6 +98,10 @@ import {
 } from "../mongodb/repository.server";
 import { SOURCE_SEED, isStructuredSource, registryEntry } from "./catalog";
 import { annotateReportProvenance } from "./doc-classifier";
+import { classifyResearch, normalizeResearchDiscovery, type ResearchCategoryId } from "./research-taxonomy";
+import { extractTelemetryRefs } from "./telemetry-refs";
+import { buildSearchPlan, parseDuckDuckGoHtml } from "./web-search";
+import { mongoResearchCoverage } from "../mongodb/research-repo.server";
 import { CollectorRun, COLLECTOR_USER_AGENT, type CrawlRunOptions } from "./collector/run";
 import { computeFingerprints, hammingDistance64, normalizeForFingerprint, simhash64 } from "./collector/fingerprint";
 import { DUPLICATE_KIND_LABEL, preferCanonical } from "./collector/dedup";
@@ -360,6 +364,10 @@ interface FrontierItem {
   lastmodHint?: string | null;
   /** Relevance pre-score computed at enqueue (title, summary, URL, source history). */
   relevance?: RelevanceResult;
+  /** The web search that found it (search discovery). */
+  discoveryQuery?: string;
+  /** The research category that search was looking for (./research-taxonomy). */
+  researchCategory?: ResearchCategoryId;
 }
 
 export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
@@ -1413,84 +1421,75 @@ export async function executeCrawlJob(
       ), Math.max(30_000, discoveryTimeLeft()));
     }
 
-    // Phase C: Real-Time Web & Graph Search Discovery
+    // Phase C: web search. A targeted hunt searches its own query; otherwise the analyst's keyword
+    // phrases (rotating) and the research taxonomy (./research-taxonomy), thinnest categories first.
     if (config.searchDiscovery !== false || targetedQuery) {
       if (!jobControl.cancel) reportDiscovery("Searching the web for related reports", true);
-      const activeKeywords = (targetedQuery || config.keywords || "").trim();
+      const research = normalizeResearchDiscovery(config.researchDiscovery);
+      let counts: Partial<Record<ResearchCategoryId, number>> | undefined;
+      if (!targetedQuery && research.enabled && isMongoConfigured()) {
+        const coverage = await settleWithin(mongoResearchCoverage(), 4000);
+        if (coverage.status === "fulfilled") counts = coverage.value.counts;
+      }
+      const plan = buildSearchPlan({
+        targetedQuery,
+        keywords: config.keywords,
+        research,
+        // Minutes since the epoch: every run rotates to different keywords and queries.
+        round: Math.floor(Date.now() / 60_000),
+        counts,
+      });
+      if (plan.length) logger.crawler("SEARCH", `Web search plan: ${plan.map((p) => p.query).join(" · ")}`, { jobId, searches: plan.length });
 
-      // Execute live search against CTI indices & open web if active query is present
-      if (activeKeywords.length > 0) {
-        const searchTerms = [
-          `"${activeKeywords}" threat intelligence technical analysis`,
-          `"${activeKeywords}" attack chain indicators of compromise`,
-          `${activeKeywords} cve technical writeup advisory filetype:html OR filetype:pdf`,
-        ];
-
-        for (const term of searchTerms) {
-          if (jobControl.cancel || discoveryTimeLeft() <= 0) break;
-          try {
-            const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
-            const html = await safeFetchText(searchUrl, {
-              timeoutMs: 6000,
-              maxBytes: 3_000_000,
-              userAgent:
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-              acceptHeader: "text/html,application/xhtml+xml,text/plain",
-            });
-
-            if (html !== null) {
-              const uddgMatches = [...html.matchAll(/\/l\/\?kh=-1&amp;uddg=([^"&]+)/g)];
-              for (const m of uddgMatches) {
-                try {
-                  const targetUrl = decodeURIComponent(m[1]);
-                  const urlObj = new URL(targetUrl);
-                  const domain = urlObj.hostname.toLowerCase().replace(/^www\./, "");
-                  const blocked = [
-                    "duckduckgo.com",
-                    "bing.com",
-                    "google.com",
-                    "youtube.com",
-                    "wikipedia.org",
-                    "facebook.com",
-                    "twitter.com",
-                    "x.com",
-                    "linkedin.com",
-                    "instagram.com",
-                  ];
-                  if (blocked.some((b) => domain.includes(b))) continue;
-
-                  const check = isCandidateResourceUrl(targetUrl);
-                  if (
-                    check.isResource ||
-                    targetUrl.endsWith(".pdf") ||
-                    /cve|threat|attack|ransomware|malware|incident|advisory|report/i.test(targetUrl)
-                  ) {
-                    const canonical = canonicalizeUrl(targetUrl);
-                    enqueue({
-                      url: targetUrl,
-                      canonicalUrl: canonical,
-                      depth: 0,
-                      priorityScore: 0.99,
-                      parentUrl: null,
-                      parentSource: `Live CTI Web Discovery (${activeKeywords})`,
-                      discoveryPath: [targetUrl],
-                      discoveryMethod: "search_expansion",
-                      sourceId: "src_web_search",
-                      publisher: domain,
-                      domain,
-                      title:
-                        targetUrl.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") ||
-                        `Live CTI: ${activeKeywords}`,
-                    });
-                  }
-                } catch {
-                  /* skip invalid URL */
-                }
-              }
-            }
-          } catch {
-            /* ignore live search network errors */
+      const blocked = ["duckduckgo.com", "bing.com", "google.com", "youtube.com", "wikipedia.org", "facebook.com", "twitter.com", "x.com", "linkedin.com", "instagram.com"];
+      for (const [i, step] of plan.entries()) {
+        if (jobControl.cancel || discoveryTimeLeft() <= 0) break;
+        if (i > 0) await new Promise((r) => setTimeout(r, Math.min(1500, Math.max(300, config.rateLimitMs || 0))));
+        try {
+          const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(step.query)}`;
+          const html = await safeFetchText(searchUrl, {
+            timeoutMs: 6000,
+            maxBytes: 3_000_000,
+            userAgent:
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            acceptHeader: "text/html,application/xhtml+xml,text/plain",
+          });
+          if (html === null) {
+            logger.crawler("SEARCH", `"${step.query}": no response from the search engine`, { jobId });
+            continue;
           }
+          let kept = 0;
+          for (const result of parseDuckDuckGoHtml(html)) {
+            try {
+              const domain = new URL(result.url).hostname.toLowerCase().replace(/^www\./, "");
+              if (blocked.some((b) => domain === b || domain.endsWith(`.${b}`))) continue;
+              const check = isCandidateResourceUrl(result.url);
+              if (!(check.isResource || /\.pdf(?:$|\?)/i.test(result.url) || /cve|threat|attack|ransomware|malware|incident|advisory|report/i.test(result.url))) continue;
+              const added = enqueue({
+                url: result.url,
+                canonicalUrl: canonicalizeUrl(result.url),
+                depth: 0,
+                priorityScore: step.origin === "targeted" ? 0.99 : 0.9,
+                parentUrl: null,
+                parentSource: `Web search: ${step.query}`,
+                discoveryPath: [result.url],
+                discoveryMethod: "search_expansion",
+                sourceId: "src_web_search",
+                publisher: domain,
+                domain,
+                title: result.title || result.url.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") || step.query,
+                summary: result.snippet || undefined,
+                discoveryQuery: step.query,
+                researchCategory: step.category,
+              });
+              if (added) kept++;
+            } catch {
+              /* skip an invalid URL */
+            }
+          }
+          logger.crawler("SEARCH", `"${step.query}": ${kept} new candidate${kept === 1 ? "" : "s"}`, { jobId, category: step.category ?? step.origin });
+        } catch {
+          /* a search engine error costs this one query only */
         }
       }
 
@@ -1613,7 +1612,7 @@ export async function executeCrawlJob(
         reason,
         stage,
         discoveryMethod: current.discoveryMethod,
-        discoveryQuery: "",
+        discoveryQuery: current.discoveryQuery ?? "",
         parentUrl: current.parentUrl,
         depth: current.depth,
         publisher: current.publisher || current.domain,
@@ -1874,7 +1873,7 @@ export async function executeCrawlJob(
             reason: "Canonical URL already acquired in knowledge base",
             stage: "duplicate",
             discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
+            discoveryQuery: current.discoveryQuery ?? "",
             parentUrl: current.parentUrl,
             depth: current.depth,
             publisher: current.publisher || current.domain,
@@ -2055,7 +2054,7 @@ export async function executeCrawlJob(
                   reason: `Needs OCR: ${pdfFailure} (${fetched.bytes.byteLength} bytes)`,
                   stage: "failed",
                   discoveryMethod: current.discoveryMethod,
-                  discoveryQuery: "",
+                  discoveryQuery: current.discoveryQuery ?? "",
                   parentUrl: current.parentUrl,
                   depth: current.depth,
                   publisher: current.publisher || current.domain,
@@ -2143,7 +2142,7 @@ export async function executeCrawlJob(
                 reason: errMsg,
                 stage: "failed",
                 discoveryMethod: current.discoveryMethod,
-                discoveryQuery: "",
+                discoveryQuery: current.discoveryQuery ?? "",
                 parentUrl: current.parentUrl,
                 depth: current.depth,
                 publisher: current.publisher || current.domain,
@@ -2253,7 +2252,7 @@ export async function executeCrawlJob(
               reason: `Syndicated or near-duplicate reproduction of canonical report ${nearDuplicate.id} ("${nearDuplicate.title.slice(0, 50)}")`,
               stage: "duplicate",
               discoveryMethod: current.discoveryMethod,
-              discoveryQuery: "",
+              discoveryQuery: current.discoveryQuery ?? "",
               parentUrl: current.parentUrl,
               depth: current.depth,
               publisher: current.publisher || current.domain,
@@ -2597,7 +2596,7 @@ export async function executeCrawlJob(
             reason: rejectMsg,
             stage: "rejected",
             discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
+            discoveryQuery: current.discoveryQuery ?? "",
             parentUrl: current.parentUrl,
             depth: current.depth,
             publisher: current.publisher || current.domain,
@@ -2629,7 +2628,7 @@ export async function executeCrawlJob(
               classification: qual.classification,
               resourceKind: qual.resourceKind,
               discoveryMethod: current.discoveryMethod,
-              discoveryQuery: "",
+              discoveryQuery: current.discoveryQuery ?? "",
               parentSource: current.parentSource || current.domain,
               parentUrl: current.parentUrl,
               sourceDomain: current.domain,
@@ -2879,7 +2878,7 @@ export async function executeCrawlJob(
                 attachments: attachments.length ? attachments : undefined,
                 relevance: relevanceNote,
                 discoveryMethod: current.discoveryMethod,
-                discoveryQuery: "",
+                discoveryQuery: current.discoveryQuery ?? "",
                 parentSource: current.parentSource || current.domain,
                 sourceDomain: current.domain,
                 version: 1,
@@ -2897,6 +2896,8 @@ export async function executeCrawlJob(
                 aiTokensUsed: agentResult?.tokensUsed,
                 aiProvider: agentResult?.providerName,
                 translation,
+                research: classifyResearch({ title: docTitle, text: textContent }),
+                telemetry: extractTelemetryRefs(textContent),
               };
               await mongoInsertReport(reportDoc);
 
@@ -2924,7 +2925,7 @@ export async function executeCrawlJob(
                 classification: qual.classification,
                 resourceKind: qual.resourceKind,
                 discoveryMethod: current.discoveryMethod,
-                discoveryQuery: "",
+                discoveryQuery: current.discoveryQuery ?? "",
                 parentSource: current.parentSource || current.domain,
                 parentUrl: current.parentUrl,
                 sourceDomain: current.domain,
@@ -3022,7 +3023,7 @@ export async function executeCrawlJob(
             reason: `Qualified (${qual.resourceKind}): quality ${score} with ${iocs.length} IOCs · Depth ${current.depth}`,
             stage: "ingested",
             discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
+            discoveryQuery: current.discoveryQuery ?? "",
             parentUrl: current.parentUrl,
             depth: current.depth,
             publisher: current.publisher || current.domain,
@@ -3083,7 +3084,7 @@ export async function executeCrawlJob(
             reason: `Qualified (${qual.resourceKind}): quality ${score}. Auto-ingest is disabled in settings; held in Discovery Queue for approval.`,
             stage: "qualified",
             discoveryMethod: current.discoveryMethod,
-            discoveryQuery: "",
+            discoveryQuery: current.discoveryQuery ?? "",
             parentUrl: current.parentUrl,
             depth: current.depth,
             publisher: current.publisher || current.domain,
@@ -3121,7 +3122,7 @@ export async function executeCrawlJob(
                 classification: qual.classification,
                 resourceKind: qual.resourceKind,
                 discoveryMethod: current.discoveryMethod,
-                discoveryQuery: "",
+                discoveryQuery: current.discoveryQuery ?? "",
                 parentSource: current.parentSource || current.domain,
                 parentUrl: current.parentUrl,
                 sourceDomain: current.domain,

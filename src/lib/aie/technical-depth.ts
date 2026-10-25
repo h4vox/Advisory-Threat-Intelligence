@@ -17,13 +17,17 @@
  *                                       behaviour, or 8+ kinds without a name)
  *   E. an exploited-vulnerability advisory from a CERT / government publisher (a CVE together with
  *      exploitation wording)
+ *   F. published detection content     (a Sigma, YARA or Suricata/Snort rule body, or two or more
+ *                                       KQL / SPL hunting queries over security telemetry)
+ * Sigma's lowercase ATT&CK tags (attack.t1003.001) count as technique IDs.
  * and rejects product / marketing pages and strategic or statistical pieces that have no hard
  * evidence (A–C), whatever else they mention. Calibrated on live Microsoft and Google Threat
  * Intelligence posts (technical reports vs. opinion, guidance and trends posts) and the product
  * page that reached the library.
  *
- * Pure module (no imports) so it runs under `node --test` and in the browser.
+ * Pure module (relative imports of pure modules only) so it runs under `node --test` and in the browser.
  */
+import { countDetectionContent } from "./telemetry-refs.ts";
 
 export type DepthKind =
   | "technical"
@@ -43,6 +47,9 @@ export type DepthStats = {
   behaviours: string[];
   cves: number;
   exploitedCveAdvisory: boolean;
+  /** Detection rule bodies (Sigma, YARA, Suricata) and hunting queries (KQL, SPL) in the text. */
+  detectionRules: number;
+  detectionQueries: number;
   marketing: string[];
   /** Strategic / statistical wording per 1000 prose words. */
   strategicPerMille: number;
@@ -305,13 +312,19 @@ export function assessTechnicalDepth(input: DepthInput): DepthVerdict {
   const language = detectLanguage(prose, input.htmlLang);
   const host = hostOf(input.url ?? "");
 
-  const techniques = distinct(prose.match(/\bT1\d{3}(?:\.\d{3})?\b/g) ?? []).size;
+  const techniques = distinct([
+    ...(prose.match(/\bT1\d{3}(?:\.\d{3})?\b/g) ?? []),
+    ...(prose.match(/\battack\.t1\d{3}(?:\.\d{3})?\b/gi) ?? []).map((t) => t.slice(7).toUpperCase()),
+  ]).size;
   const indicators = countIndicators(prose);
   const commands = countCommands(prose);
   const actors = findActors(prose);
   const behaviours = BEHAVIOURS.filter(([, re]) => re.test(prose)).map(([name]) => name);
   const cves = distinct(prose.match(/\bCVE-\d{4}-\d{4,7}\b/gi) ?? []).size;
   const exploitedCveAdvisory = cves > 0 && EXPLOITATION_RE.test(prose) && ADVISORY_PUBLISHER.test(host);
+  const detection = countDetectionContent(prose);
+  const detectionRules = detection.filter((d) => d.kind === "sigma" || d.kind === "yara" || d.kind === "suricata").reduce((n, d) => n + d.count, 0);
+  const detectionQueries = detection.filter((d) => d.kind === "kql" || d.kind === "spl").reduce((n, d) => n + d.count, 0);
   const marketing = MARKETING.filter(([, re]) => re.test(prose)).map(([name]) => name);
   const strategicPerMille = perMille(STRATEGIC_RE, prose, proseWords);
   const advicePerMille = perMille(ADVICE_RE, prose, proseWords);
@@ -325,6 +338,8 @@ export function assessTechnicalDepth(input: DepthInput): DepthVerdict {
     behaviours,
     cves,
     exploitedCveAdvisory,
+    detectionRules,
+    detectionQueries,
     marketing,
     strategicPerMille,
     advicePerMille,
@@ -335,6 +350,8 @@ export function assessTechnicalDepth(input: DepthInput): DepthVerdict {
   if (techniques >= 1) hard.push(plural(techniques, "ATT&CK technique ID"));
   if (indicators >= 2) hard.push(plural(indicators, "indicator"));
   if (commands >= 2) hard.push(plural(commands, "attacker command"));
+  if (detectionRules >= 1) hard.push(plural(detectionRules, "detection rule"));
+  else if (detectionQueries >= 2) hard.push(plural(detectionQueries, "hunting query", "hunting queries"));
   const anchors = [...hard];
   const activity = (actors.length >= 1 && behaviours.length >= 5) || behaviours.length >= 8;
   if (activity) {
@@ -353,6 +370,7 @@ export function assessTechnicalDepth(input: DepthInput): DepthVerdict {
       Math.min(20, commands * 4) +
       Math.min(10, actors.length * 3) +
       Math.min(25, behaviours.length * 3) +
+      Math.min(15, detectionRules * 5 + detectionQueries * 2) +
       (exploitedCveAdvisory ? 15 : 0),
   );
 

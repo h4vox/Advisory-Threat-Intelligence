@@ -249,7 +249,7 @@ export function SectionCard({
   );
 }
 
-export type SegmentedItem<T extends string> = { value: T; label: ReactNode; count?: number; icon?: IconType };
+export type SegmentedItem<T extends string> = { value: T; label: ReactNode; count?: number; icon?: IconType; /** Tooltip, e.g. when the label is visually hidden. */ title?: string };
 
 export function SegmentedTabs<T extends string>({
   items,
@@ -279,6 +279,7 @@ export function SegmentedTabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
+            title={item.title}
             onClick={() => onChange(item.value)}
             className={cn(
               "inline-flex shrink-0 items-center gap-2 rounded-md font-medium transition-colors",

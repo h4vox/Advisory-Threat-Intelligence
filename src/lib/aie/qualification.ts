@@ -107,6 +107,8 @@ const GENERIC_PATH_PATTERNS = [
   /\/news\/?$/i,
   /\/en-us\/security\/?$/i,
   /\/en-us\/security\/blog\/?$/i,
+  // Microsoft Security Blog content-type listings (articles live under /YYYY/MM/DD/slug).
+  /\/security\/blog\/(?:threat-intelligence|content-type|product|topic)\/[^/]+\/?$/i,
   /\/free-trial/i,
   /\/apps(?:\/.*)?$/i,
   /\/forms(?:\/.*)?$/i,
@@ -151,6 +153,10 @@ export function isCandidateResourceUrl(
     // 1b. Reject print-view duplicates and search filter parameter URLs
     if (/\?pdf=print/i.test(url.search) || /\?f%5B/i.test(url.search) || /\?category=/i.test(url.search) || /\?filter=/i.test(url.search)) {
       return { isResource: false, reason: "Print view parameter duplicate or search filter listing" };
+    }
+    // Pagination parameters mark a listing (WordPress ?p=<id> is a post permalink and stays allowed).
+    if (/[?&](?:paged|page|pg|start|offset)=\d+/i.test(url.search)) {
+      return { isResource: false, reason: "Paginated listing page" };
     }
 
     // 2. Reject negative / generic / index patterns (even if from RSS feed)

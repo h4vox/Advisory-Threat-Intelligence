@@ -11,6 +11,8 @@ import {
 } from "./attack-chain";
 import { REPORT_CATALOG, SOURCE_SEED, TIER_LABELS, isStructuredSource, registryEntry } from "./catalog";
 import { annotateReportProvenance, classifyDocument } from "./doc-classifier";
+import { BAS_CATEGORY_IDS, MAX_RESEARCH_QUERIES_PER_RUN, classifyResearch, type ResearchCategoryId } from "./research-taxonomy";
+import { extractTelemetryRefs } from "./telemetry-refs";
 import { enrichAttackEntities, withAttackRefs } from "./collector/enrich";
 import { computeFingerprints } from "./collector/fingerprint";
 import { mergeLocalReportMeta } from "../mongodb/collector-repo.server";
@@ -1684,6 +1686,8 @@ async function persistReport(input: {
         // Collector enrichment: canonical ATT&CK refs and dedup fingerprints (heuristic fields untouched).
         extractedEntities: withAttackRefs(undefined, enrichAttackEntities(input.title, input.text)),
         fingerprints: computeFingerprints({ text: input.text, title: input.title, publisher: effectivePublisher }),
+        research: classifyResearch({ title: input.title, text: input.text }),
+        telemetry: extractTelemetryRefs(input.text),
       };
       await mongoInsertReport(reportDoc);
 
@@ -2139,6 +2143,13 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware
       rateLimitMs: z.number().optional(),
       concurrency: z.number().optional(),
       maxPdfDownloads: z.number().optional(),
+      researchDiscovery: z
+        .object({
+          enabled: z.boolean(),
+          queriesPerRun: z.number().int().min(0).max(MAX_RESEARCH_QUERIES_PER_RUN),
+          bas: z.array(z.enum(BAS_CATEGORY_IDS as unknown as [ResearchCategoryId, ...ResearchCategoryId[]])).max(BAS_CATEGORY_IDS.length),
+        })
+        .optional(),
     }).passthrough(),
   )
   .handler(async ({ data }) => {

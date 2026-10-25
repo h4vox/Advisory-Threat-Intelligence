@@ -28,6 +28,8 @@ import type {
   TacticDistributionStats,
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
+import type { ResearchLabels } from "../aie/research-taxonomy";
+import type { TelemetryRefs } from "../aie/telemetry-refs";
 import { computeDashboardAnalytics } from "../aie/dashboard-analytics";
 import { computeReportSimHash, excerptOf } from "../aie/extract";
 import { logger } from "../aie/logger";
@@ -380,7 +382,15 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
       doc.translation && typeof doc.translation === "object" && typeof doc.translation.from === "string"
         ? (doc.translation as ReportTranslation)
         : undefined,
+    research: storedResearch(doc.research),
+    telemetry: doc.telemetry && typeof doc.telemetry === "object" && Array.isArray(doc.telemetry.events) ? (doc.telemetry as TelemetryRefs) : undefined,
   };
+}
+
+/** Stored research labels (research-taxonomy), when well formed. */
+function storedResearch(v: unknown): ResearchLabels | undefined {
+  const r = v as ResearchLabels | null | undefined;
+  return r && typeof r === "object" && Array.isArray(r.labels) ? r : undefined;
 }
 
 export async function mongoFindReportByCanonical(canonicalUrl: string): Promise<ReportRecord | null> {
@@ -755,6 +765,7 @@ export async function mongoListReports(params?: {
     aiAuditReason: 1,
     excerpt: 1,
     scoreBreakdown: 1,
+    research: 1,
   };
 
   // When searching, also load extractedText to compute exact matched snippets
@@ -895,6 +906,7 @@ export async function mongoListReports(params?: {
       aiAuditReason: (doc.aiAuditReason as string) || undefined,
       scoreBreakdown: doc.scoreBreakdown,
       matchedSnippet,
+      research: storedResearch(doc.research),
     };
   });
 

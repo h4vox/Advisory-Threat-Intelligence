@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ActionButton, PageHeader, SectionCard, SegmentedTabs, StatCard, Toolbar } from "@/components/layout/page";
+import { ResearchCoverageCard } from "@/components/library/research-coverage";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState, Meter, StatusChip, StatusDot, type Tone } from "@/components/ui/primitives";
@@ -662,7 +663,10 @@ function SourcesPage() {
       />
 
       {activeTab === "registry" ? (
-        <RegistryStats registry={registry} coverage={coverage} />
+        <>
+          <RegistryStats registry={registry} coverage={coverage} />
+          <ResearchCoverageCard />
+        </>
       ) : activeTab === "health" ? null : (
         <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard icon={Shield} label="Curated sources" value={(sources ?? []).length} />

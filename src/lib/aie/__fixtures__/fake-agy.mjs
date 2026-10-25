@@ -261,7 +261,8 @@ function skillDelay(prompt) {
 }
 
 // A scripted stand-in for the AIE Analyst model (tests only): asks for list_reports on "latest" /
-// "this week" questions, proposes start_crawl on crawl requests, otherwise answers citing [S1].
+// "this week" questions and on "research type <id>", proposes start_crawl on crawl requests,
+// otherwise answers citing [S1].
 function fakeAnalyst(prompt) {
   const q = prompt.match(/\nANALYST: ([^\n]*)/)?.[1];
   if (!q) return null;
@@ -269,6 +270,10 @@ function fakeAnalyst(prompt) {
   const done = (tool) => prompt.includes(`→ ${tool}(`);
   if (/\bcrawl\b/i.test(q) && !done("start_crawl")) {
     return JSON.stringify({ tool_calls: [{ name: "start_crawl", arguments: { query: "ransomware" } }] });
+  }
+  const research = q.match(/research type ([a-z0-9_]+)/i)?.[1];
+  if (research && !done("list_reports")) {
+    return JSON.stringify({ tool_calls: [{ name: "list_reports", arguments: { research, limit: 25 } }] });
   }
   if (/latest|this week|recent/i.test(q) && !done("list_reports")) {
     const since = new Date(Date.parse(today) - 30 * 86400000).toISOString().slice(0, 10);
