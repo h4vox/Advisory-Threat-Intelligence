@@ -36,6 +36,7 @@ import {
   toIsoString,
 } from "./extract";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { comparePublishedDesc, resolvePublicationDate } from "./published-date";
 import {
   isSafeCrawlPatternString,
   isSafePublicUrlString,
@@ -114,7 +115,6 @@ import {
   mongoDeleteDiscoveredSource,
   mongoToggleDiscoveredSource,
   mongoValidateDiscoveredSource,
-  mongoAuditLibraryWithAi,
   invalidateReportsCache,
   invalidateDashboardCache,
   mongoGetMarketplaceState,
@@ -160,7 +160,6 @@ import {
   getAvailableAgentModels,
   chatWithUnifiedAgent,
   runUnifiedSourceDiscovery,
-  runUnifiedResourceEvaluation,
 } from "./ai-manager";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL, AGY_AVAILABLE_MODELS } from "./agent-framework/types";
 import type { IntegrationItem, MarketplaceState } from "./marketplace-types";
@@ -892,139 +891,6 @@ export const triggerAgentSourceDiscovery = createServerFn({ method: "POST" }).mi
     };
   });
 
-export const runAiLibraryAudit = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z
-      .object({
-        autoPruneJunk: z.boolean().optional(),
-        limit: z.number().int().min(1).max(50).optional(),
-        unverifiedOnly: z.boolean().optional(),
-        forceAll: z.boolean().optional(),
-      })
-      .optional()
-  )
-  .handler(async ({ data }) => {
-    return await mongoAuditLibraryWithAi({
-      autoPruneJunk: data?.autoPruneJunk,
-      limit: data?.limit,
-      unverifiedOnly: data?.unverifiedOnly,
-      forceAll: data?.forceAll,
-    });
-  });
-
-export const auditLibraryWithAi = runAiLibraryAudit;
-
-export const evaluateReportWithAi = createServerFn({ method: "POST" }).middleware([analystMiddleware])
-  .validator(
-    z.object({
-      id: z.string(),
-      autoPrune: z.boolean().optional(),
-    })
-  )
-  .handler(async ({ data }) => {
-    const col = await getThreatIntelCollection();
-    const doc = await col.findOne({ id: data.id, docType: "report" });
-    if (!doc) {
-      throw new Error(`Report not found: ${data.id}`);
-    }
-
-    const title = (doc.title as string) || "";
-    const url = (doc.url as string) || "";
-    const text = (doc.extractedText as string) || (doc.summary as string) || "";
-
-    let evalDomain = (doc.sourceDomain as string) || "";
-    if (!evalDomain && url) {
-      try {
-        evalDomain = new URL(url).hostname.replace(/^www\./, "");
-      } catch {
-        // Invalid URL: evaluate without a domain.
-      }
-    }
-
-    const evalRes = await runUnifiedResourceEvaluation({
-      title,
-      url,
-      text,
-      domain: evalDomain || "unknown",
-      timeoutSeconds: 40,
-    });
-
-    if (!evalRes.success || evalRes.fallback) {
-      return {
-        success: false,
-        error: evalRes.error || "AI Agent evaluation timed out or returned empty response",
-        result: evalRes,
-      };
-    }
-
-    const isApproved =
-      evalRes.recommendApproval &&
-      evalRes.passScore >= 50 &&
-      evalRes.classification !== "OTHER" &&
-      evalRes.classification !== "GENERIC_NEWS";
-
-    if (isApproved) {
-      const updatedAnalysis: any = { ...(doc.analysis || {}) };
-      if (evalRes.threatActors && evalRes.threatActors.length > 0) {
-        const existingActors = new Set(updatedAnalysis.threatActors || []);
-        for (const act of evalRes.threatActors) existingActors.add(act);
-        updatedAnalysis.threatActors = Array.from(existingActors);
-      }
-      if (evalRes.mitreTechniques && evalRes.mitreTechniques.length > 0) {
-        const existingTechs = new Set(updatedAnalysis.techniques || []);
-        for (const t of evalRes.mitreTechniques) existingTechs.add(t);
-        updatedAnalysis.techniques = Array.from(existingTechs);
-      }
-
-      await col.updateOne(
-        { id: doc.id, docType: "report" },
-        {
-          $set: {
-            status: "acquired",
-            classification: evalRes.classification || doc.classification,
-            resourceKind: evalRes.resourceKind || doc.resourceKind,
-            aiVerified: true,
-            aiQualityScore: evalRes.passScore,
-            aiAuditReason: `AI Cognitive Approval (${evalRes.passScore}/100): ${evalRes.rationale}`,
-            scoreBreakdown: evalRes.scoreBreakdown,
-            analysis: updatedAnalysis,
-            updatedAt: new Date().toISOString(),
-          },
-        }
-      );
-    } else {
-      if (data.autoPrune) {
-        await col.deleteOne({ id: doc.id, docType: "report" });
-      } else {
-        await col.updateOne(
-          { id: doc.id, docType: "report" },
-          {
-            $set: {
-              status: "rejected",
-              classification: evalRes.classification || "OTHER",
-              resourceKind: evalRes.resourceKind || doc.resourceKind,
-              aiVerified: false,
-              aiQualityScore: evalRes.passScore || 0,
-              aiAuditReason: `Rejected by AI Cognitive Gate (${evalRes.passScore}/100): ${evalRes.rationale}`,
-              scoreBreakdown: evalRes.scoreBreakdown,
-              updatedAt: new Date().toISOString(),
-            },
-          }
-        );
-      }
-    }
-
-    invalidateReportsCache();
-    invalidateDashboardCache();
-
-    return {
-      success: true,
-      isApproved,
-      pruned: !isApproved && Boolean(data.autoPrune),
-      result: evalRes,
-    };
-  });
-
 export const listReports = createServerFn({ method: "GET" }).middleware([analystMiddleware])
   .validator(
     z
@@ -1041,6 +907,7 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
         hasIocs: z.boolean().optional(),
         limit: z.number().int().min(1).max(500).default(200),
         offset: z.number().int().min(0).max(100_000).default(0),
+        order: z.enum(["ingested", "published"]).optional(),
       })
       .optional(),
   )
@@ -1102,6 +969,8 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
     if (data?.hasIocs) {
       items = items.filter((r) => r.iocCount > 0);
     }
+
+    if (data?.order === "published") items.sort(comparePublishedDesc);
 
     if (!q) return items.slice(offset, offset + limit);
     return items
@@ -1505,6 +1374,8 @@ async function persistReport(input: {
   url: string;
   canonical: string;
   publishedAt: string | null;
+  /** Creation date from a PDF's document information. */
+  pdfDate?: string | null;
   contentType: string;
   raw: string | Uint8Array;
   text: string;
@@ -1626,6 +1497,16 @@ async function persistReport(input: {
       ? input.raw
       : new TextDecoder().decode(input.raw);
 
+  // Publication date from the source itself (structured data, URL, byline, PDF information), never the fetch time.
+  const publishedDate = resolvePublicationDate({
+    html: !isPdfDoc && /html/i.test(input.contentType) ? rawString : null,
+    text: input.text,
+    url: input.canonical,
+    feedDate: input.publishedAt,
+    pdfDate: input.pdfDate,
+  });
+  const publishedAt = publishedDate.publishedAt;
+
   const cleanHtml = buildPristineDocumentHtml(rawString || input.text, {
     id,
     title: input.title,
@@ -1633,7 +1514,7 @@ async function persistReport(input: {
     canonicalUrl: input.canonical,
     publisher: effectivePublisher,
     author: effectiveAuthor,
-    publishedAt: input.publishedAt,
+    publishedAt: publishedAt,
     ingestedAt: new Date().toISOString(),
     classification,
     rawHash,
@@ -1657,7 +1538,8 @@ async function persistReport(input: {
         title: input.title,
         url: input.url,
         canonicalUrl: input.canonical,
-        publishedAt: input.publishedAt,
+        publishedAt,
+        publishedDate,
         contentType: input.contentType,
         status,
         rawHash,
@@ -1747,7 +1629,7 @@ async function persistReport(input: {
         discovery_query, parent_source, source_domain, version, analysis_json, raw_html
       ) values (
         ${id}, ${effectiveSourceId}, ${input.title}, ${input.url}, ${input.canonical},
-        ${input.publishedAt}, ${input.contentType}, ${status}, ${rawHash}, ${textHash},
+        ${publishedAt}, ${input.contentType}, ${status}, ${rawHash}, ${textHash},
         ${score}, ${JSON.stringify(reasons)}, ${wordCount}, ${input.text},
         ${JSON.stringify(iocs)}, ${input.origin}, ${input.publisher ?? domain},
         ${input.author ?? domain}, ${classification}, ${input.discoveryMethod ?? 'manual'},
@@ -1864,7 +1746,8 @@ export const ingestUrl = createServerFn({ method: "POST" }).middleware([analystM
           title: pdfTitle,
           url: canonical,
           canonical,
-          publishedAt: pdfRes.creationDate || null,
+          publishedAt: null,
+          pdfDate: pdfRes.creationDate || null,
           contentType: "application/pdf",
           raw: fetched.bytes,
           text: pdfRes.text,

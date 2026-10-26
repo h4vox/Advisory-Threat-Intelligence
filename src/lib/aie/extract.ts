@@ -1,4 +1,5 @@
 import type { Evidence, IocHit, QualityReason } from "./types.ts";
+import { resolvePublicationDate } from "./published-date.ts";
 export { formatDateTime, toIsoString } from "./format.ts";
 
 export const MAX_BYTES = 1_500_000;
@@ -619,7 +620,6 @@ export function extractHtmlMetadata(html: string): {
 } {
   let author: string | undefined;
   let publisher: string | undefined;
-  let publishedAt: string | undefined;
 
   // 1. Check in-article author patterns like "Written by: Alice, Bob" or "By: Alice"
   const writtenByMatch = html.match(/<(?:p|span|div)[^>]*>(?:Written\s+by|By):\s*([^<]+)<\/(?:p|span|div)>/i);
@@ -646,9 +646,6 @@ export function extractHtmlMetadata(html: string): {
           }
           if (!publisher && item.publisher) {
             publisher = typeof item.publisher === "object" ? item.publisher.name : item.publisher;
-          }
-          if (!publishedAt && (item.datePublished || item.dateCreated)) {
-            publishedAt = (item.datePublished || item.dateCreated).slice(0, 10);
           }
         }
       } catch {
@@ -677,15 +674,9 @@ export function extractHtmlMetadata(html: string): {
     if (pubMeta) publisher = decodeEntities(pubMeta.trim());
   }
 
-  if (!publishedAt) {
-    const dateMeta =
-      html.match(/<meta\s+[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
-      html.match(/<meta\s+[^>]*name=["']published_time["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
-      html.match(/<meta\s+[^>]*name=["']track-metadata-page_first_published["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
-      html.match(/<meta\s+[^>]*name=["']publish-date["'][^>]*content=["']([^"']+)["']/i)?.[1] ||
-      html.match(/<time\s+[^>]*datetime=["']([^"']+)["']/i)?.[1];
-    if (dateMeta) publishedAt = dateMeta.slice(0, 10);
-  }
+  // Publication date: the shared resolver (./published-date) reads JSON-LD (with @graph), meta tags,
+  // itemprop and time tags, and rejects implausible dates.
+  const publishedAt = resolvePublicationDate({ html }).publishedAt ?? undefined;
 
   return { author, publisher, publishedAt };
 }

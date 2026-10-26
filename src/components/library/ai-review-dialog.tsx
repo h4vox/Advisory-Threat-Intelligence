@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import { Eye, Sparkles, X } from "lucide-react";
+import { Check, EyeOff, Eye, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { ActionButton } from "@/components/layout/page";
 import { Meter, StatusChip } from "@/components/ui/primitives";
-import { evaluateReportWithAi } from "@/lib/aie/server";
+import { analyseReportWithAi, resolveReportReview } from "@/lib/aie/server-review";
 import type { AgentScoreBreakdown, ResourceKind } from "@/lib/aie/types";
 import { aiReview, kindLabel } from "./report-utils";
 
@@ -23,6 +23,17 @@ export type AiReviewSubject = {
   aiAuditReason?: string;
   scoreBreakdown?: AgentScoreBreakdown;
   tags?: string[];
+  /** Set by the AI review when an analyst should decide. */
+  needsReview?: boolean;
+  review?: { action: string; reason: string };
+};
+
+const ACTION_TOAST: Record<string, string> = {
+  keep: "Useful: kept in the library.",
+  flag: "Kept and flagged for you to decide (Needs review).",
+  hide: "Hidden: the AI is confident this is not threat research and nothing in it protects it. Restore it from Hidden if that is wrong.",
+  restore_and_flag: "Restored to the library and flagged for you to confirm.",
+  unchanged: "Analysed; the report's visibility is unchanged.",
 };
 
 const DIMENSIONS: Array<{ key: keyof AgentScoreBreakdown; label: string; max: number }> = [
@@ -48,39 +59,50 @@ export function AiReviewDialog({
   const [busy, setBusy] = useState(false);
   useEffect(() => setCurrent(report), [report]);
 
+  const refresh = (id: string) => {
+    for (const key of ["reports-all", "reports-search", "nav-counts", "dashboard"]) void qc.invalidateQueries({ queryKey: [key] });
+    void qc.invalidateQueries({ queryKey: ["report", id] });
+  };
+
+  // Grounded AI analysis plus the safe review: nothing is deleted, uncertain reports stay for review.
   const evaluate = async (id: string) => {
     setBusy(true);
-    toast.info("Running the 5-dimension rubric evaluation…");
     try {
-      const res = await evaluateReportWithAi({ data: { id } });
-      if (res.success && res.result) {
-        const score = res.result.passScore;
-        if (res.isApproved) toast.success(`Approved by the AI agent (${score}/100)`);
-        else toast.warning(`Rejected by the AI agent (${score}/100): ${res.result.rationale}`);
-        setCurrent((prev) =>
-          !prev || prev.id !== id
-            ? prev
-            : {
-                ...prev,
-                aiVerified: res.isApproved,
-                aiQualityScore: score,
-                aiAuditReason: res.isApproved
-                  ? `AI Cognitive Approval (${score}/100): ${res.result.rationale}`
-                  : `Rejected by AI Cognitive Gate (${score}/100): ${res.result.rationale}`,
-                scoreBreakdown: res.result.scoreBreakdown,
-                status: res.isApproved ? "acquired" : "rejected",
-                classification: res.result.classification || prev.classification,
-                resourceKind: (res.result.resourceKind as ResourceKind | undefined) || prev.resourceKind,
-              },
-        );
-        void qc.invalidateQueries({ queryKey: ["reports-all"] });
-        void qc.invalidateQueries({ queryKey: ["reports-search"] });
-        void qc.invalidateQueries({ queryKey: ["report", id] });
-      } else {
-        toast.error(`Evaluation failed: ${res.error || "Unknown error"}`);
+      const res = await analyseReportWithAi({ data: { id } });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
       }
-    } catch (err: any) {
-      toast.error(`Agent evaluation failed: ${err?.message || "Unknown error"}`);
+      toast.success(ACTION_TOAST[res.action] ?? "Analysed.", { description: res.reason });
+      setCurrent((prev) =>
+        !prev || prev.id !== id
+          ? prev
+          : {
+              ...prev,
+              review: { action: res.action, reason: res.reason },
+              needsReview: res.action === "flag" || res.action === "restore_and_flag" ? true : res.action === "keep" || res.action === "hide" ? false : prev.needsReview,
+              status: res.action === "hide" ? "rejected" : res.action === "restore_and_flag" ? "acquired" : prev.status,
+            },
+      );
+      refresh(id);
+    } catch (err) {
+      toast.error(`AI analysis failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolve = async (id: string, decision: "keep" | "hide") => {
+    setBusy(true);
+    try {
+      const res = await resolveReportReview({ data: { id, decision } });
+      if (!res.ok) {
+        toast.error("The review could not be saved.");
+        return;
+      }
+      toast.success(decision === "keep" ? "Kept: the rules and the AI review will not hide it." : "Hidden. Restore it from Hidden at any time.");
+      setCurrent((prev) => (!prev || prev.id !== id ? prev : { ...prev, needsReview: false, status: decision === "hide" ? "rejected" : prev.status }));
+      refresh(id);
     } finally {
       setBusy(false);
     }
@@ -161,9 +183,21 @@ export function AiReviewDialog({
 
               <section className="border-t border-border pt-5">
                 <h3 className="mb-2 text-base font-medium text-fg">Assessment</h3>
+                {r.needsReview && (
+                  <p className="mb-2">
+                    <StatusChip tone="warning" dot>
+                      Needs review
+                    </StatusChip>
+                  </p>
+                )}
                 <p className="leading-relaxed text-muted">
-                  {r.aiAuditReason ||
-                    "No AI assessment stored for this report yet. Run an evaluation to score it against the rubric."}
+                  {r.review?.reason ||
+                    r.aiAuditReason ||
+                    "No AI assessment stored for this report yet. Analyse it to get a grounded summary, indicators, attack chain and a usefulness review."}
+                </p>
+                <p className="mt-2 text-xs text-subtle">
+                  The AI review never deletes. It hides a report only when it is confident the page is not threat research and the report has no
+                  indicators, techniques or technical depth; anything uncertain stays in the library for you to decide.
                 </p>
               </section>
 
@@ -184,9 +218,21 @@ export function AiReviewDialog({
 
           {r && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-5 py-4">
-              <ActionButton variant="primary" icon={Sparkles} disabled={busy} onClick={() => void evaluate(r.id)}>
-                {busy ? "Evaluating…" : r.aiVerified ? "Re-evaluate with AI" : "Evaluate with AI"}
-              </ActionButton>
+              <div className="flex flex-wrap items-center gap-2">
+                <ActionButton variant="primary" icon={Sparkles} disabled={busy} onClick={() => void evaluate(r.id)}>
+                  {busy ? "Analysing…" : r.review ? "Analyse again" : "Analyse with AI"}
+                </ActionButton>
+                {r.needsReview && (
+                  <>
+                    <ActionButton icon={Check} disabled={busy} onClick={() => void resolve(r.id, "keep")} title="Keep it; the rules and the AI review will not hide it">
+                      Keep
+                    </ActionButton>
+                    <ActionButton icon={EyeOff} disabled={busy} onClick={() => void resolve(r.id, "hide")} title="Hide it; restore it from Hidden at any time">
+                      Hide
+                    </ActionButton>
+                  </>
+                )}
+              </div>
               {onOpenPdf && (
                 <ActionButton
                   icon={Eye}

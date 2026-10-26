@@ -28,10 +28,12 @@ import { ActionButton, SegmentedTabs } from "@/components/layout/page";
 import { DetailPageTemplate } from "@/components/templates/page-templates";
 import { ActionMenu } from "@/components/library/action-menu";
 import { AiReviewDialog } from "@/components/library/ai-review-dialog";
+import { AiAdversaryProfile, AiAttackFlow, AiExtraIocs, AiSummary, AnalyseWithAiButton, ReviewStatus } from "@/components/library/report-ai";
 import { aiReview, downloadHtml, formatDate, kindLabel, printHtml, qualityTone } from "@/components/library/report-utils";
 import { formatReportId } from "@/lib/aie/ids";
 import { getReport } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
+import { PUBLISHED_DATE_SOURCE_LABEL } from "@/lib/aie/published-date";
 import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
 import type { IocHit } from "@/lib/aie/types";
@@ -366,7 +368,23 @@ function ReportPage() {
                   ),
                 },
                 { label: "Publisher", value: publisher },
-                { label: "Published", value: formatDate(data.publishedAt) },
+                {
+                  label: "Published",
+                  value: formatDate(data.publishedAt) ? (
+                    <span className="inline-flex flex-col">
+                      <span>{formatDate(data.publishedAt)}</span>
+                      {data.publishedDate && data.publishedDate.source !== "none" && (
+                        <span className="text-xs text-subtle" title={data.publishedDate.evidence || undefined}>
+                          From {PUBLISHED_DATE_SOURCE_LABEL[data.publishedDate.source]}
+                          {data.publishedDate.confidence === "low" ? " (approximate)" : ""}
+                          {data.publishedDate.sourceUpdatedAt ? ` · updated ${formatDate(data.publishedDate.sourceUpdatedAt)}` : ""}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-subtle">The source gives no date</span>
+                  ),
+                },
                 { label: "Ingested", value: formatDate(data.ingestedAt) ?? formatDateTime(data.ingestedAt) },
                 { label: "Source", value: data.sourceName || data.sourceDomain || null },
                 {
@@ -462,8 +480,27 @@ function ReportPage() {
       >
         {tab === "overview" && (
           <>
-            <Section title="Summary" actions={data.extractedText ? <ActionButton variant="ghost" onClick={() => setTab("text")}>Read full text</ActionButton> : undefined}>
-              {summary ? (
+            {(data.needsReview || data.review) && (
+              <ReviewStatus reportId={data.id} review={data.review} needsReview={data.needsReview} />
+            )}
+
+            <Section
+              title={data.aiAnalysis ? "AI summary" : "Summary"}
+              description={data.aiAnalysis ? "Written by AI from the report and checked against its text. The report's own opening is under Extracted text." : undefined}
+              actions={
+                <>
+                  <AnalyseWithAiButton reportId={data.id} analysed={Boolean(data.aiAnalysis)} variant={data.aiAnalysis ? "ghost" : undefined} />
+                  {data.extractedText ? (
+                    <ActionButton variant="ghost" onClick={() => setTab("text")}>
+                      Read full text
+                    </ActionButton>
+                  ) : null}
+                </>
+              }
+            >
+              {data.aiAnalysis ? (
+                <AiSummary ai={data.aiAnalysis} />
+              ) : summary ? (
                 <div className="space-y-3 text-[15px] leading-relaxed text-muted">
                   {summary.split(/\n{2,}/).map((p, i) => (
                     <p key={i}>{p}</p>
@@ -565,7 +602,7 @@ function ReportPage() {
                   </StatusChip>
                 )}
                 <p className="max-w-3xl leading-relaxed text-muted">
-                  {data.aiAuditReason || "This report has not been evaluated by the AI quality gate yet."}
+                  {data.review?.reason || data.aiAuditReason || "Not analysed with AI yet. Use Analyse with AI for a grounded summary, attack chain flow, adversary profile and a usefulness review."}
                 </p>
               </div>
             </Section>
@@ -602,6 +639,18 @@ function ReportPage() {
         {tab === "attack-chain" && (
           <>
             <Section
+              title="Reconstructed attack chain flow"
+              description="The intrusion stage by stage as the report describes it, reconstructed by AI. Every stage carries the sentence it rests on; stages the text does not support are left out."
+              actions={!data.aiAnalysis ? <AnalyseWithAiButton reportId={data.id} analysed={false} /> : undefined}
+            >
+              {data.aiAnalysis ? (
+                <AiAttackFlow ai={data.aiAnalysis} />
+              ) : (
+                <p className="text-sm text-subtle">Not analysed with AI yet. The rule-based chain below is always available.</p>
+              )}
+            </Section>
+
+            <Section
               title="Attack chain"
               description="Tactics and mapped ATT&CK techniques as summarised by the analysis. Step order is not a verified timeline; see Evidence for the order reported in the source and the supporting passages."
             >
@@ -637,7 +686,14 @@ function ReportPage() {
               )}
             </Section>
 
-            <Section title="Adversary">
+            <Section
+              title="Adversary & attack profile"
+              description={data.aiAnalysis ? "From the AI analysis; every name and target appears in the report." : "Run the AI analysis for the adversary profile: aliases, motivation, targets and tooling."}
+            >
+              {data.aiAnalysis ? <AiAdversaryProfile ai={data.aiAnalysis} /> : <p className="text-sm text-subtle">Not analysed with AI yet.</p>}
+            </Section>
+
+            <Section title="Adversary" description="Named by the rule-based analysis.">
               <dl className="grid grid-cols-1 gap-x-6 gap-y-4 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
                 <dt className="text-muted">Threat actors</dt>
                 <dd>
@@ -680,6 +736,12 @@ function ReportPage() {
               caption="Indicators of compromise"
               empty={<EmptyState title="No IOCs found in this document" />}
             />
+            {data.aiAnalysis && (
+              <div className="mt-6">
+                <h3 className="mb-2 text-sm font-medium text-fg">Found by the AI analysis</h3>
+                <AiExtraIocs ai={data.aiAnalysis} iocs={data.iocs} />
+              </div>
+            )}
           </Section>
         )}
 

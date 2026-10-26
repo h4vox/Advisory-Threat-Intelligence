@@ -124,6 +124,11 @@ export function ReportFeedCard({
               <DocTypeBadge key={t} type={t} />
             ))}
             {rejected && <StatusChip tone="neutral">Hidden</StatusChip>}
+            {r.needsReview && !rejected && (
+              <span title={r.review?.reason}>
+                <StatusChip tone="warning">Needs review</StatusChip>
+              </span>
+            )}
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <TierDot tier={tier} />
               <span className="truncate font-medium text-fg/90">{publisherOf(r)}</span>

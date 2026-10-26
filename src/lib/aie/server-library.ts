@@ -6,6 +6,7 @@
  *   setReportVisibility   an analyst hides reports by hand, or restores hidden ones for good
  *   getResearchCoverage   visible reports per research category (./research-taxonomy)
  *   labelLibraryResearch  labels reports stored before labelling (or under an older labeller)
+ *   dateLibraryReports    re-dates reports stored before the publication-date resolver (or an older one)
  *
  * Rules: ./library-gate (pure, unit-tested). Storage: ../mongodb/library-gate-repo.server.
  * Nothing is deleted; hidden reports stay listed in the Library's "Hidden" view with the reason.
@@ -15,6 +16,7 @@ import { z } from "zod";
 import { analystMiddleware } from "./access";
 import { runLibraryGatePass, setReportVisibility as setVisibility } from "../mongodb/library-gate-repo.server";
 import { mongoLabelResearchBatch, mongoResearchCoverage } from "../mongodb/research-repo.server";
+import { mongoRedateReportsBatch } from "../mongodb/published-date-repo.server";
 
 export const runLibraryGate = createServerFn({ method: "POST" })
   .middleware([analystMiddleware])
@@ -36,3 +38,8 @@ export const getResearchCoverage = createServerFn({ method: "GET" })
 export const labelLibraryResearch = createServerFn({ method: "POST" })
   .middleware([analystMiddleware])
   .handler(async () => mongoLabelResearchBatch(200));
+
+/** One batch of the publication-date backfill; the caller repeats while `remaining` is above zero. */
+export const dateLibraryReports = createServerFn({ method: "POST" })
+  .middleware([analystMiddleware])
+  .handler(async () => mongoRedateReportsBatch(25));

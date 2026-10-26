@@ -41,6 +41,7 @@ import {
 } from "./agent-framework/types";
 import { backgroundAgentService, warmAgentService } from "./warm-agent-service";
 import { translateDocument, type ChunkTranslator, type DocumentTranslation } from "./translation";
+import { ANALYSIS_SYSTEM, buildAnalysisPrompt, groundReportAnalysis, type AnalysisPromptInput, type ReportAiAnalysis } from "./report-ai-analysis";
 import { sha256Hex } from "./retrieval";
 
 export type UnifiedDiscoveryParams = {
@@ -911,6 +912,68 @@ export async function runUnifiedTranslation(params: {
   return usedSandbox
     ? { ...result, provider: active.isRest ? "Antigravity Agent (AGY)" : active.providerName, model: agyModel }
     : { ...result, provider: active.providerName, model: restModel };
+}
+
+/**
+ * Grounded AI analysis of one report (./report-ai-analysis) through the active provider: the REST
+ * API when one is configured, otherwise (or when it fails) the AGY agent in its sandbox. Every item
+ * of the answer is checked against the report text before it is returned. Throws when no provider
+ * answers or the answer is not JSON, so the caller can report the failure and change nothing.
+ */
+export async function runUnifiedReportAnalysis(
+  input: AnalysisPromptInput & {
+    techniqueName: (id: string) => string | undefined;
+    timeoutSeconds?: number;
+    allowSandboxFallback?: boolean;
+    signal?: AbortSignal;
+  },
+): Promise<ReportAiAnalysis> {
+  const active = await getActiveAIProvider();
+  const { restModel, agyModel } = resolveProviderModels(active);
+  const timeoutMs = Math.max(input.timeoutSeconds || active.timeoutSeconds, 90) * 1000;
+  const { prompt, truncated } = buildAnalysisPrompt(input, (t) => wrapUntrustedContent(t), UNTRUSTED_CONTENT_NOTICE);
+  const adapter = active.isRest && active.apiKey ? getProviderAdapter(active.providerId) : undefined;
+
+  let answer: { text: string; provider: string; model: string } | null = null;
+  let lastError = "";
+  if (adapter) {
+    const res = await adapter.generate({
+      prompt,
+      systemInstruction: ANALYSIS_SYSTEM,
+      model: restModel,
+      apiKey: active.apiKey,
+      endpointUrl: active.endpointUrl,
+      timeoutMs,
+      temperature: 0,
+      maxTokens: 8192,
+      responseFormat: "json",
+      signal: input.signal,
+    });
+    if (res.success && res.text) answer = { text: res.text, provider: active.providerName, model: restModel };
+    else {
+      lastError = res.error || "the AI provider returned no answer";
+      logger.agent("FAILSAFE", `REST report analysis failed (${lastError})${input.allowSandboxFallback === false ? "" : ", trying the sandbox agent"}`);
+    }
+  }
+  if (!answer && input.allowSandboxFallback !== false && !input.signal?.aborted) {
+    const res = await backgroundAgentService.executePrompt(`${ANALYSIS_SYSTEM}\n\n${prompt}`, { model: agyModel, timeoutMs, signal: input.signal });
+    if (res.success && res.text) answer = { text: res.text, provider: active.isRest ? "Antigravity Agent (AGY)" : active.providerName, model: agyModel };
+    else lastError = res.error || "the sandbox agent returned no answer";
+  }
+  if (!answer) throw new Error(`AI analysis failed: ${lastError || "no AI provider is available"}.`);
+
+  let parsed: unknown;
+  try {
+    parsed = extractJsonFromLlmText(answer.text);
+  } catch {
+    throw new Error("AI analysis failed: the answer was not valid JSON.");
+  }
+  return groundReportAnalysis(parsed, input.text, {
+    techniqueName: input.techniqueName,
+    provider: answer.provider,
+    model: answer.model,
+    truncated,
+  });
 }
 
 /**
