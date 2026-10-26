@@ -8,7 +8,7 @@
  * Read tools run at once; action tools are only proposed: the analyst confirms them in the chat.
  */
 import { UNTRUSTED_CONTENT_NOTICE, wrapUntrustedContent } from "../agent-framework/types.ts";
-import { EVIDENCE_GAP_PHRASE } from "../retrieval.ts";
+import { EVIDENCE_GAP_PHRASE, isConversationalTurn, isLowSignal, queryTerms } from "../retrieval.ts";
 
 export const AGENT_NAME = "AIE Analyst";
 
@@ -75,7 +75,7 @@ export function buildSystemPrompt(ctx: {
     ctx.analyst ? `You are working with ${ctx.analyst}.` : "",
     ctx.page ? `The analyst currently has this page open: ${ctx.page.label ? `${ctx.page.label} (${ctx.page.path})` : ctx.page.path}. "This report", "this actor" and similar refer to it.` : "",
     "",
-    "You can use these AIE tools. Settings are not available to you.",
+    "You can use these AIE tools. Settings are not available to you. You have no shell, file system or web browser of your own: use only these tools, and reply with text.",
     ctx.catalog,
     "",
     "HOW TO USE TOOLS",
@@ -125,6 +125,35 @@ export function buildTurnPrompt(opts: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// First step
+// ---------------------------------------------------------------------------
+
+const REPORT_ID_RE = /\brpt_[a-z0-9]{6,40}\b|\bRST-[A-F0-9]{8,24}\b/gi;
+const CONSOLE_RE = /\b(?:crawl\w*|marketplace|integrations?|settings?|scheduler?|schedules?|jobs?|queue|sources?|feeds?|providers?|sign[\s-]?in)\b/i;
+const CTI_RE =
+  /\b(?:ransomware|malware|actors?|apt\d*|campaigns?|cves?|ttps?|techniques?|iocs?|indicators?|exploit\w*|phishing|backdoors?|loaders?|stealers?|reports?|advisor(?:y|ies)|intrusions?|attacks?|threats?)\b|\bCVE-\d{4}-\d+|\bT1\d{3}/i;
+
+/**
+ * The tool calls that run before the model's first call, so most answers need one model call:
+ * the reports a question names by id are read; a factual question searches the library (short
+ * follow-ups borrow the previous question); greetings and questions about the console itself
+ * (crawler, sources, Marketplace, settings) start with no search.
+ */
+export function firstStepCalls(question: string, history: Array<{ sender: "user" | "agent"; text: string }> = []): ToolCall[] {
+  const q = String(question ?? "").trim();
+  const ids = [...new Set((q.match(REPORT_ID_RE) ?? []).map((id) => (id.toLowerCase().startsWith("rpt_") ? id.toLowerCase() : id.toUpperCase())))].slice(0, 3);
+  if (ids.length) return ids.map((id) => ({ name: "get_report", args: { id } }));
+  if (isConversationalTurn(q)) return [];
+  if (CONSOLE_RE.test(q) && !CTI_RE.test(q)) return [];
+  let query = q;
+  if (queryTerms(query).filter((t) => !isLowSignal(t)).length < 2) {
+    const lastUser = [...history].reverse().find((h) => h.sender === "user");
+    if (lastUser) query = `${q}\n${lastUser.text}`;
+  }
+  return [{ name: "search_library", args: { query: query.slice(0, 500), limit: 6 } }];
 }
 
 // ---------------------------------------------------------------------------

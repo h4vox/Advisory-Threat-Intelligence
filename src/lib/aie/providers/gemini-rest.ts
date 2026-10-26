@@ -191,6 +191,9 @@ export class GeminiRestAdapter implements AIProviderAdapter {
       const url = `${GEMINI_BASE_URL}/models/${model}:generateContent`;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const stop = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener("abort", stop, { once: true });
 
       // Build contents payload
       const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
@@ -275,7 +278,7 @@ export class GeminiRestAdapter implements AIProviderAdapter {
         model,
         providerId: this.id,
         latencyMs: Date.now() - startTime,
-        error: err.name === "AbortError" ? `Gemini API timed out after ${timeoutMs}ms` : err.message || "Unknown Gemini API error",
+        error: options.signal?.aborted ? "Stopped" : err.name === "AbortError" ? `Gemini API timed out after ${timeoutMs}ms` : err.message || "Unknown Gemini API error",
       };
     }
   }

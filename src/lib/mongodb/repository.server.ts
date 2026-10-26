@@ -3547,7 +3547,23 @@ export interface AgentChatMessageRecord {
   activity?: Array<{ kind: "tool" | "model" | "info"; label: string; detail?: string; ms?: number; ok?: boolean }>;
   /** Actions the agent proposed; each runs only after the analyst confirms. */
   actions?: AgentActionRecord[];
+  /** The analyst stopped this turn (the UI offers Continue). */
+  stopped?: boolean;
+  /**
+   * Finished tool rounds of a failed or stopped turn: Retry / Continue resumes from them. Server
+   * only: never sent to the browser.
+   */
+  checkpoint?: AgentTurnCheckpointRecord;
 }
+
+/** A chat message as read for display: everything but the server-only checkpoint. */
+export type AgentChatMessageView = Omit<AgentChatMessageRecord, "checkpoint">;
+
+/** Stored checkpoint of a turn (agent/runner TurnCheckpoint), JSON only. */
+export type AgentTurnCheckpointRecord = {
+  rounds: Array<{ calls: Array<{ name: string; args: Record<string, unknown> }>; results: string[] }>;
+  evidence: Array<{ id: string; kind: "passage" | "report"; reportId: string; title: string; publisher: string; url: string; publishedAt: string | null; quote?: string; start?: number; end?: number; score?: number }>;
+};
 
 /** A tool argument (JSON). */
 export type AgentActionArg = string | number | boolean | null | string[];
@@ -3595,13 +3611,13 @@ export async function mongoGetChatSessionMessages(
   sessionId: string,
   userId: string,
   opts: { limit?: number } = {},
-): Promise<AgentChatMessageRecord[]> {
+): Promise<AgentChatMessageView[]> {
   if (!isMongoConfigured()) return [];
   try {
     const col = await getThreatIntelCollection();
     const docs = await col
       .find({ docType: "agent_chat_message", userId, sessionId })
-      .project({ retrieval: 0 })
+      .project({ retrieval: 0, checkpoint: 0 })
       .sort({ createdAt: -1 })
       .limit(Math.max(1, Math.min(200, opts.limit ?? 100)))
       .toArray();
@@ -3625,6 +3641,7 @@ export async function mongoGetChatSessionMessages(
       modelLabel: d.modelLabel,
       activity: d.activity,
       actions: d.actions,
+      stopped: d.stopped,
     }));
   } catch (err) {
     console.warn("[chat-repo] Failed to get session messages:", err);

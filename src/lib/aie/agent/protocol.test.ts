@@ -6,6 +6,7 @@ import {
   buildSystemPrompt,
   buildTurnPrompt,
   evidenceLine,
+  firstStepCalls,
   parseToolCalls,
   renderToolCatalog,
   sessionTitleFrom,
@@ -97,4 +98,19 @@ test("session titles read like the question, without filler", () => {
   assert.equal(sessionTitleFrom("   ?? "), NEW_SESSION_TITLE);
   const long = sessionTitleFrom("Extract the MITRE TTPs and the PowerShell command lines used by Boggy Serpens in the 2026 campaigns");
   assert.ok(long.length <= 57 && long.endsWith("…"), long);
+});
+
+test("first step: named reports are read, console questions and greetings start without a search", () => {
+  assert.deepEqual(firstStepCalls("on the same, map the ATT&CK matrix for rpt_ca36919581ac4036 too"), [{ name: "get_report", args: { id: "rpt_ca36919581ac4036" } }]);
+  const two = firstStepCalls("compare RST-4ADC3515CA1F with rpt_ab12cd34ef");
+  assert.deepEqual(two.map((c) => c.args.id).sort(), ["RST-4ADC3515CA1F", "rpt_ab12cd34ef"]);
+  assert.deepEqual(firstStepCalls("hi"), []);
+  assert.deepEqual(firstStepCalls("is the crawler running right now?"), []);
+  assert.deepEqual(firstStepCalls("which sources are failing in the crawler"), []);
+  const s = firstStepCalls("what does the crawler know about LockBit ransomware?");
+  assert.equal(s[0]?.name, "search_library", "a CTI question that mentions the crawler still searches");
+  const lib = firstStepCalls("Which actors exploited Ivanti VPNs this year?");
+  assert.equal(lib[0]?.name, "search_library");
+  const follow = firstStepCalls("and APT29?", [{ sender: "user", text: "Which actors exploited Ivanti VPNs?" }]);
+  assert.match(String(follow[0]?.args.query), /Ivanti/, "a short follow-up borrows the previous question");
 });

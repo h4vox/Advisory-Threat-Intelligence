@@ -169,6 +169,9 @@ export class OpenAiRestAdapter implements AIProviderAdapter {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const stop = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener("abort", stop, { once: true });
 
       const messages: LLMMessage[] = [];
 
@@ -244,7 +247,7 @@ export class OpenAiRestAdapter implements AIProviderAdapter {
         model,
         providerId: this.id,
         latencyMs: Date.now() - startTime,
-        error: err.name === "AbortError" ? `API timed out after ${timeoutMs}ms` : err.message || "Unknown API error",
+        error: options.signal?.aborted ? "Stopped" : err.name === "AbortError" ? `API timed out after ${timeoutMs}ms` : err.message || "Unknown API error",
       };
     }
   }

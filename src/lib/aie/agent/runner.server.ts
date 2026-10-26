@@ -1,11 +1,17 @@
 /**
  * One analyst turn: the AIE Analyst answers with the console's tools.
  *
- *   1. A factual question first searches the library (most answers then need one model call).
+ *   1. A first step runs before the model (firstStepCalls): reports named by id are read, a factual
+ *      question searches the library; greetings and console questions start without a search.
  *   2. The model answers, or asks for tools ({"tool_calls":[…]}); read tools run in parallel and
  *      their results come back as numbered evidence; action tools become proposals the analyst
  *      confirms in the chat. Up to MAX_TOOL_ROUNDS rounds.
  *   3. The reply's [S#] citations become the cited evidence shown under the answer.
+ *
+ * A model call that times out or answers nothing is asked once more (a fresh worker for the AGY
+ * CLI). The analyst can stop a turn (AbortSignal: queued or running model calls are cancelled). A
+ * failed or stopped turn returns a checkpoint of its finished tool rounds, so Retry continues from
+ * there instead of starting over.
  *
  * Works with every provider: REST APIs, and the AGY CLI in its sandbox (one worker per chat session).
  * SERVER ONLY.
@@ -14,12 +20,13 @@ import { getActiveAIProvider, resolveProviderModels } from "../ai-manager";
 import { getProviderAdapter } from "../providers";
 import { chatAgentFor } from "../warm-agent-service";
 import { AGY_AVAILABLE_MODELS } from "../agent-framework/types";
-import { hasUncitedClaims, isConversationalTurn, isLowSignal, parseCitations, queryTerms } from "../retrieval";
+import { hasUncitedClaims, parseCitations } from "../retrieval";
 import type { AgentActionRecord } from "../../mongodb/repository.server";
 import {
   EvidenceBook,
   buildSystemPrompt,
   buildTurnPrompt,
+  firstStepCalls,
   parseToolCalls,
   renderToolCatalog,
   type EvidenceItem,
@@ -31,6 +38,10 @@ import { AGENT_TOOLS, findTool, isActionTool } from "./tools.server";
 
 const MAX_TOOL_ROUNDS = 4;
 const MODEL_TIMEOUT_MS = 90_000;
+/** A whole turn, tools and retries included. Past it the model is asked to answer with what it has. */
+const TURN_BUDGET_MS = 5 * 60_000;
+/** Tool results kept in a checkpoint, per result (a resumed turn re-reads them as evidence). */
+const CHECKPOINT_RESULT_CHARS = 6000;
 
 export type ActivityStep = { kind: "tool" | "model" | "info"; label: string; detail?: string; ms?: number; ok?: boolean; running?: boolean };
 
@@ -45,9 +56,9 @@ export async function activeModelInfo(): Promise<ActiveModelInfo> {
   return { providerId: active.providerId, providerName: active.providerName, model, modelLabel, isRest: active.isRest };
 }
 
-type ModelAnswer = { ok: boolean; text: string; error?: string; ms: number; tokens?: number };
+type ModelAnswer = { ok: boolean; text: string; error?: string; ms: number; tokens?: number; cancelled?: boolean };
 
-async function callModel(system: string, prompt: string, sessionKey: string): Promise<ModelAnswer> {
+async function callModel(system: string, prompt: string, sessionKey: string, signal?: AbortSignal): Promise<ModelAnswer> {
   const t0 = Date.now();
   const active = await getActiveAIProvider();
   const { restModel, agyModel } = resolveProviderModels(active, undefined);
@@ -65,17 +76,42 @@ async function callModel(system: string, prompt: string, sessionKey: string): Pr
       timeoutMs: MODEL_TIMEOUT_MS,
       temperature: 0.2,
       maxTokens: 4096,
+      signal,
     });
-    return { ok: res.success && Boolean(res.text?.trim()), text: res.text ?? "", error: res.error || (res.success ? "the model returned no text" : undefined), ms: Date.now() - t0, tokens: res.tokens?.totalTokens };
+    return {
+      ok: res.success && Boolean(res.text?.trim()),
+      text: res.text ?? "",
+      error: res.error || (res.success ? "the model returned no text" : undefined),
+      ms: Date.now() - t0,
+      tokens: res.tokens?.totalTokens,
+      cancelled: Boolean(signal?.aborted),
+    };
   }
-  const res = await chatAgentFor(sessionKey).executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: MODEL_TIMEOUT_MS, priority: "high" });
-  return { ok: res.success && Boolean(res.text?.trim()), text: res.text ?? "", error: res.error || (res.success ? "the agent returned no text" : undefined), ms: Date.now() - t0, tokens: res.tokens?.totalTokens };
+  const res = await chatAgentFor(sessionKey).executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: MODEL_TIMEOUT_MS, priority: "high", signal });
+  return {
+    ok: res.success && Boolean(res.text?.trim()),
+    text: res.text ?? "",
+    error: res.error || (res.success ? "the agent returned no text" : undefined),
+    ms: Date.now() - t0,
+    tokens: res.tokens?.totalTokens,
+    cancelled: Boolean(res.cancelled || signal?.aborted),
+  };
 }
+
+/** Failures that asking again cannot fix (configuration, credentials, quota). */
+const NOT_RETRYABLE = /api key|quota|unauthori[sz]ed|forbidden|\b40[13]\b|invalid|not configured|not signed in|sign in|subscription|billing/i;
+
+/** The finished tool rounds of a turn, so a retry continues from them. */
+export type TurnCheckpoint = { rounds: ToolRound[]; evidence: EvidenceItem[] };
 
 export type AgentTurnResult = {
   success: boolean;
+  /** The analyst stopped the turn. */
+  stopped?: boolean;
   reply: string;
   error?: string;
+  /** Set on a failed or stopped turn that finished at least one tool round. */
+  checkpoint?: TurnCheckpoint;
   /** Evidence the reply cites, in citation order. */
   sources: EvidenceItem[];
   uncitedClaims: boolean;
@@ -96,7 +132,12 @@ export async function runAgentTurn(opts: {
   timeZone?: string;
   now?: Date;
   onActivity?: (steps: ActivityStep[]) => void;
+  /** Aborted when the analyst stops the turn. */
+  signal?: AbortSignal;
+  /** Continue a failed or stopped turn from its checkpoint (no first step, its tool rounds reused). */
+  resume?: TurnCheckpoint | null;
 }): Promise<AgentTurnResult> {
+  const signal = opts.signal;
   const t0 = Date.now();
   const now = opts.now ?? new Date();
   const model = await activeModelInfo();
@@ -152,27 +193,68 @@ export async function runAgentTurn(opts: {
       }),
     );
 
-  // 1. Factual questions start from a library search (short follow-ups borrow the previous question).
-  if (!isConversationalTurn(opts.question)) {
-    let query = opts.question;
-    if (queryTerms(query).filter((t) => !isLowSignal(t)).length < 2) {
-      const lastUser = [...opts.history].reverse().find((h) => h.sender === "user");
-      if (lastUser) query = `${opts.question}\n${lastUser.text}`.slice(0, 500);
-    }
-    const calls: ToolCall[] = [{ name: "search_library", args: { query: query.slice(0, 500), limit: 6 } }];
-    rounds.push({ calls, results: await runCalls(calls) });
+  const checkpoint = (): TurnCheckpoint | undefined =>
+    rounds.length
+      ? {
+          rounds: rounds.map((r) => ({ calls: r.calls, results: r.results.map((x) => (x.length > CHECKPOINT_RESULT_CHARS ? `${x.slice(0, CHECKPOINT_RESULT_CHARS)}\n…(truncated)` : x)) })),
+          evidence: book.all(),
+        }
+      : undefined;
+  const stoppedResult = (): AgentTurnResult => ({
+    success: false,
+    stopped: true,
+    reply: "Stopped.",
+    error: "stopped by the analyst",
+    checkpoint: checkpoint(),
+    sources: [],
+    uncitedClaims: false,
+    actions,
+    activity,
+    model,
+    latencyMs: Date.now() - t0,
+    tokens: tokens || undefined,
+    evidenceCount: book.ids().length,
+  });
+
+  // 1. First step, or the checkpoint of the turn being continued (its evidence keeps its ids).
+  if (opts.resume?.rounds?.length) {
+    for (const { id: _id, ...e } of opts.resume.evidence ?? []) book.add(e);
+    rounds.push(...opts.resume.rounds);
+    activity.push({ kind: "info", label: `Continuing from ${opts.resume.rounds.length} finished step${opts.resume.rounds.length === 1 ? "" : "s"}`, ok: true });
+    emit();
+  } else {
+    const calls = firstStepCalls(opts.question, opts.history);
+    if (calls.length) rounds.push({ calls, results: await runCalls(calls) });
   }
+  if (signal?.aborted) return stoppedResult();
 
   // 2. Model rounds.
   let reply = "";
   let failure: string | undefined;
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const finalRound = round === MAX_TOOL_ROUNDS;
+    const overBudget = Date.now() - t0 > TURN_BUDGET_MS - MODEL_TIMEOUT_MS;
+    const finalRound = round === MAX_TOOL_ROUNDS || overBudget;
     const prompt = buildTurnPrompt({ question: opts.question, history: opts.history, rounds, finalRound });
-    const i = begin({ kind: "model", label: round === 0 && rounds.length === 0 ? "Thinking" : "Reading the results", detail: `${model.providerName} · ${model.modelLabel}` });
-    const ans = await callModel(system, prompt, opts.sessionKey);
+    const detail = `${model.providerName} · ${model.modelLabel}`;
+    let i = begin({ kind: "model", label: round === 0 && rounds.length === 0 ? "Thinking" : "Reading the results", detail });
+    let ans = await callModel(system, prompt, opts.sessionKey, signal);
     tokens += ans.tokens ?? 0;
-    finish(i, { ms: ans.ms, ok: ans.ok, detail: `${model.providerName} · ${model.modelLabel} · ${prompt.length.toLocaleString("en-US")} chars in${ans.ok ? ` · ${ans.text.length.toLocaleString("en-US")} out` : ""}` });
+    if (ans.cancelled || signal?.aborted) {
+      finish(i, { ms: ans.ms, ok: false, label: "Stopped" });
+      return stoppedResult();
+    }
+    // One more try for a timeout or an empty answer: these are usually transient.
+    if (!ans.ok && !NOT_RETRYABLE.test(ans.error ?? "") && Date.now() - t0 < TURN_BUDGET_MS - MODEL_TIMEOUT_MS / 2) {
+      finish(i, { ms: ans.ms, ok: false, detail: `${detail} · ${ans.error ?? "no answer"}` });
+      i = begin({ kind: "model", label: "No answer yet, asking again", detail });
+      ans = await callModel(system, `${prompt}\n\nReply now: either the tool_calls JSON object or your answer as plain text.`, opts.sessionKey, signal);
+      tokens += ans.tokens ?? 0;
+      if (ans.cancelled || signal?.aborted) {
+        finish(i, { ms: ans.ms, ok: false, label: "Stopped" });
+        return stoppedResult();
+      }
+    }
+    finish(i, { ms: ans.ms, ok: ans.ok, detail: `${detail} · ${prompt.length.toLocaleString("en-US")} chars in${ans.ok ? ` · ${ans.text.length.toLocaleString("en-US")} out` : ` · ${ans.error ?? "no answer"}`}` });
     if (!ans.ok) {
       failure = ans.error ?? "the AI provider did not answer";
       break;
@@ -183,14 +265,16 @@ export async function runAgentTurn(opts: {
       break;
     }
     rounds.push({ calls, results: await runCalls(calls) });
+    if (signal?.aborted) return stoppedResult();
   }
 
   if (failure || !reply) {
     const why = failure ?? "the model did not produce an answer";
     return {
       success: false,
-      reply: `I could not answer: ${why}. Retry, or check the AI provider in the Marketplace.`,
+      reply: `I could not answer: ${why}.${rounds.length ? " Retry continues from the finished steps." : " Retry, or check the AI provider in the Marketplace."}`,
       error: why,
+      checkpoint: checkpoint(),
       sources: [],
       uncitedClaims: false,
       actions,

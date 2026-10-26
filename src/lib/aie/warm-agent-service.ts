@@ -93,6 +93,8 @@ export interface WarmInferenceResult {
     totalTokens: number;
   };
   error?: string;
+  /** The caller stopped the request (it was dropped from the queue or its worker was stopped). */
+  cancelled?: boolean;
 }
 
 export type AgentSkill =
@@ -417,15 +419,16 @@ class WarmAgentService {
       this.turnCount++;
       const took = Date.now() - turn.startTime;
       this.avgTurnMs = this.avgTurnMs ? Math.round((this.avgTurnMs + took) / 2) : took;
+      // An empty answer is a failure, never a placeholder the caller would show as the answer.
       this.settleTurn(turn, {
-        success: result.status === "SUCCESS",
-        text: finalResponse || (result.error ? `Error: ${result.error}` : "Analysis completed."),
+        success: result.status === "SUCCESS" && Boolean(finalResponse),
+        text: finalResponse,
         latencyMs: Date.now() - turn.startTime,
         model: this.currentModel,
         conversationId: this.activeConversationId || result.conversation_id,
         tokens,
         isWarm: true,
-        error: result.error,
+        error: result.error || (finalResponse ? undefined : "the agent finished without an answer"),
       });
     }
   }
@@ -614,15 +617,29 @@ class WarmAgentService {
    */
   executePrompt(
     prompt: string,
-    options?: { model?: string; timeoutMs?: number; priority?: "high" | "normal" }
+    options?: { model?: string; timeoutMs?: number; priority?: "high" | "normal"; signal?: AbortSignal }
   ): Promise<WarmInferenceResult> {
     const model = sanitizeAgyModel(options?.model || this.currentModel);
     const timeoutMs = options?.timeoutMs || TURN_TIMEOUT_MS;
     const startTime = Date.now();
     const high = options?.priority === "high";
+    const signal = options?.signal;
 
-    return new Promise<WarmInferenceResult>((resolve) => {
+    return new Promise<WarmInferenceResult>((settle) => {
+      let onAbort: (() => void) | null = null;
+      const resolve = (res: WarmInferenceResult) => {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+        settle(res);
+      };
       const item: TurnQueueItem = { prompt, model, timeoutMs, startTime, deadlineAt: startTime + timeoutMs, high, resolve };
+      if (signal?.aborted) {
+        resolve({ ...this.failure(null, item, "Stopped."), cancelled: true });
+        return;
+      }
+      if (signal) {
+        onAbort = () => this.cancelItem(item);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
       if (!high && this.queue.length >= this.opts.maxQueue) {
         resolve(this.failure(null, item, `The agent is busy (${this.queue.length} requests waiting); try again shortly.`));
         return;
@@ -642,6 +659,25 @@ class WarmAgentService {
       }
       void this.processNextInQueue();
     });
+  }
+
+  /**
+   * Stop one request: dropped from the queue, or, when it is running, answered as stopped and its
+   * worker killed so the CLI stops working on it (the next request starts a fresh worker).
+   */
+  private cancelItem(item: TurnQueueItem) {
+    const at = this.queue.indexOf(item);
+    if (at >= 0) {
+      this.queue.splice(at, 1);
+      item.resolve({ ...this.failure(null, item, "Stopped."), cancelled: true });
+      return;
+    }
+    const turn = this.activeTurn;
+    if (turn && turn.item === item) {
+      const inFallback = turn.inFallback;
+      this.settleTurn(turn, { ...this.failure(turn, item, "Stopped."), cancelled: true });
+      if (!inFallback) this.destroyProcess("cancelled");
+    }
   }
 
   /**

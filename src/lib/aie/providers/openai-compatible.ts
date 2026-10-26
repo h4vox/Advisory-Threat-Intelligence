@@ -155,6 +155,9 @@ export class OpenAiCompatibleAdapter implements AIProviderAdapter {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const stop = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener("abort", stop, { once: true });
       const messages: LLMMessage[] = [];
       if (options.systemInstruction) messages.push({ role: "system", content: options.systemInstruction });
       if (typeof options.prompt === "string") messages.push({ role: "user", content: options.prompt });
@@ -184,7 +187,7 @@ export class OpenAiCompatibleAdapter implements AIProviderAdapter {
       };
     } catch (err) {
       const e = err as { name?: string; message?: string };
-      return { success: false, text: "", model, providerId: this.id, latencyMs: Date.now() - start, error: e.name === "AbortError" ? `Timed out after ${timeoutMs}ms` : e.message || "Unknown API error" };
+      return { success: false, text: "", model, providerId: this.id, latencyMs: Date.now() - start, error: options.signal?.aborted ? "Stopped" : e.name === "AbortError" ? `Timed out after ${timeoutMs}ms` : e.message || "Unknown API error" };
     }
   }
 }
