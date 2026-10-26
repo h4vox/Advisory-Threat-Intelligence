@@ -26,6 +26,8 @@ export interface LLMGenerateOptions {
   maxTokens?: number;
   responseFormat?: "text" | "json";
   timeoutMs?: number;
+  /** Aborts the request (the analyst stopped the turn). */
+  signal?: AbortSignal;
   apiKey?: string;
   endpointUrl?: string;
 }

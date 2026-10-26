@@ -21,6 +21,7 @@ import {
   Search,
   Send,
   Sparkles,
+  Square,
   Trash2,
   Wrench,
   X,
@@ -39,6 +40,7 @@ import {
   listAgentSessions,
   renameAgentSession,
   sendAgentMessage,
+  stopAgentTurn,
 } from "@/lib/aie/server-agent";
 
 // ---------------------------------------------------------------------------
@@ -79,12 +81,17 @@ type Message = {
   uncitedClaims?: boolean;
   evidenceGap?: boolean;
   isError?: boolean;
+  /** The analyst stopped this turn. */
+  stopped?: boolean;
   replyTo?: string;
   activity?: Activity[];
   actions?: Action[];
   /** Client-only: sent, waiting for the answer. */
   pending?: boolean;
 };
+
+/** A turn running on the server that this chat follows. */
+type Busy = { requestId: string; startedAt: number; userMessageId?: string; stopping?: boolean };
 
 const SESSION_KEY = "aie_chat_session_id";
 const WIDTH_KEY = "aie_chat_drawer_width";
@@ -195,7 +202,7 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
   const [messages, setMessages] = useState<Message[]>([]);
   const [title, setTitle] = useState<string>("");
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState<{ requestId: string; startedAt: number } | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
   const [liveSteps, setLiveSteps] = useState<Activity[]>([]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -228,6 +235,9 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
     syncedAt.current = session.dataUpdatedAt;
     setMessages(session.data.messages as Message[]);
     setTitle(session.data.title);
+    // A turn still running on the server (the chat was closed, the page changed): follow it again.
+    const p = session.data.pending;
+    if (p) setBusy((b) => b ?? { requestId: p.requestId, startedAt: Date.parse(p.startedAt) || Date.now(), userMessageId: p.userMessageId });
   }, [session.data, session.dataUpdatedAt]);
 
   useEffect(() => {
@@ -237,23 +247,76 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
     }
   }, [sessionId]);
 
-  // Live activity while a turn runs.
+  const busyRef = useRef<Busy | null>(null);
+  busyRef.current = busy;
+
+  /** The turn ended: its saved answer joins the conversation (once) and the cache follows. */
+  const finishTurn = (answer: Message | null) => {
+    setBusy(null);
+    setLiveSteps([]);
+    if (answer) {
+      setMessages((prev) => {
+        const next = [...prev.map((m) => (m.pending ? { ...m, pending: false } : m)).filter((m) => m.id !== answer.id), answer];
+        if (sessionId) {
+          queryClient.setQueryData(["agent-session", sessionId], (old: { sessionId: string; title: string } | undefined) => ({ ...(old ?? { sessionId, title }), messages: next, pending: null }));
+          syncedAt.current = queryClient.getQueryState(["agent-session", sessionId])?.dataUpdatedAt ?? syncedAt.current;
+        }
+        return next;
+      });
+    } else if (sessionId) {
+      void queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    }
+    void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  // Follow the running turn: its steps while it works, its answer when it is done. The turn runs on
+  // the server, so this also picks up a turn started before the chat was closed or the page changed.
+  const busyId = busy?.requestId;
   useEffect(() => {
-    if (!busy) return;
+    if (!busyId) return;
+    let cancelled = false;
+    let unknownSince = 0;
     const tick = setInterval(() => setNow(Date.now()), 500);
-    const poll = setInterval(async () => {
+    const poll = async () => {
       try {
-        const p = await getAgentProgress({ data: { requestId: busy.requestId } });
-        setLiveSteps(p.steps as Activity[]);
+        const p = await getAgentProgress({ data: { requestId: busyId } });
+        if (cancelled) return;
+        if (p.known) {
+          unknownSince = 0;
+          if (p.done) return finishTurn((p.message as Message | null) ?? null);
+          setLiveSteps(p.steps as Activity[]);
+          return;
+        }
+        // Not known here (the server restarted, or another instance answered): the saved session decides.
+        unknownSince ||= Date.now();
+        if (sessionId) {
+          const fresh = await getAgentSession({ data: { sessionId } });
+          if (cancelled) return;
+          const asked = busyRef.current?.userMessageId;
+          const answer = asked ? (fresh.messages as Message[]).find((m) => m.sender === "agent" && m.replyTo === asked) : undefined;
+          if (answer) return finishTurn(answer);
+          if (fresh.pending && fresh.pending.requestId !== busyId) {
+            setBusy({ requestId: fresh.pending.requestId, startedAt: Date.parse(fresh.pending.startedAt) || Date.now(), userMessageId: fresh.pending.userMessageId });
+            return;
+          }
+        }
+        // Lost for good: the question stays, with "Ask again" under it.
+        if (Date.now() - unknownSince > 6000) finishTurn(null);
       } catch {
         /* next poll */
       }
-    }, 800);
-    return () => {
-      clearInterval(tick);
-      clearInterval(poll);
     };
-  }, [busy]);
+    void poll();
+    const timer = setInterval(() => void poll(), 800);
+    return () => {
+      cancelled = true;
+      clearInterval(tick);
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busyId, sessionId]);
+
 
   useEffect(() => {
     if (isOpen) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -292,19 +355,19 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
     setLiveSteps([]);
   };
 
-  const send = async (text: string, opts: { retryOf?: string } = {}) => {
+  const send = async (text: string, opts: { retryOf?: string; askAgainOf?: string } = {}) => {
     const question = text.trim();
     if (!question || busy) return;
     const requestId = newRequestId();
     const nowIso = new Date().toISOString();
     if (opts.retryOf) {
       setMessages((prev) => prev.filter((m) => m.id !== opts.retryOf));
-    } else {
+    } else if (!opts.askAgainOf) {
       setMessages((prev) => [...prev, { id: `local-${requestId}`, sender: "user", text: question, timestamp: nowIso, pending: true }]);
       setInput("");
     }
     setLiveSteps([]);
-    setBusy({ requestId, startedAt: Date.now() });
+    setBusy({ requestId, startedAt: Date.now(), userMessageId: opts.askAgainOf });
     try {
       const res = await sendAgentMessage({
         data: {
@@ -314,31 +377,55 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
           page: { path },
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           retryOf: opts.retryOf,
+          askAgainOf: opts.askAgainOf,
         },
       });
+      if (!res || typeof res.sessionId !== "string") throw new Error("the server sent no reply (the connection was cut); ask again");
       if (res.sessionId !== sessionId) {
         setSessionId(res.sessionId);
         writeLocal(SESSION_KEY, res.sessionId);
       }
       setTitle(res.title);
       setMessages((prev) => {
-        const next = [...prev.map((m) => (m.id === `local-${requestId}` ? { ...m, id: res.userMessageId ?? m.id, pending: false } : m)), res.message as Message];
+        const next = prev.map((m) => (m.id === `local-${requestId}` ? { ...m, id: res.userMessageId ?? m.id } : m));
         // Keep the cached session in step, so reopening it shows the same conversation.
-        queryClient.setQueryData(["agent-session", res.sessionId], { sessionId: res.sessionId, title: res.title, messages: next });
+        queryClient.setQueryData(["agent-session", res.sessionId], {
+          sessionId: res.sessionId,
+          title: res.title,
+          messages: next,
+          pending: res.message ? null : { requestId, userMessageId: res.userMessageId, startedAt: nowIso },
+        });
         syncedAt.current = queryClient.getQueryState(["agent-session", res.sessionId])?.dataUpdatedAt ?? syncedAt.current;
         return next;
       });
+      if (res.message) {
+        // Serverless hosts answer within the request.
+        finishTurn(res.message as Message);
+      } else {
+        setBusy((b) => (b && b.requestId === requestId ? { ...b, userMessageId: res.userMessageId } : b));
+      }
       void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     } catch (err) {
       const why = err instanceof Error ? err.message : "the request did not reach the server";
+      setBusy(null);
+      setLiveSteps([]);
       setMessages((prev) => [
         ...prev.map((m) => (m.id === `local-${requestId}` ? { ...m, pending: false } : m)),
         { id: `local-err-${requestId}`, sender: "agent", text: `I could not answer: ${why}.`, timestamp: new Date().toISOString(), isError: true, replyTo: `local-${requestId}` },
       ]);
-    } finally {
-      setBusy(null);
-      setLiveSteps([]);
       setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  const stop = async () => {
+    if (!busy || busy.stopping) return;
+    setBusy({ ...busy, stopping: true });
+    try {
+      const res = await stopAgentTurn({ data: { requestId: busy.requestId } });
+      if (!res.ok) finishTurn(null);
+    } catch {
+      toast.error("Could not stop the answer; try again");
+      setBusy((b) => (b ? { ...b, stopping: false } : b));
     }
   };
 
@@ -398,6 +485,11 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
   });
 
   const actionsHere = useMemo(() => quickActions(path), [path]);
+
+  // The last question has no answer and nothing is running for it (the server restarted mid-turn).
+  const last = messages[messages.length - 1];
+  const unanswered =
+    !busy && last?.sender === "user" && !last.pending && !last.id.startsWith("local-") && Boolean(session.data) && !session.data?.pending && !session.isFetching ? last : null;
 
   if (!isOpen) return null;
 
@@ -509,7 +601,19 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
           ),
         )}
 
-        {busy && <LiveActivity steps={liveSteps} elapsed={elapsed} developer={developer} />}
+        {busy && <LiveActivity steps={liveSteps} elapsed={elapsed} developer={developer} stopping={Boolean(busy.stopping)} />}
+        {unanswered && (
+          <div className="mr-auto flex w-full max-w-[96%] items-center justify-between gap-3 rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted">
+            <span>This question has no answer: the answer was interrupted.</span>
+            <button
+              type="button"
+              onClick={() => void send(unanswered.text, { askAgainOf: unanswered.id })}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-fg hover:bg-bg-subtle"
+            >
+              <RotateCcw className="size-3" /> Ask again
+            </button>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
 
@@ -554,9 +658,25 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
             aria-label="Message the AIE Analyst"
             className="max-h-40 min-h-9 w-full grow resize-none rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm leading-snug text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
           />
-          <Button type="submit" size="sm" variant="primary" disabled={!input.trim() || Boolean(busy)} className="h-9 shrink-0 gap-1.5 rounded-lg px-3.5 text-sm font-medium" aria-label="Send">
-            {busy ? <ActivitySpinner size="xs" /> : <Send className="size-3.5" />}
-          </Button>
+          {busy ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => void stop()}
+              disabled={Boolean(busy.stopping)}
+              className="h-9 shrink-0 gap-1.5 rounded-lg px-3 text-sm font-medium"
+              aria-label="Stop the answer"
+              title="Stop the answer"
+            >
+              {busy.stopping ? <ActivitySpinner size="xs" /> : <Square className="size-3 fill-current" />}
+              <span className="hidden sm:inline">{busy.stopping ? "Stopping" : "Stop"}</span>
+            </Button>
+          ) : (
+            <Button type="submit" size="sm" variant="primary" disabled={!input.trim()} className="h-9 shrink-0 gap-1.5 rounded-lg px-3.5 text-sm font-medium" aria-label="Send">
+              <Send className="size-3.5" />
+            </Button>
+          )}
         </form>
         <p className="mt-1.5 text-[10px] text-subtle">Answers cite library evidence as [S#]. Actions run only when you confirm them.</p>
         {developer && info.data?.workers && <WorkerStatus workers={info.data.workers} />}
@@ -678,7 +798,16 @@ function AgentBubble({
         </span>
       </div>
 
-      {m.isError ? (
+      {m.stopped ? (
+        <div className="w-full rounded-xl rounded-bl-sm border border-dashed border-border p-3 text-xs leading-relaxed text-muted">
+          <p>Stopped. {tools.length ? "The finished steps are kept: Continue picks up from them." : "Nothing was answered."}</p>
+          <div className="mt-2 flex gap-1.5">
+            <button type="button" onClick={onRetry} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-fg hover:bg-bg-subtle disabled:opacity-50">
+              <RotateCcw className="size-3" /> {tools.length ? "Continue" : "Ask again"}
+            </button>
+          </div>
+        </div>
+      ) : m.isError ? (
         <div className="w-full rounded-xl rounded-bl-sm border border-danger/40 bg-danger/10 p-3 text-xs leading-relaxed text-danger">
           <p className="break-words">{m.text}</p>
           <div className="mt-2 flex gap-1.5">
@@ -792,14 +921,23 @@ function Steps({ steps, developer }: { steps: Activity[]; developer: boolean }) 
   );
 }
 
-function LiveActivity({ steps, elapsed, developer }: { steps: Activity[]; elapsed: number; developer: boolean }) {
+function LiveActivity({ steps, elapsed, developer, stopping }: { steps: Activity[]; elapsed: number; developer: boolean; stopping: boolean }) {
   const visible = developer ? steps : steps.filter((s) => s.kind === "tool" || s.running);
   const current = [...steps].reverse().find((s) => s.running);
+  const label = stopping
+    ? "Stopping"
+    : !current
+      ? "Starting"
+      : current.kind !== "model" || /asking again/i.test(current.label)
+        ? current.label
+        : steps.some((s) => s.kind === "tool")
+          ? "Reading the results and writing the answer"
+          : "Thinking";
   return (
     <div className="card-liquid-glass mr-auto w-full max-w-[96%] rounded-xl border border-border bg-bg-card p-3 text-xs" aria-live="polite">
       <div className="flex items-center gap-2 text-muted">
         <ActivitySpinner size="sm" className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate">{current ? (current.kind === "model" ? (steps.some((s) => s.kind === "tool") ? "Reading the results and writing the answer" : "Thinking") : current.label) : "Starting"}…</span>
+        <span className="min-w-0 flex-1 truncate">{label}…</span>
         <span className="shrink-0 tabular-nums text-subtle">{elapsed}s</span>
       </div>
       {visible.length > 0 && <Steps steps={visible} developer={developer} />}

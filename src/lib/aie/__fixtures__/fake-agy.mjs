@@ -63,10 +63,14 @@ if (streamJson || printAt >= 0 || argv.some((a) => a.startsWith("--print="))) {
     }
     const prompt = String(turn?.message?.content ?? "");
     // Test hooks: [[fake-delay-ms:N]] answers after N ms (one turn at a time, like the real CLI);
-    // [[fake-argv]] answers with this worker's flags and turn number.
+    // [[fake-argv]] answers with this worker's flags and turn number; [[fake-empty-once]] finishes
+    // without any text (as the real CLI can) until the caller asks again ("Reply now: …").
     const delay = Number(prompt.match(/\[\[fake-delay-ms:(\d+)\]\]/)?.[1] ?? skillDelay(prompt));
     turns += 1;
-    const reply = /\[\[fake-argv\]\]/.test(prompt)
+    const empty = /\[\[fake-empty-once\]\]/.test(prompt) && !/Reply now: either/.test(prompt);
+    const reply = empty
+      ? ""
+      : /\[\[fake-argv\]\]/.test(prompt)
       ? JSON.stringify({ argv: argv.filter((a) => a.startsWith("--")), turn: turns, pid: process.pid })
       : /READY/.test(prompt)
         ? "READY"

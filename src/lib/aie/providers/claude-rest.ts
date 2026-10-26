@@ -193,6 +193,9 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const stop = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener("abort", stop, { once: true });
 
       // Build messages array
       const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
@@ -281,7 +284,7 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
         model,
         providerId: this.id,
         latencyMs: Date.now() - startTime,
-        error: err.name === "AbortError" ? `Claude API timed out after ${timeoutMs}ms` : err.message || "Unknown Claude API error",
+        error: options.signal?.aborted ? "Stopped" : err.name === "AbortError" ? `Claude API timed out after ${timeoutMs}ms` : err.message || "Unknown Claude API error",
       };
     }
   }
