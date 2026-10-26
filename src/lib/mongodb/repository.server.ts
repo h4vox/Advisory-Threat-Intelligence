@@ -17,6 +17,7 @@ import type {
   QualityReason,
   ReportListItem,
   ReportRecord,
+  ReportReviewView,
   ReportTranslation,
   ResourceKind,
   SourceRecord,
@@ -29,6 +30,8 @@ import type {
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
 import type { ResearchLabels } from "../aie/research-taxonomy";
+import { comparePublishedDesc, type PublishedDate } from "../aie/published-date";
+import type { ReportAiAnalysis } from "../aie/report-ai-analysis";
 import type { TelemetryRefs } from "../aie/telemetry-refs";
 import { computeDashboardAnalytics } from "../aie/dashboard-analytics";
 import { computeReportSimHash, excerptOf } from "../aie/extract";
@@ -41,7 +44,6 @@ import {
   DEFAULT_POWERUPS,
   DEFAULT_PLAYBOOKS,
 } from "../aie/marketplace-registry";
-import { runUnifiedResourceEvaluation } from "../aie/ai-manager";
 import { isCandidateResourceUrl } from "../aie/qualification";
 import { sanitizeAgyModel, DEFAULT_AGY_MODEL } from "../aie/agent-framework/types";
 import { resolveActiveModel } from "../aie/active-model";
@@ -345,6 +347,7 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     url: doc.url,
     canonicalUrl: doc.canonicalUrl,
     publishedAt: doc.publishedAt ?? null,
+    publishedDate: storedPublishedDate(doc.publishedDate),
     contentType: doc.contentType || "text/html",
     status: doc.status || "acquired",
     rawHash: doc.rawHash,
@@ -384,7 +387,37 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
         : undefined,
     research: storedResearch(doc.research),
     telemetry: doc.telemetry && typeof doc.telemetry === "object" && Array.isArray(doc.telemetry.events) ? (doc.telemetry as TelemetryRefs) : undefined,
+    aiAnalysis: storedAiAnalysis(doc.aiAnalysis),
+    review: storedReview(doc.review),
+    needsReview: doc.needsReview === true,
   };
+}
+
+/** Stored AI analysis (aie/report-ai-analysis), when well formed. */
+function storedAiAnalysis(v: unknown): ReportAiAnalysis | undefined {
+  const a = v as ReportAiAnalysis | null | undefined;
+  return a && typeof a === "object" && typeof a.version === "number" && Array.isArray(a.iocs) && Array.isArray(a.attackChain) ? a : undefined;
+}
+
+/** Stored review decision (aie/review-decision), when well formed. */
+function storedReview(v: unknown): ReportReviewView | undefined {
+  const r = v as ReportReviewView | null | undefined;
+  if (!r || typeof r !== "object" || typeof r.action !== "string" || typeof r.reason !== "string") return undefined;
+  return {
+    action: r.action,
+    reason: r.reason,
+    protectedBy: Array.isArray(r.protectedBy) ? r.protectedBy.map(String) : [],
+    ...(r.verdict ? { verdict: r.verdict } : {}),
+    ...(typeof r.confidence === "number" ? { confidence: r.confidence } : {}),
+    reviewedAt: String(r.reviewedAt ?? ""),
+    by: r.by ?? "ai",
+  };
+}
+
+/** Stored publication-date provenance (aie/published-date), when well formed. */
+function storedPublishedDate(v: unknown): PublishedDate | undefined {
+  const d = v as PublishedDate | null | undefined;
+  return d && typeof d === "object" && typeof d.source === "string" && typeof d.version === "number" ? d : undefined;
 }
 
 /** Stored research labels (research-taxonomy), when well formed. */
@@ -522,18 +555,23 @@ export async function mongoListReports(params?: {
   hasIocs?: boolean;
   limit?: number;
   offset?: number;
+  /** "published": newest publication date first, undated last. Default: newest ingested first. */
+  order?: "ingested" | "published";
 }): Promise<ReportListItem[]> {
-  // Paging params do not change which documents match; the default (unfiltered)
+  // Paging and order do not change which documents match; the default (unfiltered)
   // list is cached in full and sliced per request.
   const isDefaultQuery =
     !params ||
     Object.entries(params).every(
-      ([k, v]) => k === "limit" || k === "offset" || v === undefined || v === "" || v === "ALL" || v === false,
+      ([k, v]) => k === "limit" || k === "offset" || k === "order" || v === undefined || v === "" || v === "ALL" || v === false,
     );
+  const byPublished = params?.order === "published";
   const pageLimit = typeof params?.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : undefined;
   const pageOffset = typeof params?.offset === "number" && params.offset > 0 ? Math.floor(params.offset) : 0;
-  const slicePage = (rows: ReportListItem[]) =>
-    pageLimit !== undefined ? rows.slice(pageOffset, pageOffset + pageLimit) : rows.slice(pageOffset);
+  const slicePage = (rows: ReportListItem[]) => {
+    const ordered = byPublished ? [...rows].sort(comparePublishedDesc) : rows;
+    return pageLimit !== undefined ? ordered.slice(pageOffset, pageOffset + pageLimit) : ordered.slice(pageOffset);
+  };
 
   if (isDefaultQuery && cachedReportsList && Date.now() - cachedReportsList.timestamp < CACHE_TTL_MS) {
     logger.mongo(
@@ -736,6 +774,7 @@ export async function mongoListReports(params?: {
     url: 1,
     canonicalUrl: 1,
     publishedAt: 1,
+    publishedDate: 1,
     contentType: 1,
     status: 1,
     rawHash: 1,
@@ -763,6 +802,8 @@ export async function mongoListReports(params?: {
     aiVerified: 1,
     aiQualityScore: 1,
     aiAuditReason: 1,
+    needsReview: 1,
+    review: 1,
     excerpt: 1,
     scoreBreakdown: 1,
     research: 1,
@@ -802,7 +843,11 @@ export async function mongoListReports(params?: {
     const regexFilter: Filter<Document> = regexQueryCondition
       ? { ...filter, $and: [...((filter.$and as Filter<Document>[]) ?? []), regexQueryCondition] }
       : filter;
-    const cursor = col.find(regexFilter).sort({ ingestedAt: -1 }).project(projection);
+    // Missing publication dates sort lowest, so undated reports come last.
+    const cursor = col
+      .find(regexFilter)
+      .sort(byPublished ? { publishedAt: -1, ingestedAt: -1 } : { ingestedAt: -1 })
+      .project(projection);
     // The unfiltered list is cached in full; anything else is paged in Mongo.
     if (!isDefaultQuery) {
       if (pageOffset > 0) cursor.skip(pageOffset);
@@ -872,6 +917,7 @@ export async function mongoListReports(params?: {
       url: doc.url,
       canonicalUrl: doc.canonicalUrl,
       publishedAt: doc.publishedAt ?? null,
+      publishedDate: storedPublishedDate(doc.publishedDate),
       contentType: doc.contentType || "text/html",
       status: doc.status || "acquired",
       rawHash: doc.rawHash,
@@ -907,6 +953,8 @@ export async function mongoListReports(params?: {
       scoreBreakdown: doc.scoreBreakdown,
       matchedSnippet,
       research: storedResearch(doc.research),
+      review: storedReview(doc.review),
+      needsReview: doc.needsReview === true,
     };
   });
 
@@ -2618,6 +2666,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       url: 1,
       canonicalUrl: 1,
       publishedAt: 1,
+      publishedDate: 1,
       contentType: 1,
       status: 1,
       rawHash: 1,
@@ -2652,6 +2701,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       url: doc.url,
       canonicalUrl: doc.canonicalUrl,
       publishedAt: doc.publishedAt ?? null,
+      publishedDate: storedPublishedDate(doc.publishedDate),
       contentType: doc.contentType || "text/html",
       status: doc.status || "acquired",
       rawHash: doc.rawHash,
@@ -2912,405 +2962,6 @@ export async function mongoGetReportOriginal(
     contentType: String(doc.originalContentType || "application/octet-stream"),
     bytes: doc.originalContent,
     length: Number(doc.originalBytes ?? 0),
-  };
-}
-
-/**
- * AI-powered Library Quality Audit & Verification Engine
- * Analyzes full content, extracts MITRE ATT&CK techniques, actors, malware, and CVEs,
- * tags resources accurately, assigns canonical ResourceKinds, verifies authentic threat intel,
- * and safely prunes confirmed non-threat content (generic index queries, webinars, podcasts, error pages)
- * if autoPruneJunk is enabled.
- */
-export async function mongoAuditLibraryWithAi(options?: {
-  autoPruneJunk?: boolean;
-  limit?: number;
-  unverifiedOnly?: boolean;
-  forceAll?: boolean;
-}): Promise<{
-  success: boolean;
-  totalAudited: number;
-  verifiedCount: number;
-  prunedCount: number;
-  aiEvaluatedCount: number;
-  prunedTitles: string[];
-  message: string;
-}> {
-  const startTime = Date.now();
-  await ensureMongoIndexes();
-  const col = await getThreatIntelCollection();
-
-  // If autoPruneJunk is not explicitly specified, check CrawlConfig
-  let shouldPrune = options?.autoPruneJunk;
-  if (shouldPrune === undefined) {
-    const cfg = await mongoGetCrawlConfig();
-    shouldPrune = Boolean(cfg.agentAutoPruneJunkEnabled);
-  }
-
-  const reports = await col.find({ docType: "report" }, { projection: { originalContent: 0 } }).toArray();
-  let verifiedCount = 0;
-  let prunedCount = 0;
-  let aiEvaluatedCount = 0;
-  const prunedTitles: string[] = [];
-  const maxAiEvaluations = options?.limit ?? 10;
-
-  for (const doc of reports) {
-    const iocCount = Array.isArray(doc.iocs) ? doc.iocs.length : 0;
-    const entities = doc.extractedEntities as ExtractedEntities | undefined;
-    const analysis = doc.analysis as IntelAnalysis | undefined;
-    const qualityScore = Number(doc.qualityScore ?? 0);
-    const wordCount = Number(doc.wordCount ?? 0);
-    const title = (doc.title as string) || "";
-    const url = (doc.url as string) || "";
-    const text = (doc.extractedText as string) || "";
-
-    // STRICT SAFETY GUARDRAILS: High-value technical assets must NEVER be pruned
-    const hasProtectedSignals =
-      iocCount >= 2 ||
-      (entities?.cves && entities.cves.length > 0) ||
-      (entities?.techniques && entities.techniques.length > 0) ||
-      (analysis?.attackChain && analysis.attackChain.length > 0) ||
-      qualityScore >= 0.70;
-
-    // Check for junk patterns (structural quality pre-screening)
-    let isJunk = false;
-    let junkReason = "";
-
-    try {
-      const u = new URL(url);
-      const host = u.hostname.replace(/^www\./, "").toLowerCase();
-      const path = u.pathname.replace(/\/+$/, "") || "/";
-      if (
-        host === "uscis.gov" ||
-        host === "ice.gov" ||
-        host === "e-verify.gov" ||
-        host === "edit.dhs.gov" ||
-        (host.endsWith(".dhs.gov") && !host.includes("cisa"))
-      ) {
-        isJunk = true;
-        junkReason = `Non-CTI administrative host: ${host}`;
-      } else if (
-        path === "" ||
-        path === "/" ||
-        path === "/en" ||
-        path === "/en-us" ||
-        path === "/en_us" ||
-        /sitemap/i.test(path)
-      ) {
-        isJunk = true;
-        junkReason = `Homepage or root sitemap: ${path || "/"}`;
-      } else if (
-        path.endsWith("/podcasts") ||
-        path.includes("/podcasts/") ||
-        path.endsWith("/webinars") ||
-        path.endsWith("/white-papers") ||
-        path.endsWith("/tips-advice") ||
-        path.endsWith("/business-security") ||
-        path.endsWith("/disclosure-policy") ||
-        path.endsWith("/privacy-policy") ||
-        path.endsWith("/privacy") ||
-        path.endsWith("/terms") ||
-        path.endsWith("/contact") ||
-        path.endsWith("/about") ||
-        path.endsWith("/sitemap1.aspx") ||
-        path.endsWith("/latest-publications") ||
-        path.endsWith("/resources") ||
-        path.endsWith("/projects") ||
-        path.endsWith("/nice")
-      ) {
-        isJunk = true;
-        junkReason = `Index / Resource aggregator path: ${path}`;
-      }
-    } catch {
-      // Invalid URL
-    }
-
-    if (!isJunk && !hasProtectedSignals) {
-      const lowerUrl = url.toLowerCase();
-      const lowerTitle = title.toLowerCase();
-
-      // 1. Generic portal search/filter query pages (e.g. CISA facet filters)
-      if (
-        (lowerUrl.includes("?f%5b") || lowerUrl.includes("?f[")) &&
-        (lowerTitle.includes("alerts & advisories") || lowerTitle.includes("cybersecurity alerts")) &&
-        iocCount === 0
-      ) {
-        isJunk = true;
-        junkReason = "Generic portal search/filter index page with zero IOCs";
-      }
-      // 2. Podcast audio landing pages
-      else if ((lowerUrl.includes("/podcasts/") || lowerTitle.includes("podcast") || lowerUrl.includes("talos_takes")) && iocCount === 0) {
-        isJunk = true;
-        junkReason = "Podcast episode / audio landing page without technical indicators";
-      }
-      // 3. Webinar sign-up marketing pages
-      else if (
-        (lowerTitle.startsWith("[webinar]") || lowerTitle.includes("exclusive briefing on q2 incidents")) &&
-        iocCount === 0
-      ) {
-        isJunk = true;
-        junkReason = "Commercial webinar marketing registration page";
-      }
-      // 4. Utility pages (contact, privacy, 404)
-      else if (
-        lowerTitle === "podcasts" ||
-        lowerTitle === "white papers" ||
-        lowerTitle === "tips & advice" ||
-        lowerTitle === "privacy policy" ||
-        lowerTitle.includes("contact us") ||
-        lowerTitle.includes("page not found") ||
-        lowerTitle.includes("404 not found")
-      ) {
-        isJunk = true;
-        junkReason = "Corporate utility / 404 / contact page";
-      }
-      // 5. Bare shell (<120 words with 0 IOCs and 0 techniques)
-      else if (wordCount < 120 && iocCount === 0 && (!entities?.tactics || entities.tactics.length === 0) && (!entities?.techniques || entities.techniques.length === 0)) {
-        isJunk = true;
-        junkReason = "Sub-threshold stub content with no technical evidence";
-      }
-    }
-
-    if (isJunk) {
-      if (shouldPrune) {
-        await col.deleteOne({ id: doc.id, docType: "report" });
-        prunedCount++;
-        prunedTitles.push(title || url);
-        continue;
-      } else {
-        await col.updateOne(
-          { id: doc.id, docType: "report" },
-          {
-            $set: {
-              status: "rejected",
-              aiVerified: false,
-              aiQualityScore: 0,
-              aiAuditReason: `Rejected by Quality Gate: ${junkReason}`,
-              updatedAt: new Date().toISOString(),
-            },
-          }
-        );
-        prunedCount++;
-        prunedTitles.push(title || url);
-        continue;
-      }
-    }
-
-    let calculatedKind = (doc.resourceKind as ResourceKind) || null;
-    const cls = (doc.classification || "").toUpperCase();
-    const fullTextUpper = (text + " " + title).toUpperCase();
-    const tags = Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any);
-
-    if (
-      cls.includes("INTRUSION") ||
-      cls.includes("ATTACK_CHAIN") ||
-      (analysis?.attackChain && analysis.attackChain.length > 0) ||
-      fullTextUpper.includes("INITIAL ACCESS") ||
-      fullTextUpper.includes("LATERAL MOVEMENT")
-    ) {
-      calculatedKind = "FULL_ATTACK_CHAIN";
-    } else if (
-      cls.includes("MALWARE") ||
-      (analysis?.malware && analysis.malware.length > 0) ||
-      fullTextUpper.includes("REVERSE ENGINEERING") ||
-      fullTextUpper.includes("C2 BEACON") ||
-      fullTextUpper.includes("LOADER")
-    ) {
-      calculatedKind = "MALWARE_ANALYSIS";
-    } else if (
-      cls.includes("EMULATION") ||
-      cls.includes("PROCEDURE") ||
-      cls.includes("PURPLE") ||
-      (analysis?.emulation && analysis.emulation.length > 0) ||
-      fullTextUpper.includes("ADVERSARY EMULATION") ||
-      fullTextUpper.includes("ATOMIC RED TEAM")
-    ) {
-      calculatedKind = "PROCEDURE_DEEPDIVE";
-    } else if (
-      cls.includes("DETECTION") ||
-      cls.includes("SIGMA") ||
-      (analysis?.detections && analysis.detections.length > 0) ||
-      fullTextUpper.includes("SIGMA RULE") ||
-      fullTextUpper.includes("HUNTING QUERY")
-    ) {
-      calculatedKind = "DETECTION_GUIDANCE";
-    } else if (
-      cls.includes("VULNERABILITY") ||
-      (entities?.cves && entities.cves.length > 0) ||
-      fullTextUpper.includes("EXPLOITATION") ||
-      fullTextUpper.includes("ZERO-DAY")
-    ) {
-      calculatedKind = "VULNERABILITY_ADVISORY";
-    } else if (
-      cls.includes("THREAT_ACTOR") ||
-      (analysis?.threatActors && analysis.threatActors.length > 0) ||
-      fullTextUpper.includes("THREAT ACTOR") ||
-      fullTextUpper.includes("STATE-SPONSORED")
-    ) {
-      calculatedKind = "THREAT_ACTOR_DOSSIER";
-    } else {
-      calculatedKind = "CAMPAIGN_INTEL";
-    }
-
-    // Cognitive AI Agent Evaluation:
-    // Dispatches unverified or low-confidence reports to the containerized AGY agent
-    // for authentic 5-dimensional adversary tradecraft rubric evaluation
-    const needsAiEvaluation =
-      (Boolean(options?.forceAll) || (!doc.aiVerified && doc.status !== "rejected") || doc.status === "pending") &&
-      aiEvaluatedCount < maxAiEvaluations &&
-      text.length > 80;
-
-    if (needsAiEvaluation) {
-      aiEvaluatedCount++;
-      try {
-        let evalDomain = (doc.sourceDomain as string) || "";
-        if (!evalDomain && url) {
-          try {
-            evalDomain = new URL(url).hostname.replace(/^www\./, "");
-          } catch {
-            // Invalid URL: evaluate without a domain.
-          }
-        }
-        const evalRes = await runUnifiedResourceEvaluation({
-          title,
-          url,
-          text,
-          domain: evalDomain || "unknown",
-          timeoutSeconds: 35,
-        });
-
-        if (evalRes.success && !evalRes.fallback) {
-          const isApproved =
-            evalRes.recommendApproval &&
-            evalRes.passScore >= 50 &&
-            evalRes.classification !== "OTHER" &&
-            evalRes.classification !== "GENERIC_NEWS";
-
-          if (isApproved) {
-            calculatedKind = evalRes.resourceKind || calculatedKind;
-            const updatedAnalysis: any = { ...(doc.analysis || {}) };
-            if (evalRes.threatActors && evalRes.threatActors.length > 0) {
-              const existingActors = new Set(updatedAnalysis.threatActors || []);
-              for (const act of evalRes.threatActors) existingActors.add(act);
-              updatedAnalysis.threatActors = Array.from(existingActors);
-            }
-            if (evalRes.mitreTechniques && evalRes.mitreTechniques.length > 0) {
-              const existingTechs = new Set(updatedAnalysis.techniques || []);
-              for (const t of evalRes.mitreTechniques) existingTechs.add(t);
-              updatedAnalysis.techniques = Array.from(existingTechs);
-            }
-
-            await col.updateOne(
-              { id: doc.id, docType: "report" },
-              {
-                $set: {
-                  status: "acquired",
-                  classification: evalRes.classification || doc.classification,
-                  resourceKind: calculatedKind,
-                  tags,
-                  aiVerified: true,
-                  aiQualityScore: evalRes.passScore,
-                  aiAuditReason: `AI Agent Approval (${evalRes.passScore}/100): ${evalRes.rationale}`,
-                  analysis: updatedAnalysis,
-                  updatedAt: new Date().toISOString(),
-                },
-              }
-            );
-            verifiedCount++;
-            continue;
-          } else {
-            // AI Agent strictly rejected this report
-            if (shouldPrune) {
-              await col.deleteOne({ id: doc.id, docType: "report" });
-              prunedCount++;
-              prunedTitles.push(title || url);
-              continue;
-            } else {
-              await col.updateOne(
-                { id: doc.id, docType: "report" },
-                {
-                  $set: {
-                    status: "rejected",
-                    classification: evalRes.classification || "OTHER",
-                    resourceKind: evalRes.resourceKind || calculatedKind,
-                    tags,
-                    aiVerified: false,
-                    aiQualityScore: evalRes.passScore || 0,
-                    aiAuditReason: `Rejected by AI Agent (${evalRes.passScore}/100): ${evalRes.rationale}`,
-                    updatedAt: new Date().toISOString(),
-                  },
-                }
-              );
-              prunedCount++;
-              prunedTitles.push(title || url);
-              continue;
-            }
-          }
-        }
-      } catch (err) {
-        console.debug("[audit] Live AI evaluation error for doc:", doc.id, (err as Error).message);
-      }
-    }
-
-    // Retain verified status if already verified by AI agent previously
-    if (doc.aiVerified) {
-      verifiedCount++;
-      continue;
-    }
-
-    // Structural CTI Signal Qualified (Pending deep AI cognitive turn in a future batch)
-    // NEVER fake aiVerified: true without cognitive model evaluation
-    const scoreVal = Math.min(
-      Math.max(
-        Math.round(
-          ((qualityScore || 0.5) * 0.45 +
-            (Number(doc.simulationScore ?? 0.3) || 0.3) * 0.35 +
-            (iocCount > 0 ? 0.2 : 0.05)) *
-            100,
-        ),
-        40,
-      ),
-      95,
-    );
-
-    await col.updateOne(
-      { id: doc.id, docType: "report" },
-      {
-        $set: {
-          status: "acquired",
-          resourceKind: calculatedKind,
-          tags,
-          aiVerified: false,
-          aiQualityScore: scoreVal,
-          aiAuditReason: "Structural CTI Signal Qualified (Pending Cognitive AI Audit Batch)",
-          updatedAt: new Date().toISOString(),
-        },
-      }
-    );
-    verifiedCount++;
-  }
-
-  invalidateReportsCache();
-  invalidateDashboardCache();
-  invalidateCrawlerStateCache();
-
-  logger.mongo(
-    "auditLibraryWithAi",
-    "threat-intel",
-    Date.now() - startTime,
-    `Audited ${reports.length} reports: ${verifiedCount} verified (${aiEvaluatedCount} deep AI agent evaluations), ${prunedCount} pruned`,
-  );
-
-  return {
-    success: true,
-    totalAudited: reports.length,
-    verifiedCount,
-    prunedCount,
-    aiEvaluatedCount,
-    prunedTitles: prunedTitles.slice(0, 10),
-    message: `Audited ${reports.length} reports: verified ${verifiedCount} technical intelligence records (${aiEvaluatedCount} evaluated by Antigravity Agent)${
-      prunedCount > 0 ? ` and pruned ${prunedCount} non-threat pages` : ""
-    }.`,
   };
 }
 

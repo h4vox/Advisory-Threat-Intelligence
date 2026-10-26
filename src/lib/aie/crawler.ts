@@ -127,6 +127,8 @@ import {
   supersedeWithCanonical,
 } from "../mongodb/collector-repo.server";
 import type { TextSection } from "./extract";
+import { resolvePublicationDate, type PublishedDate } from "./published-date";
+import { mongoAnalyseNewlyIngested } from "../mongodb/library-review-repo.server";
 import type { ReportAttachment, ReportMirror } from "./types";
 
 /** Re-fetched pages this close (SimHash bits) to the stored copy are cosmetic edits, not new versions. */
@@ -358,6 +360,10 @@ interface FrontierItem {
   title?: string;
   /** Publication date reported by the source (feed or page metadata); null when unknown. */
   publishedAt?: string | null;
+  /** How the publication date was established (./published-date), once the content is in hand. */
+  publishedDate?: PublishedDate;
+  /** Creation date from the PDF's document information, for PDF resources. */
+  pdfDate?: string;
   /** Feed summary (used by the relevance pre-score when the full text is not preloaded). */
   summary?: string;
   /** Sitemap lastmod / feed updated date: a listing-reported change after our last fetch triggers revalidation. */
@@ -580,6 +586,8 @@ export async function executeCrawlJob(
   let evaluatedCount = 0;
   let qualifiedCount = 0;
   let ingestedCount = 0;
+  /** Reports stored by this run, for the AI analysis that follows it. */
+  const ingestedReportIds: string[] = [];
   let duplicateCount = 0;
   let failedCount = 0;
   let rejectedCount = 0;
@@ -2031,6 +2039,7 @@ export async function executeCrawlJob(
                   if (pdfResult.author) {
                     current.author = pdfResult.author;
                   }
+                  if (pdfResult.creationDate) current.pdfDate = pdfResult.creationDate;
                   console.log(`[crawler] PDF extracted: ${textContent.length} chars from ${current.canonicalUrl}`);
                 } else {
                   pdfFailure = pdfResult.failureReason || "PDF has no extractable text layer";
@@ -2109,9 +2118,6 @@ export async function executeCrawlJob(
               }
 
               const htmlMeta = extractHtmlMetadata(body);
-              if (!current.publishedAt && htmlMeta.publishedAt) {
-                current.publishedAt = htmlMeta.publishedAt.slice(0, 10);
-              }
               if (htmlMeta.author && (!current.author || current.author === current.domain)) {
                 current.author = htmlMeta.author;
               }
@@ -2160,6 +2166,17 @@ export async function executeCrawlJob(
 
         // Funnel "acquired": full text obtained, by fetch or supplied by the feed.
         collector.funnel.fetched++;
+
+        // Publication date from the source itself (page structured data, feed, URL, byline), never the fetch time.
+        const feedDate = current.publishedAt ?? null;
+        current.publishedDate = resolvePublicationDate({
+          html: fetchedHtmlBody || null,
+          text: textContent,
+          url: current.canonicalUrl,
+          feedDate,
+          pdfDate: current.pdfDate,
+        });
+        current.publishedAt = current.publishedDate.publishedAt;
 
         // Multi-hash content dedup (spec §18): SHA-256, normalised text, title+publisher, SimHash (Hamming <= 3).
         // The better canonical (primary publisher, higher tier, earlier date) wins; the other URL becomes a mirror.
@@ -2275,9 +2292,16 @@ export async function executeCrawlJob(
             ? Date.now() - config.dateRangeDays * 24 * 60 * 60 * 1000
             : NaN;
         if (Number.isFinite(windowCutoff)) {
-          // Prefer the source-reported date; fall back to the first ISO-style date near the top.
-          const pubDateMatch = current.publishedAt
-            ? [current.publishedAt]
+          // Prefer the source-reported date; fall back to the first ISO-style date near the top. A report the
+          // source updated, or a feed lists as new, is judged by its latest date so refreshed research is kept.
+          // A low-confidence date (byline guess, URL month, update-only) never skips an item on its own.
+          const confident = current.publishedDate?.confidence !== "low" ? current.publishedAt : null;
+          const windowDate = [confident, current.publishedDate?.sourceUpdatedAt, feedDate]
+            .filter((d): d is string => Boolean(d))
+            .sort()
+            .pop();
+          const pubDateMatch = windowDate
+            ? [windowDate]
             : textContent.slice(0, 1500).match(/\b((?:19|20)\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b/);
           if (pubDateMatch) {
             const parsedPubDate = new Date(pubDateMatch[0]).getTime();
@@ -2742,6 +2766,7 @@ export async function executeCrawlJob(
 
         if (shouldAutoIngest) {
           ingestedCount++;
+          ingestedReportIds.push(reportId);
           storedCanonicalUrls.add(current.canonicalUrl);
           storedHashes.add(textHash);
           collector.funnel.stored++;
@@ -2855,6 +2880,7 @@ export async function executeCrawlJob(
                 url: current.url,
                 canonicalUrl: current.canonicalUrl,
                 publishedAt: current.publishedAt ?? null,
+                publishedDate: current.publishedDate,
                 contentType,
                 status: "acquired",
                 rawHash,
@@ -3281,6 +3307,13 @@ export async function executeCrawlJob(
         lastRunAt: new Date().toISOString(),
         nextRunAt: nextRun,
       });
+      // Grounded AI analysis and safe review of what this run stored, newest published first, in the
+      // background ("AI analysis of new reports" in Settings). Never deletes; see ./review-decision.
+      // Serverless functions end with the request, so there the Library's "Analyse with AI" does it.
+      const serverless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
+      if (latestConfig.agentLibraryAuditEnabled !== false && ingestedReportIds.length > 0 && !serverless) {
+        void mongoAnalyseNewlyIngested(ingestedReportIds).catch((err) => console.warn("[ai-analysis] after crawl failed:", err));
+      }
     } else {
       try {
         const sql = await getSql();

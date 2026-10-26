@@ -57,9 +57,22 @@ export function techniqueCount(r: {
 export type AiReview = { label: string; tone: Tone; rank: number; detail?: string };
 
 /** One honest AI review state, derived only from stored fields. */
-export function aiReview(r: { aiVerified?: boolean; aiQualityScore?: number; status?: string }): AiReview {
+export function aiReview(r: {
+  aiVerified?: boolean;
+  aiQualityScore?: number;
+  status?: string;
+  needsReview?: boolean;
+  review?: { action: string; verdict?: string; confidence?: number; by?: string };
+}): AiReview {
   const score = typeof r.aiQualityScore === "number" && r.aiQualityScore > 0 ? `${r.aiQualityScore}/100` : undefined;
   if (r.status === "rejected") return { label: "Hidden", tone: "neutral", rank: 0, detail: score };
+  if (r.needsReview) return { label: "Needs review", tone: "warning", rank: 1 };
+  // The grounded AI analysis and review (report-ai-analysis, review-decision).
+  if (r.review?.by === "analyst") return { label: "Confirmed by an analyst", tone: "success", rank: 3 };
+  if (r.review?.verdict === "useful") {
+    return { label: "AI reviewed: useful", tone: "success", rank: 3, detail: typeof r.review.confidence === "number" ? `${Math.round(r.review.confidence * 100)}% sure` : undefined };
+  }
+  if (r.review?.verdict) return { label: "AI reviewed", tone: "info", rank: 2 };
   if (r.aiVerified) return { label: "AI verified", tone: "success", rank: 3, detail: score };
   if (score) return { label: "Not verified", tone: "warning", rank: 1, detail: score };
   return { label: "Not evaluated", tone: "neutral", rank: 2 };

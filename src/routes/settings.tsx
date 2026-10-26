@@ -2026,13 +2026,13 @@ function SettingsPage() {
                   },
                   {
                     key: "agentLibraryAuditEnabled" as const,
-                    label: "AI library quality audit",
-                    desc: "Continuously audit and evaluate library resources, verify technical threat intelligence, and assign enriched tags",
+                    label: "AI analysis of new reports",
+                    desc: "After each crawl, new reports (newest published first) get a grounded AI analysis: summary, indicators, attack chain flow and adversary profile, each checked against the report text, plus a usefulness review that flags doubtful reports for you. Never deletes.",
                   },
                   {
                     key: "agentAutoPruneJunkEnabled" as const,
-                    label: "AI auto-prune non-threat intel pages",
-                    desc: "Carefully purge confirmed non-threat content (e.g. homepages, contact pages, error pages, zero-IOC marketing) from the library. High-value threat intelligence is protected by strict safety guardrails.",
+                    label: "Let the AI review hide reports",
+                    desc: "Off: the AI review only flags reports for you (Needs review). On: it may also hide a report it is at least 85% sure is not threat research when the report has no indicators, CVEs, techniques, attack chain or technical depth. Hidden reports stay under Hidden and can be restored; nothing is ever deleted.",
                   },
                   {
                     key: "agentApprovalEnabled" as const,
@@ -2096,7 +2096,7 @@ function SettingsPage() {
                       {toggle.key === "agentAutoPruneJunkEnabled" && isChecked && (
                         <div className="mt-2.5 flex items-center gap-2 text-[11px] text-sage bg-sage/10 border border-sage/40 rounded-md px-2.5 py-1.5 font-medium">
                           <CheckCircle2 className="size-3.5 shrink-0" />
-                          <span>Strict safety guardrails active: legitimate threat reports with IOCs, CVEs, or ATT&CK techniques are strictly protected and will never be pruned.</span>
+                          <span>Reports with indicators, CVEs, ATT&CK techniques, an attack chain or technical depth are never hidden; uncertain ones are flagged for you instead. Nothing is deleted.</span>
                         </div>
                       )}
 

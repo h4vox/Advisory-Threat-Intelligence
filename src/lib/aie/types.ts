@@ -1,5 +1,7 @@
 import type { ResearchDiscoveryConfig, ResearchLabels } from "./research-taxonomy.ts";
 import type { TelemetryRefs } from "./telemetry-refs.ts";
+import type { PublishedDate } from "./published-date.ts";
+import type { ReportAiAnalysis } from "./report-ai-analysis.ts";
 
 export type TrustLevel = "high" | "official" | "community" | "reputable" | "unverified";
 
@@ -352,6 +354,8 @@ export type ReportRecord = {
   url: string;
   canonicalUrl: string;
   publishedAt: string | null;
+  /** How the publication date was established: source, confidence, evidence and the source's last update. */
+  publishedDate?: PublishedDate;
   contentType: string;
   status: "acquired" | "rejected" | "duplicate" | "failed";
   rawHash: string;
@@ -411,6 +415,22 @@ export type ReportRecord = {
   research?: ResearchLabels;
   /** Event IDs, log sources and detection content the report itself names (./telemetry-refs). */
   telemetry?: TelemetryRefs;
+  /** Grounded AI analysis (./report-ai-analysis): summary, indicators, attack chain, adversary. */
+  aiAnalysis?: ReportAiAnalysis;
+  /** Latest review decision (./review-decision) and whether an analyst should decide. */
+  review?: ReportReviewView;
+  needsReview?: boolean;
+};
+
+/** What the Library and report page show of a review decision. */
+export type ReportReviewView = {
+  action: "keep" | "flag" | "hide" | "restore_and_flag" | "unchanged";
+  reason: string;
+  protectedBy: string[];
+  verdict?: "useful" | "not_useful" | "unsure";
+  confidence?: number;
+  reviewedAt: string;
+  by: "ai" | "recovery" | "analyst";
 };
 
 /** A report translated into English by AI (./translation); the original stays as evidence. */

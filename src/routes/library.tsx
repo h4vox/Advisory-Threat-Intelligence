@@ -32,9 +32,10 @@ import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/ui/primitives";
 import { DOC_TYPE_META, DocTypeBadge } from "@/components/ui/entity";
 import { formatDomainId, formatReportId } from "@/lib/aie/ids";
-import { getReportPdf, listReports, auditLibraryWithAi } from "@/lib/aie/server";
+import { getReportPdf, listReports } from "@/lib/aie/server";
+import { analyseReportWithAi, recoverHiddenReports, reportsToAnalyse } from "@/lib/aie/server-review";
 import { searchLibrary } from "@/lib/aie/server-search";
-import { labelLibraryResearch, runLibraryGate, setReportVisibility } from "@/lib/aie/server-library";
+import { dateLibraryReports, labelLibraryResearch, runLibraryGate, setReportVisibility } from "@/lib/aie/server-library";
 import { researchCategory } from "@/lib/aie/research-taxonomy";
 import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { cn } from "@/lib/cn";
@@ -72,7 +73,9 @@ const librarySearchSchema = z.object({
   tag: z.string().optional(),
   /** A research category id (research-taxonomy), e.g. from the coverage view. */
   research: z.string().optional(),
-  sort: z.enum(["newest", "quality", "iocs", "words", "rejected"]).optional(),
+  sort: z.enum(["published", "newest", "quality", "iocs", "words", "rejected"]).optional(),
+  /** Publication window, e.g. from the dashboard's "latest" links. */
+  published: z.enum(["any", "7d", "30d", "90d", "365d"]).optional(),
 });
 
 export const Route = createFileRoute("/library")({
@@ -88,6 +91,19 @@ const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
 type ViewMode = "cards" | "table" | "list";
 const VIEW_KEY = "aie_library_view";
 type OrderBy = "relevance" | "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
+/** The default order: the latest research first, by the date the source published it. */
+const DEFAULT_ORDER: OrderBy = "published";
+
+/** Publication window: always one selected ("Any time" by default), custom uses the From/To dates. */
+type PublishedWindow = "any" | "7d" | "30d" | "90d" | "365d" | "custom";
+const PUBLISHED_WINDOWS: Array<{ value: PublishedWindow; label: string; days?: number }> = [
+  { value: "any", label: "Any time" },
+  { value: "7d", label: "Last 7 days", days: 7 },
+  { value: "30d", label: "Last 30 days", days: 30 },
+  { value: "90d", label: "Last 90 days", days: 90 },
+  { value: "365d", label: "Last 12 months", days: 365 },
+  { value: "custom", label: "Custom range" },
+];
 
 type Derived = {
   types: DocType[];
@@ -166,21 +182,24 @@ function LibraryPage() {
   useEffect(() => {
     if (searchParams.research && researchCategory(searchParams.research)) setSelResearch([searchParams.research]);
   }, [searchParams.research]);
+  const [publishedWindow, setPublishedWindow] = useState<PublishedWindow>(searchParams.published ?? "any");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [minQuality, setMinQuality] = useState<number>(0);
   const [onlyWithIocs, setOnlyWithIocs] = useState(false);
   const [onlyWithEmulation, setOnlyWithEmulation] = useState(false);
+  const [onlyNeedsReview, setOnlyNeedsReview] = useState(false);
   const [showRejected, setShowRejected] = useState(searchParams.sort === "rejected");
   const [orderBy, setOrderBy] = useState<OrderBy>(
-    searchParams.sort && searchParams.sort !== "rejected" ? searchParams.sort : "newest",
+    searchParams.sort && searchParams.sort !== "rejected" ? searchParams.sort : DEFAULT_ORDER,
   );
   const [colSort, setColSort] = useState<ReportSort>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [previewReportId, setPreviewReportId] = useState<string | null>(searchParams.pdf || null);
   const [auditModalReport, setAuditModalReport] = useState<ReportListItem | null>(null);
   const [evidenceReport, setEvidenceReport] = useState<ReportListItem | null>(null);
-  const [isAuditing, setIsAuditing] = useState(false);
+  const [reviewProgress, setReviewProgress] = useState<{ done: number; total: number } | null>(null);
+  const cancelReview = useRef(false);
   const [view, setViewState] = useState<ViewMode>("cards");
 
   useEffect(() => {
@@ -251,6 +270,7 @@ function LibraryPage() {
   }, [q]);
 
   const isDeepSearchActive = debouncedQ.length >= 2;
+  const serverOrder = orderBy === "newest" ? "ingested" : "published";
 
   // Server-side hybrid ranker (aliases, technique names, field syntax); see src/lib/aie/search.
   const { data: searchData, isLoading: isSearchLoading } = useQuery({
@@ -261,7 +281,9 @@ function LibraryPage() {
   });
   // Rank by relevance while a search is active, unless the analyst picked another order.
   useEffect(() => {
-    setOrderBy((prev) => (isDeepSearchActive ? (prev === "newest" ? "relevance" : prev) : prev === "relevance" ? "newest" : prev));
+    setOrderBy((prev) =>
+      isDeepSearchActive ? (prev === DEFAULT_ORDER || prev === "newest" ? "relevance" : prev) : prev === "relevance" ? DEFAULT_ORDER : prev,
+    );
   }, [isDeepSearchActive]);
 
   const {
@@ -270,8 +292,9 @@ function LibraryPage() {
     error: reportsError,
     refetch: refetchReports,
   } = useQuery({
-    queryKey: ["reports-all"],
-    queryFn: () => listReports({ data: { limit: 500 } }),
+    // The server returns the first 500 in this order, so a large library still shows the latest research.
+    queryKey: ["reports-all", serverOrder],
+    queryFn: () => listReports({ data: { limit: 500, order: serverOrder } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
@@ -316,6 +339,45 @@ function LibraryPage() {
   useEffect(() => {
     if (labelQuery.data?.labelled) refreshLibrary();
   }, [labelQuery.data, refreshLibrary]);
+
+  // Publication dates (published-date) for reports stored before the resolver or under an older one:
+  // a few batches on open; the Library reloads when a date changed.
+  const dateQuery = useQuery({
+    queryKey: ["library-published-dates"],
+    queryFn: async () => {
+      let changed = 0;
+      for (let i = 0; i < 12; i++) {
+        const r = await dateLibraryReports();
+        changed += r.changed;
+        if (r.remaining === 0 || r.dated === 0) break;
+      }
+      return { changed };
+    },
+    staleTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  useEffect(() => {
+    if (dateQuery.data?.changed) refreshLibrary();
+  }, [dateQuery.data, refreshLibrary]);
+
+  // Reports the earlier AI audit hid although they carry indicators, techniques or technical depth
+  // come back once, flagged "Needs review" (deterministic, no AI call).
+  const recoveryQuery = useQuery({
+    queryKey: ["library-recover-hidden"],
+    queryFn: () => recoverHiddenReports(),
+    staleTime: 30 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  useEffect(() => {
+    const n = recoveryQuery.data?.restored ?? 0;
+    if (!n) return;
+    refreshLibrary();
+    toast.info(`Restored ${n} report${n === 1 ? "" : "s"} the earlier AI audit had hidden`, {
+      description: "They carry indicators, techniques or technical depth. Find them under Needs review to confirm.",
+    });
+  }, [recoveryQuery.data, refreshLibrary]);
 
   const changeVisibility = useCallback(
     async (ids: string[], action: "hide" | "restore") => {
@@ -383,22 +445,54 @@ function LibraryPage() {
     staleTime: 5 * 60_000,
   });
 
-  const handleRunAiAudit = async () => {
-    setIsAuditing(true);
-    toast.info("AI quality gate running across the library…");
+  // AI analysis + safe review of the newest-published reports not analysed yet, one report per
+  // request so a slow model never times out the page. Nothing is deleted; uncertain reports are
+  // flagged "Needs review". Clicking again stops after the current report.
+  const handleRunAiReview = async () => {
+    if (reviewProgress) {
+      cancelReview.current = true;
+      return;
+    }
+    cancelReview.current = false;
+    const tid = toast.loading("Finding reports to analyse…");
+    const tally = { keep: 0, flag: 0, hide: 0, restore_and_flag: 0, unchanged: 0, failed: 0 };
+    let firstError = "";
     try {
-      const res = await auditLibraryWithAi({ data: { limit: 10 } });
-      toast.success(
-        res.message ||
-          `AI audit complete: ${res.verifiedCount} verified, ${res.prunedCount} flagged (${res.aiEvaluatedCount ?? 0} deep evaluations).`,
-      );
-      void queryClient.invalidateQueries({ queryKey: ["reports-all"] });
-      void queryClient.invalidateQueries({ queryKey: ["reports-search"] });
-      void queryClient.invalidateQueries({ queryKey: ["intel-coverage"] });
-    } catch (err: any) {
-      toast.error(`AI audit failed: ${err?.message || "Unknown error"}`);
+      const queue = await reportsToAnalyse({ data: { limit: 10 } });
+      if (queue.length === 0) {
+        toast.success("Every report already has an AI analysis.", { id: tid });
+        return;
+      }
+      setReviewProgress({ done: 0, total: queue.length });
+      for (const [i, item] of queue.entries()) {
+        if (cancelReview.current) break;
+        toast.loading(`Analysing ${i + 1} of ${queue.length}: ${item.title.slice(0, 70)}`, { id: tid });
+        const res = await analyseReportWithAi({ data: { id: item.id } }).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : "failed" }));
+        if (res.ok) tally[res.action]++;
+        else {
+          tally.failed++;
+          firstError ||= res.error;
+          // The provider is down: stop instead of failing every report.
+          if (tally.failed >= 2 && tally.failed === i + 1) break;
+        }
+        setReviewProgress({ done: i + 1, total: queue.length });
+      }
+      const analysed = tally.keep + tally.flag + tally.hide + tally.restore_and_flag + tally.unchanged;
+      const parts = [
+        tally.keep && `${tally.keep} useful`,
+        tally.flag && `${tally.flag} flagged for review`,
+        tally.restore_and_flag && `${tally.restore_and_flag} restored and flagged`,
+        tally.hide && `${tally.hide} hidden (restorable)`,
+        tally.failed && `${tally.failed} failed`,
+      ].filter(Boolean);
+      if (analysed === 0) toast.error(`AI analysis failed: ${firstError || "no AI provider answered"}`, { id: tid });
+      else toast.success(`Analysed ${analysed} report${analysed === 1 ? "" : "s"}${parts.length ? `: ${parts.join(", ")}` : ""}.`, { id: tid, description: cancelReview.current ? "Stopped early." : undefined });
+      refreshLibrary();
+    } catch (err) {
+      toast.error(`AI analysis failed: ${err instanceof Error ? err.message : "unknown error"}`, { id: tid });
     } finally {
-      setIsAuditing(false);
+      setReviewProgress(null);
+      cancelReview.current = false;
     }
   };
 
@@ -556,11 +650,32 @@ function LibraryPage() {
       tags: countBy(basePool.map((r) => r.tags ?? [])),
       withIocs: basePool.filter((r) => (r.iocCount || 0) > 0).length,
       withEmulation: basePool.filter((r) => d(r).emulation).length,
+      needsReview: basePool.filter((r) => r.needsReview).length,
     };
   }, [basePool, d]);
 
-  const fromTs = dateFrom ? Date.parse(`${dateFrom}T00:00:00Z`) : null;
-  const toTs = dateTo ? Date.parse(`${dateTo}T23:59:59Z`) : null;
+  const windowDays = PUBLISHED_WINDOWS.find((w) => w.value === publishedWindow)?.days;
+  // Start of the window at UTC midnight, so the filter is stable through the day.
+  const windowStart = windowDays ? Date.parse(`${new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10)}T00:00:00Z`) : null;
+  const fromTs = publishedWindow === "custom" ? (dateFrom ? Date.parse(`${dateFrom}T00:00:00Z`) : null) : windowStart;
+  const toTs = publishedWindow === "custom" && dateTo ? Date.parse(`${dateTo}T23:59:59Z`) : null;
+
+  // Reports per publication window over the current pool, for the Published facet.
+  const publishedCounts = useMemo(() => {
+    const counts: Record<Exclude<PublishedWindow, "custom">, number> & { undated: number } = { any: basePool.length, "7d": 0, "30d": 0, "90d": 0, "365d": 0, undated: 0 };
+    const today = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+    for (const r of basePool) {
+      const t = d(r).published;
+      if (!t) {
+        counts.undated++;
+        continue;
+      }
+      for (const w of PUBLISHED_WINDOWS) {
+        if (w.days && w.value !== "custom" && w.value !== "any" && t >= today - w.days * 86_400_000) counts[w.value]++;
+      }
+    }
+    return counts;
+  }, [basePool, d]);
 
   const filteredReports = useMemo(() => {
     if (searchParams.selected) return targetReport ? [targetReport] : [];
@@ -583,6 +698,7 @@ function LibraryPage() {
       if (minQuality > 0 && r.qualityScore < minQuality) return false;
       if (onlyWithIocs && (r.iocCount || 0) === 0) return false;
       if (onlyWithEmulation && !x.emulation) return false;
+      if (onlyNeedsReview && !r.needsReview) return false;
       return true;
     });
 
@@ -591,7 +707,8 @@ function LibraryPage() {
         case "relevance":
           return (searchRank.get(a.id) ?? Infinity) - (searchRank.get(b.id) ?? Infinity) || dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
         case "published":
-          return d(b).published - d(a).published;
+          // Undated reports (0) sort last; ingest time orders reports published the same day.
+          return d(b).published - d(a).published || dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
         case "quality":
           return b.qualityScore - a.qualityScore;
         case "iocs":
@@ -625,6 +742,7 @@ function LibraryPage() {
     minQuality,
     onlyWithIocs,
     onlyWithEmulation,
+    onlyNeedsReview,
     orderBy,
     searchRank,
     d,
@@ -653,11 +771,13 @@ function LibraryPage() {
     ...selTactics.map((v) => ({ label: `Tactic: ${v}`, clear: () => setSelTactics((s) => s.filter((x) => x !== v)) })),
     ...selTags.map((v) => ({ label: `Tag: ${v}`, clear: () => setSelTags((s) => s.filter((x) => x !== v)) })),
     ...selResearch.map((v) => ({ label: `Research: ${researchCategory(v)?.short ?? v}`, clear: () => setSelResearch((s) => s.filter((x) => x !== v)) })),
-    ...(dateFrom ? [{ label: `From ${dateFrom}`, clear: () => setDateFrom("") }] : []),
-    ...(dateTo ? [{ label: `To ${dateTo}`, clear: () => setDateTo("") }] : []),
+    ...(windowDays ? [{ label: `Published: ${PUBLISHED_WINDOWS.find((w) => w.value === publishedWindow)?.label.toLowerCase()}`, clear: () => setPublishedWindow("any") }] : []),
+    ...(publishedWindow === "custom" && dateFrom ? [{ label: `From ${dateFrom}`, clear: () => setDateFrom("") }] : []),
+    ...(publishedWindow === "custom" && dateTo ? [{ label: `To ${dateTo}`, clear: () => setDateTo("") }] : []),
     ...(minQuality > 0 ? [{ label: `Quality ≥ ${Math.round(minQuality * 100)}%`, clear: () => setMinQuality(0) }] : []),
     ...(onlyWithIocs ? [{ label: "Has IOCs", clear: () => setOnlyWithIocs(false) }] : []),
     ...(onlyWithEmulation ? [{ label: "Has emulation", clear: () => setOnlyWithEmulation(false) }] : []),
+    ...(onlyNeedsReview ? [{ label: "Needs review", clear: () => setOnlyNeedsReview(false) }] : []),
     ...(showRejected ? [{ label: `Hidden (${rejectedCount})`, clear: () => setShowRejected(false) }] : []),
   ];
   const activeFiltersCount = filterChips.length;
@@ -675,11 +795,13 @@ function LibraryPage() {
     selTactics,
     selTags,
     selResearch,
+    publishedWindow,
     dateFrom,
     dateTo,
     minQuality,
     onlyWithIocs,
     onlyWithEmulation,
+    onlyNeedsReview,
     showRejected,
     orderBy,
     colSort,
@@ -740,11 +862,13 @@ function LibraryPage() {
     setSelTactics([]);
     setSelTags([]);
     setSelResearch([]);
+    setPublishedWindow("any");
     setDateFrom("");
     setDateTo("");
     setMinQuality(0);
     setOnlyWithIocs(false);
     setOnlyWithEmulation(false);
+    setOnlyNeedsReview(false);
     setShowRejected(false);
     setQ("");
     if (searchParams.selected || searchParams.highlight) clearSelection();
@@ -924,42 +1048,84 @@ function LibraryPage() {
           defaultOpen={selTags.length > 0}
         />
       )}
-      <section className="border-b border-border px-4 py-3.5">
-        <div className="mb-2.5 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-fg">Published</h3>
-          {(dateFrom || dateTo) && (
+      <section className="border-b border-border px-4 py-3.5" aria-labelledby="facet-published">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 id="facet-published" className="text-sm font-medium text-fg">
+            Published
+          </h3>
+          {publishedWindow !== "any" && (
             <button
               type="button"
               onClick={() => {
+                setPublishedWindow("any");
                 setDateFrom("");
                 setDateTo("");
               }}
               className="text-xs text-muted hover:text-fg"
             >
-              Clear
+              Any time
             </button>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="space-y-1">
-            <span className="text-[11px] text-subtle">From</span>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg [color-scheme:inherit]"
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="text-[11px] text-subtle">To</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg"
-            />
-          </label>
+        <div role="radiogroup" aria-labelledby="facet-published" className="space-y-0.5">
+          {PUBLISHED_WINDOWS.map((w) => {
+            const checked = publishedWindow === w.value;
+            const count = w.value === "custom" ? null : publishedCounts[w.value];
+            return (
+              <button
+                key={w.value}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                onClick={() => setPublishedWindow(w.value)}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-bg-subtle",
+                  checked ? "text-fg" : "text-muted",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "grid size-3.5 shrink-0 place-items-center rounded-full border",
+                    checked ? "border-[var(--color-primary)]" : "border-border-strong",
+                  )}
+                >
+                  {checked && <span className="size-1.5 rounded-full bg-[var(--color-primary)]" />}
+                </span>
+                <span className="flex-1">{w.label}</span>
+                {count !== null && <span className="text-xs tabular-nums text-subtle">{count}</span>}
+              </button>
+            );
+          })}
         </div>
+        {publishedWindow === "custom" && (
+          <div className="mt-2 grid grid-cols-2 gap-2 px-2">
+            <label className="space-y-1">
+              <span className="text-[11px] text-subtle">From</span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg [color-scheme:inherit]"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[11px] text-subtle">To</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="h-8 w-full rounded-md border border-border bg-bg-elevated px-2 text-xs text-fg"
+              />
+            </label>
+          </div>
+        )}
+        {publishedCounts.undated > 0 && (
+          <p className="mt-2 px-2 text-[11px] leading-relaxed text-subtle">
+            {publishedCounts.undated} {publishedCounts.undated === 1 ? "report gives" : "reports give"} no publication date: listed last, and left out when a
+            window is chosen.
+          </p>
+        )}
       </section>
       <section className="space-y-0.5 px-2.5 py-3">
         <FacetToggle label="Has IOCs" checked={onlyWithIocs} onChange={setOnlyWithIocs} count={facets.withIocs} />
@@ -969,6 +1135,13 @@ function LibraryPage() {
           checked={onlyWithEmulation}
           onChange={setOnlyWithEmulation}
           count={facets.withEmulation}
+        />
+        <FacetToggle
+          label="Needs review"
+          hint="The AI review was unsure, or judged a report not useful while it carries technical evidence"
+          checked={onlyNeedsReview}
+          onChange={setOnlyNeedsReview}
+          count={facets.needsReview}
         />
         <FacetToggle
           label="Hidden reports only"
@@ -1042,11 +1215,14 @@ function LibraryPage() {
             <>
               <ActionButton
                 icon={Sparkles}
-                disabled={isAuditing}
-                onClick={handleRunAiAudit}
-                title="Run the AI quality gate across acquired reports"
+                onClick={() => void handleRunAiReview()}
+                title={
+                  reviewProgress
+                    ? "Stop after the current report"
+                    : "Analyse the newest-published reports with AI: summary, indicators, attack chain, adversary and a usefulness review. Nothing is deleted; uncertain reports are flagged for review."
+                }
               >
-                {isAuditing ? "Auditing…" : "Audit with AI"}
+                {reviewProgress ? `Analysing ${reviewProgress.done + 1 > reviewProgress.total ? reviewProgress.total : reviewProgress.done + 1} of ${reviewProgress.total} · Stop` : "Analyse with AI"}
               </ActionButton>
               <ActionButton variant="primary" icon={Plus} to="/ingest">
                 Ingest report
