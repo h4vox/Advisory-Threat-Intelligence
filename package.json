@@ -26,7 +26,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "aie": "node bin/aie.mjs",
-    "build:attack-knowledge": "node --experimental-strip-types --no-warnings scripts/build-attack-knowledge.mjs"
+    "build:attack-knowledge": "node --experimental-strip-types --no-warnings scripts/build-attack-knowledge.mjs",
+    "db:migration": "node scripts/db-migration/migrate.mjs"
   },
   "bin": {
     "aie": "./bin/aie.mjs"
