@@ -133,12 +133,13 @@ export function ReportFeedCard({
               <TierDot tier={tier} />
               <span className="truncate font-medium text-fg/90">{publisherOf(r)}</span>
             </span>
-            {date && (
-              <span className="inline-flex items-center gap-1 tabular-nums text-subtle">
-                <Calendar className="size-3.5" strokeWidth={1.75} />
-                {date}
-              </span>
-            )}
+            <span
+              className="inline-flex items-center gap-1 tabular-nums text-subtle"
+              title={`${date ? `Published ${date} by the source` : "The source gives no publication date"} · ingested ${formatDate(r.ingestedAt) ?? "unknown"}`}
+            >
+              <Calendar className="size-3.5" strokeWidth={1.75} />
+              {date ?? "Undated"}
+            </span>
           </div>
 
           <h3 className="mt-2 line-clamp-2 text-[15px] font-semibold leading-snug text-fg sm:text-base">{r.title}</h3>
@@ -251,7 +252,7 @@ export function ReportListRow({
             <TierDot tier={tierOf(r)} />
           </span>{" "}
           {publisherOf(r)}
-          {date ? ` · ${date}` : ""}
+          {` · ${date ?? "Undated"}`}
           {actors.length > 0 && (
             <>
               {" · "}

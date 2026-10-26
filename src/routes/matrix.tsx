@@ -140,8 +140,9 @@ function MatrixPage() {
 
   // Fetch Central Intelligence Reports with 60s cache for fast 0ms navigation
   const { data: allReports = [], isFetching, refetch } = useQuery({
-    queryKey: ["reports-all"],
-    queryFn: () => listReports({ data: { limit: 500 } }),
+    // The 500 newest by publication date, shared with the Library's default view.
+    queryKey: ["reports-all", "published"],
+    queryFn: () => listReports({ data: { limit: 500, order: "published" } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });

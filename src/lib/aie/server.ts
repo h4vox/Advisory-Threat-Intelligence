@@ -591,7 +591,7 @@ export const getDashboard = createServerFn({ method: "GET" }).middleware([analys
   const iocCount = iocRows.reduce((n, row) => n + parseJson<IocHit[]>(row.iocs_json, []).length, 0);
 
   const recentRows = await sql.query<ReportRow>(
-    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') <> 'duplicate' order by r.ingested_at desc limit 6`,
+    `select ${REPORT_SELECT} from reports r join sources s on s.id = r.source_id where coalesce(r.status, '') not in ('duplicate', 'rejected') order by r.published_at desc nulls last, r.ingested_at desc limit 6`,
   );
   const eventRows = await sql<{
     id: string;

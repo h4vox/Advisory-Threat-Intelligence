@@ -34,6 +34,7 @@ import { DocTypeBadge, EntityChip, EntityIcon, entityMeta, type EntityKind } fro
 import { IdBadge } from "@/components/id-badge";
 import { formatAuditId, formatOutcomeId, formatReportId, formatSourceId } from "@/lib/aie/ids";
 import { formatDateTime } from "@/lib/aie/format";
+import { formatDate as formatShortDate } from "@/components/library/report-utils";
 import { getDashboard } from "@/lib/aie/server";
 import type {
   ThreatRegionStats,
@@ -739,7 +740,7 @@ function Home() {
           <SectionCard
             className="min-w-0 overflow-hidden lg:col-span-3"
             bodyClassName="px-0 pb-0 pt-4"
-            title="Recently acquired intelligence"
+            title="Latest published intelligence"
             icon={FileText}
             iconKind="advisory"
             actions={
@@ -776,7 +777,13 @@ function Home() {
                       <span className="text-subtle">·</span>
                       <span>{humanize(r.classification)}</span>
                       <span className="text-subtle">·</span>
-                      <span>PDF ready</span>
+                      <span className="tabular-nums text-fg/80" title="When the source published it">
+                        {r.publishedAt ? `Published ${formatShortDate(r.publishedAt)}` : "Publication date unknown"}
+                      </span>
+                      <span className="text-subtle">·</span>
+                      <span className="tabular-nums" title="When AIE ingested it">
+                        Ingested {formatShortDate(r.ingestedAt)}
+                      </span>
                     </div>
                     <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted">{r.excerpt}</p>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
