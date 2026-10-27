@@ -43,7 +43,7 @@ services:
     container_name: aie-mongo-local
     profiles: ["interim-mongo"]
     restart: unless-stopped
-    command: ["--bind_ip_all", "--auth"]
+    command: ["--bind_ip_all", "--auth", "--wiredTigerCacheSizeGB", "0.3"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: aie
       MONGO_INITDB_ROOT_PASSWORD: ${AIE_MONGO_PASSWORD:?Set AIE_MONGO_PASSWORD before starting the interim MongoDB}
