@@ -7,6 +7,10 @@ if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:8080/ 2>/dev/null || cmd.
   exit 0
 fi
 if command -v docker >/dev/null 2>&1; then
+  # Local database services: PostgreSQL (Phase 1/2) and interim MongoDB (local cluster replica)
+  if [ -f docker-compose.db.yml ]; then
+    nohup docker compose -f docker-compose.db.yml --profile interim-mongo up -d < /dev/null > /dev/null 2>&1 &
+  fi
   # Background: the first run builds the sandbox image (downloads the agent CLI), which takes minutes.
   nohup docker compose -f docker-compose.agent-sandbox.yml up -d < /dev/null > /dev/null 2>&1 &
 fi
