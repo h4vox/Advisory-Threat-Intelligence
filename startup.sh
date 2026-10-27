@@ -14,4 +14,5 @@ if command -v docker >/dev/null 2>&1; then
   # Background: the first run builds the sandbox image (downloads the agent CLI), which takes minutes.
   nohup docker compose -f docker-compose.agent-sandbox.yml up -d < /dev/null > /dev/null 2>&1 &
 fi
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=384}"
 nohup npm run dev < /dev/null >>/tmp/app-startup.log 2>&1 &
