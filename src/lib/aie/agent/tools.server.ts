@@ -172,7 +172,16 @@ const listReportsTool = defineRead({
       };
     }
     const rows = await listReports({
-      data: { q: args.query || undefined, actor: args.actor || undefined, malware: args.malware || undefined, hasIocs: args.has_iocs || undefined, limit: 500, offset: 0 },
+      data: {
+        q: args.query || undefined,
+        actor: args.actor || undefined,
+        malware: args.malware || undefined,
+        hasIocs: args.has_iocs || undefined,
+        limit: 500,
+        offset: 0,
+        // The 500 newest by the date asked about, so "latest" means latest published in a large library.
+        order: args.date_field === "ingested" ? "ingested" : "published",
+      },
     });
     const dateOf = (r: ReportListItem) => (args.date_field === "ingested" ? r.ingestedAt : r.publishedAt || r.ingestedAt) || "";
     const visible = rows.filter(

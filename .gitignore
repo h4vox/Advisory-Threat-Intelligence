@@ -74,3 +74,6 @@ Thumbs.db
 
 # Documentation & Plan directory
 plan/
+
+# Database backups made by scripts/db-migration (they contain the full library and account data)
+db-backups/

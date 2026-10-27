@@ -2652,11 +2652,15 @@ export async function mongoGetCrawlerState(): Promise<CrawlerState> {
 // Dashboard Aggregates
 // ---------------------------------------------------------------------------
 
+/**
+ * The latest intelligence for the dashboard: newest publication date first (undated last), visible
+ * reports only. Ingestion time only breaks ties, so an old report fetched today is not shown as new.
+ */
 export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[]> {
   const col = await getThreatIntelCollection();
   const docs = await col
-    .find({ docType: "report" })
-    .sort({ ingestedAt: -1 })
+    .find({ docType: "report", status: { $nin: ["rejected", "duplicate"] }, discoveryMethod: { $ne: "structured_sync" } })
+    .sort({ publishedAt: -1, ingestedAt: -1 })
     .limit(limit)
     .project({
       id: 1,
