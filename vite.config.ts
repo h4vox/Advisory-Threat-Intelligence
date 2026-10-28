@@ -244,6 +244,13 @@ export default defineConfig(({ command, isPreview }) => ({
       "@noble/hashes/sha2.js",
       "@noble/hashes/hkdf.js",
       "jose/errors",
+      "@better-fetch/fetch",
+      "@tanstack/router-core",
+      "@tanstack/router-core/isServer",
+      "@tanstack/router-core/ssr/client",
+      "defu",
+      "nanostores",
+      "seroval",
     ],
   },
   plugins: [

@@ -30,8 +30,7 @@ const MISSING_URI_MESSAGE =
  * for everyone who runs it. Point MONGODB_URI at a different `mongodb://` / `mongodb+srv://` URI to
  * use another database, or set MONGODB_URI=local (off / none) to fall back to the built-in local DB.
  */
-const DEFAULT_MONGODB_URI =
-  "mongodb+srv://threatintel_app:UsvyDIqA5d5YztAf@cluster0.gr9ihel.mongodb.net/?appName=Cluster0";
+const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017/threat-intel-DB";
 
 export function getMongoUri(): string | undefined {
   // Heal a pasted "MONGODB_URI=MONGODB_URI=mongodb+srv://..." double prefix before validating.
