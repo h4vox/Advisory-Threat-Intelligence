@@ -142,7 +142,7 @@ function MatrixPage() {
   const { data: allReports = [], isFetching, refetch } = useQuery({
     // The 500 newest by publication date, shared with the Library's default view.
     queryKey: ["reports-all", "published"],
-    queryFn: () => listReports({ data: { limit: 500, order: "published" } }),
+    queryFn: () => listReports({ data: { limit: 500, order: "published", view: "list" } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
