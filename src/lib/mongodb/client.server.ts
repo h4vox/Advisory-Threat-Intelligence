@@ -25,28 +25,20 @@ const MISSING_URI_MESSAGE =
   "MONGODB_URI is not set. Add it to the server environment (or a .env file next to package.json) and restart; no built-in database credentials are provided.";
 
 /**
- * The shared threat-intel database. AIE is a single-database product, so this cluster is the built-in
- * default: the app connects to it out of the box with no setup, which is why the library is the same
- * for everyone who runs it. Point MONGODB_URI at a different `mongodb://` / `mongodb+srv://` URI to
- * use another database, or set MONGODB_URI=local (off / none) to fall back to the built-in local DB.
+ * The database connection comes only from the environment: MONGODB_URI (a `mongodb://` or
+ * `mongodb+srv://` URI). There is no built-in default. In production a missing or placeholder value
+ * stops the app with a clear message (fail closed); in development it falls back to the built-in
+ * local database. MONGODB_URI=local (off / none) chooses that local database explicitly.
  */
-const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017/threat-intel-DB";
-
 export function getMongoUri(): string | undefined {
   // Heal a pasted "MONGODB_URI=MONGODB_URI=mongodb+srv://..." double prefix before validating.
   const raw = process.env.MONGODB_URI?.replace(/^(?:\s*MONGODB_URI\s*=\s*)+/i, "").trim();
   // Explicit opt-out keeps the built-in local database (offline / isolated development).
   if (raw && /^(?:local|off|none|disabled?)$/i.test(raw)) return undefined;
-  // Unset, a template placeholder, or anything that is not a real Mongo URI → the shared default.
-  if (
-    !raw ||
-    (raw.includes("<") && raw.includes(">")) ||
-    raw.includes("NEW_PASSWORD") ||
-    !/^mongodb(?:\+srv)?:\/\//i.test(raw)
-  ) {
-    return DEFAULT_MONGODB_URI;
-  }
-  return raw;
+  const usable = Boolean(raw) && !(raw!.includes("<") && raw!.includes(">")) && !raw!.includes("NEW_PASSWORD") && /^mongodb(?:\+srv)?:\/\//i.test(raw!);
+  if (usable) return raw;
+  if (process.env.NODE_ENV === "production") throw new Error(MISSING_URI_MESSAGE);
+  return undefined;
 }
 
 export function getDatabaseName(): string {
@@ -75,7 +67,11 @@ export function isMongoRequired(): boolean {
 
 /** True when the shared database is mandatory here but has not been configured — a hard deploy error. */
 export function isMongoMissingButRequired(): boolean {
-  return isMongoRequired() && !isMongoConfigured();
+  try {
+    return isMongoRequired() && !isMongoConfigured();
+  } catch {
+    return true;
+  }
 }
 
 export async function getMongoClient(): Promise<MongoClient> {

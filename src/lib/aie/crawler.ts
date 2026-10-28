@@ -3755,13 +3755,19 @@ export function startCrawlerSchedulerDaemon() {
 registerScheduleChecker(checkAndTriggerScheduledCrawl);
 startCrawlerSchedulerDaemon();
 
-// Warm the shared database + account store as soon as the server module loads, so the first
-// "Checking session…" / page load does not pay the full cold connection cost (noticeable with a
-// remote Atlas cluster), and the env-based admin / dev accounts are provisioned promptly. Backgrounded
-// and guarded; any failure is retried lazily by the normal request path.
-if (isMongoConfigured()) {
-  void import("./accounts/session.server")
-    .then((m) => m.ensureAccountsReady())
-    .then(() => console.log("[boot] account store warmed and bootstrap accounts ready"))
-    .catch((err) => console.warn("[boot] account-store warm-up failed (will retry on first request):", err instanceof Error ? err.message : err));
+// Warm the database connection as soon as the server module loads, so the first page does not
+// pay the cold connection cost. Backgrounded; a failure is retried by the normal request path.
+if ((() => {
+  try {
+    return isMongoConfigured();
+  } catch (err) {
+    // Production without MONGODB_URI: every request reports it; do not crash on load.
+    console.error(`[boot] ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+})()) {
+  void import("../mongodb/client.server")
+    .then((m) => m.getMongoDb())
+    .then(() => console.log("[boot] database connection warmed"))
+    .catch((err) => console.warn("[boot] database warm-up failed (will retry on first request):", err instanceof Error ? err.message : err));
 }

@@ -66,8 +66,8 @@ git fetch origin db-migration && git checkout db-migration && npm install
    ```bash
    export PG_ADMIN_URL="postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:5432/postgres"
    export AIE_DB_PASSWORD='<long random password for the app role "aie", 16+ chars>'
-   # Source: defaults to the app's Atlas cluster and database threat-intel-DB.
-   # export MIGRATION_MONGO_URI='mongodb+srv://…'   MIGRATION_MONGO_DB='threat-intel-DB'
+   # Source (required): the MongoDB to copy from; defaults to the app's MONGODB_URI.
+   export MIGRATION_MONGO_URI='mongodb+srv://…'   # MIGRATION_MONGO_DB defaults to threat-intel-DB
    ```
 
 3. **Look before copying** (reads only):
@@ -148,8 +148,7 @@ Prefer not to expose it at all. In order of preference:
 When the app runs on PostgreSQL (or on the interim MongoDB) and the backup is safe:
 
 - **Atlas user:** change the `threatintel_app` password in Atlas, or delete the user.
-- **This branch:** remove the hard-coded Atlas URI from `src/lib/mongodb/client.server.ts`,
-  `.env.example` and `scripts/db-migration/migrate.mjs`.
+- **Done:** the hard-coded Atlas URI is gone from the code; every connection comes from the environment.
 - **Database passwords:** keep the PostgreSQL passwords in the server's environment only, never in git.
 
 ## Phase 2: the app reads and writes PostgreSQL (next)

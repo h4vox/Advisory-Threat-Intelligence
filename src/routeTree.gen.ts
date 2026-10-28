@@ -24,8 +24,9 @@ import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as UiKitRouteImport } from './routes/ui-kit'
 import { Route as ActorsActorIdRouteImport } from './routes/actors_.$actorId'
 import { Route as AdvisoriesAdvisoryIdRouteImport } from './routes/advisories_.$advisoryId'
+import { Route as ApiLoginRouteImport } from './routes/api/login'
+import { Route as ApiLogoutRouteImport } from './routes/api/logout'
 import { Route as LibraryReportIdRouteImport } from './routes/library_.$reportId'
-import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -102,14 +103,19 @@ const AdvisoriesAdvisoryIdRoute = AdvisoriesAdvisoryIdRouteImport.update({
   path: '/advisories/$advisoryId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiLoginRoute = ApiLoginRouteImport.update({
+  id: '/api/login',
+  path: '/api/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLogoutRoute = ApiLogoutRouteImport.update({
+  id: '/api/logout',
+  path: '/api/logout',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LibraryReportIdRoute = LibraryReportIdRouteImport.update({
   id: '/library_/$reportId',
   path: '/library/$reportId',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
-  id: '/api/auth/$',
-  path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -129,8 +135,9 @@ export interface FileRoutesByFullPath {
   '/ui-kit': typeof UiKitRoute
   '/actors/$actorId': typeof ActorsActorIdRoute
   '/advisories/$advisoryId': typeof AdvisoriesAdvisoryIdRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
   '/library/$reportId': typeof LibraryReportIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -148,8 +155,9 @@ export interface FileRoutesByTo {
   '/ui-kit': typeof UiKitRoute
   '/actors/$actorId': typeof ActorsActorIdRoute
   '/advisories/$advisoryId': typeof AdvisoriesAdvisoryIdRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
   '/library/$reportId': typeof LibraryReportIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -168,8 +176,9 @@ export interface FileRoutesById {
   '/ui-kit': typeof UiKitRoute
   '/actors_/$actorId': typeof ActorsActorIdRoute
   '/advisories_/$advisoryId': typeof AdvisoriesAdvisoryIdRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
   '/library_/$reportId': typeof LibraryReportIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -189,8 +198,9 @@ export interface FileRouteTypes {
     | '/ui-kit'
     | '/actors/$actorId'
     | '/advisories/$advisoryId'
+    | '/api/login'
+    | '/api/logout'
     | '/library/$reportId'
-    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -208,8 +218,9 @@ export interface FileRouteTypes {
     | '/ui-kit'
     | '/actors/$actorId'
     | '/advisories/$advisoryId'
+    | '/api/login'
+    | '/api/logout'
     | '/library/$reportId'
-    | '/api/auth/$'
   id:
     | '__root__'
     | '/'
@@ -227,8 +238,9 @@ export interface FileRouteTypes {
     | '/ui-kit'
     | '/actors_/$actorId'
     | '/advisories_/$advisoryId'
+    | '/api/login'
+    | '/api/logout'
     | '/library_/$reportId'
-    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -247,8 +259,9 @@ export interface RootRouteChildren {
   UiKitRoute: typeof UiKitRoute
   ActorsActorIdRoute: typeof ActorsActorIdRoute
   AdvisoriesAdvisoryIdRoute: typeof AdvisoriesAdvisoryIdRoute
+  ApiLoginRoute: typeof ApiLoginRoute
+  ApiLogoutRoute: typeof ApiLogoutRoute
   LibraryReportIdRoute: typeof LibraryReportIdRoute
-  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -358,18 +371,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdvisoriesAdvisoryIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/login': {
+      id: '/api/login'
+      path: '/api/login'
+      fullPath: '/api/login'
+      preLoaderRoute: typeof ApiLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/logout': {
+      id: '/api/logout'
+      path: '/api/logout'
+      fullPath: '/api/logout'
+      preLoaderRoute: typeof ApiLogoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/library_/$reportId': {
       id: '/library_/$reportId'
       path: '/library/$reportId'
       fullPath: '/library/$reportId'
       preLoaderRoute: typeof LibraryReportIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/auth/$': {
-      id: '/api/auth/$'
-      path: '/api/auth/$'
-      fullPath: '/api/auth/$'
-      preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -391,8 +411,9 @@ const rootRouteChildren: RootRouteChildren = {
   UiKitRoute: UiKitRoute,
   ActorsActorIdRoute: ActorsActorIdRoute,
   AdvisoriesAdvisoryIdRoute: AdvisoriesAdvisoryIdRoute,
+  ApiLoginRoute: ApiLoginRoute,
+  ApiLogoutRoute: ApiLogoutRoute,
   LibraryReportIdRoute: LibraryReportIdRoute,
-  ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,84 +1,49 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { AlertTriangle, Eye, EyeOff, KeyRound, Loader2, LogIn, ShieldCheck } from "lucide-react";
-import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
-import { adoptPasswordSession, useAppSession } from "@/components/auth/use-app-session";
-import { isEmbedded } from "@/lib/aie/accounts/client-token";
-import { passwordSignIn } from "@/lib/aie/server-accounts";
+import { getAuthState } from "@/lib/aie/server-auth";
 import { cn } from "@/lib/cn";
 
-type LoginSearch = { redirect?: string };
+type LoginSearch = { redirect?: string; error?: "invalid" | "limited" | "unconfigured" };
+
+/** Same-origin paths only (no "//host" or absolute URLs): never an open redirect. */
+function safeRedirect(r: unknown): string | undefined {
+  return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\") && !r.startsWith("/login") && !r.startsWith("/api/") ? r : undefined;
+}
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>): LoginSearch => {
-    const r = search.redirect;
-    // Same-origin paths only (no "//host" or absolute URLs): never an open redirect.
-    return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\") && !r.startsWith("/login") ? { redirect: r } : {};
+    const error = search.error === "invalid" || search.error === "limited" || search.error === "unconfigured" ? search.error : undefined;
+    const r = safeRedirect(search.redirect);
+    return { ...(r ? { redirect: r } : {}), ...(error ? { error } : {}) };
+  },
+  // Already signed in: straight to the page asked for. Also tells the page whether sign-in is set up.
+  beforeLoad: async ({ search }) => {
+    const state = await getAuthState();
+    if (state.user) throw redirect({ href: search.redirect ?? "/" });
+    return { configured: state.configured };
   },
   component: Login,
 });
 
 const field =
-  "h-11 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-60";
+  "h-11 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
 
+const ERRORS: Record<NonNullable<LoginSearch["error"]>, string> = {
+  invalid: "Incorrect username or password.",
+  limited: "Too many failed sign-ins. Wait a few minutes and try again.",
+  unconfigured: "Sign-in is not set up on the server.",
+};
+
+/**
+ * A plain HTML form posted to /api/login: it works as soon as the page arrives, before (and
+ * without) the page's scripts.
+ */
 function Login() {
-  const session = useAppSession();
-  const { redirect } = Route.useSearch();
-  const router = useRouter();
-  const queryClient = useQueryClient();
-  const [identifier, setIdentifier] = useState("");
-  const [password, setPassword] = useState("");
+  const { redirect: to, error } = Route.useSearch();
+  const { configured } = Route.useRouteContext();
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [ssoBusy, setSsoBusy] = useState<string | null>(null);
-  // The server-rendered form stays inert until scripts take over, so an early submit is never lost to a page reload.
-  const [ready, setReady] = useState(false);
-  useEffect(() => setReady(true), []);
-
-  if (!session.isPending && session.user) return <GoTo href={redirect ?? "/"} />;
-
-  const info = session.info;
-  const storeDown = info ? !info.available : Boolean(session.accountError);
-  const noAccounts = info?.available && !info.hasAccounts;
-
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (submitting) return;
-    setError(null);
-    if (!identifier.trim() || !password) {
-      setError("Enter your email or username and password.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const res = await passwordSignIn({ data: { identifier, password } });
-      const kept = await adoptPasswordSession(queryClient, res.user, res.token, isEmbedded());
-      if (!kept) {
-        setError("You signed in, but this browser did not keep the session. Allow cookies for this site and try again.");
-        return;
-      }
-      router.history.replace(redirect ?? "/");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed.");
-      setPassword("");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function onSso(providerId: string) {
-    setError(null);
-    setSsoBusy(providerId);
-    try {
-      await signIn(providerId, { callbackURL: redirect ?? "/" });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Single sign-on failed.");
-    } finally {
-      setSsoBusy(null);
-    }
-  }
 
   return (
     <main className="grid min-h-dvh place-items-center bg-bg px-4 py-10 text-fg">
@@ -101,35 +66,29 @@ function Login() {
           <h1 className="text-xl font-semibold">Sign in</h1>
           <p className="mt-1 text-sm text-muted">Access is limited to approved analysts.</p>
 
-          {storeDown && (
-            <Notice tone="danger">
-              Password sign-in is unavailable right now. {info?.error ?? session.accountError}
-            </Notice>
-          )}
-          {noAccounts && (
+          {!configured && (
             <Notice tone="warning">
-              No accounts exist yet. Set <code className="font-mono text-[12px]">AIE_ADMIN_PASSWORD</code> (and optionally{" "}
-              <code className="font-mono text-[12px]">AIE_ADMIN_USERNAME</code>) in the server environment and restart to create the
-              administrator.
+              Sign-in is not set up on the server. Set <code className="font-mono text-[12px]">AIE_ADMIN_USERNAME</code> and{" "}
+              <code className="font-mono text-[12px]">AIE_ADMIN_PASSWORD</code> in its environment (<code className="font-mono text-[12px]">.env</code>) and
+              restart.
             </Notice>
           )}
 
-          <form className="mt-5 space-y-4" onSubmit={onSubmit} method="post" noValidate>
+          <form className="mt-5 space-y-4" method="post" action="/api/login" onSubmit={() => setSubmitting(true)}>
+            {to && <input type="hidden" name="redirect" value={to} />}
             <div className="space-y-1.5">
               <label htmlFor="login-username" className="text-sm font-medium">
-                Email or username
+                Username
               </label>
               <input
                 id="login-username"
                 name="username"
+                required
                 autoComplete="username"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
                 autoFocus
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                disabled={submitting}
                 className={field}
               />
             </div>
@@ -141,11 +100,9 @@ function Login() {
                 <input
                   id="login-password"
                   name="password"
+                  required
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={submitting}
                   className={cn(field, "pr-11")}
                 />
                 <button
@@ -164,67 +121,29 @@ function Login() {
               {error && (
                 <p className="flex items-start gap-2 text-sm text-danger">
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                  <span>{error}</span>
+                  <span>{ERRORS[error]}</span>
                 </p>
               )}
             </div>
 
             <button
               type="submit"
-              disabled={submitting || !ready}
-              className="btn-primary inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
+              className="btn-primary inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium aria-busy:opacity-80"
+              aria-busy={submitting}
             >
               {submitting ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogIn className="size-4" />}
               {submitting ? "Signing in…" : "Sign in"}
             </button>
           </form>
-
-          {authEnabled && (
-            <>
-              <div className="my-5 flex items-center gap-3 text-xs text-subtle">
-                <span className="h-px flex-1 bg-border" />
-                or continue with
-                <span className="h-px flex-1 bg-border" />
-              </div>
-              <div className="space-y-2">
-                {GROK_PROVIDERS.map((p) => (
-                  <button
-                    key={p.providerId}
-                    type="button"
-                    disabled={Boolean(ssoBusy) || submitting || !ready}
-                    onClick={() => void onSso(p.providerId)}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-border bg-bg-elevated px-4 text-sm font-medium transition-colors hover:bg-bg-subtle disabled:opacity-60"
-                  >
-                    {ssoBusy === p.providerId && <Loader2 className="size-4 motion-safe:animate-spin" />}
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-              {session.ssoUnavailable && (
-                <p className="mt-3 text-xs text-muted">
-                  Single sign-on did not respond just now. Username and password sign-in still works.
-                </p>
-              )}
-            </>
-          )}
         </div>
 
         <p className="flex items-center justify-center gap-1.5 text-xs text-subtle">
           <KeyRound className="size-3.5" />
-          Sessions last 7 days on this browser. Ask an administrator for an account.
+          You stay signed in on this browser for 7 days.
         </p>
       </div>
     </main>
   );
-}
-
-/** Client-side redirect to a same-origin path that may carry a query string (validated in validateSearch). */
-function GoTo({ href }: { href: string }) {
-  const router = useRouter();
-  useEffect(() => {
-    router.history.replace(href);
-  }, [router, href]);
-  return null;
 }
 
 function Notice({ tone, children }: { tone: "warning" | "danger"; children: ReactNode }) {

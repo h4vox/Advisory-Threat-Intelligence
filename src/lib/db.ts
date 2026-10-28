@@ -1,4 +1,4 @@
-import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { isMigrationDatabase, pendingMigrations } from "../../scripts/migration-plan.mjs";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -7,8 +7,14 @@ export type DbSource = "neon" | "pglite";
 // "unset" — otherwise production would silently run on the PGLite fallback.
 const rawDatabaseUrl =
   typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
+// A DATABASE_URL naming a migration database (aie_intel / aie_app, scripts/db-migration) is ignored:
+// the app's older SQL schema and queries must never touch the migrated tables.
+const ignoredMigrationUrl = Boolean(rawDatabaseUrl?.trim() && isMigrationDatabase(rawDatabaseUrl.trim()));
+if (ignoredMigrationUrl) {
+  console.warn("[db] DATABASE_URL points at a migration database (aie_intel / aie_app); ignoring it and using the built-in local database for the legacy SQL tables.");
+}
 const databaseUrl =
-  rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
+  rawDatabaseUrl && rawDatabaseUrl.trim() && !ignoredMigrationUrl ? rawDatabaseUrl : undefined;
 
 /**
  * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured

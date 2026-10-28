@@ -44,3 +44,24 @@ export function pendingMigrations(paths, applied) {
     .sort((a, b) => a.name.localeCompare(b.name))
     .filter(({ name }) => !done.has(name));
 }
+
+/**
+ * The databases made by the MongoDB → PostgreSQL migration (scripts/db-migration). They hold the
+ * migrated documents in their own tables (reports, sources, crawl_jobs…), so the app's older SQL
+ * schema must never be applied to them: a DATABASE_URL naming one of them is ignored.
+ */
+export const MIGRATION_DATABASES = ["aie_intel", "aie_app"];
+
+/**
+ * True when the connection string points at one of the migration databases.
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isMigrationDatabase(url) {
+  try {
+    const name = decodeURIComponent(new URL(url).pathname.replace(/^\//, "")).toLowerCase();
+    return MIGRATION_DATABASES.includes(name);
+  } catch {
+    return false;
+  }
+}

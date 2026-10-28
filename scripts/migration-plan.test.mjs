@@ -91,3 +91,11 @@ test("the copy check reads both files and catches an edit", () => {
   const drifted = authSchemaCopy(root);
   assert.notEqual(drifted.copy, drifted.source);
 });
+
+test("DATABASE_URL naming a migration database is recognised (and so never migrated)", async () => {
+  const { isMigrationDatabase } = await import("./migration-plan.mjs");
+  assert.equal(isMigrationDatabase("postgres://aie:secret@127.0.0.1:5432/aie_intel"), true);
+  assert.equal(isMigrationDatabase("postgresql://aie:secret@db.example:5432/AIE_APP?sslmode=require"), true);
+  assert.equal(isMigrationDatabase("postgres://u:p@127.0.0.1:5432/neondb"), false);
+  assert.equal(isMigrationDatabase("not a url"), false);
+});

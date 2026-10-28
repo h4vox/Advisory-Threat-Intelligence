@@ -27,12 +27,10 @@ import {
   Sparkles,
   Sun,
   Trash2,
-  UsersRound,
   Zap,
   Code2,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { UsersPanel } from "@/components/settings/users-panel";
 import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { StatusChip } from "@/components/ui/primitives";
@@ -75,7 +73,6 @@ const SETTINGS_SECTIONS = [
   { id: "storage", label: "Database & storage", icon: Database, badge: "Storage" },
   { id: "display", label: "Display & preferences", icon: Sliders, badge: "UI" },
   { id: "agent", label: "AI agent", icon: Sparkles, badge: "AGY" },
-  { id: "users", label: "Users & access", icon: UsersRound, badge: "Admin" },
 ] as const;
 
 // Minimum is 15m to match the server validator (frequencyMinutes >= 15); the 5m "Test" preset was
@@ -104,11 +101,11 @@ function SettingsPage() {
   const search = Route.useSearch();
   const qc = useQueryClient();
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(
-    search.tab ?? "crawler"
+    search.tab && search.tab !== "users" ? search.tab : "crawler"
   );
   // Deep links (e.g. Profile → Manage users) can switch sections while the page is open.
   useEffect(() => {
-    if (search.tab) setActiveSection(search.tab);
+    if (search.tab) setActiveSection(search.tab === "users" ? "crawler" : search.tab);
   }, [search.tab]);
 
   // Fetch Configurations from Database
@@ -2316,7 +2313,6 @@ function SettingsPage() {
         {/* ========================================================================= */}
         {/* TAB 6: USERS & ACCESS                                                     */}
         {/* ========================================================================= */}
-        {activeSection === "users" && <UsersPanel />}
         </div>
         </div>
       </div>
