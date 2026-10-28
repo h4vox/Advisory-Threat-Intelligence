@@ -138,8 +138,8 @@ function main(argv) {
   const pathSep = process.platform === "win32" ? ";" : ":";
   const existingPath = process.env.Path || process.env.PATH || "";
   const env = mergeAppEnv(readAppEnv(root), {
-    ...readDotEnv(root),
     ...process.env,
+    ...readDotEnv(root),
     PATH: `${nodeBin}${pathSep}${existingPath}`,
     Path: `${nodeBin}${pathSep}${existingPath}`,
   });

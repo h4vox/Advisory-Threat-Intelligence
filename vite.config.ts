@@ -231,6 +231,21 @@ export default defineConfig(({ command, isPreview }) => ({
     allowedHosts: ["aie.h4vox.site"],
   },
   resolve: { tsconfigPaths: true },
+  optimizeDeps: {
+    include: [
+      "@better-auth/core",
+      "@better-auth/core/env",
+      "@better-auth/core/error",
+      "@better-auth/core/utils/url",
+      "@better-auth/core/utils/string",
+      "@better-auth/core/utils/error-codes",
+      "better-auth/react",
+      "@noble/ciphers/chacha.js",
+      "@noble/hashes/sha2.js",
+      "@noble/hashes/hkdf.js",
+      "jose/errors",
+    ],
+  },
   plugins: [
     requestLoggerPlugin(),
     pgliteBootstrapPlugin(),
