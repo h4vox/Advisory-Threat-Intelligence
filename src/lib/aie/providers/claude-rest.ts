@@ -231,6 +231,9 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
       if (systemInstruction) {
         requestBody.system = systemInstruction;
       }
+      if (options.webSearch) {
+        requestBody.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 6 }];
+      }
 
       const response = await fetch(CLAUDE_BASE_URL, {
         method: "POST",
@@ -259,7 +262,9 @@ export class ClaudeRestAdapter implements AIProviderAdapter {
       }
 
       const data = await response.json();
-      const text = data?.content?.[0]?.text || "";
+      // With web search the answer is split across several text blocks (between search results).
+      const blocks: Array<{ type?: string; text?: string }> = Array.isArray(data?.content) ? data.content : [];
+      const text = blocks.filter((b) => b?.type === "text" || typeof b?.text === "string").map((b) => b.text ?? "").join("") || "";
       const usage = data?.usage;
 
       return {

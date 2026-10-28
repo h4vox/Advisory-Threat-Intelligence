@@ -42,6 +42,7 @@ import {
 import { backgroundAgentService, warmAgentService } from "./warm-agent-service";
 import { translateDocument, type ChunkTranslator, type DocumentTranslation } from "./translation";
 import { ANALYSIS_SYSTEM, buildAnalysisPrompt, groundReportAnalysis, type AnalysisPromptInput, type ReportAiAnalysis } from "./report-ai-analysis";
+import { REPORT_DISCOVERY_SYSTEM, buildReportDiscoveryPrompt, parseReportSuggestions, type DiscoveryTopic, type SuggestedReport, type SuggestedSource } from "./ai-report-discovery";
 import { sha256Hex } from "./retrieval";
 
 export type UnifiedDiscoveryParams = {
@@ -974,6 +975,57 @@ export async function runUnifiedReportAnalysis(
     model: answer.model,
     truncated,
   });
+}
+
+/** Providers whose API can search the web while answering (LLMGenerateOptions.webSearch). */
+const WEB_SEARCH_PROVIDERS = new Set(["gemini_api", "claude_api"]);
+
+/**
+ * Asks the active AI provider for specific recent research reports (and new publishers) on the
+ * given topics (./ai-report-discovery). Searches the web live where the provider can. The answer
+ * is validated for shape only; the crawler's normal gates judge every URL.
+ */
+export async function runUnifiedReportDiscovery(params: {
+  topics: DiscoveryTopic[];
+  since: string;
+  knownDomains: string[];
+  max?: number;
+  timeoutSeconds?: number;
+  allowSandboxFallback?: boolean;
+}): Promise<{ reports: SuggestedReport[]; sources: SuggestedSource[]; dropped: number; provider: string; webSearch: boolean; error?: string }> {
+  const active = await getActiveAIProvider();
+  const { restModel, agyModel } = resolveProviderModels(active);
+  const timeoutMs = Math.max(params.timeoutSeconds || active.timeoutSeconds, 45) * 1000;
+  const max = params.max ?? 20;
+  const adapter = active.isRest && active.apiKey ? getProviderAdapter(active.providerId) : undefined;
+  const webSearch = Boolean(adapter) && WEB_SEARCH_PROVIDERS.has(active.providerId);
+  const prompt = buildReportDiscoveryPrompt({ topics: params.topics, since: params.since, knownDomains: params.knownDomains, webSearch, max });
+  const categories = params.topics.map((t) => t.category).filter((c): c is string => Boolean(c));
+
+  let text = "";
+  let provider = active.providerName;
+  let error: string | undefined;
+  if (adapter) {
+    const res = await adapter.generate({ prompt, systemInstruction: REPORT_DISCOVERY_SYSTEM, model: restModel, apiKey: active.apiKey, endpointUrl: active.endpointUrl, timeoutMs, temperature: 0.2, maxTokens: 4096, responseFormat: "json", webSearch });
+    if (res.success && res.text) text = res.text;
+    else error = res.error || "the AI provider returned no answer";
+  }
+  if (!text && params.allowSandboxFallback !== false) {
+    const res = await backgroundAgentService.executePrompt(`${REPORT_DISCOVERY_SYSTEM}\n\n${prompt}`, { model: agyModel, timeoutMs });
+    if (res.success && res.text) {
+      text = res.text;
+      provider = active.isRest ? "Antigravity Agent (AGY)" : active.providerName;
+      error = undefined;
+    } else error = error ?? res.error ?? "the sandbox agent returned no answer";
+  }
+  if (!text) return { reports: [], sources: [], dropped: 0, provider, webSearch, error: error ?? "no AI provider is available" };
+  let parsed: unknown;
+  try {
+    parsed = extractJsonFromLlmText(text);
+  } catch {
+    return { reports: [], sources: [], dropped: 0, provider, webSearch, error: "the answer was not valid JSON" };
+  }
+  return { ...parseReportSuggestions(parsed, { categories, knownDomains: params.knownDomains, max }), provider, webSearch };
 }
 
 /**
