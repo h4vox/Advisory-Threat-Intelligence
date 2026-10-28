@@ -37,6 +37,7 @@ import {
 } from "./extract";
 import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
 import { comparePublishedDesc, resolvePublicationDate } from "./published-date";
+import { slimForList } from "./list-view";
 import {
   isSafeCrawlPatternString,
   isSafePublicUrlString,
@@ -908,6 +909,8 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
         limit: z.number().int().min(1).max(500).default(200),
         offset: z.number().int().min(0).max(100_000).default(0),
         order: z.enum(["ingested", "published"]).optional(),
+        /** "list": what list screens show (no quoted passages or offsets; ./list-view). Default: full. */
+        view: z.enum(["full", "list"]).optional(),
       })
       .optional(),
   )
@@ -919,7 +922,9 @@ export const listReports = createServerFn({ method: "GET" }).middleware([analyst
 
     if (isMongoConfigured()) {
       try {
-        const reports = (await mongoListReports({ ...data, limit, offset })).map(withRegistryProvenance);
+        const { view, ...query } = data ?? {};
+        const full = (await mongoListReports({ ...query, limit, offset })).map(withRegistryProvenance);
+        const reports = view === "list" ? full.map(slimForList) : full;
         logger.serverFn(
           "listReports",
           "DONE",

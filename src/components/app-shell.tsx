@@ -12,7 +12,6 @@ import {
   ChevronRight,
   Cpu,
   Globe2,
-  KeyRound,
   Keyboard,
   Layers,
   LayoutDashboard,
@@ -31,16 +30,13 @@ import {
   X,
   Route as RouteIcon,
   ScanSearch,
-  ShieldAlert,
   ScrollText,
   UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { getDashboard, getStorageStats } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
-import type { AppUser } from "@/lib/auth/use-current-user";
 import { useAppSession, useSignOut, type SessionUser } from "./auth/use-app-session";
-import { ChangePasswordForm } from "./auth/change-password-form";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
 import { CommandPalette, type PaletteNavItem } from "./layout/command-palette";
 import { actorCrumbName } from "./actors/actor-names";
@@ -178,8 +174,6 @@ function applyStyle(style: UiStyle) {
   }
 }
 
-const profileAction =
-  "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle";
 
 function signInLabel(user: SessionUser | null): string {
   if (!user) return "Not signed in";
@@ -188,13 +182,13 @@ function signInLabel(user: SessionUser | null): string {
   return "Sign-in off: local workspace user";
 }
 
-function initials(user: AppUser | null) {
+function initials(user: SessionUser | null) {
   const src = (user?.displayName || user?.primaryEmail || "Analyst").trim();
   const parts = src.split(/[\s@._-]+/).filter(Boolean);
   return ((parts[0]?.[0] ?? "A") + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
-function Avatar({ user, size = "md" }: { user: AppUser | null; size?: "md" | "lg" }) {
+function Avatar({ user, size = "md" }: { user: SessionUser | null; size?: "md" | "lg" }) {
   const box = size === "lg" ? "size-12 text-base" : "size-8 text-xs";
   if (user?.profileImageUrl) {
     return <img src={user.profileImageUrl} alt="" className={cn("shrink-0 rounded-full object-cover", box)} />;
@@ -429,7 +423,6 @@ export function AppShell({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [passwordOpen, setPasswordOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const session = useAppSession();
   const user = session.user;
@@ -542,13 +535,6 @@ export function AppShell({
             <UserRound className="size-4 text-muted" />
             Profile
           </DropdownMenu.Item>
-          {user?.method === "password" && (
-            <DropdownMenu.Item onSelect={() => setPasswordOpen(true)} className={menuItem}>
-              <KeyRound className="size-4 text-muted" />
-              Change password
-              {user.weakPassword && <span className="ml-auto size-1.5 rounded-full bg-warn" aria-label="Recommended" />}
-            </DropdownMenu.Item>
-          )}
           <DropdownMenu.Item asChild className={menuItem}>
             <Link to="/settings">
               <Settings className="size-4 text-muted" />
@@ -773,18 +759,6 @@ export function AppShell({
             {user?.role === "admin" ? "Administrator" : "Analyst"}
           </span>
         </div>
-        {user?.method === "password" && user.weakPassword && (
-          <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-border p-3 text-sm">
-            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warn" />
-            <div className="min-w-0 flex-1">
-              <div className="font-medium text-fg">Your password is short</div>
-              <div className="text-muted">It was set from the server environment. Choose one with at least 8 characters.</div>
-            </div>
-            <button type="button" onClick={() => setPasswordOpen(true)} className="shrink-0 text-sm font-medium text-accent hover:underline">
-              Change
-            </button>
-          </div>
-        )}
         <dl className="mt-4 grid grid-cols-[minmax(0,8.5rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
           {user?.username ? (
             <>
@@ -800,24 +774,9 @@ export function AppShell({
           <dt className="text-muted">Sign-in</dt>
           <dd className="text-fg">{signInLabel(user)}</dd>
           <dt className="text-muted">Role</dt>
-          <dd className="text-fg">{user?.role === "admin" ? "Administrator: manages users" : "Analyst"}</dd>
+          <dd className="text-fg">{user?.role === "admin" ? "Administrator" : "Analyst"}</dd>
         </dl>
-        {(user?.method === "password" || user?.role === "admin") && (
-          <div className="mt-4 flex flex-wrap gap-2">
-            {user?.method === "password" && (
-              <button type="button" onClick={() => setPasswordOpen(true)} className={profileAction}>
-                <KeyRound className="size-4 text-muted" />
-                Change password
-              </button>
-            )}
-            {user?.role === "admin" && (
-              <Link to="/settings" search={{ tab: "users" }} onClick={() => setProfileOpen(false)} className={profileAction}>
-                <UsersRound className="size-4 text-muted" />
-                Manage users
-              </Link>
-            )}
-          </div>
-        )}
+        <p className="mt-3 text-xs text-subtle">The username and password are set in the server environment (AIE_ADMIN_USERNAME, AIE_ADMIN_PASSWORD).</p>
         <div className="mt-5 border-t border-border pt-4">
           <div className="mb-3 text-sm font-medium text-fg">Preferences</div>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -831,9 +790,6 @@ export function AppShell({
         </div>
       </DialogShell>
 
-      <DialogShell open={passwordOpen} onOpenChange={setPasswordOpen} title="Change password" description="Other browsers signed in to this account are signed out.">
-        <ChangePasswordForm username={user?.username ?? ""} onDone={() => setPasswordOpen(false)} />
-      </DialogShell>
 
       <DialogShell open={shortcutsOpen} onOpenChange={setShortcutsOpen} title="Keyboard shortcuts" description="Work faster without leaving the keyboard.">
         <ul className="divide-y divide-border rounded-lg border border-border">

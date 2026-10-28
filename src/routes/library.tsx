@@ -294,7 +294,7 @@ function LibraryPage() {
   } = useQuery({
     // The server returns the first 500 in this order, so a large library still shows the latest research.
     queryKey: ["reports-all", serverOrder],
-    queryFn: () => listReports({ data: { limit: 500, order: serverOrder } }),
+    queryFn: () => listReports({ data: { limit: 500, order: serverOrder, view: "list" } }),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });

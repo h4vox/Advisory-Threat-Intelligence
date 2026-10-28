@@ -16,7 +16,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
-import { pendingMigrations } from "./migration-plan.mjs";
+import { isMigrationDatabase, pendingMigrations } from "./migration-plan.mjs";
 
 const databaseUrl = process.env.DATABASE_URL?.trim();
 if (!databaseUrl) {
@@ -32,6 +32,14 @@ if (!/^postgres(?:ql)?:\/\//i.test(databaseUrl)) {
   console.warn(
     `[migrate] DATABASE_URL is not a Postgres connection string (scheme "${scheme}") — skipping migrations. ` +
       (scheme.startsWith("mongodb") ? "Put the MongoDB connection string in MONGODB_URI instead." : "Set it to postgres://… or remove it."),
+  );
+  process.exit(0);
+}
+
+if (isMigrationDatabase(databaseUrl)) {
+  console.warn(
+    "[migrate] DATABASE_URL points at a migration database (aie_intel / aie_app) — skipping: the app's older SQL schema " +
+      "must not touch the migrated tables. Remove DATABASE_URL (the app keeps its data in MongoDB) or point it elsewhere.",
   );
   process.exit(0);
 }

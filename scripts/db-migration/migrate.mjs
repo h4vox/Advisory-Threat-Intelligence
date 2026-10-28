@@ -23,7 +23,7 @@
  *   --to <mongodb-uri>    restore-mongo target (must differ from the source)
  *
  * Environment (see docs/db-migration.md):
- *   MIGRATION_MONGO_URI        source; defaults to the app's built-in Atlas cluster
+ *   MIGRATION_MONGO_URI        source (required; falls back to the app's MONGODB_URI)
  *   MIGRATION_MONGO_DB         source database (default threat-intel-DB)
  *   MIGRATION_MAIN_COLLECTION  the app's main collection (default threat-intel)
  *   PG_ADMIN_URL               a PostgreSQL superuser connection, used by setup only
@@ -59,12 +59,10 @@ const { EJSON } = BSON;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
 
-// The app's built-in cluster (src/lib/mongodb/client.server.ts). Kept here on the migration branch
-// so the export runs with no setup; it is removed together with the app's copy after the cutover.
-const DEFAULT_SOURCE_URI = "mongodb+srv://threatintel_app:UsvyDIqA5d5YztAf@cluster0.gr9ihel.mongodb.net/?appName=Cluster0";
 
 const env = (k, d) => (process.env[k] ?? "").trim() || d;
-const SOURCE_URI = env("MIGRATION_MONGO_URI", DEFAULT_SOURCE_URI);
+// The source comes only from the environment: MIGRATION_MONGO_URI, else the app's MONGODB_URI.
+const SOURCE_URI = env("MIGRATION_MONGO_URI", env("MONGODB_URI", ""));
 const SOURCE_DB = env("MIGRATION_MONGO_DB", "threat-intel-DB");
 const MAIN = env("MIGRATION_MAIN_COLLECTION", MAIN_COLLECTION);
 
@@ -589,6 +587,11 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const { command, opts } = args();
   const fn = COMMANDS[command];
+  const needsSource = ["list", "backup", "all"].includes(command) || (["plan", "migrate", "verify"].includes(command) && !opts["from-backup"]);
+  if (fn && needsSource && !SOURCE_URI) {
+    console.error("[db-migration] FAILED: set MIGRATION_MONGO_URI (or MONGODB_URI) to the MongoDB to read from.");
+    process.exit(1);
+  }
   if (!fn) {
     console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("*/")[0].replace(/^#!.*\n\/\*\*?/, "").replace(/^ \* ?/gm, ""));
     process.exit(command ? 1 : 0);

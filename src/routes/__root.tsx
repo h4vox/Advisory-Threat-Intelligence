@@ -1,11 +1,9 @@
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRootRoute, HeadContent, Navigate, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { createRootRoute, HeadContent, Outlet, redirect, Scripts } from "@tanstack/react-router";
+import { useState } from "react";
 import { Toaster } from "sonner";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
-import { ACCOUNT_SESSION_KEY, useAppSession } from "@/components/auth/use-app-session";
-import { AuthProvider } from "@/lib/auth/provider";
-import { authClient, authEnabled } from "@/lib/auth/client";
+import { getAuthState, type AuthStateUser } from "@/lib/aie/server-auth";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "AIE";
@@ -39,45 +37,35 @@ export const Route = createRootRoute({
       },
     ],
   }),
+  // Sign-in check before any page renders: on the server for the first load (part of the page
+  // request, no extra round trip), then once per browser tab. No "Checking session…" screen.
+  beforeLoad: async ({ location }): Promise<{ user: AuthStateUser | null }> => {
+    if (PUBLIC_PATHS.includes(location.pathname)) return { user: null };
+    const user = await signedInUser();
+    if (!user) {
+      throw redirect({ to: "/login", search: location.pathname === "/" ? {} : { redirect: location.href } });
+    }
+    return { user };
+  },
   component: RootDocument,
 });
 
 const PUBLIC_PATHS = ["/login"];
 
-/**
- * Every page except sign-in requires a session (password or single sign-on); server functions
- * enforce access. The session check is bounded (see useAppSession), and the loading screen offers
- * a plain link to the sign-in page after a few seconds, which works even before scripts load.
- */
-function AuthGate({ children }: { children: ReactNode }) {
-  const location = useRouterState({ select: (s) => s.location });
-  const session = useAppSession();
-  if (PUBLIC_PATHS.includes(location.pathname)) return <>{children}</>;
-  if (session.isPending) return <SessionCheckScreen />;
-  if (!session.user) {
-    return <Navigate to="/login" search={location.pathname === "/" ? {} : { redirect: location.href }} replace />;
-  }
-  return <>{children}</>;
+// Browser only: the signed-in user, so moving between pages does not ask the server again.
+// Never cached on the server, where one process serves every visitor.
+let browserUser: AuthStateUser | null = null;
+
+async function signedInUser(): Promise<AuthStateUser | null> {
+  if (typeof window !== "undefined" && browserUser) return browserUser;
+  const { user } = await getAuthState();
+  if (typeof window !== "undefined") browserUser = user;
+  return user;
 }
 
-function SessionCheckScreen() {
-  return (
-    <div className="grid h-dvh place-items-center bg-bg px-4 text-center">
-      <div className="space-y-3">
-        <span aria-hidden className="mx-auto block size-5 rounded-full border-2 border-border border-t-primary motion-safe:animate-spin" />
-        <p role="status" className="text-sm text-muted">
-          Checking session…
-        </p>
-        <p className="session-slow-hint text-xs text-subtle">
-          Taking longer than usual.{" "}
-          <a href="/login" className="text-accent underline-offset-4 hover:underline">
-            Go to sign in
-          </a>{" "}
-          or reload the page.
-        </p>
-      </div>
-    </div>
-  );
+/** Forget the cached user (after sign-out, or when the server says the session ended). */
+export function forgetSignedInUser(): void {
+  browserUser = null;
 }
 
 /** A server call answered "Unauthorized" (session ended or revoked): re-check, so the gate shows sign-in. */
@@ -88,9 +76,13 @@ function isUnauthorized(error: unknown): boolean {
 function RootDocument() {
   const [queryClient] = useState(() => {
     const onError = (error: unknown) => {
-      if (!isUnauthorized(error)) return;
-      void client.invalidateQueries({ queryKey: ACCOUNT_SESSION_KEY });
-      if (authEnabled) authClient.$store.notify("$sessionSignal");
+      if (!isUnauthorized(error) || typeof window === "undefined") return;
+      // The session ended (expired, or the password changed): back to sign-in, then here again.
+      forgetSignedInUser();
+      if (!window.location.pathname.startsWith("/login")) {
+        const back = window.location.pathname + window.location.search;
+        window.location.assign(back === "/" ? "/login" : `/login?redirect=${encodeURIComponent(back)}`);
+      }
     };
     const client: QueryClient = new QueryClient({
       queryCache: new QueryCache({ onError }),
@@ -152,18 +144,10 @@ function RootDocument() {
       </head>
       <body>
         <PreviewHostBridge />
-        <AuthProvider>
-          <QueryClientProvider client={queryClient}>
-            <AuthGate>
-              <Outlet />
-            </AuthGate>
-            <Toaster
-              position="bottom-right"
-              richColors
-              closeButton
-            />
-          </QueryClientProvider>
-        </AuthProvider>
+        <QueryClientProvider client={queryClient}>
+          <Outlet />
+          <Toaster position="bottom-right" richColors closeButton />
+        </QueryClientProvider>
         <Scripts />
       </body>
     </html>
