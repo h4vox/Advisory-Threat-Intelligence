@@ -226,7 +226,11 @@ export class GeminiRestAdapter implements AIProviderAdapter {
         };
       }
 
-      if (options.responseFormat === "json") {
+      if (options.webSearch) {
+        // Google Search grounding; it cannot be combined with a JSON response type, so the JSON
+        // is read from the text instead.
+        requestBody.tools = [{ google_search: {} }];
+      } else if (options.responseFormat === "json") {
         requestBody.generationConfig.responseMimeType = "application/json";
       }
 
@@ -253,7 +257,9 @@ export class GeminiRestAdapter implements AIProviderAdapter {
       }
 
       const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      // A grounded answer can arrive in several parts.
+      const parts: Array<{ text?: string }> = data?.candidates?.[0]?.content?.parts ?? [];
+      const text = parts.map((p) => p?.text ?? "").join("") || "";
       const usage = data?.usageMetadata;
 
       return {

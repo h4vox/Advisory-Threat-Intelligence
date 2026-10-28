@@ -28,6 +28,11 @@ export interface LLMGenerateOptions {
   timeoutMs?: number;
   /** Aborts the request (the analyst stopped the turn). */
   signal?: AbortSignal;
+  /**
+   * Let the model search the web while answering, where the provider supports it (Gemini: Google
+   * Search grounding; Claude: web search tool). Ignored by providers without it.
+   */
+  webSearch?: boolean;
   apiKey?: string;
   endpointUrl?: string;
 }

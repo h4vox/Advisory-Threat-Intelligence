@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSearchPlan, parseDuckDuckGoHtml } from "./web-search.ts";
+import { buildSearchPlan, isSearchChallenge, parseBraveJson, parseDuckDuckGoHtml, parseSearxngJson, searchProviders } from "./web-search.ts";
 import { DEFAULT_RESEARCH_DISCOVERY, normalizeResearchDiscovery, splitKeywordPhrases } from "./research-taxonomy.ts";
 
 const DEFAULT_KEYWORDS = 'ransomware, "attack chain", "infection chain", "initial access", "lateral movement", "MITRE ATT&CK", "adversary emulation"';
@@ -74,4 +74,30 @@ test("DuckDuckGo results keep their titles and snippets; ads and duplicates are 
 test("unrecognised markup falls back to the bare redirect links", () => {
   const r = parseDuckDuckGoHtml('<a href="/l/?kh=-1&amp;uddg=https%3A%2F%2Fexample.com%2Fa">x</a> <a href="/l/?uddg=javascript%3Aalert(1)">y</a>');
   assert.deepEqual(r, [{ url: "https://example.com/a", title: "", snippet: "" }]);
+});
+
+test("DuckDuckGo's anti-bot challenge is recognised; a results page is not", () => {
+  assert.equal(isSearchChallenge('<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>'), true);
+  assert.equal(isSearchChallenge('<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.example%2Fr">R</a>'), false);
+  assert.equal(isSearchChallenge("<html><body>No results.</body></html>"), false);
+});
+
+test("SearXNG and Brave results are read, deduplicated and kept to http(s)", () => {
+  const sx = parseSearxngJson({ results: [
+    { url: "https://a.example/report", title: "A <b>report</b>", content: "about &amp; more" },
+    { url: "https://a.example/report", title: "dup" },
+    { url: "javascript:alert(1)", title: "bad" },
+    { url: "not a url" },
+  ] });
+  assert.deepEqual(sx, [{ url: "https://a.example/report", title: "A report", snippet: "about & more" }]);
+  const br = parseBraveJson({ web: { results: [{ url: "https://b.example/x", title: "B", description: "d" }] } });
+  assert.deepEqual(br, [{ url: "https://b.example/x", title: "B", snippet: "d" }]);
+  assert.deepEqual(parseSearxngJson({}), []);
+  assert.deepEqual(parseBraveJson(null), []);
+});
+
+test("configured search APIs come before DuckDuckGo", () => {
+  assert.deepEqual(searchProviders({}).map((p) => p.id), ["duckduckgo"]);
+  assert.deepEqual(searchProviders({ AIE_SEARXNG_URL: "http://127.0.0.1:8888", BRAVE_SEARCH_API_KEY: "k" }).map((p) => p.id), ["searxng", "brave", "duckduckgo"]);
+  assert.deepEqual(searchProviders({ BRAVE_SEARCH_API_KEY: "k", AIE_DISABLE_DUCKDUCKGO: "1" }).map((p) => p.id), ["brave"]);
 });

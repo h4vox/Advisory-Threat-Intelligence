@@ -113,3 +113,70 @@ export function parseDuckDuckGoHtml(html: string, max = 30): SearchResult[] {
   }
   return out;
 }
+
+/**
+ * True when DuckDuckGo answered with its anti-bot challenge instead of results (it does this to
+ * servers that search often). The crawler then stops asking it for the rest of the run.
+ */
+export function isSearchChallenge(html: string): boolean {
+  return /anomaly-modal|bots use DuckDuckGo too|challenge-form|Unfortunately, bots|captcha/i.test(html) && !/class="[^"]*\bresult__a\b/.test(html);
+}
+
+function cleanResult(url: unknown, title: unknown, snippet: unknown): SearchResult | null {
+  if (typeof url !== "string") return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    return { url: u.toString(), title: textOf(String(title ?? "")).slice(0, 240), snippet: textOf(String(snippet ?? "")).slice(0, 400) };
+  } catch {
+    return null;
+  }
+}
+
+/** Results of a SearXNG JSON response (`/search?format=json`). */
+export function parseSearxngJson(body: unknown, max = 30): SearchResult[] {
+  const results = (body as { results?: Array<{ url?: unknown; title?: unknown; content?: unknown }> })?.results;
+  if (!Array.isArray(results)) return [];
+  const out: SearchResult[] = [];
+  const seen = new Set<string>();
+  for (const r of results) {
+    const c = cleanResult(r?.url, r?.title, r?.content);
+    if (!c || seen.has(c.url)) continue;
+    seen.add(c.url);
+    out.push(c);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Results of a Brave Search API response (`/res/v1/web/search`). */
+export function parseBraveJson(body: unknown, max = 30): SearchResult[] {
+  const results = (body as { web?: { results?: Array<{ url?: unknown; title?: unknown; description?: unknown }> } })?.web?.results;
+  if (!Array.isArray(results)) return [];
+  const out: SearchResult[] = [];
+  const seen = new Set<string>();
+  for (const r of results) {
+    const c = cleanResult(r?.url, r?.title, r?.description);
+    if (!c || seen.has(c.url)) continue;
+    seen.add(c.url);
+    out.push(c);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+export type SearchProvider = { id: "searxng" | "brave" | "duckduckgo"; label: string };
+
+/**
+ * Search engines to use, in order: the ones configured in the environment (reliable APIs) first,
+ * then DuckDuckGo's HTML page (free, but it challenges servers that search often).
+ *   AIE_SEARXNG_URL        a SearXNG instance with the JSON format enabled (self-hostable, free)
+ *   BRAVE_SEARCH_API_KEY   Brave Search API (free tier available)
+ */
+export function searchProviders(env: Record<string, string | undefined>): SearchProvider[] {
+  const out: SearchProvider[] = [];
+  if (env.AIE_SEARXNG_URL?.trim()) out.push({ id: "searxng", label: "SearXNG" });
+  if (env.BRAVE_SEARCH_API_KEY?.trim()) out.push({ id: "brave", label: "Brave Search" });
+  if (env.AIE_DISABLE_DUCKDUCKGO?.trim() !== "1") out.push({ id: "duckduckgo", label: "DuckDuckGo" });
+  return out;
+}
