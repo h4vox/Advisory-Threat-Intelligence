@@ -5,6 +5,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { analystMiddleware } from "./access";
+import { logger } from "./logger";
 import { listReports } from "./server";
 import { getThreatIntelCollection, isMongoConfigured } from "../mongodb/client.server";
 import { buildIntelGraph, type GraphSourceReport } from "./graph/build";
@@ -58,10 +59,21 @@ async function loadReports(): Promise<GraphSourceReport[]> {
 async function getGraph(): Promise<IntelGraph> {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.graph;
   inflight ??= (async () => {
+    const started = Date.now();
     try {
-      const graph = buildIntelGraph(await loadReports());
+      const reports = await loadReports();
+      const graph = buildIntelGraph(reports);
       cache = { at: Date.now(), graph };
+      logger.intel("GRAPH", `Built from ${graph.stats.reports} reports: ${graph.stats.nodes} entities, ${graph.stats.edges} links (${graph.stats.stated} stated)`, {
+        loaded: reports.length,
+        skipped: graph.stats.skipped ?? 0,
+        ms: Date.now() - started,
+      });
+      if (graph.stats.skipped) logger.warn("INTEL", `${graph.stats.skipped} report(s) skipped: their stored analysis is malformed`);
       return graph;
+    } catch (err) {
+      logger.error("INTEL", "Graph build failed", err);
+      throw err;
     } finally {
       inflight = null;
     }

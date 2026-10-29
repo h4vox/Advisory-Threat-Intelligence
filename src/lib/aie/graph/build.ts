@@ -13,7 +13,7 @@
  * Across reports, edges add up: weight = reports, confidence = 1 − Π(1 − cᵢ).
  */
 import { getGroup, getSoftware, getTechnique, isGenericEntityName, normalizeEntityName, resolveEntity } from "../attack-knowledge.ts";
-import type { EvidenceLabel, ExtractedEntities, IntelAnalysis, IocHit } from "../types.ts";
+import type { EvidenceLabel, ExtractedEntities, IntelAnalysis, IocHit, RelationshipFact } from "../types.ts";
 import type { ReportAiAnalysis } from "../report-ai-analysis.ts";
 import type { GraphEdge, GraphNode, GraphNodeType, GraphPredicate, GraphReportRef, IntelGraph } from "./types.ts";
 
@@ -54,6 +54,13 @@ function tooGeneric(name: string): boolean {
   return name.length <= 5 && isGenericEntityName(name);
 }
 
+/** An array field from a stored report, or [] when it is missing or not an array. */
+function arr<T = unknown>(v: unknown): T[] {
+  return Array.isArray(v) ? (v.filter((x) => x !== null && x !== undefined) as T[]) : [];
+}
+
+const textOf = (v: unknown) => (typeof v === "string" ? v : "");
+
 function clean(s: unknown): string {
   return typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "";
 }
@@ -61,7 +68,7 @@ function clean(s: unknown): string {
 type Mention = { id: string; type: GraphNodeType; label: string; attackId?: string; tactics?: string[]; subtype?: string; alias?: string; confidence: number };
 
 /** Actor or campaign name → node (ATT&CK group / campaign when known). */
-function actorMention(name: string, confidence: number): Mention | null {
+function actorMention(name: unknown, confidence: number): Mention | null {
   const raw = clean(name);
   if (raw.length < 2 || raw.length > 80 || tooGeneric(raw)) return null;
   const hit = resolveEntity(raw, ["group", "campaign"])[0];
@@ -73,7 +80,7 @@ function actorMention(name: string, confidence: number): Mention | null {
   return key ? { id: `actor:x-${key}`, type: "actor", label: raw, confidence } : null;
 }
 
-function campaignMention(name: string, confidence: number): Mention | null {
+function campaignMention(name: unknown, confidence: number): Mention | null {
   const raw = clean(name);
   if (raw.length < 2 || raw.length > 80 || tooGeneric(raw)) return null;
   const hit = resolveEntity(raw, ["campaign"])[0];
@@ -83,7 +90,7 @@ function campaignMention(name: string, confidence: number): Mention | null {
 }
 
 /** Malware or tool name → node (ATT&CK software when known; its type decides malware vs tool). */
-function softwareMention(name: string, confidence: number, fallback: "malware" | "tool" = "malware"): Mention | null {
+function softwareMention(name: unknown, confidence: number, fallback: "malware" | "tool" = "malware"): Mention | null {
   const raw = clean(name);
   if (raw.length < 2 || raw.length > 80 || tooGeneric(raw)) return null;
   const hit = resolveEntity(raw, ["software"])[0];
@@ -98,22 +105,22 @@ function softwareMention(name: string, confidence: number, fallback: "malware" |
   return key ? { id: `${fallback}:x-${key}`, type: fallback, label: raw, confidence } : null;
 }
 
-function techniqueMention(id: string, confidence: number, name?: string, tactic?: string): Mention | null {
-  const tid = id.trim().toUpperCase();
+function techniqueMention(id: unknown, confidence: number, name?: unknown, tactic?: unknown): Mention | null {
+  const tid = clean(id).toUpperCase();
   if (!/^T\d{4}(?:\.\d{3})?$/.test(tid)) return null;
   const t = getTechnique(tid);
   const label = t?.name ?? clean(name);
   if (!label) return null;
-  const tactics = t?.tactics?.length ? t.tactics : tactic ? [tactic] : [];
+  const tactics = t?.tactics?.length ? t.tactics : clean(tactic) ? [clean(tactic)] : [];
   return { id: `technique:${tid}`, type: "technique", label, attackId: tid, tactics, confidence };
 }
 
-function vulnMention(cve: string, confidence: number): Mention | null {
-  const id = cve.trim().toUpperCase();
+function vulnMention(cve: unknown, confidence: number): Mention | null {
+  const id = clean(cve).toUpperCase();
   return /^CVE-\d{4}-\d{4,7}$/.test(id) ? { id: `vulnerability:${id}`, type: "vulnerability", label: id, confidence } : null;
 }
 
-function targetMention(kind: string, value: string, confidence: number): Mention | null {
+function targetMention(kind: unknown, value: unknown, confidence: number): Mention | null {
   const raw = clean(value);
   if (raw.length < 2 || raw.length > 60) return null;
   const type: GraphNodeType | null = kind === "sector" || kind === "victim_type" ? "sector" : kind === "geography" ? "geography" : kind === "platform" ? "platform" : null;
@@ -124,9 +131,9 @@ function targetMention(kind: string, value: string, confidence: number): Mention
   return { id: `${type}:${key}`, type, label, alias: raw, confidence };
 }
 
-function indicatorMention(kind: string, value: string, confidence: number): Mention | null {
+function indicatorMention(kind: unknown, value: unknown, confidence: number): Mention | null {
   const v = clean(value).toLowerCase();
-  if (!INDICATOR_KINDS.has(kind) || v.length < 4 || v.length > 300) return null;
+  if (typeof kind !== "string" || !INDICATOR_KINDS.has(kind) || v.length < 4 || v.length > 300) return null;
   const label = v.length > 64 ? `${v.slice(0, 30)}…${v.slice(-12)}` : v;
   return { id: `indicator:${kind}:${v}`, type: "indicator", label, subtype: kind, confidence };
 }
@@ -145,35 +152,36 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
   const ai = r.aiAnalysis;
 
   // Actors and campaigns.
-  if (ev?.actors?.length) for (const f of ev.actors) ACTIVITY.has(f.label) && add(actorMention(f.value, f.confidence ?? 0.6));
+  if (arr(ev?.actors).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.actors)) ACTIVITY.has(f.label) && add(actorMention(f.value, f.confidence ?? 0.6));
   else for (const n of a?.threatActors ?? []) add(actorMention(n, 0.5));
   for (const n of ee?.threatActors ?? []) add(actorMention(n, 0.45));
   if (ai?.adversary?.name) add(actorMention(ai.adversary.name, 0.6));
   if (ee?.campaign) add(campaignMention(ee.campaign, 0.5));
   for (const ref of ee?.attackRefs ?? []) {
+    if (!ref || typeof ref.id !== "string") continue;
     if (ref.kind === "group") add({ id: `actor:${ref.id}`, type: "actor", label: getGroup(ref.id)?.name ?? ref.name, attackId: ref.id, alias: ref.matched, confidence: ref.inTitle ? 0.6 : 0.45 });
     else if (ref.kind === "campaign") add({ id: `campaign:${ref.id}`, type: "campaign", label: ref.name, attackId: ref.id, alias: ref.matched, confidence: 0.45 });
     else if (ref.kind === "software") add(softwareMention(ref.name, ref.inTitle ? 0.6 : 0.45));
   }
 
   // Malware and tools.
-  if (ev?.malware?.length) for (const f of ev.malware) ACTIVITY.has(f.label) && add(softwareMention(f.value, f.confidence ?? 0.6));
+  if (arr(ev?.malware).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.malware)) ACTIVITY.has(f.label) && add(softwareMention(f.value, f.confidence ?? 0.6));
   else for (const n of a?.malware ?? []) add(softwareMention(n, 0.5));
   for (const n of ee?.malwareFamilies ?? []) add(softwareMention(n, 0.45));
   for (const n of ai?.adversary?.malware ?? []) add(softwareMention(n, 0.5));
   for (const n of ai?.adversary?.tools ?? []) add(softwareMention(n, 0.5, "tool"));
 
   // Techniques: evidence facts, else the older lists.
-  if (ev?.techniques?.length) {
-    for (const t of ev.techniques) ACTIVITY.has(t.label) && add(techniqueMention(t.id, t.label === "observed" ? t.confidence ?? 0.7 : Math.min(t.confidence ?? 0.5, 0.5), t.name, t.tactic));
+  if (arr(ev?.techniques).length) {
+    for (const t of arr<{ id: unknown; name: unknown; tactic: unknown; label: EvidenceLabel; confidence?: number }>(ev?.techniques)) ACTIVITY.has(t.label) && add(techniqueMention(t.id, t.label === "observed" ? t.confidence ?? 0.7 : Math.min(t.confidence ?? 0.5, 0.5), t.name, t.tactic));
   } else {
     for (const t of ee?.techniques ?? []) add(techniqueMention(t.id, 0.45, t.name, t.tactic));
-    for (const s of a?.ttps ?? []) for (const id of s.match(TECH_ID) ?? []) add(techniqueMention(id, 0.45));
+    for (const s of arr(a?.ttps)) for (const id of textOf(s).match(TECH_ID) ?? []) add(techniqueMention(id, 0.45));
   }
-  for (const step of ai?.attackChain ?? []) if (step.technique?.id) add(techniqueMention(step.technique.id, 0.55, step.technique.name, step.stage));
+  for (const step of ai?.attackChain ?? []) if (step?.technique?.id) add(techniqueMention(step.technique.id, 0.55, step.technique.name, step.stage));
 
   // Vulnerabilities.
-  for (const s of [...(a?.vulnerabilities ?? []), ...(ee?.cves ?? [])]) for (const id of s.match(CVE_ID) ?? []) add(vulnMention(id, 0.6));
+  for (const s of [...arr(a?.vulnerabilities), ...arr(ee?.cves)]) for (const id of textOf(s).match(CVE_ID) ?? []) add(vulnMention(id, 0.6));
   for (const i of r.iocs ?? []) if (i.kind === "cve") add(vulnMention(i.value, 0.6));
 
   // Targeting: only what the source says was targeted or compromised.
@@ -224,7 +232,7 @@ const UNDIRECTED: ReadonlySet<GraphPredicate> = new Set(["communicates_with"]);
 
 type EdgeAcc = { source: string; target: string; predicate: GraphPredicate; reports: Map<string, number>; stated: Set<string>; quote?: { reportId: string; text: string }; lastSeen: string | null };
 
-const reportDate = (r: GraphSourceReport) => r.publishedAt || r.ingestedAt || null;
+const reportDate = (r: GraphSourceReport) => (typeof r.publishedAt === "string" && r.publishedAt) || (typeof r.ingestedAt === "string" && r.ingestedAt) || null;
 
 /** True for library reports (not synced ATT&CK reference documents or rejected records). */
 export function isGraphReport(r: GraphSourceReport): boolean {
@@ -233,7 +241,7 @@ export function isGraphReport(r: GraphSourceReport): boolean {
 }
 
 export function buildIntelGraph(input: GraphSourceReport[], now = new Date()): IntelGraph {
-  const reports = input.filter(isGraphReport).sort((a, b) => String(reportDate(b) ?? "").localeCompare(String(reportDate(a) ?? "")));
+  const reports = input.filter((r) => r && typeof r.id === "string" && isGraphReport(r)).sort((a, b) => String(reportDate(b) ?? "").localeCompare(String(reportDate(a) ?? "")));
   type NodeAcc = { node: Omit<GraphNode, "reports" | "reportCount" | "degree" | "aliases">; reports: string[]; count: number; aliases: Set<string> };
   const nodes = new Map<string, NodeAcc>();
   const edges = new Map<string, EdgeAcc>();
@@ -257,11 +265,19 @@ export function buildIntelGraph(input: GraphSourceReport[], now = new Date()): I
     if (date && (!e.lastSeen || date > e.lastSeen)) e.lastSeen = date;
   };
 
+  let skipped = 0;
   for (const r of reports) {
-    const ents = reportEntities(r);
+    // One malformed stored report must not take the whole graph down: skip it and count it.
+    let ents: Map<string, Mention>;
+    try {
+      ents = reportEntities(r);
+    } catch {
+      skipped++;
+      continue;
+    }
     if (!ents.size) continue;
     const date = reportDate(r);
-    refs[r.id] = { id: r.id, title: r.title, publisher: r.publisher || r.sourceName || "", publishedAt: r.publishedAt ?? null };
+    refs[r.id] = { id: r.id, title: clean(r.title) || r.id, publisher: clean(r.publisher) || clean(r.sourceName), publishedAt: typeof r.publishedAt === "string" ? r.publishedAt : null };
     for (const m of ents.values()) {
       let acc = nodes.get(m.id);
       if (!acc) {
@@ -276,8 +292,8 @@ export function buildIntelGraph(input: GraphSourceReport[], now = new Date()): I
     }
 
     // Stated links: both entities in one sentence.
-    for (const rel of r.analysis?.evidence?.relationships ?? []) {
-      if (!ACTIVITY.has(rel.label)) continue;
+    for (const rel of arr<RelationshipFact>(r.analysis?.evidence?.relationships)) {
+      if (!ACTIVITY.has(rel.label) || !rel.subject || !rel.object) continue;
       const predicate = PREDICATE[rel.predicate];
       const s = refToNodeId(rel.subject, ents);
       const o = refToNodeId(rel.object, ents);
@@ -348,6 +364,6 @@ export function buildIntelGraph(input: GraphSourceReport[], now = new Date()): I
     nodes: nodeList,
     edges: edgeList,
     reports: refs,
-    stats: { reports: Object.keys(refs).length, nodes: nodeList.length, edges: edgeList.length, stated: edgeList.filter((e) => e.basis === "stated").length, builtAt: now.toISOString() },
+    stats: { reports: Object.keys(refs).length, nodes: nodeList.length, edges: edgeList.length, stated: edgeList.filter((e) => e.basis === "stated").length, skipped, builtAt: now.toISOString() },
   };
 }

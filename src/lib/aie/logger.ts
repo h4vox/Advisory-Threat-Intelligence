@@ -189,6 +189,25 @@ export const logger = {
   },
 
   /**
+   * Intelligence engine (graph, correlation, entity context, AI briefs)
+   */
+  intel(action: string, message: string, meta?: Record<string, unknown> | string) {
+    const time = getTimestamp();
+    let metaStr = "";
+    if (typeof meta === "string") {
+      metaStr = ` ${FG_GRAY}› ${meta}${RESET}`;
+    } else if (meta) {
+      try {
+        metaStr = ` ${FG_GRAY}${JSON.stringify(meta)}${RESET}`;
+      } catch {
+        metaStr = "";
+      }
+    }
+    console.log(`${FG_GRAY}${time}${RESET} ${FG_MAGENTA}${BOLD}[INTEL]${RESET} ${FG_CYAN}${BOLD}${action}${RESET}: ${message}${metaStr}`);
+    appendSandboxLog("INFO", "intel", `[INTEL] ${action}: ${message}`, typeof meta === "object" ? meta : undefined);
+  },
+
+  /**
    * MITRE ATT&CK Matrix Mapping Logging
    */
   mitre(action: string, details: string) {
