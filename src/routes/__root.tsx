@@ -124,6 +124,10 @@ function RootDocument() {
                   document.documentElement.setAttribute('data-style', 'default');
                   document.documentElement.classList.remove('theme-liquid-glass');
                 }
+                var ac = localStorage.getItem('aie_accent');
+                if (ac && /^(blue|teal|green|red|orange|pink|graphite)$/.test(ac)) {
+                  document.documentElement.setAttribute('data-accent', ac);
+                }
                 var gr = localStorage.getItem('aie_glass_blur_ratio');
                 var val = gr ? parseInt(gr, 10) : 70;
                 if (!isNaN(val) && val >= 5 && val <= 110) {
