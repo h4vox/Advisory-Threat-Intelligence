@@ -14,6 +14,7 @@ import {
   Globe2,
   Keyboard,
   Layers,
+  Waypoints,
   LayoutDashboard,
   Library,
   LogOut,
@@ -57,6 +58,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/search", label: "Search", icon: ScanSearch },
       { to: "/actors", label: "Threat actors", icon: UsersRound },
       { to: "/matrix", label: "ATT&CK Matrix", icon: Layers },
+      { to: "/graph", label: "Intel Graph", icon: Waypoints },
     ],
   },
   {
