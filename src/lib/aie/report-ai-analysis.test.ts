@@ -159,7 +159,7 @@ test("a non-object answer is an error, not an empty analysis", () => {
 test("emulation assessment: quotes are verified and an unsupported 'attack chain' grade is lowered", () => {
   const r = groundReportAnalysis(
     {
-      emulation: {
+      emulationSimulation: {
         grade: "chain",
         reproducible: "yes",
         steps: [
@@ -175,7 +175,7 @@ test("emulation assessment: quotes are verified and an unsupported 'attack chain
     REPORT,
     opts,
   );
-  const e = r.emulation!;
+  const e = r.emulationSimulation!;
   assert.equal(e.claimedGrade, "chain");
   assert.equal(e.grade, "procedures", "two verified steps support procedures, not a chain");
   assert.equal(e.steps.length, 2);
@@ -186,6 +186,6 @@ test("emulation assessment: quotes are verified and an unsupported 'attack chain
 });
 
 test("emulation assessment: a news grade stays news, a missing block is null", () => {
-  assert.equal(groundReportAnalysis({ emulation: { grade: "news", reproducible: "yes", steps: [] } }, REPORT, opts).emulation?.reproducible, "no");
-  assert.equal(groundReportAnalysis({}, REPORT, opts).emulation, null);
+  assert.equal(groundReportAnalysis({ emulationSimulation: { grade: "news", reproducible: "yes", steps: [] } }, REPORT, opts).emulationSimulation?.reproducible, "no");
+  assert.equal(groundReportAnalysis({}, REPORT, opts).emulationSimulation, null);
 });

@@ -273,7 +273,7 @@ export function formatOriginId(origin?: string): string {
 export function formatJobId(jobId: string, trigger?: string): string {
   const base = formatSystemId("job", jobId);
   if (!trigger) return base;
-  const trg = trigger.toUpperCase().slice(0, 3);
+  const trg = trigger.toUpperCase() === "REALTIME" ? "RT" : trigger.toUpperCase().slice(0, 3);
   return base.replace(/^JOB-/, `JOB-${trg}-`);
 }
 

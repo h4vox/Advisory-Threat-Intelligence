@@ -19,7 +19,7 @@ const KEYWORD_QUERIES_PER_RUN = 2;
 const EMULATION_QUERIES_PER_RUN = 2;
 
 /**
- * Searches for the reports an emulation team wants most: step-by-step infection chains, procedure
+ * Searches for the reports an emulation or simulation team wants most: step-by-step infection chains, procedure
  * walk-throughs and new tradecraft, written by research teams. Half are restricted to research
  * publishers that write such walk-throughs, so news rewrites and patch notes are not what comes back.
  */
@@ -34,6 +34,9 @@ export const EMULATION_HUNT_QUERIES: readonly string[] = [
   'new backdoor campaign "execution flow" persistence C2 analysis',
   'infostealer infection chain obfuscated script analysis',
   'zero-day exploit chain threat actor post-exploitation analysis',
+  'attack chain detection opportunities Sysmon event ID analysis',
+  'intrusion analysis "detection opportunities" attack simulation purple team',
+  'breach and attack simulation scenario threat actor TTPs analysis',
   'site:labs.k7computing.com infection chain',
   'site:securelist.com infection chain',
   'site:sentinelone.com/labs attack chain',

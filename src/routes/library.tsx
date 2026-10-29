@@ -40,7 +40,7 @@ import { researchCategory } from "@/lib/aie/research-taxonomy";
 import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { cn } from "@/lib/cn";
 import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
-import { EMULATION_GRADE_META, effectiveGrade, type EmulationGrade } from "@/lib/aie/emulation-value";
+import { EMULATION_SIMULATION_GRADE_META, effectiveGrade, type EmulationSimulationGrade } from "@/lib/aie/emulation-simulation";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { Pagination } from "@/components/templates/page-templates";
@@ -96,10 +96,10 @@ type ViewMode = "cards" | "table" | "list";
 const VIEW_KEY = "aie_library_view";
 type OrderBy = "relevance" | "newest" | "published" | "emulation" | "quality" | "iocs" | "techniques" | "words";
 
-const GRADE_ORDER: Array<EmulationGrade | "ungraded"> = ["chain", "procedures", "context", "news", "ungraded"];
+const GRADE_ORDER: Array<EmulationSimulationGrade | "ungraded"> = ["chain", "procedures", "context", "news", "ungraded"];
 const gradeRank = (r: ReportListItem) => {
-  const g = effectiveGrade(r.emulation);
-  return g ? EMULATION_GRADE_META[g].rank : -1;
+  const g = effectiveGrade(r.emulationSimulation);
+  return g ? EMULATION_SIMULATION_GRADE_META[g].rank : -1;
 };
 /** The default order: the latest research first, by the date the source published it. */
 const DEFAULT_ORDER: OrderBy = "published";
@@ -125,8 +125,8 @@ type Derived = {
   techniques: string[];
   cves: string[];
   emulation: boolean;
-  /** Emulation value grade (./emulation-value), "ungraded" until the library check has run. */
-  grade: EmulationGrade | "ungraded";
+  /** Emulation & simulation value grade (./emulation-simulation), "ungraded" until the library check has run. */
+  grade: EmulationSimulationGrade | "ungraded";
   published: number;
   research: string[];
 };
@@ -142,7 +142,7 @@ function derive(r: ReportListItem): Derived {
     techniques: techniquesOf(r).map((t) => t.id),
     cves: cvesOf(r),
     emulation: hasEmulationContent(r),
-    grade: effectiveGrade(r.emulation) ?? "ungraded",
+    grade: effectiveGrade(r.emulationSimulation) ?? "ungraded",
     published: dateValue(r.publishedAt),
     research: (r.research?.labels ?? []).map((l) => l.id),
   };
@@ -667,14 +667,14 @@ function LibraryPage() {
       })),
       tactics: countBy(basePool.map((r) => d(r).tactics)),
       emulation: countBy(basePool.map((r) => [d(r).grade]))
-        .sort((a, b) => GRADE_ORDER.indexOf(a.value as EmulationGrade) - GRADE_ORDER.indexOf(b.value as EmulationGrade))
+        .sort((a, b) => GRADE_ORDER.indexOf(a.value as EmulationSimulationGrade) - GRADE_ORDER.indexOf(b.value as EmulationSimulationGrade))
         .map((o) =>
           o.value === "ungraded"
             ? { ...o, label: <span className="text-subtle">Not graded yet</span>, text: "Not graded yet" }
             : {
                 ...o,
-                label: <span title={EMULATION_GRADE_META[o.value as EmulationGrade].description}>{EMULATION_GRADE_META[o.value as EmulationGrade].label}</span>,
-                text: EMULATION_GRADE_META[o.value as EmulationGrade].label,
+                label: <span title={EMULATION_SIMULATION_GRADE_META[o.value as EmulationSimulationGrade].description}>{EMULATION_SIMULATION_GRADE_META[o.value as EmulationSimulationGrade].label}</span>,
+                text: EMULATION_SIMULATION_GRADE_META[o.value as EmulationSimulationGrade].label,
               },
         ),
       research: countBy(basePool.map((r) => d(r).research)).map((o) => {
@@ -745,7 +745,7 @@ function LibraryPage() {
           // Undated reports (0) sort last; ingest time orders reports published the same day.
           return d(b).published - d(a).published || dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
         case "emulation":
-          return gradeRank(b) - gradeRank(a) || (b.emulation?.score ?? 0) - (a.emulation?.score ?? 0) || d(b).published - d(a).published;
+          return gradeRank(b) - gradeRank(a) || (b.emulationSimulation?.score ?? 0) - (a.emulationSimulation?.score ?? 0) || d(b).published - d(a).published;
         case "quality":
           return b.qualityScore - a.qualityScore;
         case "iocs":
@@ -809,7 +809,7 @@ function LibraryPage() {
     ...selTactics.map((v) => ({ label: `Tactic: ${v}`, clear: () => setSelTactics((s) => s.filter((x) => x !== v)) })),
     ...selTags.map((v) => ({ label: `Tag: ${v}`, clear: () => setSelTags((s) => s.filter((x) => x !== v)) })),
     ...selEmulation.map((v) => ({
-      label: `Emulation: ${v === "ungraded" ? "not graded" : EMULATION_GRADE_META[v as EmulationGrade].label}`,
+      label: `Emulation & simulation: ${v === "ungraded" ? "not graded" : EMULATION_SIMULATION_GRADE_META[v as EmulationSimulationGrade].label}`,
       clear: () => setSelEmulation((s) => s.filter((x) => x !== v)),
     })),
     ...selResearch.map((v) => ({ label: `Research: ${researchCategory(v)?.short ?? v}`, clear: () => setSelResearch((s) => s.filter((x) => x !== v)) })),
@@ -1025,7 +1025,7 @@ function LibraryPage() {
   const sidebar = (
     <FacetPanel activeCount={activeFiltersCount} onClearAll={resetFilters}>
       <FacetGroup
-        title="Emulation value"
+        title="Emulation & simulation value"
         options={facets.emulation}
         selected={selEmulation}
         onToggle={(v) => setSelEmulation((s) => toggle(s, v))}
@@ -1392,7 +1392,7 @@ function LibraryPage() {
                   >
                     {isDeepSearchActive && <option value="relevance">Relevance</option>}
                     <option value="newest">Newest ingested</option>
-                    <option value="emulation">Emulation value</option>
+                    <option value="emulation">Emulation & simulation value</option>
                     <option value="published">Newest published</option>
                     <option value="quality">Quality score</option>
                     <option value="techniques">Most techniques</option>

@@ -17,7 +17,7 @@ import { getThreatIntelCollection, isMongoConfigured } from "./client.server";
 import { invalidateDashboardCache, invalidateReportsCache } from "./repository.server";
 import { invalidateLocalSearchCache } from "../aie/search/corpus.server";
 import { LIBRARY_GATE_VERSION, evaluateLibraryReport, gateReasonLine, type GateInput, type GateVerdict } from "../aie/library-gate";
-import { summarizeEmulation } from "../aie/emulation-value";
+import { summarizeEmulationSimulation } from "../aie/emulation-simulation";
 
 export type GatePassResult = {
   storage: "mongodb" | "local";
@@ -50,9 +50,11 @@ function gateFields(v: GateVerdict, at: string): Record<string, unknown> {
     "gate.protectedBy": v.protectedBy,
     "gate.relevance": v.relevance,
     "gate.checkedAt": at,
-    // Emulation value travels with each check, so every stored report gets a grade. Dotted paths,
-    // so the AI's verdict (`emulation.ai`) survives re-checks.
-    ...(v.emulation ? Object.fromEntries(Object.entries(summarizeEmulation(v.emulation)).map(([k, x]) => [`emulation.${k}`, x])) : {}),
+    // Emulation & simulation value travels with each check, so every stored report gets a grade. Dotted paths,
+    // so the AI's verdict (`emulationSimulation.ai`) survives re-checks.
+    ...(v.emulationSimulation
+      ? Object.fromEntries(Object.entries(summarizeEmulationSimulation(v.emulationSimulation)).map(([k, x]) => [`emulationSimulation.${k}`, x]))
+      : {}),
   };
 }
 

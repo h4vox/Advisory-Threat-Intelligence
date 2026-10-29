@@ -1,4 +1,4 @@
-/** Samples for ./emulation-value tests: research write-ups an emulation team wants, and notices it does not. */
+/** Samples for ./emulation-simulation tests: research write-ups an emulation or simulation team wants, and notices it does not. */
 
 /** An infection-chain write-up (public research summary, ClickFix delivery platform). */
 export const CLICKFIX_CHAIN = {

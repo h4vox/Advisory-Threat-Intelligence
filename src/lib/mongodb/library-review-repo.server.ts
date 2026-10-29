@@ -174,12 +174,12 @@ export async function mongoAnalyseAndReviewReport(id: string, opts: { signal?: A
   };
   const update = reviewUpdate(doc, review);
   update.$set.aiAnalysis = analysis;
-  // The AI's grounded emulation grade sits beside the rules' grade (the Library prefers it).
-  if (analysis.emulation) {
-    update.$set["emulation.ai"] = {
-      grade: analysis.emulation.grade,
-      reproducible: analysis.emulation.reproducible,
-      verifiedSteps: analysis.emulation.steps.length,
+  // The AI's grounded emulation & simulation grade sits beside the rules' grade (the Library prefers it).
+  if (analysis.emulationSimulation) {
+    update.$set["emulationSimulation.ai"] = {
+      grade: analysis.emulationSimulation.grade,
+      reproducible: analysis.emulationSimulation.reproducible,
+      verifiedSteps: analysis.emulationSimulation.steps.length,
       at: analysis.analysedAt,
     };
   }

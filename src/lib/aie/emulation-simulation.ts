@@ -1,13 +1,18 @@
 /**
- * Emulation value: how much a report gives an attack emulation / simulation team to rebuild.
+ * Emulation & simulation value: how much a report gives an adversary emulation team (red / purple
+ * team rebuilding the attack) and an attack simulation platform (BAS: replaying the behaviour and
+ * checking that defences see it).
  *
  * The technical-depth check (./technical-depth) answers "is this technical threat intelligence?".
- * This module answers the next question: "could a red / purple team replay what it describes?".
+ * This module answers the next two questions: "could a team emulate or simulate what it describes?"
+ * and "what should defenders see when they do?". Emulation needs the procedures in order;
+ * simulation also needs what to validate: the telemetry, log sources, detection content and C2
+ * network behaviour the report names (./telemetry-refs).
  * The reports worth most are those that walk through an infection chain step by step, naming the
  * files, paths, registry keys, commands, APIs and encryption the attacker used, in order (e.g.
  * "PowerShell downloads X.msi … msiexec installs it silently … DeElevate64.exe loads the patched
  * DLL … the loader decrypts config.ini with AES-256 and maps the backdoor in memory"). A patch note
- * that names a CVE and the fixed versions passes the depth check but gives an emulation team
+ * that names a CVE and the fixed versions passes the depth check but gives an emulation or simulation team
  * nothing.
  *
  * Grades, best first:
@@ -23,31 +28,32 @@
  * Pure module (relative imports of pure modules only) so it runs under `node --test` and in the browser.
  */
 import { articleProse, countCommands } from "./technical-depth.ts";
+import { extractTelemetryRefs } from "./telemetry-refs.ts";
 
 /** Bump when the rules change so stored reports are graded again. */
-export const EMULATION_VALUE_VERSION = 1;
+export const EMULATION_SIMULATION_VERSION = 2;
 
-export type EmulationGrade = "chain" | "procedures" | "context" | "news";
+export type EmulationSimulationGrade = "chain" | "procedures" | "context" | "news";
 
-export const EMULATION_GRADES: EmulationGrade[] = ["chain", "procedures", "context", "news"];
+export const EMULATION_SIMULATION_GRADES: EmulationSimulationGrade[] = ["chain", "procedures", "context", "news"];
 
-export const EMULATION_GRADE_META: Record<EmulationGrade, { label: string; short: string; description: string; rank: number }> = {
+export const EMULATION_SIMULATION_GRADE_META: Record<EmulationSimulationGrade, { label: string; short: string; description: string; rank: number }> = {
   chain: {
     label: "Attack chain",
     short: "Chain",
-    description: "Walks through a multi-step attack chain with the files, commands and tooling used at each step: ready to emulate.",
+    description: "Walks through a multi-step attack chain with the files, commands and tooling used at each step: ready to emulate or simulate.",
     rank: 3,
   },
   procedures: {
     label: "Procedures",
     short: "Procedures",
-    description: "Concrete attacker procedures (commands, artifacts, techniques) without the full chain.",
+    description: "Concrete attacker procedures (commands, artifacts, techniques) to emulate or simulate, without the full chain.",
     rank: 2,
   },
   context: {
     label: "Context",
     short: "Context",
-    description: "Actor, campaign or malware context, indicators or techniques; few procedures to replay.",
+    description: "Actor, campaign or malware context, indicators, techniques or detection content; few procedures to emulate or simulate.",
     rank: 1,
   },
   news: {
@@ -58,9 +64,9 @@ export const EMULATION_GRADE_META: Record<EmulationGrade, { label: string; short
   },
 };
 
-export type EmulationValue = {
+export type EmulationSimulationValue = {
   version: number;
-  grade: EmulationGrade;
+  grade: EmulationSimulationGrade;
   /** 0–100. */
   score: number;
   /** Plain-language reasons for the grade, most important first. */
@@ -69,6 +75,11 @@ export type EmulationValue = {
   steps: string[];
   /** Statements of novelty quoted from the text (new technique, previously undocumented …). */
   novelty: string[];
+  /**
+   * What a simulation should be validated against, quoted from the text: event IDs, log sources,
+   * detection content and C2 network behaviour the report names (at most 8).
+   */
+  validate: string[];
   /** Distinct artifacts by kind (a few examples each). */
   artifacts: Partial<Record<ArtifactKind, string[]>>;
   stats: {
@@ -80,12 +91,16 @@ export type EmulationValue = {
     behaviours: number;
     techniques: number;
     patchNotice: number;
+    /** Event IDs, log sources and detection rules / queries the report names. */
+    telemetry: number;
+    /** Sentences describing C2 network behaviour (protocol, URI, user agent, port, DNS). */
+    network: number;
   };
 };
 
 export type ArtifactKind = "file" | "path" | "registry" | "api" | "crypto" | "lolbin" | "network";
 
-export type EmulationInput = {
+export type EmulationSimulationInput = {
   title: string;
   text: string;
   /** Kinds of attacker behaviour and technique IDs, when the caller already has them (./technical-depth). */
@@ -196,6 +211,10 @@ const PROCEDURE_OBJECT_RE =
 /** Numbered step lines ("1. …", "Step 2:", "Stage 3 –"). */
 const NUMBERED_STEP_RE = /^\s*(?:\d{1,2}[.)]\s|(?:step|stage|phase)\s+\d{1,2}\b)/gim;
 
+/** C2 / network behaviour a simulation can reproduce and a sensor should see. */
+const NETWORK_BEHAVIOUR_RE =
+  /\b(?:user[- ]agent|HTTP (?:GET|POST|PUT)|POST requests?|GET requests?|URI|URL path|over (?:HTTPS?|TLS|DNS|SMB|WebSocket|ICMP|TCP|UDP)|DNS (?:TXT|tunnel\w*|queries|requests?)|port \d{2,5}|TCP\/\d{2,5}|beacon(?:s|ing)? (?:every|interval)|jitter|named pipe|WebSocket|DoH|DNS-over-HTTPS|Telegram (?:bot|API)|Discord webhook)\b/i;
+
 const clip = (s: string, n = 220) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
 // ---------------------------------------------------------------------------
@@ -216,8 +235,8 @@ const BEHAVIOUR_HINTS: RegExp[] = [
   /\b(?:ransomware|encrypt(?:s|ed) (?:files|data)|wiper|destroy)/i,
 ];
 
-/** Grades a report's emulation value (see the module doc). */
-export function assessEmulationValue(input: EmulationInput): EmulationValue {
+/** Grades a report's emulation & simulation value (see the module doc). */
+export function assessEmulationSimulation(input: EmulationSimulationInput): EmulationSimulationValue {
   const prose = articleProse(`${input.title ?? ""}\n${(input.text ?? "").slice(0, MAX_CHARS)}`);
   const all = sentences(prose);
   const { byKind, total: artifacts } = collectArtifacts(prose);
@@ -243,6 +262,25 @@ export function assessEmulationValue(input: EmulationInput): EmulationValue {
     if (novelty.length < 5 && NOVELTY_RE.test(s) && s.length <= 400) novelty.push(clip(s));
   }
   const procedureSteps = candidates.length;
+
+  // What to validate a simulation against: telemetry the report names, then C2 network behaviour.
+  const telemetryRefs = extractTelemetryRefs(prose);
+  const validate: string[] = [];
+  const addValidate = (q: string) => {
+    const c = clip(q.trim());
+    if (c.length >= 12 && !validate.includes(c) && validate.length < 8) validate.push(c);
+  };
+  for (const e of telemetryRefs.events) addValidate(e.quote);
+  for (const s of telemetryRefs.sources) addValidate(s.quote);
+  let network = 0;
+  for (const s of all) {
+    if (NETWORK_BEHAVIOUR_RE.test(s) && !/^\|/.test(s)) {
+      network++;
+      if (network <= 3) addValidate(s);
+    }
+  }
+  const detectionContent = telemetryRefs.content.reduce((n, c) => n + c.count, 0);
+  const telemetry = telemetryRefs.events.length + telemetryRefs.sources.length + detectionContent;
   const strongSteps = candidates.filter((c) => c.strong);
   const steps = (strongSteps.length >= 4 ? strongSteps : candidates).slice(0, 12).map((c) => clip(c.s));
 
@@ -259,7 +297,8 @@ export function assessEmulationValue(input: EmulationInput): EmulationValue {
       Math.min(12, commands * 3) +
       Math.min(10, chainMarkers * 3 + sequenceMarkers) +
       Math.min(14, behaviours * 2) +
-      Math.min(10, techniques) -
+      Math.min(10, techniques) +
+      Math.min(10, telemetry * 2 + Math.min(network, 3)) -
       (procedureSteps <= 1 ? Math.min(20, patchNotice * 4) : 0),
   );
 
@@ -271,13 +310,15 @@ export function assessEmulationValue(input: EmulationInput): EmulationValue {
   if (commands) signals.push(plural(commands, "attacker command"));
   if (techniques) signals.push(plural(techniques, "ATT&CK technique"));
   if (behaviours) signals.push(`${plural(behaviours, "kind")} of attacker behaviour`);
+  if (telemetry) signals.push(`${plural(telemetry, "telemetry / detection reference")} to validate a simulation against`);
+  if (network) signals.push(`${plural(network, "description")} of C2 network behaviour to simulate`);
   if (novelty.length) signals.push("states something new (technique, variant or tooling)");
 
-  let grade: EmulationGrade;
+  let grade: EmulationSimulationGrade;
   const chainShape = chainMarkers >= 1 || sequenceMarkers >= 3;
   if (procedureSteps >= 5 && chainShape && artifacts >= 6 && behaviours >= 3) grade = "chain";
   else if ((procedureSteps >= 3 && artifacts >= 4) || commands >= 3 || (techniques >= 6 && procedureSteps >= 1)) grade = "procedures";
-  else if (procedureSteps >= 1 || techniques >= 1 || artifacts >= 4 || behaviours >= 4) grade = "context";
+  else if (procedureSteps >= 1 || techniques >= 1 || artifacts >= 4 || behaviours >= 4 || telemetry >= 3) grade = "context";
   else grade = "news";
   // A vulnerability or patch notice that names a few file names is still a notice.
   // Behaviour words in a notice ("ransomware groups have exploited earlier flaws") are background.
@@ -288,40 +329,59 @@ export function assessEmulationValue(input: EmulationInput): EmulationValue {
   if (grade === "news" && !signals.length) signals.push("no attacker procedures, artifacts or techniques described");
 
   return {
-    version: EMULATION_VALUE_VERSION,
+    version: EMULATION_SIMULATION_VERSION,
     grade,
     score: Math.max(0, score),
     signals,
     steps,
     novelty,
+    validate,
     artifacts: byKind,
-    stats: { procedureSteps, artifacts, commands, chainMarkers, sequenceMarkers, behaviours, techniques, patchNotice },
+    stats: { procedureSteps, artifacts, commands, chainMarkers, sequenceMarkers, behaviours, techniques, patchNotice, telemetry, network },
   };
 }
 
 /** The AI's grounded verdict (./report-ai-analysis), stored beside the rules' grade. */
-export type EmulationAiVerdict = { grade: EmulationGrade; reproducible: "yes" | "partly" | "no"; verifiedSteps: number; at: string };
+export type EmulationSimulationAiVerdict = { grade: EmulationSimulationGrade; reproducible: "yes" | "partly" | "no"; verifiedSteps: number; at: string };
 
 /** Compact form stored on a report and sent with list items. */
-export type EmulationSummary = Pick<EmulationValue, "version" | "grade" | "score" | "signals" | "steps" | "novelty"> & { ai?: EmulationAiVerdict };
+export type EmulationSimulationSummary = Pick<EmulationSimulationValue, "version" | "grade" | "score" | "signals" | "steps" | "novelty"> & {
+  /** Absent in summaries stored before simulation validation was added. */
+  validate?: string[];
+  ai?: EmulationSimulationAiVerdict;
+};
 
 /** The grade the Library uses: the AI's grounded grade when there is one, else the rules' grade. */
-export function effectiveGrade(v: EmulationSummary | null | undefined): EmulationGrade | null {
+export function effectiveGrade(v: EmulationSimulationSummary | null | undefined): EmulationSimulationGrade | null {
   return v ? (v.ai?.grade ?? v.grade) : null;
 }
 
-export function summarizeEmulation(v: EmulationValue): EmulationSummary {
-  return { version: v.version, grade: v.grade, score: v.score, signals: v.signals.slice(0, 6), steps: v.steps.slice(0, 12), novelty: v.novelty.slice(0, 5) };
+export function summarizeEmulationSimulation(v: EmulationSimulationValue): EmulationSimulationSummary {
+  return {
+    version: v.version,
+    grade: v.grade,
+    score: v.score,
+    signals: v.signals.slice(0, 8),
+    steps: v.steps.slice(0, 12),
+    novelty: v.novelty.slice(0, 5),
+    validate: v.validate.slice(0, 8),
+  };
 }
 
-/** A stored summary read back from the database (anything malformed is dropped). */
-export function storedEmulation(v: unknown): EmulationSummary | undefined {
-  if (!v || typeof v !== "object") return undefined;
-  const o = v as Record<string, unknown>;
+/**
+ * A stored summary read back from the database (anything malformed is dropped). `legacy` is the
+ * `emulation` field reports carried before the emulation & simulation rename; the current field wins,
+ * and an AI verdict stored under the old name is kept.
+ */
+export function storedEmulationSimulation(v: unknown, legacy?: unknown): EmulationSimulationSummary | undefined {
+  const cur = v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  const old = legacy && typeof legacy === "object" ? (legacy as Record<string, unknown>) : null;
+  if (!cur && !old) return undefined;
+  const o: Record<string, unknown> = cur ? { ...cur, ai: cur.ai ?? old?.ai } : { ...old! };
   const strings = (x: unknown, n: number) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string").slice(0, n) : []);
   const ai = o.ai as Record<string, unknown> | undefined;
-  const aiVerdict: EmulationAiVerdict | undefined =
-    ai && typeof ai === "object" && isEmulationGrade(ai.grade)
+  const aiVerdict: EmulationSimulationAiVerdict | undefined =
+    ai && typeof ai === "object" && isEmulationSimulationGrade(ai.grade)
       ? {
           grade: ai.grade,
           reproducible: ai.reproducible === "yes" || ai.reproducible === "partly" ? ai.reproducible : "no",
@@ -330,19 +390,20 @@ export function storedEmulation(v: unknown): EmulationSummary | undefined {
         }
       : undefined;
   // Only the AI's verdict (rules not run yet): its grade stands in.
-  const grade = isEmulationGrade(o.grade) ? o.grade : aiVerdict?.grade;
+  const grade = isEmulationSimulationGrade(o.grade) ? o.grade : aiVerdict?.grade;
   if (!grade) return undefined;
   return {
     ...(aiVerdict ? { ai: aiVerdict } : {}),
     version: Number(o.version) || 0,
     grade,
     score: Math.max(0, Math.min(100, Number(o.score) || 0)),
-    signals: strings(o.signals, 6),
+    signals: strings(o.signals, 8),
     steps: strings(o.steps, 12),
     novelty: strings(o.novelty, 5),
+    validate: strings(o.validate, 8),
   };
 }
 
-export function isEmulationGrade(v: unknown): v is EmulationGrade {
-  return typeof v === "string" && (EMULATION_GRADES as string[]).includes(v);
+export function isEmulationSimulationGrade(v: unknown): v is EmulationSimulationGrade {
+  return typeof v === "string" && (EMULATION_SIMULATION_GRADES as string[]).includes(v);
 }
