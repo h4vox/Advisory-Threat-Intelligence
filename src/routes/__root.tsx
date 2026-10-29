@@ -5,6 +5,7 @@ import { Toaster } from "sonner";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { getAuthState, type AuthStateUser } from "@/lib/aie/server-auth";
 import appCss from "../styles.css?url";
+import { accentCss } from "@/lib/ui/accent";
 
 const APP_NAME = "AIE";
 
@@ -104,6 +105,8 @@ function RootDocument() {
     <html lang="en" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
+        {/* Accent colours live in the page, not the stylesheet: a cached stylesheet cannot hold them back. */}
+        <style id="aie-accent-css" dangerouslySetInnerHTML={{ __html: accentCss() }} />
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){
