@@ -1,5 +1,6 @@
 /**
- * Emulation brief: a report retold the way emulation-focused analysts share research —
+ * Emulation & simulation brief: a report retold the way emulation / simulation-focused analysts
+ * share research —
  *
  *   [THREAT CAMPAIGN] DCRat Deployment: Obfuscated VBS + Payloads Appended to PNGs
  *   ℹ️ What the research found (two or three sentences).
@@ -8,17 +9,18 @@
  *   • msiexec.exe installs it silently using /qn and /norestart.
  *   …
  *   🆕 What is new …
+ *   🛡️ VALIDATE: event IDs, log sources, detections and C2 behaviour a simulation should trigger
  *   📌 Source: Forescout
  *   🔗 https://www.forescout[.]com/blog/romulus-…
  *
  * Built only from the report: the steps are sentences quoted from the text (the AI's verified steps
- * when the report was analysed, otherwise the procedure steps ./emulation-value found), the summary
+ * when the report was analysed, otherwise the procedure steps ./emulation-simulation found), the summary
  * is the grounded AI summary or the report's own opening. Nothing is written that the report does
  * not say. The link is defanged, as in shared intel posts.
  *
  * Pure module so it runs under `node --test` and in the browser.
  */
-import type { EmulationGrade, EmulationSummary } from "./emulation-value.ts";
+import type { EmulationSimulationGrade, EmulationSimulationSummary } from "./emulation-simulation.ts";
 import type { ReportAiAnalysis } from "./report-ai-analysis.ts";
 
 export type BriefCategory =
@@ -30,7 +32,7 @@ export type BriefCategory =
   | "VULNERABILITY EXPLOITATION"
   | "THREAT REPORT";
 
-export type EmulationBrief = {
+export type EmulationSimulationBrief = {
   category: BriefCategory;
   title: string;
   about: string[];
@@ -39,9 +41,11 @@ export type EmulationBrief = {
   /** Where the steps come from. */
   stepsFrom: "ai" | "rules" | "none";
   novel: string[];
+  /** Telemetry, detections and C2 behaviour to validate a simulation against (quoted). */
+  validate: string[];
   source: string;
   link: string;
-  grade: EmulationGrade | null;
+  grade: EmulationSimulationGrade | null;
   /** The brief as plain text, ready to copy. */
   text: string;
 };
@@ -53,8 +57,8 @@ export type BriefInput = {
   docTypes?: readonly string[];
   classification?: string | null;
   extractedText?: string | null;
-  emulation?: EmulationSummary | null;
-  aiAnalysis?: Pick<ReportAiAnalysis, "summary" | "emulation"> | null;
+  emulationSimulation?: EmulationSimulationSummary | null;
+  aiAnalysis?: Pick<ReportAiAnalysis, "summary" | "emulationSimulation"> | null;
 };
 
 /** Defangs a URL the way shared intel does (https://host[.]tld/path). */
@@ -103,13 +107,14 @@ function sentences(text: string, max: number): string[] {
     .slice(0, max);
 }
 
-export function buildEmulationBrief(input: BriefInput): EmulationBrief {
+export function buildEmulationSimulationBrief(input: BriefInput): EmulationSimulationBrief {
   const ai = input.aiAnalysis ?? null;
-  const aiSteps = ai?.emulation?.steps ?? [];
-  const ruleSteps = input.emulation?.steps ?? [];
-  const stepsFrom: EmulationBrief["stepsFrom"] = aiSteps.length >= 2 ? "ai" : ruleSteps.length ? "rules" : aiSteps.length ? "ai" : "none";
+  const aiSteps = ai?.emulationSimulation?.steps ?? [];
+  const ruleSteps = input.emulationSimulation?.steps ?? [];
+  const stepsFrom: EmulationSimulationBrief["stepsFrom"] = aiSteps.length >= 2 ? "ai" : ruleSteps.length ? "rules" : aiSteps.length ? "ai" : "none";
   const steps = (stepsFrom === "ai" ? aiSteps.map((s) => s.quote) : ruleSteps).slice(0, 12);
-  const novel = [...new Set([...(ai?.emulation?.novel ?? []).map((n) => n.quote), ...(input.emulation?.novelty ?? [])])].slice(0, 3);
+  const novel = [...new Set([...(ai?.emulationSimulation?.novel ?? []).map((n) => n.quote), ...(input.emulationSimulation?.novelty ?? [])])].slice(0, 3);
+  const validate = [...new Set([...(ai?.emulationSimulation?.detections ?? []).map((d) => d.quote), ...(input.emulationSimulation?.validate ?? [])])].slice(0, 6);
   const about = ai?.summary ? sentences(ai.summary, 3) : opening(input.extractedText ?? "");
   const category = categoryOf(input, steps.length);
   const source = (input.publisher ?? "").trim() || (() => {
@@ -121,7 +126,7 @@ export function buildEmulationBrief(input: BriefInput): EmulationBrief {
   })();
   const link = defangUrl(input.url);
   const chainHeading = category === "INCIDENT ANALYSIS" ? "INTRUSION CHAIN" : category === "THREAT TTPs" ? "PROCEDURE" : "INFECTION CHAIN";
-  const grade = input.emulation ? (input.emulation.ai?.grade ?? input.emulation.grade) : (ai?.emulation?.grade ?? null);
+  const grade = input.emulationSimulation ? (input.emulationSimulation.ai?.grade ?? input.emulationSimulation.grade) : (ai?.emulationSimulation?.grade ?? null);
 
   const lines = [`[${category}] ${input.title.trim()}`, ""];
   for (const a of about) lines.push(`ℹ️ ${a}`, "");
@@ -135,8 +140,13 @@ export function buildEmulationBrief(input: BriefInput): EmulationBrief {
     for (const n of novel) lines.push(`• ${n}`);
     lines.push("");
   }
+  if (validate.length) {
+    lines.push("🛡️ VALIDATE (what defenders should see when it is simulated)", "");
+    for (const v of validate) lines.push(`• ${v}`);
+    lines.push("");
+  }
   if (source) lines.push(`📌 Source: ${source}`);
   lines.push(`🔗 ${link}`);
 
-  return { category, title: input.title.trim(), about, chainHeading, steps, stepsFrom, novel, source, link, grade, text: lines.join("\n") };
+  return { category, title: input.title.trim(), about, chainHeading, steps, stepsFrom, novel, validate, source, link, grade, text: lines.join("\n") };
 }

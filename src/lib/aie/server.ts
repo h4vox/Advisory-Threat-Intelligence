@@ -2025,7 +2025,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware
       requireIocs: z.boolean().optional(),
       requireAttck: z.boolean().optional(),
       rejectMarketingNoise: z.boolean().optional(),
-      minEmulationGrade: z.enum(["chain", "procedures", "context", "news"]).optional(),
+      minEmulationSimulationGrade: z.enum(["chain", "procedures", "context", "news"]).optional(),
       dedupMethod: z.enum(["canonical_url", "content_hash", "both", "smart_hybrid"]).optional(),
       activeSources: z.array(z.string()).optional(),
       targetResourceTypes: z.array(z.string()).optional(),

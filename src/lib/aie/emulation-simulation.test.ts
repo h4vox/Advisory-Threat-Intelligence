@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assessEmulationValue } from "./emulation-value.ts";
+import { assessEmulationSimulation } from "./emulation-simulation.ts";
 import { assessTechnicalDepth } from "./technical-depth.ts";
-import { BREACH_NEWS, CLICKFIX_CHAIN, PATCH_NOTICE, PATCH_NOTICE_WITH_BACKGROUND, SIDELOADING_PROCEDURE } from "./__fixtures__/emulation-samples.ts";
+import { BREACH_NEWS, CLICKFIX_CHAIN, PATCH_NOTICE, PATCH_NOTICE_WITH_BACKGROUND, SIDELOADING_PROCEDURE } from "./__fixtures__/emulation-simulation-samples.ts";
 import { CAMPAIGN_SUMMARY, GOVERNMENT_ADVISORY, PRODUCT_PAGE } from "./__fixtures__/depth-samples.ts";
 
 test("an infection-chain write-up grades as an attack chain, with its steps quoted in order", () => {
-  const v = assessEmulationValue(CLICKFIX_CHAIN);
+  const v = assessEmulationSimulation(CLICKFIX_CHAIN);
   assert.equal(v.grade, "chain", JSON.stringify(v.stats));
   assert.ok(v.score >= 60, String(v.score));
   const msi = v.steps.findIndex((s) => /IconEdit2Turb\.msi/.test(s));
@@ -16,13 +16,13 @@ test("an infection-chain write-up grades as an attack chain, with its steps quot
 });
 
 test("a side-loading walk-through grades as an attack chain", () => {
-  const v = assessEmulationValue(SIDELOADING_PROCEDURE);
+  const v = assessEmulationSimulation(SIDELOADING_PROCEDURE);
   assert.equal(v.grade, "chain", JSON.stringify(v.stats));
   assert.ok(v.steps.some((s) => /jli\.dll/.test(s)));
 });
 
 test("a patch notice is news, however many version numbers it lists", () => {
-  const v = assessEmulationValue(PATCH_NOTICE);
+  const v = assessEmulationSimulation(PATCH_NOTICE);
   assert.equal(v.grade, "news", JSON.stringify(v.stats));
   assert.ok(v.score < 25, String(v.score));
   // Version numbers are not IP indicators either.
@@ -33,21 +33,21 @@ test("a patch notice is news, however many version numbers it lists", () => {
 });
 
 test("breach news and product pages are news", () => {
-  assert.equal(assessEmulationValue(BREACH_NEWS).grade, "news");
-  assert.equal(assessEmulationValue(PRODUCT_PAGE).grade, "news");
+  assert.equal(assessEmulationSimulation(BREACH_NEWS).grade, "news");
+  assert.equal(assessEmulationSimulation(PRODUCT_PAGE).grade, "news");
 });
 
 test("a campaign summary with behaviour but no procedures is context; an advisory is not graded a chain", () => {
-  const c = assessEmulationValue(CAMPAIGN_SUMMARY);
+  const c = assessEmulationSimulation(CAMPAIGN_SUMMARY);
   assert.equal(c.grade, "context", JSON.stringify(c.stats));
-  assert.notEqual(assessEmulationValue(GOVERNMENT_ADVISORY).grade, "chain");
+  assert.notEqual(assessEmulationSimulation(GOVERNMENT_ADVISORY).grade, "chain");
 });
 
-test("the library gate hides a vendor patch notice as low emulation value, but not a CERT advisory or an analyst's Restore", async () => {
+test("the library gate hides a vendor patch notice as low emulation & simulation value, but not a CERT advisory or an analyst's Restore", async () => {
   const { evaluateLibraryReport } = await import("./library-gate.ts");
   const base = { wordCount: 160, iocCount: 0, techniques: 0, cves: 1, attackChainSteps: 0, entities: 0, qualityScore: 0.5 };
   assert.equal(assessTechnicalDepth({ ...PATCH_NOTICE_WITH_BACKGROUND, url: "https://brandefense.io/x" }).pass, true, "background on earlier attacks passes the depth check");
-  assert.equal(assessEmulationValue(PATCH_NOTICE_WITH_BACKGROUND).grade, "news");
+  assert.equal(assessEmulationSimulation(PATCH_NOTICE_WITH_BACKGROUND).grade, "news");
   const notice = evaluateLibraryReport({ ...base, ...PATCH_NOTICE_WITH_BACKGROUND, url: "https://brandefense.io/security-news/veeam-backup-replication-cve-2026-108142-patch" });
   assert.equal(notice.verdict, "reject");
   assert.equal(notice.rule, "low_value");
@@ -55,5 +55,30 @@ test("the library gate hides a vendor patch notice as low emulation value, but n
   assert.equal(evaluateLibraryReport({ ...base, ...PATCH_NOTICE_WITH_BACKGROUND, url: "https://brandefense.io/x", keep: true }).verdict, "keep");
   const chain = evaluateLibraryReport({ ...base, ...CLICKFIX_CHAIN, url: "https://www.forescout.com/blog/romulus" });
   assert.equal(chain.verdict, "keep");
-  assert.equal(chain.emulation?.grade, "chain");
+  assert.equal(chain.emulationSimulation?.grade, "chain");
+});
+
+test("telemetry and C2 behaviour the report names are listed to validate a simulation against", () => {
+  const v = assessEmulationSimulation({
+    title: "Loader",
+    text: `${SIDELOADING_PROCEDURE.text}
+Defenders can detect the side-loading with Sysmon Event ID 7 (image loaded) for jli.dll loaded by javaw.exe from C:\\ProgramData.
+The backdoor beacons over HTTPS with the user agent "Mozilla/5.0 (compatible; MSIE 9.0)" to /api/v2/check every 60 seconds.`,
+  });
+  assert.ok(v.stats.telemetry >= 1, JSON.stringify(v.stats));
+  assert.ok(v.stats.network >= 1);
+  assert.ok(v.validate.some((q) => /Event ID 7/.test(q)));
+  assert.ok(v.validate.some((q) => /user agent/.test(q)));
+  assert.ok(v.signals.some((s) => /validate a simulation/.test(s)));
+});
+
+test("summaries stored under the old `emulation` name are still read, with their AI verdict", async () => {
+  const { storedEmulationSimulation } = await import("./emulation-simulation.ts");
+  const legacy = { version: 1, grade: "procedures", score: 40, signals: ["x"], steps: [], novelty: [], ai: { grade: "chain", reproducible: "yes", verifiedSteps: 5, at: "2026-10-29" } };
+  assert.equal(storedEmulationSimulation(undefined, legacy)?.ai?.grade, "chain");
+  const current = { version: 2, grade: "context", score: 20, signals: [], steps: [], novelty: [], validate: ["Event ID 4688"] };
+  const merged = storedEmulationSimulation(current, legacy);
+  assert.equal(merged?.grade, "context");
+  assert.equal(merged?.ai?.grade, "chain", "an AI verdict stored under the old name is kept");
+  assert.deepEqual(merged?.validate, ["Event ID 4688"]);
 });

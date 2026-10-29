@@ -1,21 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildEmulationBrief, defangUrl } from "./emulation-brief.ts";
-import { assessEmulationValue, summarizeEmulation } from "./emulation-value.ts";
-import { CLICKFIX_CHAIN } from "./__fixtures__/emulation-samples.ts";
+import { buildEmulationSimulationBrief, defangUrl } from "./emulation-simulation-brief.ts";
+import { assessEmulationSimulation, summarizeEmulationSimulation } from "./emulation-simulation.ts";
+import { CLICKFIX_CHAIN } from "./__fixtures__/emulation-simulation-samples.ts";
 
 test("defangUrl defangs the last dot of the host, like shared intel posts", () => {
   assert.equal(defangUrl("https://www.forescout.com/blog/romulus/"), "https://www.forescout[.]com/blog/romulus/");
 });
 
 test("a chain report becomes a brief in the shared-intel format, using only the report's sentences", () => {
-  const emulation = summarizeEmulation(assessEmulationValue(CLICKFIX_CHAIN));
-  const b = buildEmulationBrief({
+  const emulationSimulation = summarizeEmulationSimulation(assessEmulationSimulation(CLICKFIX_CHAIN));
+  const b = buildEmulationSimulationBrief({
     ...CLICKFIX_CHAIN,
     url: "https://www.forescout.com/blog/romulus-analysis-of-a-new-multi-payload-clickfix-delivery-platform/",
     publisher: "Forescout",
     extractedText: CLICKFIX_CHAIN.text,
-    emulation,
+    emulationSimulation,
   });
   assert.equal(b.category, "ATTACK INFRASTRUCTURE");
   assert.equal(b.stepsFrom, "rules");
@@ -27,12 +27,12 @@ test("a chain report becomes a brief in the shared-intel format, using only the 
 });
 
 test("verified AI steps take precedence over the rules' steps", () => {
-  const b = buildEmulationBrief({
+  const b = buildEmulationSimulationBrief({
     title: "New loader",
     url: "https://x.example/r",
     aiAnalysis: {
       summary: "Researchers found a loader. It sideloads a DLL.",
-      emulation: {
+      emulationSimulation: {
         grade: "procedures",
         claimedGrade: "procedures",
         reproducible: "partly",
@@ -41,13 +41,24 @@ test("verified AI steps take precedence over the rules' steps", () => {
           { text: "b", quote: "jli.dll decodes config.ini." },
         ],
         novel: [],
+        detections: [{ text: "process creation", quote: "Sysmon Event ID 1 records javaw.exe starting." }],
         missing: [],
         note: "",
       },
     },
-    emulation: { version: 1, grade: "context", score: 20, signals: [], steps: ["Other step."], novelty: [] },
+    emulationSimulation: { version: 1, grade: "context", score: 20, signals: [], steps: ["Other step."], novelty: [] },
   });
   assert.equal(b.stepsFrom, "ai");
   assert.deepEqual(b.steps, ["javaw.exe loads jli.dll.", "jli.dll decodes config.ini."]);
   assert.deepEqual(b.about, ["Researchers found a loader.", "It sideloads a DLL."]);
+});
+
+test("the brief lists what a simulation should be validated against", () => {
+  const b = buildEmulationSimulationBrief({
+    title: "Loader",
+    url: "https://x.example/r",
+    emulationSimulation: { version: 2, grade: "procedures", score: 40, signals: [], steps: [], novelty: [], validate: ["Look for Event ID 4688 with msiexec.exe /qn."] },
+  });
+  assert.deepEqual(b.validate, ["Look for Event ID 4688 with msiexec.exe /qn."]);
+  assert.match(b.text, /🛡️ VALIDATE[^\n]*\n\n• Look for Event ID 4688/);
 });

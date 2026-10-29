@@ -1051,12 +1051,12 @@ function SettingsPage() {
 
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
-                    <label htmlFor="crawl-min-emulation" className="font-medium text-fg">Min emulation value</label>
+                    <label htmlFor="crawl-min-emulation" className="font-medium text-fg">Min emulation & simulation value</label>
                   </div>
                   <Select
                     id="crawl-min-emulation"
-                    value={currentCrawl.minEmulationGrade || "context"}
-                    onValueChange={(v) => updateCrawlField("minEmulationGrade", v as "chain" | "procedures" | "context" | "news")}
+                    value={currentCrawl.minEmulationSimulationGrade || "context"}
+                    onValueChange={(v) => updateCrawlField("minEmulationSimulationGrade", v as "chain" | "procedures" | "context" | "news")}
                     className="w-full"
                   >
                     <option value="news">Everything (news and patch notes too)</option>

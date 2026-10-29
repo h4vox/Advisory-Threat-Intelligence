@@ -20,7 +20,7 @@
  */
 import { refang } from "./extract.ts";
 import { findWrittenDate } from "./published-date.ts";
-import { EMULATION_GRADE_META, isEmulationGrade, type EmulationGrade } from "./emulation-value.ts";
+import { EMULATION_SIMULATION_GRADE_META, isEmulationSimulationGrade, type EmulationSimulationGrade } from "./emulation-simulation.ts";
 
 export const REPORT_AI_ANALYSIS_VERSION = 1;
 
@@ -65,19 +65,21 @@ export type AiReview = {
   reasons: string[];
 };
 
-/** What an attack emulation team can take from the report, as the AI read it (grounded). */
-export type AiEmulationAssessment = {
+/** What an adversary emulation team and an attack simulation platform can take from the report, as the AI read it (grounded). */
+export type AiEmulationSimulationAssessment = {
   /** Grade after the grounding check (see `gradeNote` when it was lowered). */
-  grade: EmulationGrade;
+  grade: EmulationSimulationGrade;
   /** The grade the model gave, before the check. */
-  claimedGrade: EmulationGrade;
+  claimedGrade: EmulationSimulationGrade;
   /** Could a red / purple team rebuild the activity from this report alone? */
   reproducible: "yes" | "partly" | "no";
   /** Procedure steps in order, each with the sentence that states it (verified). */
   steps: AiFinding[];
   /** What is new: technique, variant, tooling, delivery (verified quotes). */
   novel: AiFinding[];
-  /** What an emulation team would still need that the report does not give. */
+  /** Telemetry and detections a simulation of this activity should trigger, as the report states them (verified quotes). */
+  detections: AiFinding[];
+  /** What an emulation or simulation team would still need that the report does not give. */
   missing: string[];
   /** The model's plain account of how much of the chain the report documents. */
   note: string;
@@ -95,8 +97,8 @@ export type ReportAiAnalysis = {
   /** Publication date the report states, with the line that states it (verified). */
   publishedDate: { date: string; quote: string } | null;
   review: AiReview;
-  /** Emulation value as the AI assessed it (absent in analyses made before it existed). */
-  emulation?: AiEmulationAssessment | null;
+  /** Emulation & simulation value as the AI assessed it (absent in analyses made before it existed). */
+  emulationSimulation?: AiEmulationSimulationAssessment | null;
   /** Items the grounding check removed because the report text does not support them. */
   dropped: { iocs: number; steps: number; findings: number; adversaryTerms: number; summarySentences: number };
   /** Only the first ANALYSIS_TEXT_CHARS characters were analysed. */
@@ -143,12 +145,13 @@ Analyse the report and return JSON with exactly these fields:
   "adversary": { "name": "actor or group name as written, or empty", "aliases": [], "type": "state-sponsored|cybercrime|hacktivist|insider|unknown", "motivation": "as stated, or empty", "sectors": [], "regions": [], "malware": [], "tools": [], "summary": "1-2 sentences on the adversary, or empty" },
   "publishedDate": { "date": "YYYY-MM-DD the report itself was published, or empty", "quote": "the exact line of the report that states it" },
   "review": { "verdict": "useful|not_useful|unsure", "confidence": 0.0, "reasons": ["short reasons"] },
-  "emulation": {
+  "emulationSimulation": {
     "grade": "chain|procedures|context|news",
     "reproducible": "yes|partly|no",
     "steps": [{ "text": "one attacker procedure step: what ran, what it did, with which file, command, path or tool", "quote": "exact sentence copied from the report" }],
     "novel": [{ "text": "what is new (technique, variant, tooling, delivery) according to the report", "quote": "exact sentence copied from the report" }],
-    "missing": ["what an emulation team would still need that the report does not give, e.g. how the payload was delivered"],
+    "detections": [{ "text": "telemetry, log source, detection rule or network behaviour that a simulation of this activity should trigger", "quote": "exact sentence copied from the report" }],
+    "missing": ["what an emulation or simulation team would still need that the report does not give, e.g. how the payload was delivered"],
     "note": "1-2 honest sentences: how much of the attack chain the report actually documents"
   }
 }
@@ -158,7 +161,7 @@ Rules:
 - List indicators only when the report itself lists them. Never guess.
 - Order the attack chain as the intrusion unfolded. Use only ATT&CK tactic names for "stage".
 - "review": "useful" when the report is technical threat intelligence a defender can act on (attack behaviour, intrusion details, malware analysis, indicators, detection content, vulnerability exploitation in the wild). "not_useful" only when the page is clearly not threat research (empty page, navigation or listing page, marketing, job post, event or webinar notice, generic news without technical content). When in doubt, answer "unsure". "confidence" is how sure you are, from 0 to 1.
-- "emulation" is for a red / purple team that wants to rebuild the attack: "chain" = the report walks through a multi-step attack chain with concrete procedures (files, commands, paths, tools, order); "procedures" = concrete procedures but not the whole chain; "context" = actor, campaign, malware or indicator context with few procedures; "news" = news, patch note or vulnerability notice without attacker procedures. Grade what the text shows, not what the topic suggests. List "steps" in the order they happened, only steps the report describes. Be honest in "note" and "missing": say plainly when the report is thin.
+- "emulationSimulation" is for red / purple teams and attack-simulation (BAS) platforms that wants to rebuild the attack: "chain" = the report walks through a multi-step attack chain with concrete procedures (files, commands, paths, tools, order); "procedures" = concrete procedures but not the whole chain; "context" = actor, campaign, malware or indicator context with few procedures; "news" = news, patch note or vulnerability notice without attacker procedures. Grade what the text shows, not what the topic suggests. List "steps" in the order they happened, only steps the report describes. List "detections" only when the report names the event IDs, logs, detection content or network behaviour. Be honest in "note" and "missing": say plainly when the report is thin.
 - Use empty strings and empty arrays when the report does not say.`;
   return { prompt, truncated };
 }
@@ -350,7 +353,7 @@ export function groundReportAnalysis(parsed: unknown, sourceText: string, opts: 
   dropped.summarySentences = summaryRes.removed;
 
   // Emulation assessment
-  const emulation = groundEmulation(o.emulation, normText);
+  const emulationSimulation = groundEmulationSimulation(o.emulationSimulation, normText);
 
   // Review
   const rv = (o.review ?? {}) as Record<string, unknown>;
@@ -367,7 +370,7 @@ export function groundReportAnalysis(parsed: unknown, sourceText: string, opts: 
     adversary,
     publishedDate,
     review: { verdict, confidence, reasons: strList(rv.reasons, 6) },
-    emulation,
+    emulationSimulation,
     dropped,
     truncated: opts.truncated,
     provider: opts.provider,
@@ -377,13 +380,13 @@ export function groundReportAnalysis(parsed: unknown, sourceText: string, opts: 
 }
 
 /** Minimum verified procedure steps for a grade the model gives. */
-const MIN_VERIFIED_STEPS: Record<EmulationGrade, number> = { chain: 4, procedures: 2, context: 0, news: 0 };
+const MIN_VERIFIED_STEPS: Record<EmulationSimulationGrade, number> = { chain: 4, procedures: 2, context: 0, news: 0 };
 
-function groundEmulation(raw: unknown, normText: string): AiEmulationAssessment | null {
+function groundEmulationSimulation(raw: unknown, normText: string): AiEmulationSimulationAssessment | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const e = raw as Record<string, unknown>;
   const claimed = str(e.grade, 20).toLowerCase();
-  if (!isEmulationGrade(claimed)) return null;
+  if (!isEmulationSimulationGrade(claimed)) return null;
   const quoted = (list: unknown, max: number): AiFinding[] => {
     const out: AiFinding[] = [];
     for (const item of Array.isArray(list) ? list.slice(0, max) : []) {
@@ -396,17 +399,18 @@ function groundEmulation(raw: unknown, normText: string): AiEmulationAssessment 
   };
   const steps = quoted(e.steps, 25);
   const novel = quoted(e.novel, 8);
+  const detections = quoted(e.detections, 10);
   // The grade can be no better than the verified steps support.
-  let grade: EmulationGrade = claimed;
+  let grade: EmulationSimulationGrade = claimed;
   if (grade === "chain" && steps.length < MIN_VERIFIED_STEPS.chain) grade = "procedures";
   if (grade === "procedures" && steps.length < MIN_VERIFIED_STEPS.procedures) grade = "context";
   const gradeNote =
     grade !== claimed
-      ? `The AI graded it "${EMULATION_GRADE_META[claimed].label}", but only ${steps.length} procedure step${steps.length === 1 ? " is" : "s are"} backed by quotes from the text, so it counts as "${EMULATION_GRADE_META[grade].label}".`
+      ? `The AI graded it "${EMULATION_SIMULATION_GRADE_META[claimed].label}", but only ${steps.length} procedure step${steps.length === 1 ? " is" : "s are"} backed by quotes from the text, so it counts as "${EMULATION_SIMULATION_GRADE_META[grade].label}".`
       : undefined;
   const rep = str(e.reproducible, 10).toLowerCase();
-  let reproducible: AiEmulationAssessment["reproducible"] = rep === "yes" || rep === "partly" ? rep : "no";
+  let reproducible: AiEmulationSimulationAssessment["reproducible"] = rep === "yes" || rep === "partly" ? rep : "no";
   if (reproducible === "yes" && grade !== "chain") reproducible = "partly";
   if (grade === "news" || grade === "context") reproducible = steps.length >= 2 ? "partly" : "no";
-  return { grade, claimedGrade: claimed, reproducible, steps, novel, missing: strList(e.missing, 6), note: str(e.note, 500), ...(gradeNote ? { gradeNote } : {}) };
+  return { grade, claimedGrade: claimed, reproducible, steps, novel, detections, missing: strList(e.missing, 6), note: str(e.note, 500), ...(gradeNote ? { gradeNote } : {}) };
 }

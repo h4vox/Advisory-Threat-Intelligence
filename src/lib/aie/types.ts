@@ -2,7 +2,7 @@ import type { ResearchDiscoveryConfig, ResearchLabels } from "./research-taxonom
 import type { TelemetryRefs } from "./telemetry-refs.ts";
 import type { PublishedDate } from "./published-date.ts";
 import type { ReportAiAnalysis } from "./report-ai-analysis.ts";
-import type { EmulationGrade, EmulationSummary } from "./emulation-value.ts";
+import type { EmulationSimulationGrade, EmulationSimulationSummary } from "./emulation-simulation.ts";
 
 export type TrustLevel = "high" | "official" | "community" | "reputable" | "unverified";
 
@@ -395,8 +395,8 @@ export type ReportRecord = {
   simulationScore?: number;
   isEmergingTechnique?: boolean;
   noveltyRationale?: string;
-  /** Emulation value: attack chain / procedures / context / news, with the quoted evidence (./emulation-value). */
-  emulation?: EmulationSummary;
+  /** Emulation & simulation value: attack chain / procedures / context / news, with the quoted evidence (./emulation-simulation). */
+  emulationSimulation?: EmulationSimulationSummary;
   canonicalReportId?: string;
   tags?: string[];
   aiVerified?: boolean;
@@ -654,11 +654,11 @@ export type CrawlConfig = {
   requireAttck: boolean;
   rejectMarketingNoise: boolean;
   /**
-   * Lowest emulation value the crawler ingests (./emulation-value). "context" (default) skips news,
+   * Lowest emulation & simulation value the crawler ingests (./emulation-simulation). "context" (default) skips news,
    * patch notes and vulnerability notices without attacker procedures; "news" ingests everything
    * that passes the other checks.
    */
-  minEmulationGrade?: EmulationGrade;
+  minEmulationSimulationGrade?: EmulationSimulationGrade;
   dedupMethod: DedupMethod;
   activeSources: string[];
   targetResourceTypes: ResourceKind[];

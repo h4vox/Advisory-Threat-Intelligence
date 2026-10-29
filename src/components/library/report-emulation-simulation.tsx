@@ -2,37 +2,37 @@ import { useMemo } from "react";
 import { Copy, Route, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { StatusChip } from "@/components/ui/primitives";
-import { EMULATION_GRADE_META, assessEmulationValue, summarizeEmulation, type EmulationSummary } from "@/lib/aie/emulation-value";
-import { buildEmulationBrief } from "@/lib/aie/emulation-brief";
+import { EMULATION_SIMULATION_GRADE_META, assessEmulationSimulation, summarizeEmulationSimulation, type EmulationSimulationSummary } from "@/lib/aie/emulation-simulation";
+import { buildEmulationSimulationBrief } from "@/lib/aie/emulation-simulation-brief";
 import type { ReportRecord } from "@/lib/aie/types";
-import { EMULATION_TONE } from "./emulation-badge";
+import { EMULATION_SIMULATION_TONE } from "./emulation-simulation-badge";
 
 const REPRODUCIBLE_LABEL = { yes: "Reproducible from the report", partly: "Partly reproducible", no: "Not reproducible from the report" } as const;
 
 /**
- * Emulation value of one report: the rules' grade with its reasons, the AI's grounded verdict (when
- * analysed) and the emulation brief — the report retold as infection-chain steps quoted from it.
+ * Emulation & simulation value of one report: the rules' grade with its reasons, the AI's grounded verdict (when
+ * analysed) and the emulation & simulation brief — the report retold as infection-chain steps quoted from it.
  */
-export function ReportEmulationValue({ report }: { report: ReportRecord }) {
+export function ReportEmulationSimulation({ report }: { report: ReportRecord }) {
   // Reports stored before grading existed are graded here from their text.
-  const value: EmulationSummary | null = useMemo(() => {
-    if (report.emulation?.steps?.length || (report.emulation && !report.extractedText)) return report.emulation ?? null;
+  const value: EmulationSimulationSummary | null = useMemo(() => {
+    if (report.emulationSimulation?.steps?.length || (report.emulationSimulation && !report.extractedText)) return report.emulationSimulation ?? null;
     const text = report.extractedText ?? "";
-    if (text.length < 300) return report.emulation ?? null;
-    const fresh = summarizeEmulation(assessEmulationValue({ title: report.title, text }));
-    return report.emulation?.ai ? { ...fresh, ai: report.emulation.ai } : fresh;
+    if (text.length < 300) return report.emulationSimulation ?? null;
+    const fresh = summarizeEmulationSimulation(assessEmulationSimulation({ title: report.title, text }));
+    return report.emulationSimulation?.ai ? { ...fresh, ai: report.emulationSimulation.ai } : fresh;
   }, [report]);
-  const ai = report.aiAnalysis?.emulation ?? null;
+  const ai = report.aiAnalysis?.emulationSimulation ?? null;
   const brief = useMemo(
     () =>
-      buildEmulationBrief({
+      buildEmulationSimulationBrief({
         title: report.title,
         url: report.canonicalUrl || report.url,
         publisher: report.publisher,
         docTypes: report.docTypes,
         classification: report.classification,
         extractedText: report.extractedText,
-        emulation: value,
+        emulationSimulation: value,
         aiAnalysis: report.aiAnalysis ?? null,
       }),
     [report, value],
@@ -40,17 +40,17 @@ export function ReportEmulationValue({ report }: { report: ReportRecord }) {
 
   if (!value && !ai) return <p className="text-sm text-subtle">Not graded: the report has too little text.</p>;
   const grade = ai?.grade ?? value?.grade ?? "news";
-  const meta = EMULATION_GRADE_META[grade];
+  const meta = EMULATION_SIMULATION_GRADE_META[grade];
 
   const copyBrief = () => {
     void navigator.clipboard.writeText(brief.text);
-    toast.success("Copied the emulation brief");
+    toast.success("Copied the emulation & simulation brief");
   };
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
-        <StatusChip tone={EMULATION_TONE[grade]}>
+        <StatusChip tone={EMULATION_SIMULATION_TONE[grade]}>
           <Route className="size-3" aria-hidden />
           {meta.label}
         </StatusChip>
@@ -58,7 +58,7 @@ export function ReportEmulationValue({ report }: { report: ReportRecord }) {
         {ai && (
           <StatusChip tone="primary">
             <Sparkles className="size-3" aria-hidden />
-            AI: {EMULATION_GRADE_META[ai.grade].label} · {REPRODUCIBLE_LABEL[ai.reproducible]}
+            AI: {EMULATION_SIMULATION_GRADE_META[ai.grade].label} · {REPRODUCIBLE_LABEL[ai.reproducible]}
           </StatusChip>
         )}
       </div>
@@ -72,14 +72,24 @@ export function ReportEmulationValue({ report }: { report: ReportRecord }) {
         </ul>
       )}
 
-      {ai && (ai.note || ai.gradeNote || ai.missing.length > 0) && (
+      {ai && (ai.note || ai.gradeNote || ai.missing.length > 0 || (ai.detections?.length ?? 0) > 0) && (
         <div className="max-w-3xl space-y-2 rounded-xl border border-border bg-bg-card p-4 text-sm">
           <p className="font-medium text-fg">AI assessment (every step checked against the report text)</p>
           {ai.note && <p className="text-muted">{ai.note}</p>}
           {ai.gradeNote && <p className="text-warn">{ai.gradeNote}</p>}
+          {(ai.detections?.length ?? 0) > 0 && (
+            <div>
+              <p className="text-muted">What a simulation should trigger (stated in the report):</p>
+              <ul className="list-disc pl-5 text-muted">
+                {ai.detections.map((d) => (
+                  <li key={d.quote}>{d.text}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {ai.missing.length > 0 && (
             <div>
-              <p className="text-muted">Still needed to emulate it:</p>
+              <p className="text-muted">Still needed to emulate or simulate it:</p>
               <ul className="list-disc pl-5 text-muted">
                 {ai.missing.map((m) => (
                   <li key={m}>{m}</li>
@@ -93,7 +103,7 @@ export function ReportEmulationValue({ report }: { report: ReportRecord }) {
       <div className="rounded-xl border border-border bg-bg-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
           <div>
-            <p className="text-sm font-medium text-fg">Emulation brief</p>
+            <p className="text-sm font-medium text-fg">Emulation & simulation brief</p>
             <p className="text-xs text-subtle">
               {brief.stepsFrom === "ai"
                 ? "Steps verified by the AI analysis, quoted from the report."

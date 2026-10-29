@@ -43,7 +43,7 @@ import { TierDot } from "@/components/library/report-card";
 import { AttackCoverageStrip } from "@/components/library/attack-coverage";
 import { StructuredPanel } from "@/components/library/structured-panel";
 import { ReportEmulation } from "@/components/library/report-emulation";
-import { ReportEmulationValue } from "@/components/library/report-emulation-value";
+import { ReportEmulationSimulation } from "@/components/library/report-emulation-simulation";
 import { CollectionRecord } from "@/components/library/collection-record";
 import { ReportTelemetry, ResearchTypeChips } from "@/components/library/report-research";
 import { TIER_META, actorsOf, cvesOf, docTypesOf, malwareOf, techniquesOf, tierOf } from "@/components/library/intel-taxonomy";
@@ -571,10 +571,10 @@ function ReportPage() {
             </Section>
 
             <Section
-              title="Emulation value"
-              description="What an attack emulation or simulation team can take from this report: the grade, why, and the infection chain retold from the report's own sentences."
+              title="Emulation & simulation value"
+              description="What an adversary emulation team or an attack simulation platform can take from this report: the grade, why, the infection chain to emulate or simulate, and what defenders should see when it runs, all retold from the report's own sentences."
             >
-              <ReportEmulationValue report={data} />
+              <ReportEmulationSimulation report={data} />
             </Section>
 
             <Section

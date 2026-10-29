@@ -30,7 +30,7 @@ import type {
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
 import type { ResearchLabels } from "../aie/research-taxonomy";
-import { isEmulationGrade, storedEmulation } from "../aie/emulation-value";
+import { isEmulationSimulationGrade, storedEmulationSimulation } from "../aie/emulation-simulation";
 import { comparePublishedDesc, type PublishedDate } from "../aie/published-date";
 import type { ReportAiAnalysis } from "../aie/report-ai-analysis";
 import type { TelemetryRefs } from "../aie/telemetry-refs";
@@ -376,7 +376,7 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     analysis: (doc.analysis as IntelAnalysis) || null,
     scoreBreakdown: doc.scoreBreakdown,
     simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
-      emulation: storedEmulation(doc.emulation),
+      emulationSimulation: storedEmulationSimulation(doc.emulationSimulation, doc.emulation),
     isEmergingTechnique: Boolean(doc.isEmergingTechnique),
     noveltyRationale: (doc.noveltyRationale as string) || undefined,
     tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
@@ -398,7 +398,13 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
 /** Stored AI analysis (aie/report-ai-analysis), when well formed. */
 function storedAiAnalysis(v: unknown): ReportAiAnalysis | undefined {
   const a = v as ReportAiAnalysis | null | undefined;
-  return a && typeof a === "object" && typeof a.version === "number" && Array.isArray(a.iocs) && Array.isArray(a.attackChain) ? a : undefined;
+  if (!(a && typeof a === "object" && typeof a.version === "number" && Array.isArray(a.iocs) && Array.isArray(a.attackChain))) return undefined;
+  // Analyses stored before the emulation & simulation rename keep the assessment under `emulation`.
+  const legacy = (a as { emulation?: ReportAiAnalysis["emulationSimulation"] }).emulation;
+  if (!a.emulationSimulation && legacy && typeof legacy === "object") {
+    return { ...a, emulationSimulation: { ...legacy, detections: Array.isArray(legacy.detections) ? legacy.detections : [] } };
+  }
+  return a;
 }
 
 /** Stored review decision (aie/review-decision), when well formed. */
@@ -798,6 +804,7 @@ export async function mongoListReports(params?: {
     version: 1,
     analysis: 1,
     simulationScore: 1,
+    emulationSimulation: 1,
     emulation: 1,
     isEmergingTechnique: 1,
     noveltyRationale: 1,
@@ -947,7 +954,7 @@ export async function mongoListReports(params?: {
       pdfBase64: "",
       analysis: (doc.analysis as IntelAnalysis) || null,
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
-      emulation: storedEmulation(doc.emulation),
+      emulationSimulation: storedEmulationSimulation(doc.emulationSimulation, doc.emulation),
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
       noveltyRationale: (doc.noveltyRationale as string) || undefined,
       tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
@@ -1374,7 +1381,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   requireIocs: false,
   requireAttck: false,
   rejectMarketingNoise: true,
-  minEmulationGrade: "context",
+  minEmulationSimulationGrade: "context",
   dedupMethod: "smart_hybrid",
   activeSources: [],
   targetResourceTypes: [
@@ -1452,7 +1459,12 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       requireIocs: Boolean(doc.requireIocs ?? false),
       requireAttck: Boolean(doc.requireAttck ?? false),
       rejectMarketingNoise: Boolean(doc.rejectMarketingNoise ?? true),
-      minEmulationGrade: isEmulationGrade(doc.minEmulationGrade) ? doc.minEmulationGrade : "context",
+      // `minEmulationGrade`: the setting's name before the emulation & simulation rename.
+      minEmulationSimulationGrade: isEmulationSimulationGrade(doc.minEmulationSimulationGrade)
+        ? doc.minEmulationSimulationGrade
+        : isEmulationSimulationGrade(doc.minEmulationGrade)
+          ? doc.minEmulationGrade
+          : "context",
       dedupMethod: doc.dedupMethod || "smart_hybrid",
       activeSources: (doc.activeSources as string[]) || [],
       targetResourceTypes: (doc.targetResourceTypes as ResourceKind[]) || DEFAULT_CRAWL_CONFIG.targetResourceTypes,
@@ -2698,6 +2710,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       classification: 1,
       resourceKind: 1,
       simulationScore: 1,
+    emulationSimulation: 1,
     emulation: 1,
       isEmergingTechnique: 1,
       noveltyRationale: 1,
@@ -2736,7 +2749,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       classification: doc.classification || "THREAT_REPORT",
       resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
-      emulation: storedEmulation(doc.emulation),
+      emulationSimulation: storedEmulationSimulation(doc.emulationSimulation, doc.emulation),
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
       noveltyRationale: (doc.noveltyRationale as string) || undefined,
       version: Number(doc.version ?? 1),

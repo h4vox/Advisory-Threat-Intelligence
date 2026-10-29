@@ -79,6 +79,7 @@ const INTRUSION_TERMS: Array<[RegExp, string]> = [
   [/\btargets?\b|\btargeting\b|\btargeted\b/i, "targeting"],
   [/\bthreat hunting\b|\bhunt(?:ing)? for\b|\bdetection (?:opportunities|engineering|rules?)\b|\bsigma\b|\byara\b/i, "detection / hunting"],
   [/\badversary emulation\b|\bemulation plan\b|\bred team\b|\bpurple team\b|\batomic\b/i, "emulation"],
+  [/\battack simulation\b|\bbreach and attack simulation\b|\bbas\b|\bsimulat(?:e|ed|ing|ion) (?:the )?(?:attack|adversary|intrusion|ransomware)\b|\bdetection opportunit(?:y|ies)\b/i, "simulation / detection validation"],
   [/\bvulnerabilit(?:y|ies)\b|\brce\b|\bremote code execution\b/i, "vulnerability"],
   [/\bbreach(?:ed|es)?\b|\bcompromis(?:e|ed|es)\b/i, "compromise"],
   [/\bdeep[- ]dive\b|\banalysis\b|\bdissect\w*\b|\breverse[- ]engineer\w*/i, "technical analysis"],
@@ -122,7 +123,7 @@ const NEGATIVE_TERMS: Array<[RegExp, string, number]> = [
   [/\bultimate guide\b|\bcomplete guide\b|\beverything you need to know\b|\btop \d+ (?:tools|vendors|solutions|tips|ways|reasons)\b|\bbest \d+ (?:tools|vendors|solutions|antivirus|vpns?)\b|\bbuyer'?s guide\b|\bmagic quadrant\b|\bforrester waves? report\b/i, "buyer's guide / comparison", 0.3],
   [/\bstate of (?:[a-z ]+ )?(?:security|ransomware|threats?|the [a-z]+) (?:report )?20\d\d\b|\bannual (?:threat )?report 20\d\d\b|\btrends to watch\b|\bpredictions for 20\d\d\b|\byear in review\b/i, "vendor trend / predictions report", 0.22],
   [/\bop-?ed\b|\bcommentary\b|\bmy take\b|\bhot take\b/i, "opinion / commentary", 0.2],
-  // Vendor patch / update notices: a CVE in the title still fetches them, the emulation-value floor decides.
+  // Vendor patch / update notices: a CVE in the title still fetches them, the emulation-simulation floor decides.
   [/\b(?:patch(?:es|ed)? (?:released|available|now)|(?:releases?|issues?|ships?) (?:a )?(?:patch|fix|security update)s?|security updates? (?:for|address)|update now|patch tuesday|fixes (?:critical|high|\d+)|patched (?:in|by)|hotfix)\b/i, "patch / update notice", 0.26],
   [/\bdata privacy day\b|\bcyber(?:security)? awareness month\b|\bworld (?:password|backup) day\b|\bstay safe online\b|\bpassword (?:hygiene|tips)\b/i, "awareness campaign", 0.3],
 ];

@@ -1,7 +1,7 @@
 import { ArrowUpRight, Calendar, Download, Eye, FileText, Hash, Layers, Shield, ShieldAlert, Sparkles } from "lucide-react";
 import { DOC_TYPE_META, DocTypeBadge, EntityChip, EntityIcon, entityMeta, type EntityKind } from "@/components/ui/entity";
 import { Meter, StatusChip } from "@/components/ui/primitives";
-import { EmulationBadge } from "./emulation-badge";
+import { EmulationSimulationBadge } from "./emulation-simulation-badge";
 import type { ReportListItem } from "@/lib/aie/types";
 import { cn } from "@/lib/cn";
 import { ActionMenu } from "./action-menu";
@@ -124,7 +124,7 @@ export function ReportFeedCard({
             {types.slice(0, 3).map((t) => (
               <DocTypeBadge key={t} type={t} />
             ))}
-            <EmulationBadge value={r.emulation} />
+            <EmulationSimulationBadge value={r.emulationSimulation} />
             {rejected && <StatusChip tone="neutral">Hidden</StatusChip>}
             {r.needsReview && !rejected && (
               <span title={r.review?.reason}>
