@@ -16,6 +16,7 @@ import { getGroup, getSoftware, getTechnique, isGenericEntityName, normalizeEnti
 import type { EvidenceLabel, ExtractedEntities, IntelAnalysis, IocHit, RelationshipFact } from "../types.ts";
 import type { ReportAiAnalysis } from "../report-ai-analysis.ts";
 import type { GraphEdge, GraphNode, GraphNodeType, GraphPredicate, GraphReportRef, IntelGraph } from "./types.ts";
+import { edgeStrength } from "./analyze.ts";
 
 export type GraphSourceReport = {
   id: string;
@@ -367,3 +368,61 @@ export function buildIntelGraph(input: GraphSourceReport[], now = new Date()): I
     stats: { reports: Object.keys(refs).length, nodes: nodeList.length, edges: edgeList.length, stated: edgeList.filter((e) => e.basis === "stated").length, skipped, builtAt: now.toISOString() },
   };
 }
+
+/** Per-type caps for the copy of the graph sent to the browser (the server keeps everything). */
+export const CLIENT_TYPE_CAPS: Partial<Record<GraphNodeType, number>> = { indicator: 1500, vulnerability: 1500 };
+
+/**
+ * The browser's copy of the graph: the most-reported entities of the high-volume types (indicators,
+ * vulnerabilities), and shorter report lists per entity / link. Everything else is unchanged, so
+ * filters and views work the same; the entity context panel and search ask the server, which has
+ * the full graph. `stats.trimmed` says how many entities of each type were left out.
+ */
+export function clientGraph(graph: IntelGraph, opts: { nodeReports?: number; edgeReports?: number; edgesPerNode?: number; caps?: Partial<Record<GraphNodeType, number>> } = {}): IntelGraph {
+  const caps = opts.caps ?? CLIENT_TYPE_CAPS;
+  const nodeReports = opts.nodeReports ?? 12;
+  const edgeReports = opts.edgeReports ?? 3;
+  const edgesPerNode = opts.edgesPerNode ?? 24;
+  const byType = new Map<GraphNodeType, GraphNode[]>();
+  for (const n of graph.nodes) (byType.get(n.type) ?? byType.set(n.type, []).get(n.type)!).push(n);
+  const keep = new Set<string>();
+  const trimmed: Partial<Record<GraphNodeType, number>> = {};
+  for (const [type, list] of byType) {
+    const cap = caps[type];
+    const kept = cap !== undefined && list.length > cap ? [...list].sort((a, b) => b.reportCount - a.reportCount || b.degree - a.degree).slice(0, cap) : list;
+    if (kept.length < list.length) trimmed[type] = list.length - kept.length;
+    for (const n of kept) keep.add(n.id);
+  }
+  const nodes = graph.nodes
+    .filter((n) => keep.has(n.id))
+    .map((n) => ({ ...n, reports: n.reports.slice(0, nodeReports), firstSeen: n.firstSeen ? n.firstSeen.slice(0, 10) : null, lastSeen: n.lastSeen ? n.lastSeen.slice(0, 10) : null }));
+  // Links: each entity's strongest `edgesPerNode`, plus every stated link (the server keeps all).
+  const candidates = graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target));
+  const byNode = new Map<string, GraphEdge[]>();
+  for (const e of candidates) {
+    (byNode.get(e.source) ?? byNode.set(e.source, []).get(e.source)!).push(e);
+    (byNode.get(e.target) ?? byNode.set(e.target, []).get(e.target)!).push(e);
+  }
+  const keptEdges = new Set<GraphEdge>(candidates.filter((e) => e.basis === "stated"));
+  for (const list of byNode.values()) {
+    if (list.length <= edgesPerNode) list.forEach((e) => keptEdges.add(e));
+    else list.sort((a, b) => edgeStrength(b) - edgeStrength(a)).slice(0, edgesPerNode).forEach((e) => keptEdges.add(e));
+  }
+  // Compact for transport: no id (withEdgeIds rebuilds it), dates as days, fewer report ids.
+  const edges = candidates
+    .filter((e) => keptEdges.has(e))
+    .map((e) => {
+      const { id: _id, ...rest } = e;
+      return { ...rest, reports: e.reports.slice(0, edgeReports), lastSeen: e.lastSeen ? e.lastSeen.slice(0, 10) : null } as GraphEdge;
+    });
+  const used = new Set<string>();
+  for (const n of nodes) for (const r of n.reports) used.add(r);
+  for (const e of edges) {
+    for (const r of e.reports) used.add(r);
+    if (e.quote) used.add(e.quote.reportId);
+  }
+  const reports: IntelGraph["reports"] = {};
+  for (const id of used) if (graph.reports[id]) reports[id] = graph.reports[id];
+  return { nodes, edges, reports, stats: { ...graph.stats, ...(Object.keys(trimmed).length ? { trimmed } : {}), clientEdges: edges.length } };
+}
+
