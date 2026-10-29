@@ -8,7 +8,9 @@ type LoginSearch = { redirect?: string; error?: "invalid" | "limited" | "unconfi
 
 /** Same-origin paths only (no "//host" or absolute URLs): never an open redirect. */
 function safeRedirect(r: unknown): string | undefined {
-  return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\") && !r.startsWith("/login") && !r.startsWith("/api/") ? r : undefined;
+  return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\") && !r.startsWith("/login") && !r.startsWith("/api/")
+    ? r
+    : undefined;
 }
 
 export const Route = createFileRoute("/login")({
@@ -82,7 +84,7 @@ function Login() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg text-fg">
-      <header className="flex h-16 items-center px-4 sm:px-6">
+      <header className="flex items-center px-4 py-4">
         <div className="flex items-center gap-2.5">
           <span
             aria-hidden
@@ -95,32 +97,36 @@ function Login() {
         </div>
       </header>
 
-      <main className="flex flex-1 justify-center px-4 pb-12 pt-6 sm:pt-12">
-        <div className="w-full max-w-[360px]">
-          <h1 className="text-center text-2xl font-semibold tracking-tight">Sign in to AIE</h1>
-          <p className="mt-1.5 text-center text-sm text-muted">Adversary Intelligence Engine</p>
-
-          <div className="mt-7 grid grid-cols-3 gap-2">
-            <button type="button" disabled title="Not enabled yet" className={providerButton}>
-              <GoogleMark className="size-4" />
-              Google
-            </button>
-            <button type="button" disabled title="Not enabled yet" className={providerButton}>
-              <Apple className="size-4" />
-              Apple
-            </button>
-            <button type="button" disabled title="Not enabled yet" className={providerButton}>
-              <Github className="size-4" />
-              GitHub
-            </button>
+      <main className="flex flex-1 justify-center px-4 pb-12 pt-8">
+        <div className="flex w-full max-w-[360px] flex-col gap-6">
+          <div className="text-center">
+            <h1 className="text-2xl font-semibold tracking-tight">Sign in to AIE</h1>
+            <p className="mt-1.5 text-sm text-muted">Adversary Intelligence Engine</p>
           </div>
-          <button type="button" disabled title="Not enabled yet" className={cn(providerButton, "mt-2 w-full")}>
-            <LockKeyhole className="size-4" />
-            Continue with SSO
-          </button>
-          <p className="mt-2 text-center text-xs text-subtle">Google, Apple, GitHub and SSO sign-in are not enabled yet.</p>
 
-          <div className="my-6 flex items-center gap-3 text-xs font-medium uppercase tracking-wider text-subtle" aria-hidden>
+          <div>
+            <div className="grid grid-cols-3 gap-2">
+              <button type="button" disabled title="Not enabled yet" className={providerButton}>
+                <GoogleMark className="size-4" />
+                Google
+              </button>
+              <button type="button" disabled title="Not enabled yet" className={providerButton}>
+                <Apple className="size-4" />
+                Apple
+              </button>
+              <button type="button" disabled title="Not enabled yet" className={providerButton}>
+                <Github className="size-4" />
+                GitHub
+              </button>
+            </div>
+            <button type="button" disabled title="Not enabled yet" className={cn(providerButton, "mt-2 w-full")}>
+              <LockKeyhole className="size-4" />
+              Continue with SSO
+            </button>
+            <p className="mt-2 text-center text-xs text-subtle">Google, Apple, GitHub and SSO sign-in are not enabled yet.</p>
+          </div>
+
+          <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-wider text-subtle" aria-hidden>
             <span className="h-px flex-1 bg-border" />
             or
             <span className="h-px flex-1 bg-border" />
@@ -216,12 +222,14 @@ function Login() {
             </button>
           </form>
 
-          <div className="mt-6 space-y-1.5 text-center text-sm text-muted">
+          <div className="space-y-1.5 text-center text-sm text-muted">
             <p>Don't have access? Ask your administrator.</p>
             <p>Forgot your password? Your administrator can reset it.</p>
           </div>
 
-          <p className="mt-10 text-center text-xs text-subtle">Access is limited to approved analysts. You stay signed in on this browser until you sign out or the session expires.</p>
+          <p className="mt-4 text-center text-xs text-subtle">
+            Access is limited to approved analysts. You stay signed in on this browser until you sign out or the session expires.
+          </p>
         </div>
       </main>
     </div>
@@ -232,10 +240,19 @@ function Login() {
 function GoogleMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 48 48" aria-hidden className={className}>
-      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path
+        fill="#EA4335"
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+      />
       <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+      <path
+        fill="#FBBC05"
+        d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+      />
     </svg>
   );
 }
@@ -245,7 +262,7 @@ function Notice({ tone, children }: { tone: "warning" | "danger"; children: Reac
   return (
     <div
       role="alert"
-      className="mb-4 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm"
+      className="flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm"
       style={{ borderColor: `color-mix(in oklab, ${color} 30%, transparent)`, backgroundColor: `color-mix(in oklab, ${color} 8%, transparent)` }}
     >
       <AlertTriangle className="mt-0.5 size-4 shrink-0" style={{ color }} />
