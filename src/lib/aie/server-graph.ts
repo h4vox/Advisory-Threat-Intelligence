@@ -2,6 +2,7 @@
  * Intelligence graph server functions: the whole graph (built from the library and rebuilt in the
  * background when the library changes), entity context, paths and AI briefs (./graph).
  */
+import { intelCoverage, type IntelCoverageStatus } from "../mongodb/intel-refresh-repo.server";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { analystMiddleware } from "./access";
@@ -40,6 +41,7 @@ const GRAPH_PROJECTION = {
   "aiAnalysis.adversary": 1,
   "aiAnalysis.attackChain.technique": 1,
   "aiAnalysis.attackChain.stage": 1,
+  "aiAnalysis.iocs": 1,
 } as const;
 
 async function loadReports(): Promise<GraphSourceReport[]> {
@@ -126,10 +128,21 @@ async function readLibraryVersion(): Promise<string | null> {
     const [v] = await col
       .aggregate([
         { $match: { docType: "report", status: { $nin: ["duplicate", "rejected", "failed"] } } },
-        { $group: { _id: null, n: { $sum: 1 }, ing: { $max: "$ingestedAt" }, ai: { $max: "$aiAnalysis.analysedAt" }, rev: { $max: "$review.reviewedAt" } } },
+        {
+          $group: {
+            _id: null,
+            n: { $sum: 1 },
+            ing: { $max: "$ingestedAt" },
+            ai: { $max: "$aiAnalysis.analysedAt" },
+            rev: { $max: "$review.reviewedAt" },
+            ref: { $max: "$intelRefresh.at" },
+          },
+        },
       ])
       .toArray();
-    return v ? `${v.n}|${v.ing ?? ""}|${v.ai ?? ""}|${v.rev ?? ""}` : "0";
+    // Re-extracted intel (mongodb/intel-refresh-repo) counts in 10-minute steps, so a background
+    // refresh of the whole library rebuilds the graph a few times, not after every batch.
+    return v ? `${v.n}|${v.ing ?? ""}|${v.ai ?? ""}|${v.rev ?? ""}|${String(v.ref ?? "").slice(0, 15)}` : "0";
   } catch {
     return null;
   }
@@ -154,6 +167,14 @@ export const getGraphVersion = createServerFn({ method: "GET" })
   .handler(async (): Promise<{ builtAt: string | null; building: boolean; nodes: number; edges: number; reports: number }> => {
     const b = cache ? await getBuilt() : null;
     return { builtAt: b?.graph.stats.builtAt ?? null, building: Boolean(inflight), nodes: b?.graph.stats.nodes ?? 0, edges: b?.graph.stats.edges ?? 0, reports: b?.graph.stats.reports ?? 0 };
+  });
+
+/** How much of the library the extraction layers cover (rules, AI) and how many reports the graph maps. */
+export const getMappingCoverage = createServerFn({ method: "GET" })
+  .middleware([analystMiddleware])
+  .handler(async (): Promise<IntelCoverageStatus & { mapped: number }> => {
+    const [c, b] = await Promise.all([intelCoverage(), cache ? getBuilt().catch(() => null) : Promise.resolve(null)]);
+    return { ...c, mapped: b?.graph.stats.reports ?? 0 };
   });
 
 /** The browser copy (./graph/build clientGraph), as JSON prepared once per build. */

@@ -219,6 +219,8 @@ export type ChainStepEvidence = {
 
 export type IntelEvidence = {
   version: 1;
+  /** Labelling rules version (./evidence EVIDENCE_RULES_VERSION); absent = rules 1. */
+  rules?: number;
   /** textHash of the extractedText these offsets refer to. */
   textHash?: string;
   sections: Array<{ heading: string; start: number }>;
@@ -625,6 +627,11 @@ export type CrawlConfig = {
   realTime?: boolean;
   /** Pause between real-time runs (1–60 minutes, default 2). */
   realTimePauseMinutes?: number;
+  /**
+   * Grounded AI analyses per hour of reports that have none, existing and new (0 = off, default 30);
+   * mongodb/intel-refresh-repo. Uses AI quota.
+   */
+  aiBackfillPerHour?: number;
   startHour: string;
   maxResourcesPerRun: number; // Max resources processed in single job run
   maxResourcesPerJob?: number;

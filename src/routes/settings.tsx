@@ -695,6 +695,33 @@ function SettingsPage() {
                 )}
               </div>
 
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <label htmlFor="crawl-ai-backfill" className="text-sm font-medium text-fg">Background AI analysis</label>
+                    <p className="text-xs text-muted">
+                      Runs the grounded AI analysis over every report that has none, existing and new, so the Intel Graph and entity context map the whole
+                      library. Each item is checked against the report text. Uses AI quota; 0 turns it off.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <input
+                      id="crawl-ai-backfill"
+                      type="range"
+                      min="0"
+                      max="240"
+                      step="10"
+                      value={currentCrawl.aiBackfillPerHour ?? 30}
+                      onChange={(e) => updateCrawlField("aiBackfillPerHour", parseInt(e.target.value, 10) || 0)}
+                      className="w-40 accent-accent"
+                    />
+                    <span className="w-24 text-right text-xs tabular-nums text-fg">
+                      {(currentCrawl.aiBackfillPerHour ?? 30) === 0 ? "Off" : `${currentCrawl.aiBackfillPerHour ?? 30} per hour`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                 <div className={cn("space-y-1.5", currentCrawl.realTime && "opacity-50")} title={currentCrawl.realTime ? "Not used in real-time mode" : undefined}>
                   <div className="flex justify-between text-sm">

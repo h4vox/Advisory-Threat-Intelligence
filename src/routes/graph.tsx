@@ -17,7 +17,7 @@ import { DEFAULT_FILTER, focusView, indexGraph, overviewView, type GraphFilter }
 import { forceLayout, layout3d, radialLayout, type GraphLayout3 } from "@/lib/aie/graph/layout";
 import { withEdgeIds } from "@/lib/aie/graph/client";
 import type { IntelGraph } from "@/lib/aie/graph/types";
-import { getGraphVersion, getIntelGraph } from "@/lib/aie/server-graph";
+import { getGraphVersion, getIntelGraph, getMappingCoverage } from "@/lib/aie/server-graph";
 import { cn } from "@/lib/cn";
 
 const searchSchema = z.object({
@@ -131,6 +131,7 @@ function IntelGraphPage() {
   const query = useQuery({ queryKey: ["intel-graph"], queryFn: async () => withEdgeIds(JSON.parse(await getIntelGraph()) as IntelGraph), staleTime: 60_000, retry: 1 });
   // New ingestion and re-analysis: the server rebuilds in the background; the open page offers the
   // newer graph instead of changing the view under the analyst.
+  const coverage = useQuery({ queryKey: ["intel-mapping-coverage"], queryFn: () => getMappingCoverage(), refetchInterval: 60_000, enabled: query.isSuccess });
   const version = useQuery({ queryKey: ["intel-graph-version"], queryFn: () => getGraphVersion(), refetchInterval: 20_000, enabled: query.isSuccess });
   const newer = query.data && version.data?.builtAt && version.data.builtAt !== query.data.stats.builtAt ? version.data : null;
   const ix = useMemo(() => (query.data ? indexGraph(query.data) : null), [query.data]);
@@ -361,6 +362,28 @@ function IntelGraphPage() {
                 <span>
                   <b className="text-fg">{stats.reports.toLocaleString()}</b> reports
                 </span>
+                {coverage.data?.available && coverage.data.reports > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <span>
+                      mapped <b className="text-fg">{Math.round((coverage.data.rulesCurrent / coverage.data.reports) * 100)}%</b> · AI{" "}
+                      <b className="text-fg">{Math.round((coverage.data.aiAnalysed / coverage.data.reports) * 100)}%</b>
+                    </span>
+                    <Hint label="About mapping coverage">
+                      <p className="font-medium text-fg">How much of the library is mapped</p>
+                      <p className="mt-1">
+                        <b>Mapped</b>: {coverage.data.rulesCurrent.toLocaleString()} of {coverage.data.reports.toLocaleString()} reports have their actors, malware,
+                        techniques, CVEs, targets and indicators extracted with the current rules. Older reports are re-extracted in the background.
+                      </p>
+                      <p className="mt-1">
+                        <b>AI</b>: {coverage.data.aiAnalysed.toLocaleString()} reports have the grounded AI analysis (every item checked against the report).
+                        {coverage.data.aiPerHour > 0
+                          ? ` The rest are analysed in the background, ${coverage.data.aiPerHour} per hour${coverage.data.aiPaused ? " (waiting: no AI provider is usable or the last attempts failed)" : ""}.`
+                          : " Background AI analysis is off (Settings → Crawler)."}
+                      </p>
+                      <p className="mt-1">The graph includes {coverage.data.mapped.toLocaleString()} reports that name at least one entity.</p>
+                    </Hint>
+                  </span>
+                )}
                 {view && (
                   <span className="text-subtle">
                     showing {view.nodes.length}

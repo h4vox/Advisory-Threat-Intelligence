@@ -146,9 +146,29 @@ export function detectSections(text: string): Section[] {
 // Sentence classification rules (precision over recall)
 // ---------------------------------------------------------------------------
 
+/**
+ * Version of the labelling rules below. Bump when they change: stored reports whose evidence was
+ * built with older rules are re-labelled in the background (mongodb/intel-refresh-repo).
+ */
+export const EVIDENCE_RULES_VERSION = 2;
+
 /** Headings whose content is defender advice / detection content. */
 export const DEFENSIVE_HEADING =
   /mitigat|recommend|remediat|harden|detection|detections|detecting|hunting|hunt for|defen[cs]|guidance|protect|best practice|response actions|security controls|containment|prevent|playbook|advanced hunting|queries/i;
+
+/**
+ * Headings that name attacker activity although they contain a defensive word: the ATT&CK tactic
+ * "Defense Evasion", "Impair Defenses", "Evading detection" … Content under them is adversary activity.
+ */
+const ADVERSARY_HEADING = /defen[cs]e evasion|impair\w* (?:\w+ )?defen[cs]es|evad\w*|evasion|bypass\w*|anti-?(?:analysis|detection|forensics?)|disabl\w* (?:\w+ )?(?:defen[cs]es|security|edr|antivirus)|att&?ck (?:techniques|mapping|ttps)|mitre att&?ck|techniques? (?:observed|used)/i;
+
+/**
+ * A row of the report's own ATT&CK mapping table: a technique ID, its name, then what the actor did
+ * ("T1140 Deobfuscate/Decode Files or Information | cook.py decodes … at runtime"). The vendor's
+ * own mapping of observed activity, whatever section it sits in.
+ */
+const TECHNIQUE_MAPPING_ROW = /^\s*(?:[-•*]\s*)?(?:\|\s*)?(?:[A-Z][A-Za-z ]{2,30}\s*\|\s*)?T\d{4}(?:\.\d{3})?\b[^|\n]{0,140}(?:\||\s[–—-]\s|\t)\s*\S/;
+const ROW_NEGATED = /^\s*(?:not (?:observed|seen|confirmed)|no (?:evidence|indication)|n\/a)\b/i;
 
 /** Headings that end an inherited defensive context (back to report narrative). */
 const NARRATIVE_HEADING =
@@ -281,7 +301,17 @@ export function hasPastActorAction(sentence: string): boolean {
 export function classifySentence(sentence: string, sectionHeading?: string): EvidenceLabel {
   const s = sentence.trim();
   if (isRuleSyntax(s)) return "defensive";
-  if (sectionHeading && DEFENSIVE_HEADING.test(sectionHeading)) return "defensive";
+  // The report's own technique mapping row is observed activity; a side clause ("returned
+  // credentials were not confirmed") does not negate it, only a row that says so does.
+  if (TECHNIQUE_MAPPING_ROW.test(s)) {
+    const desc = s.split(/\||\s[–—-]\s|\t/).slice(1).join(" ");
+    return ROW_NEGATED.test(desc) ? "negated" : "observed";
+  }
+  if (sectionHeading && DEFENSIVE_HEADING.test(sectionHeading)) {
+    // "Defense Evasion" (an ATT&CK tactic) and similar headings describe the attacker.
+    const own = sectionHeading.split(" › ").pop() ?? sectionHeading;
+    if (!ADVERSARY_HEADING.test(own)) return "defensive";
+  }
   if (anyMatch(NEGATION, s)) return "negated";
   if (anyMatch(REFERENCE, s)) return "reference";
   if (anyMatch(HYPOTHETICAL_STRONG, s)) return "hypothetical";
@@ -888,6 +918,7 @@ export function buildEvidence(text: string, options: BuildEvidenceOptions = {}):
 
   return {
     version: 1,
+    rules: EVIDENCE_RULES_VERSION,
     sections,
     techniques,
     actors,

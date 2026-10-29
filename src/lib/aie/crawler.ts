@@ -132,6 +132,7 @@ import { EMULATION_SIMULATION_GRADE_META, assessEmulationSimulation, summarizeEm
 import { isAdvisoryPublisher } from "./technical-depth";
 import { resolvePublicationDate, type PublishedDate } from "./published-date";
 import { mongoAnalyseNewlyIngested } from "../mongodb/library-review-repo.server";
+import { startIntelRefreshDaemon } from "../mongodb/intel-refresh-repo.server";
 import type { ReportAttachment, ReportMirror } from "./types";
 
 /** Re-fetched pages this close (SimHash bits) to the stored copy are cosmetic edits, not new versions. */
@@ -3966,6 +3967,8 @@ export function startCrawlerSchedulerDaemon() {
 // Auto-register hooks and launch daemon on module load
 registerScheduleChecker(checkAndTriggerScheduledCrawl);
 startCrawlerSchedulerDaemon();
+// Keeps every stored report's extracted intel current (rules + background AI analysis).
+startIntelRefreshDaemon();
 
 // Warm the database connection as soon as the server module loads, so the first page does not
 // pay the cold connection cost. Backgrounded; a failure is retried by the normal request path.
