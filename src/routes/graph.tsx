@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import { ChevronRight, Orbit, RefreshCw, SlidersHorizontal, Waypoints } from "lucide-react";
+import { Box, ChevronRight, Orbit, RefreshCw, SlidersHorizontal, Square, Waypoints } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { GraphCanvas } from "@/components/graph/graph-canvas";
 import { FilterPanel, Inspector, TIME_WINDOWS, TypeDot, type TimeWindow } from "@/components/graph/graph-panels";
@@ -10,7 +10,7 @@ import { graphTheme, isDarkTheme } from "@/components/graph/graph-style";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { EmptyState } from "@/components/ui/primitives";
 import { DEFAULT_FILTER, focusView, indexGraph, overviewView, type GraphFilter } from "@/lib/aie/graph/analyze";
-import { forceLayout, radialLayout } from "@/lib/aie/graph/layout";
+import { forceLayout, layout3d, radialLayout } from "@/lib/aie/graph/layout";
 import { getIntelGraph } from "@/lib/aie/server-graph";
 import { cn } from "@/lib/cn";
 
@@ -18,6 +18,11 @@ const searchSchema = z.object({
   focus: z.string().max(400).optional(),
   hops: z.union([z.literal(1), z.literal(2)]).optional(),
 });
+
+// The 3D view (three.js) loads only when it is shown.
+const GraphCanvas3D = lazy(() => import("@/components/graph/graph-canvas-3d").then((m) => ({ default: m.GraphCanvas3D })));
+
+const DIMENSION_KEY = "aie_graph_dimension";
 
 export const Route = createFileRoute("/graph")({
   validateSearch: (search) => searchSchema.parse(search),
@@ -63,7 +68,24 @@ function IntelGraphPage() {
     if (center && ix.node.has(center)) return focusView(ix, center, effective, { hops });
     return overviewView(ix, effective);
   }, [ix, center, effective, hops]);
-  const layout = useMemo(() => (view ? (view.mode === "focus" ? radialLayout(view) : forceLayout(view)) : null), [view]);
+  const [dimension, setDimension] = useState<"2d" | "3d">("3d");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(DIMENSION_KEY) === "2d") setDimension("2d");
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  const changeDimension = (d: "2d" | "3d") => {
+    setDimension(d);
+    try {
+      localStorage.setItem(DIMENSION_KEY, d);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  const layout = useMemo(() => (view && dimension === "2d" ? (view.mode === "focus" ? radialLayout(view) : forceLayout(view)) : null), [view, dimension]);
+  const layout3 = useMemo(() => (view && dimension === "3d" ? layout3d(view) : null), [view, dimension]);
 
   const focus = (id: string | null) => {
     navigate({ search: (s) => ({ ...s, focus: id ?? undefined }), replace: false });
@@ -123,6 +145,21 @@ function IntelGraphPage() {
             >
               Focus
             </button>
+          </div>
+          <div role="radiogroup" aria-label="Dimensions" className="inline-flex rounded-lg border border-border bg-bg-elevated p-0.5">
+            {(["3d", "2d"] as const).map((d) => (
+              <button
+                key={d}
+                type="button"
+                role="radio"
+                aria-checked={dimension === d}
+                onClick={() => changeDimension(d)}
+                className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium", dimension === d ? "bg-bg-subtle text-fg" : "text-muted hover:text-fg")}
+              >
+                {d === "3d" ? <Box className="size-3.5" /> : <Square className="size-3.5" />}
+                {d.toUpperCase()}
+              </button>
+            ))}
           </div>
           {center && (
             <div role="radiogroup" aria-label="Depth" className="inline-flex rounded-lg border border-border bg-bg-elevated p-0.5">
@@ -223,7 +260,21 @@ function IntelGraphPage() {
 
             {/* Centre: the graph and the trail of entities visited. */}
             <section className="relative flex h-[68vh] min-h-[420px] min-w-0 flex-col lg:h-auto lg:min-h-0 lg:flex-1">
-              {view && layout && view.nodes.length ? (
+              {view && layout3 && view.nodes.length ? (
+                <Suspense fallback={<div className="grid flex-1 place-items-center text-sm text-muted">Loading the 3D view…</div>}>
+                  <GraphCanvas3D
+                    className="min-h-0 flex-1"
+                    view={view}
+                    layout={layout3}
+                    theme={theme}
+                    selectedNode={selectedNode}
+                    selectedEdge={selectedEdge}
+                    onSelectNode={setSelectedNode}
+                    onSelectEdge={setSelectedEdge}
+                    onFocus={(id) => focus(id)}
+                  />
+                </Suspense>
+              ) : view && layout && view.nodes.length ? (
                 <GraphCanvas
                   className="min-h-0 flex-1"
                   view={view}
