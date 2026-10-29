@@ -222,3 +222,19 @@ test("procedure regex: net does not match inside Internet", () => {
   assert.equal("Internet traffic from edge devices and appliances".match(re), null);
   assert.ok("The actor ran net group \"domain admins\" /domain".match(new RegExp(PROCEDURE_RE.source, "gi")));
 });
+
+test("a 'Defense Evasion' heading is attacker activity, not defensive content", () => {
+  assert.equal(classifySentence("The loader decodes the collector at runtime before execution.", "Defense Evasion"), "observed");
+  assert.equal(classifySentence("The loader decodes the collector at runtime before execution.", "Mitigation and protection guidance"), "defensive");
+  assert.equal(classifySentence("Disable macros from the internet.", "Defense Evasion"), "defensive", "advice is still advice");
+});
+
+test("rows of the report's own ATT&CK mapping table are observed; a side clause does not negate them", () => {
+  assert.equal(classifySentence("T1140 Deobfuscate/Decode Files or Information | cook.py decodes and decompresses the collector at runtime.", "Detections"), "observed");
+  assert.equal(
+    classifySentence("T1552.005 Unsecured Credentials: Cloud Instance Metadata API | Requests AWS and GCP credentials from metadata services; returned credentials were not confirmed.", "Credential Access"),
+    "observed",
+  );
+  assert.equal(classifySentence("T1486 Data Encrypted for Impact | Not observed in this intrusion.", "Impact"), "negated");
+  assert.equal(classifySentence("tags: attack.t1059.001", "Detections"), "defensive", "rule syntax stays defensive");
+});

@@ -620,12 +620,19 @@ function SettingsPage() {
                         {currentCrawl.lastRunAt ? new Date(currentCrawl.lastRunAt).toLocaleString() : "Never run"}
                       </span>
                     </span>
-                    <span>
-                      Next scheduled run:{" "}
-                      <span className="font-medium text-fg">
-                        {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
+                    {currentCrawl.realTime ? (
+                      <span>
+                        Next crawl:{" "}
+                        <span className="font-medium text-fg">{currentCrawl.realTimePauseMinutes ?? 2} min after the current run ends</span>
                       </span>
-                    </span>
+                    ) : (
+                      <span>
+                        Next scheduled run:{" "}
+                        <span className="font-medium text-fg">
+                          {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <Button
@@ -690,9 +697,40 @@ function SettingsPage() {
                       className="w-48 accent-accent"
                     />
                     <span className="tabular-nums text-fg">{currentCrawl.realTimePauseMinutes ?? 2} min</span>
-                    <span>Each run is still bounded by the run time limit. The master scheduler switch must be on.</span>
+                    <span>
+                      The limits below (time, resources, per-domain cap, depth) apply to each run, so no single run hammers a site; real time repeats runs
+                      and walks each source&apos;s archive 6 pages deeper every run, so it keeps finding reports the library does not have. The crawl
+                      interval is not used.
+                    </span>
                   </div>
                 )}
+              </div>
+
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <label htmlFor="crawl-ai-backfill" className="text-sm font-medium text-fg">Background AI analysis</label>
+                    <p className="text-xs text-muted">
+                      Runs the grounded AI analysis over every report that has none, existing and new, so the Intel Graph and entity context map the whole
+                      library. Each item is checked against the report text. Uses AI quota; 0 turns it off.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <input
+                      id="crawl-ai-backfill"
+                      type="range"
+                      min="0"
+                      max="240"
+                      step="10"
+                      value={currentCrawl.aiBackfillPerHour ?? 30}
+                      onChange={(e) => updateCrawlField("aiBackfillPerHour", parseInt(e.target.value, 10) || 0)}
+                      className="w-40 accent-accent"
+                    />
+                    <span className="w-24 text-right text-xs tabular-nums text-fg">
+                      {(currentCrawl.aiBackfillPerHour ?? 30) === 0 ? "Off" : `${currentCrawl.aiBackfillPerHour ?? 30} per hour`}
+                    </span>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">

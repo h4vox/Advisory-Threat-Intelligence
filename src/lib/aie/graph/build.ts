@@ -35,7 +35,7 @@ export type GraphSourceReport = {
 
 const ACTIVITY: ReadonlySet<EvidenceLabel> = new Set(["observed", "inferred"]);
 const INDICATOR_KINDS = new Set(["ipv4", "domain", "url", "sha256", "sha1", "md5", "email"]);
-const MAX_INDICATORS_PER_REPORT = 40;
+const MAX_INDICATORS_PER_REPORT = 150;
 const MAX_NODE_REPORTS = 60;
 const MAX_EDGE_REPORTS = 25;
 
@@ -153,8 +153,13 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
   const ai = r.aiAnalysis;
 
   // Actors and campaigns.
-  if (arr(ev?.actors).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.actors)) if (ACTIVITY.has(f.label)) add(actorMention(f.value, f.confidence ?? 0.6));
-  else for (const n of a?.threatActors ?? []) add(actorMention(n, 0.5));
+  // Evidence facts first; the older analysis list only when the report has no actor evidence.
+  // (Braces matter: without them the `else` bound to the inner `if` and the older list was never read.)
+  if (arr(ev?.actors).length) {
+    for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.actors)) if (ACTIVITY.has(f.label)) add(actorMention(f.value, f.confidence ?? 0.6));
+  } else {
+    for (const n of arr(a?.threatActors)) add(actorMention(n, 0.5));
+  }
   for (const n of ee?.threatActors ?? []) add(actorMention(n, 0.45));
   if (ai?.adversary?.name) add(actorMention(ai.adversary.name, 0.6));
   if (ee?.campaign) add(campaignMention(ee.campaign, 0.5));
@@ -162,12 +167,21 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
     if (!ref || typeof ref.id !== "string") continue;
     if (ref.kind === "group") add({ id: `actor:${ref.id}`, type: "actor", label: getGroup(ref.id)?.name ?? ref.name, attackId: ref.id, alias: ref.matched, confidence: ref.inTitle ? 0.6 : 0.45 });
     else if (ref.kind === "campaign") add({ id: `campaign:${ref.id}`, type: "campaign", label: ref.name, attackId: ref.id, alias: ref.matched, confidence: 0.45 });
-    else if (ref.kind === "software") add(softwareMention(ref.name, ref.inTitle ? 0.6 : 0.45));
+    else if (ref.kind === "software") {
+      // A short generic name (cmd, net) counts when the report names the binary itself (cmd.exe).
+      const binary = typeof ref.matched === "string" && /\.(?:exe|dll|ps1|sh)$/i.test(ref.matched);
+      const sw = binary ? getSoftware(ref.id) : undefined;
+      if (sw) add({ id: `${sw.type === "tool" ? "tool" : "malware"}:${ref.id}`, type: sw.type === "tool" ? "tool" : "malware", label: sw.name, attackId: ref.id, alias: ref.matched, confidence: 0.45 });
+      else add(softwareMention(ref.name, ref.inTitle ? 0.6 : 0.45));
+    }
   }
 
   // Malware and tools.
-  if (arr(ev?.malware).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.malware)) if (ACTIVITY.has(f.label)) add(softwareMention(f.value, f.confidence ?? 0.6));
-  else for (const n of a?.malware ?? []) add(softwareMention(n, 0.5));
+  if (arr(ev?.malware).length) {
+    for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.malware)) if (ACTIVITY.has(f.label)) add(softwareMention(f.value, f.confidence ?? 0.6));
+  } else {
+    for (const n of arr(a?.malware)) add(softwareMention(n, 0.5));
+  }
   for (const n of ee?.malwareFamilies ?? []) add(softwareMention(n, 0.45));
   for (const n of ai?.adversary?.malware ?? []) add(softwareMention(n, 0.5));
   for (const n of ai?.adversary?.tools ?? []) add(softwareMention(n, 0.5, "tool"));
@@ -180,6 +194,10 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
     for (const s of arr(a?.ttps)) for (const id of textOf(s).match(TECH_ID) ?? []) add(techniqueMention(id, 0.45));
   }
   for (const step of ai?.attackChain ?? []) if (step?.technique?.id) add(techniqueMention(step.technique.id, 0.55, step.technique.name, step.stage));
+  // The analysis's attack chain lists the techniques of each observed step ("T1059.001 - PowerShell").
+  for (const step of arr<{ tactic?: unknown; techniques?: unknown }>(a?.attackChain)) {
+    for (const t of arr(step.techniques)) for (const id of textOf(t).match(TECH_ID) ?? []) add(techniqueMention(id, 0.5, undefined, step.tactic));
+  }
 
   // Vulnerabilities.
   for (const s of [...arr(a?.vulnerabilities), ...arr(ee?.cves)]) for (const id of textOf(s).match(CVE_ID) ?? []) add(vulnMention(id, 0.6));
@@ -192,9 +210,18 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
 
   // Indicators.
   let n = 0;
-  for (const i of r.iocs ?? []) {
+  // Extracted indicators, then the ones the grounded AI analysis verified in the text.
+  const indicators: Array<{ kind: unknown; value: unknown; c: number }> = [
+    ...arr<IocHit>(r.iocs).map((i) => ({ kind: i.kind, value: i.value, c: 0.6 })),
+    ...arr<{ type?: unknown; value?: unknown }>(ai?.iocs).map((i) => ({ kind: i.type === "ipv4" ? "ipv4" : i.type, value: i.value, c: 0.55 })),
+  ];
+  for (const i of indicators) {
     if (n >= MAX_INDICATORS_PER_REPORT) break;
-    const m = indicatorMention(i.kind, i.value, 0.6);
+    if (i.kind === "cve") {
+      add(vulnMention(i.value, 0.6));
+      continue;
+    }
+    const m = indicatorMention(i.kind, i.value, i.c);
     if (m && !out.has(m.id)) {
       add(m);
       n++;

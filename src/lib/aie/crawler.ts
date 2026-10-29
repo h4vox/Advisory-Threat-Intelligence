@@ -132,6 +132,7 @@ import { EMULATION_SIMULATION_GRADE_META, assessEmulationSimulation, summarizeEm
 import { isAdvisoryPublisher } from "./technical-depth";
 import { resolvePublicationDate, type PublishedDate } from "./published-date";
 import { mongoAnalyseNewlyIngested } from "../mongodb/library-review-repo.server";
+import { startIntelRefreshDaemon } from "../mongodb/intel-refresh-repo.server";
 import type { ReportAttachment, ReportMirror } from "./types";
 
 /** Re-fetched pages this close (SimHash bits) to the stored copy are cosmetic edits, not new versions. */
@@ -483,6 +484,27 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
   return defaultConfig;
 }
 
+/** Pages a real-time run walks further into each source's archive. */
+const REALTIME_ARCHIVE_PAGES = 6;
+type ArchiveCursor = { page: number; nextUrl: string | null };
+
+async function loadArchiveCursors(): Promise<Map<string, ArchiveCursor>> {
+  const col = await getThreatIntelCollection();
+  const docs = await col.find({ docType: "archive_cursor" }, { projection: { _id: 0, sourceId: 1, page: 1, nextUrl: 1 } }).toArray();
+  return new Map(docs.map((d) => [String(d.sourceId), { page: Number(d.page) || 1, nextUrl: typeof d.nextUrl === "string" ? d.nextUrl : null }]));
+}
+
+async function saveArchiveCursors(updates: Map<string, ArchiveCursor>): Promise<void> {
+  const col = await getThreatIntelCollection();
+  const at = new Date().toISOString();
+  await col.bulkWrite(
+    [...updates].map(([sourceId, c]) => ({
+      updateOne: { filter: { docType: "archive_cursor", sourceId }, update: { $set: { docType: "archive_cursor", sourceId, page: c.page, nextUrl: c.nextUrl, updatedAt: at } }, upsert: true },
+    })),
+    { ordered: false },
+  );
+}
+
 export async function executeCrawlJob(
   jobId: string,
   triggerType: CrawlTrigger = "MANUAL",
@@ -499,6 +521,10 @@ export async function executeCrawlJob(
   activeJobs.set(jobId, jobControl);
 
   const breadth = config.discoveryBreadth || "balanced";
+  // Real-time runs walk each source's archive further on every run (see the listing pagination).
+  const deepWalk = triggerType === "REALTIME";
+  const archiveCursors = deepWalk && isMongo ? await loadArchiveCursors().catch(() => new Map<string, ArchiveCursor>()) : new Map<string, ArchiveCursor>();
+  const archiveCursorUpdates = new Map<string, ArchiveCursor>();
   let maxDepth = config.maxDepth || 3;
   if (breadth === "focused") maxDepth = 1;
   else if (breadth === "wide") maxDepth = Math.max(maxDepth, 4);
@@ -1214,7 +1240,8 @@ export async function executeCrawlJob(
             const homeRes = await collector.fetchSourceDocument(source.id, source.homepageUrl, "listing", {
               timeoutMs: 4500,
               accept: "text/html,application/xhtml+xml,text/plain",
-              forceFull: feedWeak || Boolean(backfillPlan),
+              // Real time reads it in full too: the archive walk starts from it.
+              forceFull: feedWeak || Boolean(backfillPlan) || deepWalk,
             });
             const html = homeRes.status === "ok" ? homeRes.body : null;
 
@@ -1377,18 +1404,38 @@ export async function executeCrawlJob(
               // Listing / archive pagination: research hubs whose feed is short are walked past page 1
               // (page pattern, rel=next or "Older posts"); a backfill walks up to its page budget. Stops at
               // the first page that adds no new candidates.
+              // Real time: every run resumes the archive walk where the previous run stopped
+              // (per-source cursor) and goes REALTIME_ARCHIVE_PAGES deeper, skipping pages of known
+              // articles instead of stopping at them, so back-to-back runs keep reaching reports the
+              // library does not have yet. At the end of the archive the walk starts over.
               const shortFeed = feedWeak;
-              const maxPages = backfillPlan ? backfillPlan.maxListingPages : shortFeed ? 4 : breadth === "wide" || maxDepth >= 3 ? 2 : 1;
+              const cursor = deepWalk && !backfillPlan ? archiveCursors.get(source.id) : undefined;
+              const startPage = deepWalk && !backfillPlan ? Math.max(2, (cursor?.page ?? 1) + 1) : 2;
+              const maxPages = backfillPlan
+                ? backfillPlan.maxListingPages
+                : deepWalk
+                  ? startPage + REALTIME_ARCHIVE_PAGES - 1
+                  : shortFeed
+                    ? 4
+                    : breadth === "wide" || maxDepth >= 3
+                      ? 2
+                      : 1;
               const listingStart = source.researchArchives?.[0] || source.homepageUrl;
-              if (maxPages >= 2 && (source.paginationPattern || shortFeed || backfillPlan)) {
-                const queue = source.paginationPattern ? paginationUrls(source.paginationPattern, 2, maxPages) : [];
-                let pageUrl: string | null = queue.shift() ?? null;
+              if (maxPages >= 2 && (source.paginationPattern || shortFeed || backfillPlan || deepWalk)) {
+                const queue = source.paginationPattern ? paginationUrls(source.paginationPattern, startPage, maxPages) : [];
+                let pageUrl: string | null = queue.shift() ?? (cursor?.nextUrl || null);
                 let prevHtml = html;
                 let prevUrl = listingStart;
                 if (!pageUrl && prevHtml) pageUrl = findNextPageUrl(prevHtml, prevUrl);
-                for (let page = 2; pageUrl && page <= maxPages && discoveryTimeLeft() > 0; page++) {
-                  const pr = await collector.fetchSourceDocument(source.id, pageUrl, "listing", { timeoutMs: 8000, accept: "text/html,application/xhtml+xml,text/plain", forceFull: Boolean(backfillPlan) });
-                  if (pr.status !== "ok") break;
+                let emptyPages = 0;
+                let lastPage = startPage - 1;
+                let archiveEnded = false;
+                for (let page = startPage; pageUrl && page <= maxPages && discoveryTimeLeft() > 0; page++) {
+                  const pr = await collector.fetchSourceDocument(source.id, pageUrl, "listing", { timeoutMs: 8000, accept: "text/html,application/xhtml+xml,text/plain", forceFull: Boolean(backfillPlan) || deepWalk });
+                  if (pr.status !== "ok") {
+                    archiveEnded = pr.status === "error";
+                    break;
+                  }
                   collector.funnel.listingPages++;
                   const pLinks = extractOutlinksAndCitations(pr.body, pageUrl, {
                     sourceId: source.id,
@@ -1419,10 +1466,19 @@ export async function executeCrawlJob(
                     )
                       added++;
                   }
-                  if (added === 0) break;
+                  lastPage = page;
+                  if (added === 0) {
+                    // A page of known articles ends a normal walk; a real-time walk goes on past a few.
+                    if (!deepWalk || ++emptyPages >= 3) break;
+                  } else emptyPages = 0;
                   prevHtml = pr.body;
                   prevUrl = pageUrl;
                   pageUrl = source.paginationPattern ? queue.shift() ?? null : findNextPageUrl(prevHtml, prevUrl);
+                  if (!pageUrl && !source.paginationPattern) archiveEnded = true;
+                }
+                if (deepWalk && !backfillPlan) {
+                  const restart = archiveEnded || lastPage < startPage;
+                  archiveCursorUpdates.set(source.id, restart ? { page: 1, nextUrl: null } : { page: lastPage, nextUrl: source.paginationPattern ? null : pageUrl });
                 }
               }
             }
@@ -1431,6 +1487,10 @@ export async function executeCrawlJob(
           }
         }),
       ), Math.max(30_000, discoveryTimeLeft()));
+      if (archiveCursorUpdates.size && isMongo) {
+        await saveArchiveCursors(archiveCursorUpdates).catch((err) => console.warn("[crawler] archive cursors not saved:", err));
+        logger.crawler("ARCHIVE", `Real time: archive walk advanced for ${archiveCursorUpdates.size} source${archiveCursorUpdates.size === 1 ? "" : "s"}`, { jobId });
+      }
     }
 
     // Phase C: web search. A targeted hunt searches its own query; otherwise the analyst's keyword
@@ -3966,6 +4026,8 @@ export function startCrawlerSchedulerDaemon() {
 // Auto-register hooks and launch daemon on module load
 registerScheduleChecker(checkAndTriggerScheduledCrawl);
 startCrawlerSchedulerDaemon();
+// Keeps every stored report's extracted intel current (rules + background AI analysis).
+startIntelRefreshDaemon();
 
 // Warm the database connection as soon as the server module loads, so the first page does not
 // pay the cold connection cost. Backgrounded; a failure is retried by the normal request path.

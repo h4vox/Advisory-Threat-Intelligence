@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildIntelGraph, type GraphSourceReport } from "./build.ts";
+import { buildIntelGraph, reportEntities, type GraphSourceReport } from "./build.ts";
 import { DEFAULT_FILTER, focusView, indexGraph, overviewView, searchNodes, similarEntities } from "./analyze.ts";
 import { forceLayout, radialLayout } from "./layout.ts";
 import { buildBriefPrompt, parseBrief } from "./brief.ts";
@@ -200,4 +200,38 @@ test("browser copy: per-type caps, strongest links per entity, stated links kept
   withEdgeIds(c);
   assert.ok(c.edges.every((e) => g.edges.some((x) => x.id === e.id)), "ids match the server's");
   assert.equal(g.edges.every((e) => e.id), true, "the server graph is unchanged");
+});
+
+test("reports without evidence facts still contribute their analysis actors, malware and attack-chain techniques", () => {
+  const ents = reportEntities({
+    id: "r-old",
+    title: "Older analysis",
+    analysis: {
+      method: "heuristic",
+      classification: "THREAT_REPORT",
+      threatActors: ["Storm-1811"],
+      malware: ["QakBot"],
+      vulnerabilities: [],
+      ttps: [],
+      ioas: [],
+      attackChain: [{ order: 1, tactic: "Execution", techniques: ["T1059.001 - PowerShell"], summary: "" }],
+      detections: [],
+      hunting: [],
+      emulation: [],
+    },
+  });
+  const types = [...ents.values()].map((m) => `${m.type}:${m.label}`);
+  assert.ok(types.some((t) => t.startsWith("actor:")), types.join(", "));
+  assert.ok(types.some((t) => /QakBot/i.test(t)), types.join(", "));
+  assert.ok(ents.has("technique:T1059.001"));
+});
+
+test("indicators the grounded AI analysis verified reach the graph", () => {
+  const ents = reportEntities({
+    id: "r-ai",
+    title: "AI",
+    aiAnalysis: { iocs: [{ type: "domain", value: "smashshape.com" }, { type: "cve", value: "CVE-2024-1709" }] } as never,
+  });
+  assert.ok(ents.has("indicator:domain:smashshape.com"));
+  assert.ok(ents.has("vulnerability:CVE-2024-1709"));
 });
