@@ -1,6 +1,6 @@
 /**
- * Intelligence graph server functions: the whole graph (built from the library, cached for a
- * minute) and an AI brief for one entity (./graph).
+ * Intelligence graph server functions: the whole graph (built from the library and rebuilt in the
+ * background when the library changes), entity context, paths and AI briefs (./graph).
  */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -14,7 +14,6 @@ import { connectionPaths, entityContext, resolveRef, type ConnectionPath, type E
 import { BRIEF_SYSTEM, buildBriefPrompt, engineBrief, parseBrief, type GraphBrief } from "./graph/brief";
 import type { GraphNode, GraphReportRef, IntelGraph } from "./graph/types";
 
-const CACHE_MS = 60_000;
 const MAX_REPORTS = 10_000;
 
 let cache: Built | null = null;
@@ -68,12 +67,14 @@ function rebuild(): Promise<Built> {
   inflight ??= (async () => {
     const started = Date.now();
     try {
+      const version = await readLibraryVersion();
       const reports = await loadReports();
       const graph = buildIntelGraph(reports);
       const ix = indexGraph(graph);
       const copy = clientGraph(graph);
       const clientJson = JSON.stringify(copy);
       cache = { at: Date.now(), graph, ix, clientJson };
+      libraryVersion = { checkedAt: Date.now(), value: version, builtFor: version };
       logger.intel("GRAPH", `Built from ${graph.stats.reports} reports: ${graph.stats.nodes} entities, ${graph.stats.edges} links (${graph.stats.stated} stated)`, {
         loaded: reports.length,
         skipped: graph.stats.skipped ?? 0,
@@ -93,18 +94,67 @@ function rebuild(): Promise<Built> {
 }
 
 /**
- * The current graph. A fresh one is built on first use; after CACHE_MS the current one is still
- * served at once while a newer one builds in the background (no waiting on every expiry).
+ * The current graph. A fresh one is built on first use; when the library changes (or after
+ * MAX_AGE_MS) the current one is still served at once while a newer one builds in the background.
  */
 async function getBuilt(): Promise<Built> {
   if (!cache) return rebuild();
-  if (Date.now() - cache.at >= CACHE_MS && !inflight) {
+  // Without a library version (no MongoDB) rebuild every two minutes instead.
+  const maxAge = libraryVersion.builtFor === null ? 2 * 60_000 : MAX_AGE_MS;
+  if (!inflight && (Date.now() - cache.at >= maxAge || (await libraryChanged()))) {
     rebuild().catch(() => {
       /* logged in rebuild; the previous graph keeps serving */
     });
   }
   return cache;
 }
+
+/**
+ * The library's version: report count, newest ingestion and newest AI analysis. Checked at most
+ * every VERSION_CHECK_MS (one small aggregate), so new ingestion, re-analysis or removed reports
+ * reach the graph within seconds instead of on a fixed schedule.
+ */
+const VERSION_CHECK_MS = 15_000;
+/** Rebuild anyway after this long (changes the version cannot see, e.g. edited analyses). */
+const MAX_AGE_MS = 10 * 60_000;
+let libraryVersion: { checkedAt: number; value: string | null; builtFor: string | null } = { checkedAt: 0, value: null, builtFor: null };
+
+async function readLibraryVersion(): Promise<string | null> {
+  if (!isMongoConfigured()) return null;
+  try {
+    const col = await getThreatIntelCollection();
+    const [v] = await col
+      .aggregate([
+        { $match: { docType: "report", status: { $nin: ["duplicate", "rejected", "failed"] } } },
+        { $group: { _id: null, n: { $sum: 1 }, ing: { $max: "$ingestedAt" }, ai: { $max: "$aiAnalysis.analysedAt" }, rev: { $max: "$review.reviewedAt" } } },
+      ])
+      .toArray();
+    return v ? `${v.n}|${v.ing ?? ""}|${v.ai ?? ""}|${v.rev ?? ""}` : "0";
+  } catch {
+    return null;
+  }
+}
+
+async function libraryChanged(): Promise<boolean> {
+  if (Date.now() - libraryVersion.checkedAt < VERSION_CHECK_MS) return false;
+  libraryVersion.checkedAt = Date.now();
+  const value = await readLibraryVersion();
+  libraryVersion.value = value;
+  if (value === null || libraryVersion.builtFor === null) return false;
+  if (value !== libraryVersion.builtFor) {
+    logger.intel("GRAPH", "Library changed (new or re-analysed reports): rebuilding in the background");
+    return true;
+  }
+  return false;
+}
+
+/** What the open graph page polls: which build it has, and whether a newer one exists. */
+export const getGraphVersion = createServerFn({ method: "GET" })
+  .middleware([analystMiddleware])
+  .handler(async (): Promise<{ builtAt: string | null; building: boolean; nodes: number; edges: number; reports: number }> => {
+    const b = cache ? await getBuilt() : null;
+    return { builtAt: b?.graph.stats.builtAt ?? null, building: Boolean(inflight), nodes: b?.graph.stats.nodes ?? 0, edges: b?.graph.stats.edges ?? 0, reports: b?.graph.stats.reports ?? 0 };
+  });
 
 /** The browser copy (./graph/build clientGraph), as JSON prepared once per build. */
 export const getIntelGraph = createServerFn({ method: "GET" })

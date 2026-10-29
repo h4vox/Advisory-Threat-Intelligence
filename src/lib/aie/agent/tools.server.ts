@@ -36,8 +36,12 @@ import { EvidenceBook, evidenceLine, type ToolSpec } from "./protocol";
 
 export type ToolContext = { book: EvidenceBook; now: Date };
 
-/** What a read tool returns: text for the model and one line for the analyst. */
-export type ToolOutput = { text: string; summary: string };
+/**
+ * What a read tool returns: text for the model and one line for the analyst. `answer` is an
+ * optional ready answer (Markdown, citing [S#]) the engine tools write from their own results:
+ * the turn falls back to it when the AI does not answer.
+ */
+export type ToolOutput = { text: string; summary: string; answer?: string };
 
 /** What an action does once the analyst confirms. */
 export type ActionOutcome = { ok: boolean; message: string; link?: { label: string; href: string } };
@@ -490,26 +494,46 @@ const entityContextTool = defineRead({
   async run(args, ctx) {
     const { context: c, reports, suggestions } = await getEntityContext({ data: { ref: args.ref } });
     if (!c) {
-      return {
-        text: `No entity in the library matches "${args.ref}".${suggestions.length ? ` Close matches: ${suggestions.map((x) => `${x.label} (${x.type})`).join(", ")}.` : ""}`,
-        summary: `Entity context for “${shortText(args.ref, 40)}”: not found`,
-      };
+      const text = `No entity in the library matches "${args.ref}".${suggestions.length ? ` Close matches: ${suggestions.map((x) => `${x.label} (${x.type})`).join(", ")}.` : ""}`;
+      return { text, summary: `Entity context for “${shortText(args.ref, 40)}”: not found`, answer: text };
     }
+    // Compact on purpose: the model reads this, and long tool results slow its answer.
+    const top = (n: number) => c.links.map((g) => ({ ...g, items: g.items.slice(0, n) }));
+    const linkLine = (l: (typeof c.links)[number]["items"][number]) =>
+      `${l.outgoing ? "" : "← "}${l.edge.predicate.replace(/_/g, " ")} ${l.node.label} [${l.edge.weight} rep${l.edge.basis === "stated" ? ", stated" : ""}]`;
+    const cites = Object.values(reports)
+      .slice(0, 5)
+      .map((r) => {
+        const e = { kind: "report" as const, reportId: r.id, title: r.title, publisher: r.publisher, url: "", publishedAt: r.publishedAt };
+        const id = ctx.book.add(e);
+        return { id, line: evidenceLine(id, e, "") };
+      });
     const lines: string[] = [c.summary, ""];
-    for (const g of c.links) {
-      lines.push(`${g.type} (${g.total}): ${g.items.map((l) => `${l.outgoing ? "" : "← "}${l.edge.predicate.replace(/_/g, " ")} ${l.node.label} [${l.edge.weight} rep, ${Math.round(l.edge.confidence * 100)}%${l.edge.basis === "stated" ? ", stated" : ""}]`).join("; ")}`);
-    }
-    if (c.related.length) lines.push(`Related through shared links: ${c.related.slice(0, 6).map((r) => `${r.node.label} (via ${r.via.map((v) => v.label).join(", ")})`).join("; ")}`);
-    if (c.similar.length) lines.push(`Look-alikes, not stated by any report: ${c.similar.slice(0, 4).map((s) => `${s.node.label} ${Math.round(s.score * 100)}% (shares ${s.shared.slice(0, 4).map((x) => x.label).join(", ")})`).join("; ")}`);
-    if (c.attack?.newInLibrary?.length) lines.push(`Observed but not in ATT&CK's entry: ${c.attack.newInLibrary.join(", ")}`);
-    if (c.activity.length) lines.push(`Activity by month: ${c.activity.map((a) => `${a.month}:${a.reports}`).join(" ")} (trend: ${c.trend})`);
-    lines.push("Findings:", ...c.findings.map((f) => `- ${f.text}`));
-    const refs = Object.values(reports).slice(0, 6).map((r) => {
-      const e = { kind: "report" as const, reportId: r.id, title: r.title, publisher: r.publisher, url: "", publishedAt: r.publishedAt };
-      return evidenceLine(ctx.book.add(e), e, "");
-    });
-    if (refs.length) lines.push("", "Reports:", ...refs);
-    return { text: lines.join("\n"), summary: `Correlated ${c.node.label}: ${c.links.reduce((n, g) => n + g.total, 0)} links, ${c.related.length} related` };
+    for (const g of top(5)) lines.push(`${g.type} (${g.total}): ${g.items.map(linkLine).join("; ")}`);
+    if (c.related.length) lines.push(`Related through shared links: ${c.related.slice(0, 5).map((r) => `${r.node.label} (via ${r.via.map((v) => v.label).join(", ")})`).join("; ")}`);
+    if (c.similar.length) lines.push(`Look-alikes, not stated by any report: ${c.similar.slice(0, 3).map((s) => `${s.node.label} ${Math.round(s.score * 100)}% (shares ${s.shared.slice(0, 3).map((x) => x.label).join(", ")})`).join("; ")}`);
+    if (c.attack?.newInLibrary?.length) lines.push(`Observed but not in ATT&CK's entry: ${c.attack.newInLibrary.slice(0, 10).join(", ")}${c.attack.newInLibrary.length > 10 ? "…" : ""}`);
+    lines.push(`Trend: ${c.trend}`, "Findings:", ...c.findings.map((f) => `- ${f.text}`));
+    if (cites.length) lines.push("", "Reports:", ...cites.map((x) => x.line));
+
+    // The engine's own answer, used if the AI does not reply.
+    const cite = cites.map((x) => `[${x.id}]`).join(" ");
+    const answer = [
+      `**${c.node.label}** — ${c.summary}${cite ? ` ${cite}` : ""}`,
+      "",
+      c.findings.length ? "**Findings**" : "",
+      ...c.findings.map((f) => `- ${f.text}`),
+      "",
+      "**Strongest links**",
+      ...top(4).map((g) => `- ${g.type} (${g.total}): ${g.items.map((l) => `${l.node.label}${l.edge.basis === "stated" ? " (stated)" : ""}`).join(", ")}`),
+      ...(c.related.length ? ["", "**Related through shared links**", ...c.related.slice(0, 4).map((r) => `- ${r.node.label} — via ${r.via.map((v) => v.label).join(", ")}`)] : []),
+      ...(c.similar.some((x) => !x.linked)
+        ? ["", "**Worth checking** (no report states these links)", ...c.similar.filter((x) => !x.linked).slice(0, 3).map((s) => `- ${s.node.label}: shares ${s.shared.slice(0, 3).map((x) => x.label).join(", ")}`)]
+        : []),
+    ]
+      .filter((l, k, a) => !(l === "" && a[k - 1] === ""))
+      .join("\n");
+    return { text: lines.join("\n"), summary: `Correlated ${c.node.label}: ${c.links.reduce((n, g) => n + g.total, 0)} links, ${c.related.length} related`, answer };
   },
 });
 
@@ -523,11 +547,19 @@ const findConnectionTool = defineRead({
   schema: z.object({ from: z.string().trim().min(1).max(200), to: z.string().trim().min(1).max(200) }),
   async run(args) {
     const r = await findConnection({ data: { from: args.from, to: args.to } });
-    if (!r.from || !r.to) return { text: `Could not find ${!r.from ? `"${args.from}"` : `"${args.to}"`} in the library.`, summary: "Connection: entity not found" };
-    if (!r.paths.length) return { text: `No path of up to 4 links connects ${r.from.label} and ${r.to.label} in the library.`, summary: `No connection between ${r.from.label} and ${r.to.label}` };
+    if (!r.from || !r.to) {
+      const text = `Could not find ${!r.from ? `"${args.from}"` : `"${args.to}"`} in the library.`;
+      return { text, summary: "Connection: entity not found", answer: text };
+    }
+    if (!r.paths.length) {
+      const text = `No path of up to 4 links connects ${r.from.label} and ${r.to.label} in the library.`;
+      return { text, summary: `No connection between ${r.from.label} and ${r.to.label}`, answer: text };
+    }
+    const text = r.paths.map((p, i) => `${i + 1}. ${p.text} (weakest link strength ${p.strength}; links backed by ${p.edges.map((e) => e.weight).join("/")} report(s))`).join("\n");
     return {
-      text: r.paths.map((p, i) => `${i + 1}. ${p.text} (weakest link strength ${p.strength}; links backed by ${p.edges.map((e) => e.weight).join("/")} report(s))`).join("\n"),
+      text,
       summary: `Found ${r.paths.length} connection(s) between ${r.from.label} and ${r.to.label}`,
+      answer: `**How ${r.from.label} connects to ${r.to.label}** (strongest paths first):\n${text}`,
     };
   },
 });
