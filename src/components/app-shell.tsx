@@ -39,6 +39,8 @@ import { getDashboard, getStorageStats } from "@/lib/aie/server";
 import { formatDateTime } from "@/lib/aie/format";
 import { useAppSession, useSignOut, type SessionUser } from "./auth/use-app-session";
 import { AieAgentChatDrawer } from "./aie-agent-chat-drawer";
+import { AGENT_ASK_EVENT, ENTITY_CONTEXT_EVENT, askAgentAbout, isEntityDrag, readDroppedEntity } from "./agent-handoff";
+import { EntityContextSheet } from "./intel/entity-context-sheet";
 import { CommandPalette, type PaletteNavItem } from "./layout/command-palette";
 import { actorCrumbName } from "./actors/actor-names";
 
@@ -421,6 +423,28 @@ export function AppShell({
   const [theme, setTheme] = useState<Theme>("dark");
   const [uiStyle, setUiStyle] = useState<UiStyle>("default");
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  // Requests handed to the agent from elsewhere (buttons, drag-and-drop), and the entity context panel.
+  const [agentAsk, setAgentAsk] = useState<{ id: number; text: string } | null>(null);
+  const [contextRef, setContextRef] = useState<string | null>(null);
+  const [agentDropActive, setAgentDropActive] = useState(false);
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (!text) return;
+      setAgentAsk({ id: Date.now(), text });
+      setAgentDrawerOpen(true);
+    };
+    const onContext = (e: Event) => {
+      const ref = (e as CustomEvent<{ ref?: string }>).detail?.ref;
+      if (ref) setContextRef(ref);
+    };
+    window.addEventListener(AGENT_ASK_EVENT, onAsk);
+    window.addEventListener(ENTITY_CONTEXT_EVENT, onContext);
+    return () => {
+      window.removeEventListener(AGENT_ASK_EVENT, onAsk);
+      window.removeEventListener(ENTITY_CONTEXT_EVENT, onContext);
+    };
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -727,9 +751,26 @@ export function AppShell({
             <button
               type="button"
               onClick={() => setAgentDrawerOpen(true)}
-              title="Open the AI agent chat"
+              title="Open the AI agent chat (drop an entity here to investigate it)"
               aria-label="Open AI agent"
-              className="inline-flex h-9 items-center gap-2 rounded-lg px-2 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle md:border md:border-border md:bg-bg-elevated md:px-3"
+              onDragOver={(e) => {
+                if (!isEntityDrag(e)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                setAgentDropActive(true);
+              }}
+              onDragLeave={() => setAgentDropActive(false)}
+              onDrop={(e) => {
+                setAgentDropActive(false);
+                const ent = readDroppedEntity(e);
+                if (!ent) return;
+                e.preventDefault();
+                askAgentAbout(ent);
+              }}
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-lg px-2 text-sm font-medium text-fg transition-colors hover:bg-bg-subtle md:border md:border-border md:bg-bg-elevated md:px-3",
+                agentDropActive && "ring-2 ring-primary ring-offset-2 ring-offset-bg",
+              )}
             >
               <Bot className="size-[18px] text-primary" strokeWidth={1.75} />
               <span className="hidden lg:inline">AI Agent</span>
@@ -810,7 +851,8 @@ export function AppShell({
         </ul>
       </DialogShell>
 
-      <AieAgentChatDrawer isOpen={agentDrawerOpen} onClose={() => setAgentDrawerOpen(false)} />
+      <AieAgentChatDrawer isOpen={agentDrawerOpen} onClose={() => setAgentDrawerOpen(false)} ask={agentAsk} onAskHandled={() => setAgentAsk(null)} />
+      <EntityContextSheet refValue={contextRef} onOpenChange={(open) => !open && setContextRef(null)} onRef={setContextRef} />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} navItems={PALETTE_ITEMS} />
     </div>
   );

@@ -321,6 +321,10 @@ function toolRunningLabel(call: ToolCall): string {
       return `Reading actor ${String(a.id ?? "")}`;
     case "get_technique":
       return `Reading ${String(a.id ?? "")}`;
+    case "entity_context":
+      return `Correlating ${String(a.ref ?? "")} across the library`;
+    case "find_connection":
+      return `Tracing how ${String(a.from ?? "")} connects to ${String(a.to ?? "")}`;
     case "library_overview":
       return "Reading the library overview";
     case "crawler_status":

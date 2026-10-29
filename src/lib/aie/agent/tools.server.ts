@@ -22,6 +22,7 @@ import {
 } from "../server";
 import { searchLibrary } from "../server-search";
 import { getActorProfile, listActors } from "../server-actors";
+import { findConnection, getEntityContext } from "../server-graph";
 import { createAdvisory, getAdvisory, listAdvisories } from "../server-advisories";
 import { buildPurplePath } from "../server-emulation";
 import { getResearchCoverage, setReportVisibility } from "../server-library";
@@ -480,6 +481,57 @@ const planPurplePathTool = defineRead({
 // Action tools (proposed; run only after the analyst confirms)
 // ---------------------------------------------------------------------------
 
+const entityContextTool = defineRead({
+  name: "entity_context",
+  summary:
+    "Everything the library correlates with one entity (threat actor, campaign, malware, tool, ATT&CK technique ID, CVE, sector, region, platform or indicator): links by type with report counts and confidence, entities related through shared links, look-alikes not stated by any report, activity trend, ATT&CK comparison and findings.",
+  params: { ref: { type: "string", description: "a name, alias, ATT&CK ID, CVE or indicator, e.g. APT29, Cobalt Strike, T1566, CVE-2024-3400", required: true } },
+  schema: z.object({ ref: z.string().trim().min(1).max(200) }),
+  async run(args, ctx) {
+    const { context: c, reports, suggestions } = await getEntityContext({ data: { ref: args.ref } });
+    if (!c) {
+      return {
+        text: `No entity in the library matches "${args.ref}".${suggestions.length ? ` Close matches: ${suggestions.map((x) => `${x.label} (${x.type})`).join(", ")}.` : ""}`,
+        summary: `Entity context for “${shortText(args.ref, 40)}”: not found`,
+      };
+    }
+    const lines: string[] = [c.summary, ""];
+    for (const g of c.links) {
+      lines.push(`${g.type} (${g.total}): ${g.items.map((l) => `${l.outgoing ? "" : "← "}${l.edge.predicate.replace(/_/g, " ")} ${l.node.label} [${l.edge.weight} rep, ${Math.round(l.edge.confidence * 100)}%${l.edge.basis === "stated" ? ", stated" : ""}]`).join("; ")}`);
+    }
+    if (c.related.length) lines.push(`Related through shared links: ${c.related.slice(0, 6).map((r) => `${r.node.label} (via ${r.via.map((v) => v.label).join(", ")})`).join("; ")}`);
+    if (c.similar.length) lines.push(`Look-alikes, not stated by any report: ${c.similar.slice(0, 4).map((s) => `${s.node.label} ${Math.round(s.score * 100)}% (shares ${s.shared.slice(0, 4).map((x) => x.label).join(", ")})`).join("; ")}`);
+    if (c.attack?.newInLibrary?.length) lines.push(`Observed but not in ATT&CK's entry: ${c.attack.newInLibrary.join(", ")}`);
+    if (c.activity.length) lines.push(`Activity by month: ${c.activity.map((a) => `${a.month}:${a.reports}`).join(" ")} (trend: ${c.trend})`);
+    lines.push("Findings:", ...c.findings.map((f) => `- ${f.text}`));
+    const refs = Object.values(reports).slice(0, 6).map((r) => {
+      const e = { kind: "report" as const, reportId: r.id, title: r.title, publisher: r.publisher, url: "", publishedAt: r.publishedAt };
+      return evidenceLine(ctx.book.add(e), e, "");
+    });
+    if (refs.length) lines.push("", "Reports:", ...refs);
+    return { text: lines.join("\n"), summary: `Correlated ${c.node.label}: ${c.links.reduce((n, g) => n + g.total, 0)} links, ${c.related.length} related` };
+  },
+});
+
+const findConnectionTool = defineRead({
+  name: "find_connection",
+  summary: "How two entities are connected in the library: the strongest short paths of relationships between them (e.g. an actor and a CVE, two actors, malware and a sector).",
+  params: {
+    from: { type: "string", description: "first entity (name, alias, ATT&CK ID, CVE…)", required: true },
+    to: { type: "string", description: "second entity", required: true },
+  },
+  schema: z.object({ from: z.string().trim().min(1).max(200), to: z.string().trim().min(1).max(200) }),
+  async run(args) {
+    const r = await findConnection({ data: { from: args.from, to: args.to } });
+    if (!r.from || !r.to) return { text: `Could not find ${!r.from ? `"${args.from}"` : `"${args.to}"`} in the library.`, summary: "Connection: entity not found" };
+    if (!r.paths.length) return { text: `No path of up to 4 links connects ${r.from.label} and ${r.to.label} in the library.`, summary: `No connection between ${r.from.label} and ${r.to.label}` };
+    return {
+      text: r.paths.map((p, i) => `${i + 1}. ${p.text} (weakest link strength ${p.strength}; links backed by ${p.edges.map((e) => e.weight).join("/")} report(s))`).join("\n"),
+      summary: `Found ${r.paths.length} connection(s) between ${r.from.label} and ${r.to.label}`,
+    };
+  },
+});
+
 const startCrawlTool = defineAction({
   name: "start_crawl",
   action: true,
@@ -573,6 +625,8 @@ export const AGENT_TOOLS: AgentTool[] = [
   listActorsTool,
   getActorTool,
   getTechniqueTool,
+  entityContextTool,
+  findConnectionTool,
   libraryOverviewTool,
   crawlerStatusTool,
   listAdvisoriesTool,

@@ -1,11 +1,13 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowRight, ChevronDown, Crosshair, ExternalLink, FileText, Lightbulb, Loader2, Quote, Search, Sparkles, X } from "lucide-react";
+import { ArrowRight, Bot, ChevronDown, Crosshair, ExternalLink, FileText, GripVertical, Loader2, PanelRightOpen, Quote, Search, Sparkles, X } from "lucide-react";
 import { connections, edgeStrength, graphInsights, searchNodes, similarEntities, type GraphFilter, type GraphIndex } from "@/lib/aie/graph/analyze";
 import { GRAPH_NODE_TYPES, NODE_TYPE_LABEL, PREDICATE_LABEL, type GraphEdge, type GraphNode, type GraphNodeType } from "@/lib/aie/graph/types";
-import type { GraphBrief } from "@/lib/aie/graph/brief";
 import { explainGraphNode } from "@/lib/aie/server-graph";
+import { entityContext } from "@/lib/aie/graph/correlate";
+import { askAgentAbout, entityDragProps, openEntityContext } from "@/components/agent-handoff";
+import { BriefView, handoffFor } from "@/components/intel/entity-context-sheet";
 import { cn } from "@/lib/cn";
 import type { GraphTheme } from "./graph-style";
 
@@ -63,6 +65,22 @@ const fmtDay = (d: string | null | undefined) => (d ? new Date(d).toLocaleDateSt
 // Left: search, view and filters
 // ---------------------------------------------------------------------------
 
+/** Preset selections of entity types, by what the analyst wants to look into. */
+export const LENSES: Array<{ id: string; label: string; hint: string; types: GraphNodeType[] }> = [
+  { id: "adversary", label: "Adversaries", hint: "Who, with what, and how: actors, campaigns, malware, tools, techniques", types: ["actor", "campaign", "malware", "tool", "technique"] },
+  { id: "targeting", label: "Targeting", hint: "Who targets which sectors, regions and platforms", types: ["actor", "campaign", "malware", "sector", "geography", "platform"] },
+  { id: "exploitation", label: "Exploitation", hint: "Vulnerabilities, who exploits them and what they hit", types: ["actor", "campaign", "malware", "vulnerability", "sector"] },
+  { id: "infrastructure", label: "Infrastructure", hint: "Indicators and the malware / actors they belong to", types: ["actor", "campaign", "malware", "tool", "indicator"] },
+  { id: "everything", label: "Everything", hint: "All entity types except indicators", types: ["actor", "campaign", "malware", "tool", "technique", "vulnerability", "sector", "geography"] },
+];
+
+export type GraphDetail = "key" | "standard" | "wide";
+export const GRAPH_DETAILS: Array<{ id: GraphDetail; label: string; nodes: number }> = [
+  { id: "key", label: "Key", nodes: 80 },
+  { id: "standard", label: "More", nodes: 160 },
+  { id: "wide", label: "Wide", nodes: 320 },
+];
+
 export const TIME_WINDOWS = [
   { value: "all", label: "All time", days: 0 },
   { value: "30", label: "Last 30 days", days: 30 },
@@ -79,6 +97,8 @@ export function FilterPanel({
   windowValue,
   onWindow,
   onPick,
+  detail,
+  onDetail,
 }: {
   ix: GraphIndex;
   theme: GraphTheme;
@@ -87,6 +107,8 @@ export function FilterPanel({
   windowValue: TimeWindow;
   onWindow: (w: TimeWindow) => void;
   onPick: (id: string) => void;
+  detail: GraphDetail;
+  onDetail: (d: GraphDetail) => void;
 }) {
   const [q, setQ] = useState("");
   const results = useMemo(() => searchNodes(ix, q, 10), [ix, q]);
@@ -94,6 +116,12 @@ export function FilterPanel({
     const m = new Map<GraphNodeType, number>();
     for (const n of ix.graph.nodes) m.set(n.type, (m.get(n.type) ?? 0) + 1);
     return m;
+  }, [ix]);
+  const tactics = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const n of ix.graph.nodes) if (n.type === "technique") for (const t of n.tactics ?? []) m.set(t, (m.get(t) ?? 0) + 1);
+    const order = ["Reconnaissance", "Resource Development", "Initial Access", "Execution", "Persistence", "Privilege Escalation", "Defense Evasion", "Stealth", "Defense Impairment", "Credential Access", "Discovery", "Lateral Movement", "Collection", "Command and Control", "Exfiltration", "Impact"];
+    return [...m.entries()].sort((a, b) => (order.indexOf(a[0]) + 100) % 100 - (order.indexOf(b[0]) + 100) % 100);
   }, [ix]);
   const toggle = (t: GraphNodeType) => onFilter({ ...filter, types: filter.types.includes(t) ? filter.types.filter((x) => x !== t) : [...filter.types, t] });
 
@@ -141,6 +169,41 @@ export function FilterPanel({
         )}
       </div>
 
+      <Section title="Lens" hint="What you want to look into; fine-tune the entity types below.">
+        <div className="grid grid-cols-2 gap-1">
+          {LENSES.map((l) => {
+            const on = l.types.length === filter.types.length && l.types.every((t) => filter.types.includes(t));
+            return (
+              <button
+                key={l.id}
+                type="button"
+                title={l.hint}
+                onClick={() => onFilter({ ...filter, types: [...l.types] })}
+                className={cn("h-8 rounded-md border px-2 text-left text-xs", on ? "border-primary bg-primary/10 font-semibold text-fg" : "border-border text-muted hover:text-fg")}
+              >
+                {l.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-3">
+          <div className="mb-1.5 text-xs text-muted">Detail</div>
+          <div className="grid grid-cols-3 gap-1">
+            {GRAPH_DETAILS.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                title={`Up to ${d.nodes} entities in the overview`}
+                onClick={() => onDetail(d.id)}
+                className={cn("h-7 rounded-md border text-xs", detail === d.id ? "border-primary bg-primary/10 font-semibold text-fg" : "border-border text-muted hover:text-fg")}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
       <Section title="Entity types">
         <ul className="space-y-0.5">
           {GRAPH_NODE_TYPES.map((t) => {
@@ -160,23 +223,28 @@ export function FilterPanel({
         </ul>
       </Section>
 
+      {filter.types.includes("technique") && (
+        <Section title="ATT&CK tactics" defaultOpen={false} hint="Show only techniques of these tactics (none selected = all).">
+          <div className="flex flex-wrap gap-1">
+            {tactics.map(([t, count]) => {
+              const on = filter.tactics?.includes(t) ?? false;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onFilter({ ...filter, tactics: on ? (filter.tactics ?? []).filter((x) => x !== t) : [...(filter.tactics ?? []), t] })}
+                  className={cn("rounded-md border px-2 py-0.5 text-[11px]", on ? "border-primary bg-primary/10 font-semibold text-fg" : "border-border text-muted hover:text-fg")}
+                >
+                  {t} <span className="text-subtle">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
       <Section title="Evidence">
         <div className="space-y-4">
-          <div>
-            <div className="mb-1.5 text-xs text-muted">Seen in at least</div>
-            <div className="flex gap-1">
-              {[1, 2, 3, 5].map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => onFilter({ ...filter, minReports: v })}
-                  className={cn("h-7 flex-1 rounded-md border text-xs", filter.minReports === v ? "border-primary bg-primary/10 font-semibold text-fg" : "border-border text-muted hover:text-fg")}
-                >
-                  {v} report{v === 1 ? "" : "s"}
-                </button>
-              ))}
-            </div>
-          </div>
           <div>
             <div className="mb-1.5 flex items-center justify-between text-xs text-muted">
               <label htmlFor="graph-confidence">Link confidence at least</label>
@@ -194,6 +262,13 @@ export function FilterPanel({
               style={{ accentColor: "var(--color-primary)" }}
             />
           </div>
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+            <input type="checkbox" checked={filter.minReports > 1} onChange={(e) => onFilter({ ...filter, minReports: e.target.checked ? 2 : 1 })} className="mt-0.5 size-3.5 cursor-pointer" />
+            <span>
+              Corroborated only
+              <span className="block text-[11px] text-subtle">Entities and links backed by more than one report.</span>
+            </span>
+          </label>
           <label className="flex cursor-pointer items-start gap-2.5 text-sm">
             <input type="checkbox" checked={filter.statedOnly} onChange={(e) => onFilter({ ...filter, statedOnly: e.target.checked })} className="mt-0.5 size-3.5 cursor-pointer" />
             <span>
@@ -367,6 +442,7 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
     return { groups: GRAPH_NODE_TYPES.filter((t) => m.has(t)).map((t) => [t, m.get(t)!] as const), hiddenLinks: hidden };
   }, [links, filter.types]);
   const similar = useMemo(() => similarEntities(ix, node.id, 6), [ix, node.id]);
+  const ctx = useMemo(() => entityContext(ix, node.id), [ix, node.id]);
   const [expanded, setExpanded] = useState<Set<GraphNodeType>>(new Set());
   const color = theme.type[node.type];
 
@@ -402,11 +478,59 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
               <Crosshair className="size-3.5" /> Focus on this
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => askAgentAbout(handoffFor(node))}
+            {...entityDragProps(handoffFor(node))}
+            title="Investigate with the AI Agent (or drag this onto the AI Agent button)"
+            className="inline-flex h-8 cursor-grab items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs hover:bg-bg-subtle active:cursor-grabbing"
+          >
+            <GripVertical className="size-3.5 text-subtle" />
+            <Bot className="size-3.5 text-primary" /> Ask the agent
+          </button>
+          <button type="button" onClick={() => openEntityContext(node.id)} title="Everything correlated with it, and how it connects to anything else" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs hover:bg-bg-subtle">
+            <PanelRightOpen className="size-3.5" /> Full context
+          </button>
           {profileLink(node)}
         </div>
       </PanelHeader>
 
       <AiBrief node={node} ix={ix} theme={theme} onSelectNode={onSelectNode} />
+
+      {ctx && ctx.findings.length > 0 && (
+        <Section title="Findings" count={ctx.findings.length} hint="Worked out by the engine from the library's links (no AI).">
+          <ul className="space-y-2.5">
+            {ctx.findings.map((f, i) => (
+              <li key={i} className="text-sm leading-snug">
+                {f.text}
+                {f.refs.some((r) => ix.node.has(r)) && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {f.refs.filter((r) => ix.node.has(r)).map((r) => (
+                      <NodeChip key={r} node={ix.node.get(r)!} theme={theme} onClick={() => onSelectNode(r)} />
+                    ))}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {ctx && ctx.related.length > 0 && (
+        <Section title="Related through shared links" count={ctx.related.length} defaultOpen={false} hint="Not linked directly, but connected through the entities after “via”; common hubs count less.">
+          <ul className="space-y-2">
+            {ctx.related.slice(0, 8).map((r) => (
+              <li key={r.node.id} className="flex flex-wrap items-center gap-1 text-xs">
+                <NodeChip node={r.node} theme={theme} onClick={() => onSelectNode(r.node.id)} />
+                <span className="text-subtle">via</span>
+                {r.via.map((v) => (
+                  <NodeChip key={v.id} node={v} theme={theme} onClick={() => onSelectNode(v.id)} />
+                ))}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       <Section title="Connections" count={links.length - hiddenLinks}>
         {groups.length ? (
@@ -558,6 +682,16 @@ function EdgeInspector({ ix, theme, edge, onSelectNode, onFocus, onClear }: Insp
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => askAgentAbout({ ref: a.id, label: a.label, relation: { from: a.label, predicate: PREDICATE_LABEL[edge.predicate], to: b.label } })}
+          {...entityDragProps({ ref: a.id, label: `${a.label} ${PREDICATE_LABEL[edge.predicate]} ${b.label}`, relation: { from: a.label, predicate: PREDICATE_LABEL[edge.predicate], to: b.label } })}
+          title="Ask the AI Agent to explain this link (or drag it onto the AI Agent button)"
+          className="mt-2 inline-flex h-8 w-full cursor-grab items-center justify-center gap-1.5 rounded-lg border border-border text-xs hover:bg-bg-subtle active:cursor-grabbing"
+        >
+          <GripVertical className="size-3.5 text-subtle" />
+          <Bot className="size-3.5 text-primary" /> Ask the agent about this link
+        </button>
       </PanelHeader>
       {edge.quote && (
         <Section title="Stated in">
@@ -582,7 +716,14 @@ function EdgeInspector({ ix, theme, edge, onSelectNode, onFocus, onClear }: Insp
 }
 
 function AiBrief({ node, ix, theme, onSelectNode }: { node: GraphNode; ix: GraphIndex; theme: GraphTheme; onSelectNode: (id: string) => void }) {
-  const brief = useMutation({ mutationFn: () => explainGraphNode({ data: { nodeId: node.id } }) });
+  const brief = useMutation({ mutationFn: (refresh: boolean) => explainGraphNode({ data: { nodeId: node.id, refresh } }) });
+  // Models sometimes write IDs ("technique:T1003.001") in prose; show the entity names instead.
+  const readable = (text: string) =>
+    text.replace(/\[?((?:actor|campaign|malware|tool|technique|vulnerability|sector|geography|platform|indicator):[^\s\],;)]+)\]?/g, (m, raw: string) => {
+      const id = ix.node.has(raw) ? raw : raw.replace(/\.+$/, "");
+      const n = ix.node.get(id);
+      return n ? n.label + raw.slice(id.length) : m;
+    });
   const ref = (id: string) => {
     if (id.startsWith("report:")) {
       const rid = id.slice(7);
@@ -597,74 +738,25 @@ function AiBrief({ node, ix, theme, onSelectNode }: { node: GraphNode; ix: Graph
     const n = ix.node.get(id);
     return n ? <NodeChip key={id} node={n} theme={theme} onClick={() => onSelectNode(id)} /> : null;
   };
-  // Models sometimes write IDs ("technique:T1003.001") in prose; show the entity names instead.
-  const readable = (text: string) =>
-    text.replace(/\[?((?:actor|campaign|malware|tool|technique|vulnerability|sector|geography|platform|indicator):[^\s\],;)]+)\]?/g, (m, raw: string) => {
-      // A sentence may end right after the ID: try it with and without trailing dots.
-      const id = ix.node.has(raw) ? raw : raw.replace(/\.+$/, "");
-      const n = ix.node.get(id);
-      return n ? n.label + raw.slice(id.length) : m;
-    });
-  const points = (title: string, list: GraphBrief["points"], icon: ReactNode) =>
-    list.length ? (
-      <div>
-        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
-          {icon}
-          {title}
-        </div>
-        <ul className="space-y-2">
-          {list.map((p, i) => (
-            <li key={i} className="text-sm leading-snug">
-              {readable(p.text)}
-              <div className="mt-1 flex flex-wrap gap-1">{p.refs.map(ref)}</div>
-            </li>
-          ))}
-        </ul>
-      </div>
-    ) : null;
-
+  const data = brief.data
+    ? { ...brief.data, summary: readable(brief.data.summary), points: brief.data.points.map((p) => ({ ...p, text: readable(p.text) })), hiddenLinks: brief.data.hiddenLinks.map((p) => ({ ...p, text: readable(p.text) })) }
+    : null;
   return (
     <div className="border-t border-border px-4 py-3">
-      {!brief.data && (
+      {!data ? (
         <button
           type="button"
-          onClick={() => brief.mutate()}
+          onClick={() => brief.mutate(false)}
           disabled={brief.isPending}
           className="inline-flex h-8 w-full items-center justify-center gap-2 rounded-lg border border-border bg-bg-elevated text-xs font-medium hover:bg-bg-subtle disabled:opacity-70"
         >
           {brief.isPending ? <Loader2 className="size-3.5 motion-safe:animate-spin" /> : <Sparkles className="size-3.5 text-primary" />}
-          {brief.isPending ? "Writing the AI brief…" : "AI brief: assess this entity"}
+          {brief.isPending ? "Writing the assessment…" : "Assessment (AI when available)"}
         </button>
+      ) : (
+        <BriefView brief={data} render={ref} onRegenerate={() => brief.mutate(true)} busy={brief.isPending} />
       )}
-      {brief.error && <p className="mt-2 text-xs text-danger">{brief.error instanceof Error ? brief.error.message : "The AI brief failed."}</p>}
-      {brief.data && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
-              <Sparkles className="size-3.5 text-primary" /> AI brief
-            </span>
-            <button type="button" onClick={() => brief.mutate()} disabled={brief.isPending} className="text-[11px] text-primary hover:underline disabled:opacity-60">
-              {brief.isPending ? "Rewriting…" : "Regenerate"}
-            </button>
-          </div>
-          {brief.data.summary && <p className="text-sm leading-relaxed">{readable(brief.data.summary)}</p>}
-          {points("Key points", brief.data.points, null)}
-          {points("Worth checking", brief.data.hiddenLinks, <Lightbulb className="size-3.5" />)}
-          {brief.data.gaps.length > 0 && (
-            <div>
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">Gaps</div>
-              <ul className="list-disc space-y-1 pl-4 text-xs text-muted">
-                {brief.data.gaps.map((g, i) => (
-                  <li key={i}>{g}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <p className="text-[10px] text-subtle">
-            Written by {brief.data.provider} from this graph's facts only; every point cites them.{brief.data.dropped ? ` ${brief.data.dropped} uncited point(s) removed.` : ""}
-          </p>
-        </div>
-      )}
+      {brief.error && <p className="mt-2 text-xs text-danger">{brief.error instanceof Error ? brief.error.message : "The assessment failed."}</p>}
     </div>
   );
 }

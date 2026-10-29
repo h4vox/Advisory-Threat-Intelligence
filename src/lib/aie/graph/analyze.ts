@@ -20,6 +20,8 @@ export type GraphFilter = {
   statedOnly: boolean;
   /** Only entities and links seen on or after this date (ISO), or null for all time. */
   since: string | null;
+  /** Techniques: only these ATT&CK tactics (empty or missing = all). */
+  tactics?: string[];
 };
 
 export const DEFAULT_FILTER: GraphFilter = {
@@ -53,11 +55,13 @@ export function nodePasses(n: GraphNode, f: GraphFilter): boolean {
   if (!f.types.includes(n.type)) return false;
   if (n.reportCount < f.minReports) return false;
   if (f.since && (!n.lastSeen || n.lastSeen < f.since)) return false;
+  if (f.tactics?.length && n.type === "technique" && !n.tactics?.some((t) => f.tactics!.includes(t))) return false;
   return true;
 }
 
 export function edgePasses(e: GraphEdge, f: GraphFilter): boolean {
   if (e.confidence < f.minConfidence) return false;
+  if (f.minReports > 1 && e.weight < f.minReports) return false;
   if (f.statedOnly && e.basis !== "stated") return false;
   if (f.since && (!e.lastSeen || e.lastSeen < f.since)) return false;
   return true;
@@ -131,7 +135,7 @@ export function focusView(ix: GraphIndex, centerId: string, f: GraphFilter, opts
   const first = strongest(centerId);
   const r1 = first.slice(0, ring1Max);
   for (const { n } of r1) ring.set(n.id, 1);
-  let hidden = Math.max(0, first.length - r1.length);
+  const hidden = Math.max(0, first.length - r1.length);
   if (opts.hops === 2) {
     const perParent = opts.perParent ?? 3;
     let budget = opts.ring2Max ?? 90;

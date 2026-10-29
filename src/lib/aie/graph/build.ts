@@ -152,7 +152,7 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
   const ai = r.aiAnalysis;
 
   // Actors and campaigns.
-  if (arr(ev?.actors).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.actors)) ACTIVITY.has(f.label) && add(actorMention(f.value, f.confidence ?? 0.6));
+  if (arr(ev?.actors).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.actors)) if (ACTIVITY.has(f.label)) add(actorMention(f.value, f.confidence ?? 0.6));
   else for (const n of a?.threatActors ?? []) add(actorMention(n, 0.5));
   for (const n of ee?.threatActors ?? []) add(actorMention(n, 0.45));
   if (ai?.adversary?.name) add(actorMention(ai.adversary.name, 0.6));
@@ -165,7 +165,7 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
   }
 
   // Malware and tools.
-  if (arr(ev?.malware).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.malware)) ACTIVITY.has(f.label) && add(softwareMention(f.value, f.confidence ?? 0.6));
+  if (arr(ev?.malware).length) for (const f of arr<{ value: unknown; label: EvidenceLabel; confidence?: number }>(ev?.malware)) if (ACTIVITY.has(f.label)) add(softwareMention(f.value, f.confidence ?? 0.6));
   else for (const n of a?.malware ?? []) add(softwareMention(n, 0.5));
   for (const n of ee?.malwareFamilies ?? []) add(softwareMention(n, 0.45));
   for (const n of ai?.adversary?.malware ?? []) add(softwareMention(n, 0.5));
@@ -173,7 +173,7 @@ export function reportEntities(r: GraphSourceReport): Map<string, Mention> {
 
   // Techniques: evidence facts, else the older lists.
   if (arr(ev?.techniques).length) {
-    for (const t of arr<{ id: unknown; name: unknown; tactic: unknown; label: EvidenceLabel; confidence?: number }>(ev?.techniques)) ACTIVITY.has(t.label) && add(techniqueMention(t.id, t.label === "observed" ? t.confidence ?? 0.7 : Math.min(t.confidence ?? 0.5, 0.5), t.name, t.tactic));
+    for (const t of arr<{ id: unknown; name: unknown; tactic: unknown; label: EvidenceLabel; confidence?: number }>(ev?.techniques)) if (ACTIVITY.has(t.label)) add(techniqueMention(t.id, t.label === "observed" ? t.confidence ?? 0.7 : Math.min(t.confidence ?? 0.5, 0.5), t.name, t.tactic));
   } else {
     for (const t of ee?.techniques ?? []) add(techniqueMention(t.id, 0.45, t.name, t.tactic));
     for (const s of arr(a?.ttps)) for (const id of textOf(s).match(TECH_ID) ?? []) add(techniqueMention(id, 0.45));

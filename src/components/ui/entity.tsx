@@ -19,6 +19,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { entityDragProps, openEntityContext } from "@/components/agent-handoff";
 import type { DocType } from "@/lib/aie/types";
 
 /**
@@ -65,16 +66,55 @@ export function EntityIcon({ kind, size = "md", icon }: { kind: EntityKind; size
 }
 
 /** Compact coloured chip for a named entity (actor, malware, CVE…). */
-export function EntityChip({ kind, children, title }: { kind: EntityKind; children: ReactNode; title?: string }) {
+/** Kinds whose chips open the entity context panel and can be dragged to the AI Agent. */
+const CONTEXT_KINDS: ReadonlySet<EntityKind> = new Set(["actor", "malware", "technique", "cve", "ioc"]);
+
+/**
+ * A coloured entity tag. Actor, malware, technique, CVE and indicator chips with a text label are
+ * interactive everywhere: click opens what the intelligence engine correlates with the entity,
+ * dragging onto the AI Agent investigates it. `noContext` keeps a chip plain (labels that are not
+ * entities, e.g. "State-sponsored").
+ */
+export function EntityChip({ kind, children, title, noContext, refValue }: { kind: EntityKind; children: ReactNode; title?: string; noContext?: boolean; refValue?: string }) {
   const meta = KIND[kind];
-  return (
-    <span
-      title={title ?? meta.label}
-      className="inline-flex max-w-full items-center gap-1.5 truncate rounded-md px-2 py-0.5 text-xs font-medium"
-      style={{ color: meta.color, backgroundColor: `color-mix(in oklab, ${meta.color} 14%, transparent)` }}
-    >
+  const text = typeof children === "string" || typeof children === "number" ? String(children).trim() : "";
+  // "T1566.001 - Phishing" → the technique ID; otherwise the label itself.
+  const ref = refValue ?? (text.match(/^(T\d{4}(?:\.\d{3})?)\b/i)?.[1] ?? text);
+  const interactive = !noContext && CONTEXT_KINDS.has(kind) && ref.length > 1;
+  const style = { color: meta.color, backgroundColor: `color-mix(in oklab, ${meta.color} 14%, transparent)` };
+  const body = (
+    <>
       <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
       <span className="truncate">{children}</span>
+    </>
+  );
+  if (!interactive) {
+    return (
+      <span title={title ?? meta.label} className="inline-flex max-w-full items-center gap-1.5 truncate rounded-md px-2 py-0.5 text-xs font-medium" style={style}>
+        {body}
+      </span>
+    );
+  }
+  // A span with button semantics: chips often sit inside links (cards), where a <button> is invalid.
+  const open = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openEntityContext(ref);
+  };
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title={`${title ?? meta.label} — click for correlated intelligence, drag to the AI Agent`}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") open(e);
+      }}
+      {...entityDragProps({ ref, label: text, kind: meta.label.toLowerCase() })}
+      className="inline-flex max-w-full cursor-pointer items-center gap-1.5 truncate rounded-md px-2 py-0.5 text-xs font-medium outline-none transition-shadow hover:ring-1 hover:ring-current focus-visible:ring-2 focus-visible:ring-current"
+      style={style}
+    >
+      {body}
     </span>
   );
 }

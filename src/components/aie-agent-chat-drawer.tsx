@@ -31,6 +31,7 @@ import { Button } from "./ui/button";
 import { MarkdownView } from "./ui/markdown-view";
 import { ActivitySpinner } from "./ui/activity-spinner";
 import { cn } from "@/lib/cn";
+import { handoffPrompt, isEntityDrag, readDroppedEntity } from "./agent-handoff";
 import {
   decideAgentAction,
   deleteAgentSession,
@@ -193,9 +194,12 @@ function quickActions(path: string): Array<{ label: string; prompt: string }> {
 interface AieAgentChatDrawerProps {
   isOpen: boolean;
   onClose: () => void;
+  /** A request handed over from elsewhere in the app (./agent-handoff), sent once. */
+  ask?: { id: number; text: string } | null;
+  onAskHandled?: () => void;
 }
 
-export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps) {
+export function AieAgentChatDrawer({ isOpen, onClose, ask, onAskHandled }: AieAgentChatDrawerProps) {
   const queryClient = useQueryClient();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const [sessionId, setSessionId] = useState<string | null>(() => readLocal(SESSION_KEY));
@@ -491,6 +495,21 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
   const unanswered =
     !busy && last?.sender === "user" && !last.pending && !last.id.startsWith("local-") && Boolean(session.data) && !session.data?.pending && !session.isFetching ? last : null;
 
+  // A request handed over from the app: send it, or leave it in the box while a turn is running.
+  const handledAsk = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isOpen || !ask || handledAsk.current === ask.id) return;
+    handledAsk.current = ask.id;
+    if (busy) {
+      setInput(ask.text);
+      inputRef.current?.focus();
+    } else void send(ask.text);
+    onAskHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per hand-off
+  }, [isOpen, ask]);
+
+  const [dropActive, setDropActive] = useState(false);
+
   if (!isOpen) return null;
 
   const modelLine = info.data ? `${info.data.providerName} · ${info.data.modelLabel}` : "Connecting…";
@@ -687,7 +706,27 @@ export function AieAgentChatDrawer({ isOpen, onClose }: AieAgentChatDrawerProps)
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="fixed inset-0 bg-black/40 backdrop-blur-xs" onClick={onClose} />
-      <div style={{ width: `${width}px` }} className="drawer-liquid-glass relative z-10 flex h-full max-w-[100vw] flex-col shadow-2xl animate-in slide-in-from-right duration-200">
+      <div
+        style={{ width: `${width}px` }}
+        className={cn("drawer-liquid-glass relative z-10 flex h-full max-w-[100vw] flex-col shadow-2xl animate-in slide-in-from-right duration-200", dropActive && "ring-2 ring-inset ring-primary")}
+        onDragOver={(e) => {
+          if (!isEntityDrag(e)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDropActive(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropActive(false);
+        }}
+        onDrop={(e) => {
+          setDropActive(false);
+          const ent = readDroppedEntity(e);
+          if (!ent) return;
+          e.preventDefault();
+          if (busy) setInput(handoffPrompt(ent));
+          else void send(handoffPrompt(ent));
+        }}
+      >
         <div
           onMouseDown={(e) => {
             e.preventDefault();
