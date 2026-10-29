@@ -608,7 +608,9 @@ function SettingsPage() {
                         ? "Autonomous daemon: disabled"
                         : currentCrawl.paused
                           ? "Autonomous daemon: paused"
-                          : `Autonomous daemon: active (every ${formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)})`}
+                          : currentCrawl.realTime
+                            ? `Autonomous daemon: real time (next crawl ${currentCrawl.realTimePauseMinutes ?? 2} min after each run)`
+                            : `Autonomous daemon: active (every ${formatCrawlInterval(currentCrawl.frequencyMinutes ?? 360)})`}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
@@ -639,8 +641,62 @@ function SettingsPage() {
                 </Button>
               </div>
 
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-fg">Run mode</p>
+                    <p className="text-xs text-muted">
+                      {currentCrawl.realTime
+                        ? "Real time: full crawls run back to back (every source, web search and AI discovery, like a manual run), with a short pause after each. Uses more network, CPU and AI quota."
+                        : "Scheduled: a crawl runs at the interval below and visits only the sources that are due under their own daily / weekly schedule, so later runs can find little."}
+                    </p>
+                  </div>
+                  <div className="inline-flex shrink-0 rounded-lg border border-border p-0.5" role="radiogroup" aria-label="Run mode">
+                    {([
+                      { v: false, label: "Scheduled" },
+                      { v: true, label: "Real time" },
+                    ] as const).map((o) => (
+                      <button
+                        key={o.label}
+                        type="button"
+                        role="radio"
+                        aria-checked={Boolean(currentCrawl.realTime) === o.v}
+                        onClick={() => {
+                          updateCrawlField("realTime", o.v);
+                          // Real time needs the daemon on.
+                          if (o.v && !currentCrawl.enabled) updateCrawlField("enabled", true);
+                        }}
+                        className={cn(
+                          "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                          Boolean(currentCrawl.realTime) === o.v ? "bg-accent/15 text-accent" : "text-muted hover:text-fg",
+                        )}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {currentCrawl.realTime && (
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+                    <label htmlFor="crawl-rt-pause" className="font-medium text-fg">Pause between runs</label>
+                    <input
+                      id="crawl-rt-pause"
+                      type="range"
+                      min="1"
+                      max="30"
+                      step="1"
+                      value={currentCrawl.realTimePauseMinutes ?? 2}
+                      onChange={(e) => updateCrawlField("realTimePauseMinutes", parseInt(e.target.value, 10) || 2)}
+                      className="w-48 accent-accent"
+                    />
+                    <span className="tabular-nums text-fg">{currentCrawl.realTimePauseMinutes ?? 2} min</span>
+                    <span>Each run is still bounded by the run time limit. The master scheduler switch must be on.</span>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
-                <div className="space-y-1.5">
+                <div className={cn("space-y-1.5", currentCrawl.realTime && "opacity-50")} title={currentCrawl.realTime ? "Not used in real-time mode" : undefined}>
                   <div className="flex justify-between text-sm">
                     <label className="font-medium text-fg">Crawl interval</label>
                     <span className="font-medium text-fg tabular-nums">

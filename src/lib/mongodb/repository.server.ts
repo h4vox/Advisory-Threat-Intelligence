@@ -1336,11 +1336,16 @@ export async function mongoSeedSources(sources: Array<Omit<SourceRecord, "lastIn
 // Crawler Config & Granular Controls
 // ---------------------------------------------------------------------------
 
+/** Pause between real-time crawler runs when none is configured. */
+export const REALTIME_DEFAULT_PAUSE_MINUTES = 2;
+
 export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   id: "cfg_default",
   enabled: true,
   paused: false,
   frequencyMinutes: 360,
+  realTime: false,
+  realTimePauseMinutes: 2,
   startHour: "09:00",
   maxResourcesPerRun: 60,
   maxResourcesPerJob: 60,
@@ -1417,6 +1422,8 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       enabled: Boolean(doc.enabled ?? true),
       paused: Boolean(doc.paused ?? false),
       frequencyMinutes: Number(doc.frequencyMinutes ?? 360),
+      realTime: doc.realTime === true,
+      realTimePauseMinutes: Math.min(60, Math.max(1, Number(doc.realTimePauseMinutes ?? REALTIME_DEFAULT_PAUSE_MINUTES) || REALTIME_DEFAULT_PAUSE_MINUTES)),
       startHour: doc.startHour || "09:00",
       maxResourcesPerRun: Number(doc.maxResourcesPerRun ?? doc.maxResourcesPerJob ?? 60),
       maxResourcesPerJob: Number(doc.maxResourcesPerJob ?? doc.maxResourcesPerRun ?? 60),

@@ -592,6 +592,8 @@ function IngestPage() {
     ? "Disabled"
     : config.paused
       ? "Paused"
+      : config.realTime
+        ? "Real time"
       : !Number.isFinite(freq) || freq <= 0
         ? "Scheduled"
         : `Every ${freq < 60 ? `${freq}m` : `${Math.floor(freq / 60)}h ${freq % 60 > 0 ? `${freq % 60}m` : ""}`.trim()}`;
@@ -860,7 +862,7 @@ function IngestPage() {
     {
       accessorKey: "triggerType",
       header: "Trigger",
-      cell: ({ getValue }) => <span className="text-muted">{humanize(getValue() as string)}</span>,
+      cell: ({ getValue }) => <span className="text-muted">{getValue() === "REALTIME" ? "Real time" : humanize(getValue() as string)}</span>,
       meta: { hideBelow: "sm" },
     },
     {
@@ -1154,7 +1156,7 @@ function IngestPage() {
                       <ActivitySpinner size="xs" className="text-accent" />
                       <span className="font-mono text-[13px] text-fg">{formatJobId(activeJob.id, activeJob.triggerType)}</span>
                       <span className="text-muted">
-                        · {humanize(activeJob.triggerType)} · stage {humanize(activeJob.currentStage || "evaluated").toLowerCase()}
+                        · {activeJob.triggerType === "REALTIME" ? "Real time" : humanize(activeJob.triggerType)} · stage {humanize(activeJob.currentStage || "evaluated").toLowerCase()}
                       </span>
                     </div>
                     {activeJob.currentStage === "discovered" ? (
@@ -1373,6 +1375,7 @@ function IngestPage() {
                     <option value="all">All triggers</option>
                     <option value="MANUAL">Manual</option>
                     <option value="SCHEDULED">Scheduled</option>
+                    <option value="REALTIME">Real time</option>
                     <option value="SEARCH">Search</option>
                     <option value="BACKFILL">Backfill</option>
                   </FilterSelect>

@@ -2005,6 +2005,8 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware
       enabled: z.boolean().optional(),
       paused: z.boolean().optional(),
       frequencyMinutes: z.number().int().min(5).max(10080).optional(),
+      realTime: z.boolean().optional(),
+      realTimePauseMinutes: z.number().int().min(1).max(60).optional(),
       startHour: z.string().optional(),
       maxResourcesPerRun: z.number().int().min(1).max(500).optional(),
       maxDepth: z.number().int().min(0).max(5).optional(),

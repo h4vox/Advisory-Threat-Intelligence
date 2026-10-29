@@ -3775,6 +3775,52 @@ export async function checkAndTriggerScheduledCrawl(): Promise<ScheduleCheckResu
       };
     }
 
+    // 3a. Real-time mode: full crawls back to back, a short pause after each run ends. The lock is
+    // the same `nextRunAt` compare-and-set as scheduled runs, so two workers never both start one.
+    if (config.realTime) {
+      const pauseMs = Math.min(60, Math.max(1, config.realTimePauseMinutes ?? 2)) * 60_000;
+      const last = await col.find({ docType: "crawl_job" }).sort({ startedAt: -1 }).limit(1).next();
+      const lastEnd = last ? Date.parse(String(last.completedAt ?? last.startedAt ?? "")) || 0 : 0;
+      const readyAt = lastEnd + pauseMs;
+      if (lastEnd && now < readyAt) {
+        return {
+          triggered: false,
+          reason: `Real time: next crawl in ${Math.ceil((readyAt - now) / 1000)}s`,
+          nextRunAt: new Date(readyAt).toISOString(),
+          lastRunAt: config.lastRunAt,
+        };
+      }
+      const lock = await col.updateOne(
+        {
+          docType: "crawl_config",
+          id: config.id,
+          enabled: true,
+          paused: { $ne: true },
+          // Free when due, unset, or still holding a later time from scheduled mode; a real-time
+          // claim by another worker sits within (now, now + pause] and loses this race.
+          $or: [
+            { nextRunAt: { $lte: new Date(now + 10_000).toISOString() } },
+            { nextRunAt: { $gt: new Date(now + pauseMs + 10_000).toISOString() } },
+            { nextRunAt: null },
+            { nextRunAt: { $exists: false } },
+          ],
+        },
+        { $set: { nextRunAt: new Date(now + pauseMs).toISOString(), updatedAt: new Date().toISOString() } },
+      );
+      if (lock.matchedCount === 0) {
+        return { triggered: false, reason: "Autonomous lock acquired by concurrent worker", nextRunAt: config.nextRunAt, lastRunAt: config.lastRunAt };
+      }
+      invalidateCrawlerStateCache();
+      logger.info("scheduler", `[REAL-TIME CRAWL] Starting a full crawl (pause between runs ${pauseMs / 60_000}m)`);
+      try {
+        const job = await createAndRunCrawlJob("REALTIME");
+        return { triggered: true, jobId: job.id, reason: `Real-time crawl started (${job.id})`, nextRunAt: null, lastRunAt: config.lastRunAt };
+      } catch (err) {
+        if (err instanceof CrawlAlreadyRunningError) return { triggered: false, reason: err.message, nextRunAt: config.nextRunAt, lastRunAt: config.lastRunAt };
+        throw err;
+      }
+    }
+
     // 3. Cadence and due condition evaluation
     const freqMinutes = Math.max(5, config.frequencyMinutes || 60);
     const freqMs = freqMinutes * 60 * 1000;

@@ -608,7 +608,7 @@ export type DashboardStats = {
   attackHeatmap?: AttackHeatmapCell[];
 };
 
-export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "API" | "AGENT" | "SEARCH" | "EXPANSION" | "BACKFILL";
+export type CrawlTrigger = "MANUAL" | "SCHEDULED" | "REALTIME" | "API" | "AGENT" | "SEARCH" | "EXPANSION" | "BACKFILL";
 
 export type CrawlJobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -617,6 +617,14 @@ export type CrawlConfig = {
   enabled: boolean;
   paused: boolean;
   frequencyMinutes: number;
+  /**
+   * Real-time mode: the daemon runs full crawls back to back (every source, web search and AI
+   * discovery, like a manual run), pausing `realTimePauseMinutes` between runs, instead of the
+   * scheduled cadence that only crawls the sources due under their schedule.
+   */
+  realTime?: boolean;
+  /** Pause between real-time runs (1–60 minutes, default 2). */
+  realTimePauseMinutes?: number;
   startHour: string;
   maxResourcesPerRun: number; // Max resources processed in single job run
   maxResourcesPerJob?: number;
