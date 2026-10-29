@@ -183,56 +183,86 @@ const SIMILAR_ON: Partial<Record<GraphNodeType, GraphNodeType[]>> = {
  * infrastructure. Shared items are weighted by rarity (IDF): sharing a rare technique or an
  * indicator says more than sharing "PowerShell". Score is 0..1 (weighted Jaccard).
  */
+/** Rarity weights (IDF) per index, peer group and feature, computed once and reused. */
+const idfCache = new WeakMap<GraphIndex, Map<string, number>>();
+
 export function similarEntities(ix: GraphIndex, id: string, limit = 8): SimilarEntity[] {
   const self = ix.node.get(id);
   const on = self ? SIMILAR_ON[self.type] : undefined;
   if (!self || !on) return [];
   const peers: GraphNodeType[] = self.type === "actor" || self.type === "campaign" ? ["actor", "campaign"] : self.type === "malware" || self.type === "tool" ? ["malware", "tool"] : [self.type];
-  const features = (nid: string) => {
+  const isPeer = (nid: string) => peers.includes(ix.node.get(nid)?.type as GraphNodeType);
+  const isFeature = (nid: string) => {
+    const t = ix.node.get(nid)?.type;
+    return Boolean(t && on.includes(t) && !peers.includes(t));
+  };
+  const peerKey = peers.join(",");
+  let cache = idfCache.get(ix);
+  if (!cache) idfCache.set(ix, (cache = new Map()));
+  let total = cache.get(`#total:${peerKey}`);
+  if (total === undefined) {
+    total = Math.max(1, ix.graph.nodes.filter((n) => peers.includes(n.type)).length);
+    cache.set(`#total:${peerKey}`, total);
+  }
+  const idf = (fid: string) => {
+    const key = `${peerKey}|${fid}`;
+    let w = cache!.get(key);
+    if (w === undefined) {
+      let df = 0;
+      for (const e of ix.adj.get(fid) ?? []) if (isPeer(otherEnd(e, fid))) df++;
+      w = Math.log(1 + total! / Math.max(1, df));
+      cache!.set(key, w);
+    }
+    return w;
+  };
+  const featuresOf = (nid: string) => {
     const out = new Set<string>();
     for (const e of ix.adj.get(nid) ?? []) {
-      const o = ix.node.get(otherEnd(e, nid));
-      if (o && on.includes(o.type) && !peers.includes(o.type)) out.add(o.id);
+      const o = otherEnd(e, nid);
+      if (isFeature(o)) out.add(o);
     }
     return out;
   };
-  const total = Math.max(1, ix.graph.nodes.filter((n) => peers.includes(n.type)).length);
-  const idf = (fid: string) => {
-    const df = (ix.adj.get(fid) ?? []).filter((e) => peers.includes(ix.node.get(otherEnd(e, fid))?.type as GraphNodeType)).length;
-    return Math.log(1 + total / Math.max(1, df));
-  };
-  const mine = features(id);
+  const mine = featuresOf(id);
   if (!mine.size) return [];
-  const weights = new Map<string, number>();
-  for (const fid of mine) weights.set(fid, idf(fid));
-  // Candidates: peers that share at least one feature.
-  const candidates = new Set<string>();
-  for (const fid of mine) for (const e of ix.adj.get(fid) ?? []) {
-    const o = otherEnd(e, fid);
-    if (o !== id && peers.includes(ix.node.get(o)?.type as GraphNodeType)) candidates.add(o);
+  let mineW = 0;
+  // One pass over the shared features gives each candidate's overlap weight.
+  const inter = new Map<string, { w: number; shared: string[]; last: string }>();
+  for (const fid of mine) {
+    const w = idf(fid);
+    mineW += w;
+    for (const e of ix.adj.get(fid) ?? []) {
+      const o = otherEnd(e, fid);
+      if (o === id || !isPeer(o)) continue;
+      let cur = inter.get(o);
+      if (!cur) inter.set(o, (cur = { w: 0, shared: [], last: "" }));
+      // Several links (predicates) between the same pair count once.
+      if (cur.last === fid) continue;
+      cur.last = fid;
+      cur.w += w;
+      cur.shared.push(fid);
+    }
   }
   const directly = new Set((ix.adj.get(id) ?? []).map((e) => otherEnd(e, id)));
   const out: SimilarEntity[] = [];
-  for (const cid of candidates) {
-    const theirs = features(cid);
-    let inter = 0;
-    let union = 0;
-    const shared: string[] = [];
-    for (const fid of new Set([...mine, ...theirs])) {
-      const w = weights.get(fid) ?? idf(fid);
-      union += w;
-      if (mine.has(fid) && theirs.has(fid)) {
-        inter += w;
-        shared.push(fid);
-      }
+  // Only the strongest overlaps need the full (union) score.
+  const top = [...inter.entries()].filter(([, v]) => v.shared.length >= 2).sort((a, b) => b[1].w - a[1].w).slice(0, 150);
+  for (const [cid, v] of top) {
+    const wKey = `#w:${peerKey}|${cid}`;
+    let theirsW = cache.get(wKey);
+    if (theirsW === undefined) {
+      theirsW = 0;
+      for (const fid of featuresOf(cid)) theirsW += idf(fid);
+      cache.set(wKey, theirsW);
     }
-    if (shared.length < 2 || !union) continue;
-    const score = inter / union;
+    const union = mineW + theirsW - v.w;
+    if (union <= 0) continue;
+    const score = v.w / union;
     if (score < 0.08) continue;
     out.push({
       node: ix.node.get(cid)!,
       score: Math.round(score * 100) / 100,
-      shared: shared.sort((a, b) => (weights.get(b) ?? 0) - (weights.get(a) ?? 0)).slice(0, 8).map((s) => ix.node.get(s)!),
+      shared: v.shared.sort((a, b) => idf(b) - idf(a)).slice(0, 8).map((s) => ix.node.get(s)!),
       linked: directly.has(cid),
     });
   }

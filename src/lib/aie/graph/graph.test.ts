@@ -185,3 +185,19 @@ test("malformed stored reports never break the graph", () => {
   assert.ok(g.nodes.some((n) => n.id === `actor:${apt29.id}`));
   assert.ok(g.stats.reports >= 3);
 });
+
+test("browser copy: per-type caps, strongest links per entity, stated links kept, ids restored", async () => {
+  const { clientGraph } = await import("./build.ts");
+  const { withEdgeIds } = await import("./client.ts");
+  const g = buildIntelGraph(reports);
+  const c = clientGraph(g, { caps: { technique: 2 }, edgesPerNode: 2, edgeReports: 1 });
+  assert.equal(c.nodes.filter((n) => n.type === "technique").length, 2);
+  assert.equal(c.stats.trimmed?.technique, g.nodes.filter((n) => n.type === "technique").length - 2);
+  const ids = new Set(c.nodes.map((n) => n.id));
+  assert.ok(c.edges.every((e) => ids.has(e.source) && ids.has(e.target)), "no dangling links");
+  assert.ok(c.edges.some((e) => e.basis === "stated"), "stated links are kept");
+  assert.ok(c.edges.every((e) => !e.id && e.reports.length <= 1));
+  withEdgeIds(c);
+  assert.ok(c.edges.every((e) => g.edges.some((x) => x.id === e.id)), "ids match the server's");
+  assert.equal(g.edges.every((e) => e.id), true, "the server graph is unchanged");
+});

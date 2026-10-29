@@ -1,16 +1,19 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { Box, ChevronRight, Orbit, RefreshCw, SlidersHorizontal, Square, Waypoints } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { openEntityContext } from "@/components/agent-handoff";
 import { GraphCanvas } from "@/components/graph/graph-canvas";
 import { FilterPanel, GRAPH_DETAILS, Inspector, TIME_WINDOWS, TypeDot, type GraphDetail, type TimeWindow } from "@/components/graph/graph-panels";
 import { graphTheme, isDarkTheme } from "@/components/graph/graph-style";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { EmptyState } from "@/components/ui/primitives";
 import { DEFAULT_FILTER, focusView, indexGraph, overviewView, type GraphFilter } from "@/lib/aie/graph/analyze";
-import { forceLayout, layout3d, radialLayout } from "@/lib/aie/graph/layout";
+import { forceLayout, layout3d, radialLayout, type GraphLayout3 } from "@/lib/aie/graph/layout";
+import { withEdgeIds } from "@/lib/aie/graph/client";
+import type { IntelGraph } from "@/lib/aie/graph/types";
 import { getIntelGraph } from "@/lib/aie/server-graph";
 import { cn } from "@/lib/cn";
 
@@ -20,9 +23,83 @@ const searchSchema = z.object({
 });
 
 // The 3D view (three.js) loads only when it is shown.
-const GraphCanvas3D = lazy(() => import("@/components/graph/graph-canvas-3d").then((m) => ({ default: m.GraphCanvas3D })));
+// If it cannot load (e.g. three.js not installed yet), the page shows the 2D view and says why.
+let threeDUnavailable = false;
+type Canvas3DProps = Omit<ComponentProps<typeof GraphCanvas>, "layout"> & { layout: GraphLayout3; onFallback?: () => void };
+const GraphCanvas3D = lazy<ComponentType<Canvas3DProps>>(() =>
+  import("@/components/graph/graph-canvas-3d")
+    .then((m) => ({ default: m.GraphCanvas3D as ComponentType<Canvas3DProps> }))
+    .catch(() => {
+      threeDUnavailable = true;
+      return { default: ThreeDUnavailable };
+    }),
+);
+
+function ThreeDUnavailable({ onFallback }: { onFallback?: () => void }) {
+  useEffect(() => {
+    onFallback?.();
+  }, [onFallback]);
+  return null;
+}
+
+/** Any crash inside the 3D view (WebGL context lost, driver issue) falls back to 2D. */
+class Canvas3DBoundary extends Component<{ onError: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err: unknown) {
+    console.warn("[intel-graph] 3D view failed, showing 2D:", err);
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function GraphCanvas3DSafe(props: Canvas3DProps) {
+  return (
+    <Canvas3DBoundary onError={() => props.onFallback?.()}>
+      <GraphCanvas3D {...props} />
+    </Canvas3DBoundary>
+  );
+}
+
+/** True when the browser can draw WebGL (the 3D view); false on machines without it. */
+function webglAvailable(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    return Boolean(c.getContext("webgl2") || c.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
 
 const DIMENSION_KEY = "aie_graph_dimension";
+
+/**
+ * Page layout: filters | graph | details on wide screens, stacked on small ones. Rendered with the
+ * page (not in the shared stylesheet) so the columns hold even when a browser or proxy serves an
+ * older cached stylesheet.
+ */
+const GRAPH_LAYOUT_CSS = `
+.ig-root{display:flex;flex-direction:column;flex:1 1 0%;min-height:0;min-width:0;overflow-x:hidden;overflow-y:auto}
+.ig-body{display:flex;flex-direction:column;flex:1 1 0%;min-height:0;min-width:0}
+.ig-left{min-width:0;border-bottom:1px solid var(--color-border)}
+.ig-right{min-width:0;border-top:1px solid var(--color-border)}
+.ig-canvas{position:relative;display:flex;flex-direction:column;min-width:0;height:68vh;min-height:420px;overflow:hidden}
+.ig-canvas>*:first-child{flex:1 1 0%;min-height:0}
+@media (min-width:1024px){
+  .ig-root{overflow:hidden}
+  .ig-body{display:grid;grid-template-columns:18rem minmax(0,1fr) 24rem;grid-template-rows:minmax(0,1fr)}
+  .ig-left,.ig-right{min-height:0;overflow-x:hidden;overflow-y:auto;border:0}
+  .ig-left{border-right:1px solid var(--color-border)}
+  .ig-right{border-left:1px solid var(--color-border)}
+  .ig-canvas{height:auto;min-height:0}
+}
+@media (min-width:1024px) and (max-width:1279px){
+  .ig-body{grid-template-columns:16rem minmax(0,1fr) 21rem}
+}`;
 
 export const Route = createFileRoute("/graph")({
   validateSearch: (search) => searchSchema.parse(search),
@@ -48,7 +125,7 @@ function IntelGraphPage() {
   const dark = useDarkTheme();
   const theme = useMemo(() => graphTheme(dark), [dark]);
 
-  const query = useQuery({ queryKey: ["intel-graph"], queryFn: () => getIntelGraph(), staleTime: 60_000 });
+  const query = useQuery({ queryKey: ["intel-graph"], queryFn: async () => withEdgeIds(JSON.parse(await getIntelGraph()) as IntelGraph), staleTime: 60_000 });
   const ix = useMemo(() => (query.data ? indexGraph(query.data) : null), [query.data]);
 
   const [filter, setFilter] = useState<GraphFilter>(DEFAULT_FILTER);
@@ -70,12 +147,26 @@ function IntelGraphPage() {
     return overviewView(ix, effective, GRAPH_DETAILS.find((d) => d.id === detail)?.nodes ?? 160);
   }, [ix, center, effective, hops, detail]);
   const [dimension, setDimension] = useState<"2d" | "3d">("3d");
+  const [no3d, setNo3d] = useState<string | null>(null);
   useEffect(() => {
+    if (!webglAvailable()) {
+      setNo3d("This browser cannot draw 3D (WebGL is off), so the graph is shown in 2D.");
+      setDimension("2d");
+      return;
+    }
     try {
       if (localStorage.getItem(DIMENSION_KEY) === "2d") setDimension("2d");
     } catch {
       /* storage unavailable */
     }
+  }, []);
+  const fallbackTo2d = useCallback(() => {
+    setNo3d(
+      threeDUnavailable
+        ? "The 3D view could not load (its library is missing on the server: run npm install and restart), so the graph is shown in 2D."
+        : "The 3D view could not start, so the graph is shown in 2D.",
+    );
+    setDimension("2d");
   }, []);
   const changeDimension = (d: "2d" | "3d") => {
     setDimension(d);
@@ -112,7 +203,8 @@ function IntelGraphPage() {
 
   return (
     <AppShell flush>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden lg:overflow-hidden">
+      <div className="ig-root">
+        <style dangerouslySetInnerHTML={{ __html: GRAPH_LAYOUT_CSS }} />
         {/* Top strip: title, mode and counts. */}
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border px-4 py-3 md:px-6">
           <div className="flex items-center gap-2.5">
@@ -155,7 +247,9 @@ function IntelGraphPage() {
                 role="radio"
                 aria-checked={dimension === d}
                 onClick={() => changeDimension(d)}
-                className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium", dimension === d ? "bg-bg-subtle text-fg" : "text-muted hover:text-fg")}
+                disabled={d === "3d" && Boolean(no3d)}
+                title={d === "3d" && no3d ? no3d : undefined}
+                className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-40", dimension === d ? "bg-bg-subtle text-fg" : "text-muted hover:text-fg")}
               >
                 {d === "3d" ? <Box className="size-3.5" /> : <Square className="size-3.5" />}
                 {d.toUpperCase()}
@@ -214,6 +308,7 @@ function IntelGraphPage() {
           </div>
         </div>
 
+        {no3d && <div className="border-b border-border bg-bg-elevated px-4 py-1.5 text-xs text-muted md:px-6">{no3d}</div>}
         {query.isPending ? (
           <div className="grid flex-1 place-items-center p-10">
             <div className="flex items-center gap-3 text-sm text-muted">
@@ -229,9 +324,9 @@ function IntelGraphPage() {
             <EmptyState title="Nothing to map yet" description="The graph is built from analysed library reports. Run the crawler or ingest reports, then come back." />
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="ig-body">
             {/* Left: filters (a collapsible sheet on small screens). */}
-            <aside className="min-w-0 border-b border-border lg:w-72 lg:shrink-0 lg:overflow-y-auto lg:overflow-x-hidden lg:border-b-0 lg:border-r">
+            <aside className="ig-left">
               <button
                 type="button"
                 onClick={() => setFiltersOpen((v) => !v)}
@@ -252,20 +347,23 @@ function IntelGraphPage() {
                   detail={detail}
                   onDetail={setDetail}
                   onPick={(id) => {
+                    setFiltersOpen(false);
+                    // Entities left out of the browser copy open in the context panel instead.
+                    if (!ix.node.has(id)) return openEntityContext(id);
                     setSelectedNode(id);
                     setSelectedEdge(null);
                     focus(id);
-                    setFiltersOpen(false);
                   }}
                 />
               </div>
             </aside>
 
             {/* Centre: the graph and the trail of entities visited. */}
-            <section className="relative flex h-[68vh] min-h-[420px] min-w-0 flex-col lg:h-auto lg:min-h-0 lg:flex-1">
+            <section className="ig-canvas">
               {view && layout3 && view.nodes.length ? (
                 <Suspense fallback={<div className="grid flex-1 place-items-center text-sm text-muted">Loading the 3D view…</div>}>
-                  <GraphCanvas3D
+                  <GraphCanvas3DSafe
+                    onFallback={fallbackTo2d}
                     className="min-h-0 flex-1"
                     view={view}
                     layout={layout3}
@@ -322,7 +420,7 @@ function IntelGraphPage() {
             </section>
 
             {/* Right: details of the selection, or insights. */}
-            <aside className="min-w-0 border-t border-border lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:overflow-x-hidden lg:border-l lg:border-t-0">
+            <aside className="ig-right">
               <Inspector
                 ix={ix}
                 theme={theme}

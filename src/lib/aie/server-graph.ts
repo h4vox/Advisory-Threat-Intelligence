@@ -8,8 +8,8 @@ import { analystMiddleware } from "./access";
 import { logger } from "./logger";
 import { listReports } from "./server";
 import { getThreatIntelCollection, isMongoConfigured } from "../mongodb/client.server";
-import { buildIntelGraph, type GraphSourceReport } from "./graph/build";
-import { connections, indexGraph, searchNodes, similarEntities } from "./graph/analyze";
+import { buildIntelGraph, clientGraph, type GraphSourceReport } from "./graph/build";
+import { connections, indexGraph, searchNodes, similarEntities, type GraphIndex } from "./graph/analyze";
 import { connectionPaths, entityContext, resolveRef, type ConnectionPath, type EntityContext } from "./graph/correlate";
 import { BRIEF_SYSTEM, buildBriefPrompt, engineBrief, parseBrief, type GraphBrief } from "./graph/brief";
 import type { GraphNode, GraphReportRef, IntelGraph } from "./graph/types";
@@ -17,12 +17,12 @@ import type { GraphNode, GraphReportRef, IntelGraph } from "./graph/types";
 const CACHE_MS = 60_000;
 const MAX_REPORTS = 10_000;
 
-let cache: { at: number; graph: IntelGraph } | null = null;
+let cache: Built | null = null;
 
 /** AI briefs per entity, for 10 minutes or until the graph is rebuilt. */
 const BRIEF_CACHE_MS = 10 * 60_000;
 const briefCache = new Map<string, { at: number; builtAt: string; brief: GraphBrief }>();
-let inflight: Promise<IntelGraph> | null = null;
+let inflight: Promise<Built> | null = null;
 
 /** Only the fields the graph reads (no report text, HTML or PDF). */
 const GRAPH_PROJECTION = {
@@ -61,21 +61,27 @@ async function loadReports(): Promise<GraphSourceReport[]> {
   return out;
 }
 
-async function getGraph(): Promise<IntelGraph> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.graph;
+type Built = { at: number; graph: IntelGraph; ix: GraphIndex; clientJson: string };
+
+/** Builds the graph, its index and the browser copy (as ready-to-send JSON) together. */
+function rebuild(): Promise<Built> {
   inflight ??= (async () => {
     const started = Date.now();
     try {
       const reports = await loadReports();
       const graph = buildIntelGraph(reports);
-      cache = { at: Date.now(), graph };
+      const ix = indexGraph(graph);
+      const copy = clientGraph(graph);
+      const clientJson = JSON.stringify(copy);
+      cache = { at: Date.now(), graph, ix, clientJson };
       logger.intel("GRAPH", `Built from ${graph.stats.reports} reports: ${graph.stats.nodes} entities, ${graph.stats.edges} links (${graph.stats.stated} stated)`, {
         loaded: reports.length,
         skipped: graph.stats.skipped ?? 0,
+        browserCopy: { entities: copy.nodes.length, links: copy.edges.length, mb: Math.round(clientJson.length / 1e5) / 10, trimmed: copy.stats.trimmed ?? {} },
         ms: Date.now() - started,
       });
       if (graph.stats.skipped) logger.warn("INTEL", `${graph.stats.skipped} report(s) skipped: their stored analysis is malformed`);
-      return graph;
+      return cache;
     } catch (err) {
       logger.error("INTEL", "Graph build failed", err);
       throw err;
@@ -86,16 +92,41 @@ async function getGraph(): Promise<IntelGraph> {
   return inflight;
 }
 
+/**
+ * The current graph. A fresh one is built on first use; after CACHE_MS the current one is still
+ * served at once while a newer one builds in the background (no waiting on every expiry).
+ */
+async function getBuilt(): Promise<Built> {
+  if (!cache) return rebuild();
+  if (Date.now() - cache.at >= CACHE_MS && !inflight) {
+    rebuild().catch(() => {
+      /* logged in rebuild; the previous graph keeps serving */
+    });
+  }
+  return cache;
+}
+
+/** The browser copy (./graph/build clientGraph), as JSON prepared once per build. */
 export const getIntelGraph = createServerFn({ method: "GET" })
   .middleware([analystMiddleware])
-  .handler(async (): Promise<IntelGraph> => getGraph());
+  .handler(async (): Promise<string> => (await getBuilt()).clientJson);
+
+/** Entities matching a search, over the full graph (the browser copy leaves some out). */
+export const searchGraphEntities = createServerFn({ method: "GET" })
+  .middleware([analystMiddleware])
+  .validator(z.object({ q: z.string().trim().min(1).max(200) }))
+  .handler(async ({ data }): Promise<GraphNode[]> => {
+    const { ix } = await getBuilt();
+    const exact = resolveRef(ix, data.q);
+    const list = searchNodes(ix, data.q, 12);
+    return exact && !list.some((n) => n.id === exact.id) ? [exact, ...list.slice(0, 11)] : list;
+  });
 
 export const explainGraphNode = createServerFn({ method: "POST" })
   .middleware([analystMiddleware])
   .validator(z.object({ nodeId: z.string().min(3).max(400), refresh: z.boolean().optional() }))
   .handler(async ({ data }): Promise<GraphBrief> => {
-    const graph = await getGraph();
-    const ix = indexGraph(graph);
+    const { graph, ix } = await getBuilt();
     const node = ix.node.get(data.nodeId);
     if (!node) throw new Error("That entity is no longer in the graph. Reload the page.");
     const cached = briefCache.get(node.id);
@@ -140,8 +171,7 @@ export const getEntityContext = createServerFn({ method: "GET" })
   .validator(z.object({ ref: z.string().trim().min(1).max(400) }))
   .handler(async ({ data }): Promise<{ context: EntityContext | null; reports: Record<string, GraphReportRef>; suggestions: Array<{ id: string; label: string; type: string }> }> => {
     const started = Date.now();
-    const graph = await getGraph();
-    const ix = indexGraph(graph);
+    const { graph, ix } = await getBuilt();
     const node = resolveRef(ix, data.ref);
     if (!node) {
       const suggestions = searchNodes(ix, data.ref, 6).map((n) => ({ id: n.id, label: n.label, type: n.type }));
@@ -162,7 +192,7 @@ export const findConnection = createServerFn({ method: "GET" })
   .middleware([analystMiddleware])
   .validator(z.object({ from: z.string().trim().min(1).max(400), to: z.string().trim().min(1).max(400) }))
   .handler(async ({ data }): Promise<{ from: GraphNode | null; to: GraphNode | null; paths: ConnectionPath[] }> => {
-    const ix = indexGraph(await getGraph());
+    const { ix } = await getBuilt();
     const from = resolveRef(ix, data.from);
     const to = resolveRef(ix, data.to);
     const paths = from && to ? connectionPaths(ix, from.id, to.id) : [];

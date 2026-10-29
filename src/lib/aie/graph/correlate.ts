@@ -148,7 +148,9 @@ function relatedThrough(ix: GraphIndex, id: string, limit: number): RelatedEntit
   const self = ix.node.get(id)!;
   const direct = new Set((ix.adj.get(id) ?? []).map((e) => otherEnd(e, id)));
   const score = new Map<string, { s: number; via: Map<string, number> }>();
-  for (const e1 of ix.adj.get(id) ?? []) {
+  // Through the 60 strongest links only: weaker ones barely move the ranking and cost the most.
+  const firstHop = (ix.adj.get(id) ?? []).slice().sort((a, b) => edgeStrength(b) - edgeStrength(a)).slice(0, 60);
+  for (const e1 of firstHop) {
     const mid = otherEnd(e1, id);
     const midNode = ix.node.get(mid);
     if (!midNode || midNode.type === "indicator") continue;

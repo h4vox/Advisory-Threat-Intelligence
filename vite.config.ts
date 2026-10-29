@@ -163,6 +163,9 @@ export default defineConfig(({ command, isPreview }) => ({
       "@tanstack/router-core/isServer",
       "@tanstack/router-core/ssr/client",
       "seroval",
+      // The 3D Intel Graph view.
+      "three",
+      "three/examples/jsm/controls/OrbitControls.js",
     ],
   },
   plugins: [

@@ -1,11 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRight, Bot, ChevronDown, Crosshair, ExternalLink, FileText, GripVertical, Loader2, PanelRightOpen, Quote, Search, Sparkles, X } from "lucide-react";
 import { connections, edgeStrength, graphInsights, searchNodes, similarEntities, type GraphFilter, type GraphIndex } from "@/lib/aie/graph/analyze";
 import { GRAPH_NODE_TYPES, NODE_TYPE_LABEL, PREDICATE_LABEL, type GraphEdge, type GraphNode, type GraphNodeType } from "@/lib/aie/graph/types";
-import { explainGraphNode } from "@/lib/aie/server-graph";
-import { entityContext } from "@/lib/aie/graph/correlate";
+import { explainGraphNode, getEntityContext, searchGraphEntities } from "@/lib/aie/server-graph";
 import { askAgentAbout, entityDragProps, openEntityContext } from "@/components/agent-handoff";
 import { BriefView, handoffFor } from "@/components/intel/entity-context-sheet";
 import { cn } from "@/lib/cn";
@@ -111,7 +110,18 @@ export function FilterPanel({
   onDetail: (d: GraphDetail) => void;
 }) {
   const [q, setQ] = useState("");
-  const results = useMemo(() => searchNodes(ix, q, 10), [ix, q]);
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+  const local = useMemo(() => searchNodes(ix, q, 10), [ix, q]);
+  // The server searches the full graph (the browser copy leaves rare indicators / CVEs out).
+  const remote = useQuery({ queryKey: ["graph-search", debounced], queryFn: () => searchGraphEntities({ data: { q: debounced } }), enabled: debounced.length >= 2, staleTime: 60_000 });
+  const results = useMemo(() => {
+    const seen = new Set(local.map((n) => n.id));
+    return [...local, ...(remote.data ?? []).filter((n) => !seen.has(n.id))].slice(0, 12);
+  }, [local, remote.data]);
   const counts = useMemo(() => {
     const m = new Map<GraphNodeType, number>();
     for (const n of ix.graph.nodes) m.set(n.type, (m.get(n.type) ?? 0) + 1);
@@ -146,7 +156,9 @@ export function FilterPanel({
         )}
         {q && (
           <div className="absolute inset-x-4 top-full z-20 -mt-2 max-h-80 overflow-y-auto rounded-lg border border-border bg-bg-elevated p-1 shadow-xl">
-            {results.length ? (
+            {remote.isFetching && !results.length ? (
+              <p className="px-2 py-2 text-xs text-subtle">Searching…</p>
+            ) : results.length ? (
               results.map((n) => (
                 <button
                   key={n.id}
@@ -159,7 +171,7 @@ export function FilterPanel({
                 >
                   <TypeDot type={n.type} theme={theme} />
                   <span className="min-w-0 flex-1 truncate">{n.label}</span>
-                  <span className="shrink-0 text-[11px] text-subtle">{NODE_TYPE_LABEL[n.type].one}</span>
+                  <span className="shrink-0 text-[11px] text-subtle">{ix.node.has(n.id) ? NODE_TYPE_LABEL[n.type].one : `${NODE_TYPE_LABEL[n.type].one} · details`}</span>
                 </button>
               ))
             ) : (
@@ -208,14 +220,18 @@ export function FilterPanel({
         <ul className="space-y-0.5">
           {GRAPH_NODE_TYPES.map((t) => {
             const on = filter.types.includes(t);
-            const count = counts.get(t) ?? 0;
+            const count = (counts.get(t) ?? 0) + (ix.graph.stats.trimmed?.[t] ?? 0);
+            const capped = Boolean(ix.graph.stats.trimmed?.[t]);
             return (
               <li key={t}>
                 <label className={cn("flex cursor-pointer items-center gap-2.5 rounded-md px-1.5 py-1 text-sm hover:bg-bg-subtle", !count && "opacity-50")}>
                   <input type="checkbox" checked={on} onChange={() => toggle(t)} className="size-3.5 cursor-pointer" style={{ accentColor: theme.type[t] }} />
                   <TypeDot type={t} theme={theme} />
                   <span className={cn("flex-1", on ? "text-fg" : "text-muted")}>{NODE_TYPE_LABEL[t].many}</span>
-                  <span className="font-mono text-[11px] text-subtle tabular-nums">{count}</span>
+                  <span className="font-mono text-[11px] text-subtle tabular-nums" title={capped ? `The map holds the ${(counts.get(t) ?? 0).toLocaleString()} most-reported; search and Full context cover all ${count.toLocaleString()}.` : undefined}>
+                    {count.toLocaleString()}
+                    {capped ? "*" : ""}
+                  </span>
                 </label>
               </li>
             );
@@ -442,7 +458,10 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
     return { groups: GRAPH_NODE_TYPES.filter((t) => m.has(t)).map((t) => [t, m.get(t)!] as const), hiddenLinks: hidden };
   }, [links, filter.types]);
   const similar = useMemo(() => similarEntities(ix, node.id, 6), [ix, node.id]);
-  const ctx = useMemo(() => entityContext(ix, node.id), [ix, node.id]);
+  // Findings and related entities come from the server's full graph (the browser copy is trimmed).
+  const ctxQuery = useQuery({ queryKey: ["entity-context", node.id], queryFn: () => getEntityContext({ data: { ref: node.id } }), staleTime: 60_000 });
+  const ctx = ctxQuery.data?.context ?? null;
+  const known = (id: string) => ix.node.get(id) ?? (ctx ? [...ctx.links.flatMap((g) => g.items.map((l) => l.node)), ...ctx.related.flatMap((r) => [r.node, ...r.via])].find((n) => n.id === id) : undefined);
   const [expanded, setExpanded] = useState<Set<GraphNodeType>>(new Set());
   const color = theme.type[node.type];
 
@@ -460,7 +479,7 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
         <div className="mt-3 grid grid-cols-3 gap-2 text-center">
           {[
             [node.reportCount, "reports"],
-            [links.length, "links"],
+            [node.degree, "links"],
             [similar.length, "similar"],
           ].map(([v, l]) => (
             <div key={l as string} className="rounded-lg border border-border bg-bg-elevated px-2 py-1.5">
@@ -503,10 +522,10 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
             {ctx.findings.map((f, i) => (
               <li key={i} className="text-sm leading-snug">
                 {f.text}
-                {f.refs.some((r) => ix.node.has(r)) && (
+                {f.refs.some((r) => known(r)) && (
                   <div className="mt-1 flex flex-wrap gap-1">
-                    {f.refs.filter((r) => ix.node.has(r)).map((r) => (
-                      <NodeChip key={r} node={ix.node.get(r)!} theme={theme} onClick={() => onSelectNode(r)} />
+                    {f.refs.filter((r) => known(r)).map((r) => (
+                      <NodeChip key={r} node={known(r)!} theme={theme} onClick={() => (ix.node.has(r) ? onSelectNode(r) : openEntityContext(r))} />
                     ))}
                   </div>
                 )}
@@ -521,10 +540,10 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
           <ul className="space-y-2">
             {ctx.related.slice(0, 8).map((r) => (
               <li key={r.node.id} className="flex flex-wrap items-center gap-1 text-xs">
-                <NodeChip node={r.node} theme={theme} onClick={() => onSelectNode(r.node.id)} />
+                <NodeChip node={r.node} theme={theme} onClick={() => (ix.node.has(r.node.id) ? onSelectNode(r.node.id) : openEntityContext(r.node.id))} />
                 <span className="text-subtle">via</span>
                 {r.via.map((v) => (
-                  <NodeChip key={v.id} node={v} theme={theme} onClick={() => onSelectNode(v.id)} />
+                  <NodeChip key={v.id} node={v} theme={theme} onClick={() => (ix.node.has(v.id) ? onSelectNode(v.id) : openEntityContext(v.id))} />
                 ))}
               </li>
             ))}
@@ -583,6 +602,14 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
           <p className="text-xs text-subtle">No links pass the current filters.</p>
         )}
         {hiddenLinks > 0 && <p className="mt-3 text-[11px] text-subtle">{hiddenLinks} more link{hiddenLinks === 1 ? "" : "s"} to entity types switched off in the filters.</p>}
+        {node.degree > links.length && (
+          <p className="mt-2 text-[11px] text-subtle">
+            The map holds its {links.length} strongest links of {node.degree}.{" "}
+            <button type="button" onClick={() => openEntityContext(node.id)} className="text-primary hover:underline">
+              Full context lists all
+            </button>
+          </p>
+        )}
       </Section>
 
       {similar.length > 0 && (
@@ -611,14 +638,25 @@ function NodeInspector({ ix, theme, filter, node, centerId, onSelectNode, onSele
       )}
 
       <Section title="Reports" count={node.reportCount} defaultOpen={false}>
-        <ReportList ids={node.reports} ix={ix} />
+        <ReportList ids={node.reports} ix={ix} total={node.reportCount} onMore={() => openEntityContext(node.id)} />
       </Section>
     </div>
   );
 }
 
-function ReportList({ ids, ix }: { ids: string[]; ix: GraphIndex }) {
+function ReportList({ ids, ix, total, onMore }: { ids: string[]; ix: GraphIndex; total?: number; onMore?: () => void }) {
   return (
+    <>
+    {total !== undefined && total > ids.length && (
+      <p className="mb-2 text-[11px] text-subtle">
+        Showing {ids.length} of {total}.{" "}
+        {onMore && (
+          <button type="button" onClick={onMore} className="text-primary hover:underline">
+            Full context lists more
+          </button>
+        )}
+      </p>
+    )}
     <ul className="space-y-1">
       {ids.slice(0, 30).map((id) => {
         const r = ix.graph.reports[id];
@@ -638,6 +676,7 @@ function ReportList({ ids, ix }: { ids: string[]; ix: GraphIndex }) {
         );
       })}
     </ul>
+    </>
   );
 }
 
@@ -709,7 +748,7 @@ function EdgeInspector({ ix, theme, edge, onSelectNode, onFocus, onClear }: Insp
         </Section>
       )}
       <Section title="Supporting reports" count={edge.weight}>
-        <ReportList ids={edge.reports} ix={ix} />
+        <ReportList ids={edge.reports} ix={ix} total={edge.weight} onMore={() => openEntityContext(a.id)} />
       </Section>
     </div>
   );
