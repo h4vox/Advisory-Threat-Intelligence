@@ -866,3 +866,19 @@ body,
     visibility: visible;
   }
 }
+
+/* Accent colour (Settings → Appearance; src/lib/ui/accent.ts). Violet is the default above. */
+[data-accent="blue"] { --color-primary: #3b82f6; --color-accent: #60a5fa; --color-ring: #60a5fa; }
+[data-theme="light"][data-accent="blue"], .light[data-accent="blue"] { --color-primary: #2563eb; --color-accent: #2563eb; --color-ring: #2563eb; }
+[data-accent="teal"] { --color-primary: #14a39a; --color-accent: #2dc5b9; --color-ring: #2dc5b9; }
+[data-theme="light"][data-accent="teal"], .light[data-accent="teal"] { --color-primary: #0f7f78; --color-accent: #0f7f78; --color-ring: #0f7f78; }
+[data-accent="green"] { --color-primary: #22a05b; --color-accent: #3fbf7a; --color-ring: #3fbf7a; }
+[data-theme="light"][data-accent="green"], .light[data-accent="green"] { --color-primary: #15803d; --color-accent: #15803d; --color-ring: #15803d; }
+[data-accent="red"] { --color-primary: #e5484d; --color-accent: #f06a6e; --color-ring: #f06a6e; }
+[data-theme="light"][data-accent="red"], .light[data-accent="red"] { --color-primary: #c62a2f; --color-accent: #c62a2f; --color-ring: #c62a2f; }
+[data-accent="orange"] { --color-primary: #e8701a; --color-accent: #f28a3d; --color-ring: #f28a3d; }
+[data-theme="light"][data-accent="orange"], .light[data-accent="orange"] { --color-primary: #c2510c; --color-accent: #c2510c; --color-ring: #c2510c; }
+[data-accent="pink"] { --color-primary: #d6409f; --color-accent: #e461b3; --color-ring: #e461b3; }
+[data-theme="light"][data-accent="pink"], .light[data-accent="pink"] { --color-primary: #b8237f; --color-accent: #b8237f; --color-ring: #b8237f; }
+[data-accent="graphite"] { --color-primary: #6b7686; --color-accent: #8d97a6; --color-ring: #8d97a6; }
+[data-theme="light"][data-accent="graphite"], .light[data-accent="graphite"] { --color-primary: #4b5563; --color-accent: #4b5563; --color-ring: #4b5563; }

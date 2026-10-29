@@ -55,6 +55,7 @@ import { getAgentInfo } from "@/lib/aie/server-agent";
 import { AGY_AVAILABLE_MODELS } from "@/lib/aie/agent-framework/types";
 import { z } from "zod";
 import { cn } from "@/lib/cn";
+import { ACCENTS, ACCENT_CHANGED_EVENT, readAccent, saveAccent, type AccentId } from "@/lib/ui/accent";
 import type { AppSettings, CrawlConfig, ResourceKind } from "@/lib/aie/types";
 import { RESEARCH_CATEGORIES, normalizeResearchDiscovery, type ResearchDiscoveryConfig } from "@/lib/aie/research-taxonomy";
 
@@ -173,40 +174,28 @@ function SettingsPage() {
   };
 
   // Visual Theme & UI Preferences
-  const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">(() => {
-    if (typeof window !== "undefined") {
-      return (localStorage.getItem("aie_ui_style") as "default" | "liquid-glass") || "default";
-    }
-    return "default";
-  });
+  // Saved preferences are read after the page loads (below), so the server and browser render alike.
+  const [uiStyle, setUiStyle] = useState<"default" | "liquid-glass">("default");
 
-  const [colorTheme, setColorTheme] = useState<"dark" | "light">(() => {
-    if (typeof window !== "undefined") {
-      return (localStorage.getItem("aie_theme") as "dark" | "light") || "dark";
-    }
-    return "dark";
-  });
+  const [colorTheme, setColorTheme] = useState<"dark" | "light">("dark");
 
-  const [spinnerVariant, setSpinnerVariant] = useState<"radial" | "ring" | "dots">(() => {
-    if (typeof window !== "undefined") {
-      const saved = (localStorage.getItem("aie_spinner_variant") as string | null) || "radial";
-      return saved === "ios" ? "radial" : (saved as "radial" | "ring" | "dots");
-    }
-    return "radial";
-  });
+  const [spinnerVariant, setSpinnerVariant] = useState<"radial" | "ring" | "dots">("radial");
+
+  const [accent, setAccent] = useState<AccentId>("violet");
+  useEffect(() => {
+    const sync = () => setAccent(readAccent());
+    sync();
+    window.addEventListener(ACCENT_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(ACCENT_CHANGED_EVENT, sync);
+  }, []);
+  const handleAccentChange = (id: AccentId) => {
+    setAccent(id);
+    saveAccent(id);
+  };
 
   const [previewSpinnerSize, setPreviewSpinnerSize] = useState<"xs" | "sm" | "md" | "lg">("md");
 
-  const [glassRatio, setGlassRatio] = useState<number>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("aie_glass_blur_ratio");
-      if (saved) {
-        const parsed = parseInt(saved, 10);
-        if (!isNaN(parsed) && parsed >= 5 && parsed <= 110) return parsed;
-      }
-    }
-    return 70;
-  });
+  const [glassRatio, setGlassRatio] = useState<number>(70);
 
   const applyGlassRatioTokens = (val: number) => {
     if (typeof document === "undefined") return;
@@ -253,6 +242,10 @@ function SettingsPage() {
       }
     };
 
+    handleStyleSync();
+    handleThemeSync();
+    handleSpinnerSync();
+    handleGlassRatioSync();
     window.addEventListener("aie-style-changed", handleStyleSync);
     window.addEventListener("aie-theme-changed", handleThemeSync);
     window.addEventListener("aie-spinner-changed", handleSpinnerSync);
@@ -1732,6 +1725,46 @@ function SettingsPage() {
                     {colorTheme === "light" && <Check className="size-4 text-accent" />}
                   </button>
                 </div>
+              </div>
+
+              {/* Accent colour */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-fg block">Accent color</label>
+                  <span className="text-[11px] text-subtle">
+                    Buttons, selections, links and focus rings. Saved on this browser.
+                  </span>
+                </div>
+                <div role="radiogroup" aria-label="Accent color" className="flex flex-wrap gap-2.5">
+                  {ACCENTS.map((a) => {
+                    const active = accent === a.id;
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        aria-label={a.label}
+                        title={a.label}
+                        onClick={() => handleAccentChange(a.id)}
+                        className={cn(
+                          "relative size-11 cursor-pointer rounded-lg transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg-card",
+                          active && "ring-2 ring-fg ring-offset-2 ring-offset-bg-card",
+                        )}
+                        style={{ backgroundColor: a.swatch }}
+                      >
+                        {active && (
+                          <span className="absolute right-0.5 top-0.5 inline-flex size-4 items-center justify-center rounded-sm bg-white text-black">
+                            <Check className="size-3" strokeWidth={3} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-subtle">
+                  Selected: <span className="font-medium text-fg">{ACCENTS.find((a) => a.id === accent)?.label}</span>
+                </p>
               </div>
 
               {/* Activity Indicator (Spinner) Style */}
