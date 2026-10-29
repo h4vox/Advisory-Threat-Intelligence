@@ -1754,7 +1754,7 @@ function SettingsPage() {
                         style={{ backgroundColor: a.swatch }}
                       >
                         {active && (
-                          <span className="absolute right-0.5 top-0.5 inline-flex size-4 items-center justify-center rounded-sm bg-white text-black">
+                          <span className="absolute right-0.5 top-0.5 inline-flex size-4 items-center justify-center rounded-sm" style={{ backgroundColor: "#fff", color: "#111" }}>
                             <Check className="size-3" strokeWidth={3} />
                           </span>
                         )}
