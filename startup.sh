@@ -45,6 +45,13 @@ fi
 
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=768}"
 
+# Dependencies: install when the lockfile changed since the last install (e.g. after a pull that
+# added a package), so the app never starts against missing modules.
+if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+  echo "[startup] installing dependencies ($(date))" >>/tmp/app-build.log
+  npm install --no-audit --no-fund >>/tmp/app-build.log 2>&1 || echo "[startup] npm install failed; see /tmp/app-build.log" >>/tmp/app-build.log
+fi
+
 if [ "$RUN_MODE" = "dev" ]; then
   nohup npm run dev < /dev/null >>/tmp/app-startup.log 2>&1 &
   exit 0
