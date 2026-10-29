@@ -39,6 +39,7 @@ import {
   runUnifiedSourceDiscovery,
   runUnifiedResourceEvaluation,
   runUnifiedDomainResourceDiscovery,
+  runUnifiedReportDiscovery,
   runUnifiedTranslation,
   type CrawlerAiAvailability,
 } from "./ai-manager";
@@ -100,7 +101,7 @@ import { SOURCE_SEED, isStructuredSource, registryEntry } from "./catalog";
 import { annotateReportProvenance } from "./doc-classifier";
 import { classifyResearch, normalizeResearchDiscovery, type ResearchCategoryId } from "./research-taxonomy";
 import { extractTelemetryRefs } from "./telemetry-refs";
-import { buildSearchPlan, parseDuckDuckGoHtml } from "./web-search";
+import { buildSearchPlan, isSearchChallenge, parseBraveJson, parseDuckDuckGoHtml, parseSearxngJson, searchProviders, type SearchProvider, type SearchResult } from "./web-search";
 import { mongoResearchCoverage } from "../mongodb/research-repo.server";
 import { CollectorRun, COLLECTOR_USER_AGENT, type CrawlRunOptions } from "./collector/run";
 import { computeFingerprints, hammingDistance64, normalizeForFingerprint, simhash64 } from "./collector/fingerprint";
@@ -1450,54 +1451,196 @@ export async function executeCrawlJob(
       if (plan.length) logger.crawler("SEARCH", `Web search plan: ${plan.map((p) => p.query).join(" · ")}`, { jobId, searches: plan.length });
 
       const blocked = ["duckduckgo.com", "bing.com", "google.com", "youtube.com", "wikipedia.org", "facebook.com", "twitter.com", "x.com", "linkedin.com", "instagram.com"];
-      for (const [i, step] of plan.entries()) {
-        if (jobControl.cancel || discoveryTimeLeft() <= 0) break;
-        if (i > 0) await new Promise((r) => setTimeout(r, Math.min(1500, Math.max(300, config.rateLimitMs || 0))));
-        try {
-          const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(step.query)}`;
-          const html = await safeFetchText(searchUrl, {
+      // Engines in order (./web-search searchProviders): configured APIs first, then DuckDuckGo.
+      // An engine that challenges or fails is skipped for the rest of the run.
+      const engines = searchProviders(process.env);
+      const disabledEngines = new Set<SearchProvider["id"]>();
+      const searchWith = async (engine: SearchProvider, query: string): Promise<SearchResult[] | "challenged" | null> => {
+        if (engine.id === "duckduckgo") {
+          const html = await safeFetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
             timeoutMs: 6000,
             maxBytes: 3_000_000,
             userAgent:
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             acceptHeader: "text/html,application/xhtml+xml,text/plain",
           });
-          if (html === null) {
-            logger.crawler("SEARCH", `"${step.query}": no response from the search engine`, { jobId });
-            continue;
+          if (html === null) return null;
+          return isSearchChallenge(html) ? "challenged" : parseDuckDuckGoHtml(html);
+        }
+        // Configured by the operator (a self-hosted SearXNG may be on a private address): plain fetch.
+        const url =
+          engine.id === "searxng"
+            ? `${process.env.AIE_SEARXNG_URL!.trim().replace(/\/+$/, "")}/search?q=${encodeURIComponent(query)}&format=json`
+            : `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=20`;
+        const res = await fetch(url, {
+          headers: { Accept: "application/json", ...(engine.id === "brave" ? { "X-Subscription-Token": process.env.BRAVE_SEARCH_API_KEY!.trim() } : {}) },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.status === 429 || res.status === 403) return "challenged";
+        if (!res.ok) return null;
+        const body = await res.json();
+        return engine.id === "searxng" ? parseSearxngJson(body) : parseBraveJson(body);
+      };
+      let searchCandidates = 0;
+      if (!engines.length && plan.length) logger.crawler("SEARCH", "Web search is off: no search engine is configured (AIE_DISABLE_DUCKDUCKGO=1 and no AIE_SEARXNG_URL or BRAVE_SEARCH_API_KEY)", { jobId });
+      for (const [i, step] of plan.entries()) {
+        if (jobControl.cancel || discoveryTimeLeft() <= 0) break;
+        const usable = engines.filter((e) => !disabledEngines.has(e.id));
+        if (!usable.length) break;
+        if (i > 0) await new Promise((r) => setTimeout(r, Math.min(1500, Math.max(300, config.rateLimitMs || 0))));
+        let results: SearchResult[] | null = null;
+        let engineUsed = "";
+        for (const engine of usable) {
+          try {
+            const r = await searchWith(engine, step.query);
+            if (r === "challenged") {
+              disabledEngines.add(engine.id);
+              logger.crawler("SEARCH", `${engine.label} refused automated searches (bot check or rate limit); not used for the rest of this run`, { jobId });
+              continue;
+            }
+            if (r === null) {
+              logger.crawler("SEARCH", `"${step.query}": no response from ${engine.label}`, { jobId });
+              continue;
+            }
+            results = r;
+            engineUsed = engine.label;
+            break;
+          } catch (err) {
+            logger.crawler("SEARCH", `"${step.query}": ${engine.label} failed (${err instanceof Error ? err.message : String(err)})`, { jobId });
           }
+        }
+        if (!results) continue;
+        let kept = 0;
+        for (const result of results) {
+          try {
+            const domain = new URL(result.url).hostname.toLowerCase().replace(/^www\./, "");
+            if (blocked.some((b) => domain === b || domain.endsWith(`.${b}`))) continue;
+            if (!isSafePublicUrlString(result.url)) continue;
+            const check = isCandidateResourceUrl(result.url);
+            if (!(check.isResource || /\.pdf(?:$|\?)/i.test(result.url) || /cve|threat|attack|ransomware|malware|incident|advisory|report/i.test(result.url))) continue;
+            const added = enqueue({
+              url: result.url,
+              canonicalUrl: canonicalizeUrl(result.url),
+              depth: 0,
+              priorityScore: step.origin === "targeted" ? 0.99 : 0.9,
+              parentUrl: null,
+              parentSource: `Web search: ${step.query}`,
+              discoveryPath: [result.url],
+              discoveryMethod: "search_expansion",
+              sourceId: "src_web_search",
+              publisher: domain,
+              domain,
+              title: result.title || result.url.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") || step.query,
+              summary: result.snippet || undefined,
+              discoveryQuery: step.query,
+              researchCategory: step.category,
+            });
+            if (added) kept++;
+          } catch {
+            /* skip an invalid URL */
+          }
+        }
+        searchCandidates += kept;
+        logger.crawler("SEARCH", `"${step.query}" (${engineUsed}): ${results.length} result${results.length === 1 ? "" : "s"}, ${kept} new candidate${kept === 1 ? "" : "s"}`, { jobId, category: step.category ?? step.origin });
+      }
+
+      // AI-assisted discovery (./ai-report-discovery): when search brings too few new candidates,
+      // the AI provider suggests specific recent reports (searching the web itself where it can)
+      // and new publishers. Every URL still goes through the normal fetch and quality gates.
+      if (
+        searchCandidates < 5 &&
+        plan.length &&
+        !jobControl.cancel &&
+        ai.usable &&
+        config.agentDiscoveryEnabled !== false &&
+        !runOptions.backfill &&
+        discoveryTimeLeft() > 30_000
+      ) {
+        reportDiscovery("Asking the AI agent for recent reports", true);
+        const knownDomains = Array.from(
+          new Set(
+            sources
+              .map((src) => {
+                try {
+                  return new URL(src.homepageUrl).hostname.toLowerCase().replace(/^www\./, "");
+                } catch {
+                  return "";
+                }
+              })
+              .filter(Boolean),
+          ),
+        );
+        const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+        const found = await settleWithin(
+          runUnifiedReportDiscovery({
+            topics: plan.map((p) => ({ query: p.query, category: p.category })),
+            since,
+            knownDomains,
+            max: 20,
+            timeoutSeconds: Math.max(45, Math.min(config.agentTimeoutSeconds || 90, 180, Math.floor(discoveryTimeLeft() / 1000) - 10)),
+          }),
+          Math.max(30_000, discoveryTimeLeft()),
+        );
+        if (found.status !== "fulfilled") {
+          logger.agent("DISCOVERY", "AI report discovery did not answer in time");
+        } else if (found.value.error) {
+          logger.agent("DISCOVERY", `AI report discovery failed: ${found.value.error}`, found.value.provider);
+        } else {
+          const { reports, sources: newSources, dropped, provider, webSearch } = found.value;
           let kept = 0;
-          for (const result of parseDuckDuckGoHtml(html)) {
+          for (const r of reports) {
+            if (!isSafePublicUrlString(r.url)) continue;
             try {
-              const domain = new URL(result.url).hostname.toLowerCase().replace(/^www\./, "");
-              if (blocked.some((b) => domain === b || domain.endsWith(`.${b}`))) continue;
-              const check = isCandidateResourceUrl(result.url);
-              if (!(check.isResource || /\.pdf(?:$|\?)/i.test(result.url) || /cve|threat|attack|ransomware|malware|incident|advisory|report/i.test(result.url))) continue;
+              const domain = new URL(r.url).hostname.toLowerCase().replace(/^www\./, "");
               const added = enqueue({
-                url: result.url,
-                canonicalUrl: canonicalizeUrl(result.url),
+                url: r.url,
+                canonicalUrl: canonicalizeUrl(r.url),
                 depth: 0,
-                priorityScore: step.origin === "targeted" ? 0.99 : 0.9,
+                priorityScore: 0.92,
                 parentUrl: null,
-                parentSource: `Web search: ${step.query}`,
-                discoveryPath: [result.url],
-                discoveryMethod: "search_expansion",
+                parentSource: `AI discovery (${provider})`,
+                discoveryPath: [r.url],
+                discoveryMethod: "agent_discovery",
                 sourceId: "src_web_search",
-                publisher: domain,
+                publisher: r.publisher || domain,
                 domain,
-                title: result.title || result.url.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") || step.query,
-                summary: result.snippet || undefined,
-                discoveryQuery: step.query,
-                researchCategory: step.category,
+                title: r.title || r.url.split("/").filter(Boolean).pop()?.replace(/[-_]/g, " ") || r.url,
+                summary: r.why || undefined,
+                discoveryQuery: plan.find((p) => p.category && p.category === r.category)?.query,
+                researchCategory: plan.find((p) => p.category && p.category === r.category)?.category,
               });
               if (added) kept++;
             } catch {
               /* skip an invalid URL */
             }
           }
-          logger.crawler("SEARCH", `"${step.query}": ${kept} new candidate${kept === 1 ? "" : "s"}`, { jobId, category: step.category ?? step.origin });
-        } catch {
-          /* a search engine error costs this one query only */
+          let registered = 0;
+          if (isMongoConfigured()) {
+            for (const src of newSources) {
+              if (!isSafePublicUrlString(`https://${src.domain}`)) continue;
+              try {
+                await mongoCreateDiscoveredSource({
+                  domain: src.domain,
+                  name: src.name,
+                  homepageUrl: `https://${src.domain}`,
+                  parentSource: `AI discovery (${provider})`,
+                  trustScore: 70,
+                  origin: "agent_discovery",
+                  notes: src.why,
+                  whyCrawl: src.why,
+                  status: "discovered",
+                  enabled: true,
+                });
+                registered++;
+              } catch {
+                /* a source that cannot be saved is skipped */
+              }
+            }
+          }
+          logger.agent(
+            "DISCOVERY",
+            `AI report discovery (${provider}${webSearch ? ", web search" : ", from knowledge"}): ${reports.length} report${reports.length === 1 ? "" : "s"} suggested, ${kept} new candidate${kept === 1 ? "" : "s"}, ${dropped} dropped, ${registered} new source${registered === 1 ? "" : "s"} registered`,
+          );
         }
       }
 
