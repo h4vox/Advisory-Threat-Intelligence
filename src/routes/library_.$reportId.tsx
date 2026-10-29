@@ -36,6 +36,7 @@ import { formatDateTime } from "@/lib/aie/format";
 import { PUBLISHED_DATE_SOURCE_LABEL } from "@/lib/aie/published-date";
 import { cn } from "@/lib/cn";
 import { toSafeSrcDoc } from "@/lib/aie/safe-srcdoc";
+import { reportProfile } from "@/lib/aie/report-profile";
 import type { IocHit } from "@/lib/aie/types";
 import { DocTypeBadge, EntityChip, EntityIcon, type EntityKind } from "@/components/ui/entity";
 import { TierDot } from "@/components/library/report-card";
@@ -210,6 +211,15 @@ function ReportPage() {
   }, [data?.extractedText]);
 
   const techniques = useMemo(() => (data ? techniquesOf(data) : []), [data]);
+  // Indicators of compromise are network and file indicators; ATT&CK techniques and CVEs have their
+  // own sections (same rule as the document view, ./report-profile).
+  const indicatorIocs = useMemo(() => (data ? data.iocs.filter((i) => i.kind !== "technique" && i.kind !== "cve") : []), [data]);
+  // The analysis chain without the AI: limited to techniques the evidence supports (./report-profile).
+  const analysisChain = useMemo(
+    () => (data ? reportProfile({ extractedText: data.extractedText, analysis: data.analysis }).chain : []),
+    [data],
+  );
+  const cveIocs = useMemo(() => (data ? [...new Set(data.iocs.filter((i) => i.kind === "cve").map((i) => i.value.toUpperCase()))] : []), [data]);
 
   const aiSubject = useMemo(
     () => (aiOpen && data ? { ...data, iocCount: data.iocs.length } : null),
@@ -342,9 +352,9 @@ function ReportPage() {
                 label: t.label,
                 count:
                   t.value === "iocs"
-                    ? data.iocs.length
+                    ? indicatorIocs.length
                     : t.value === "attack-chain"
-                      ? (analysis?.attackChain?.length ?? 0)
+                      ? (data.aiAnalysis?.attackChain?.length || analysisChain.length)
                       : t.value === "emulation"
                         ? techniques.length
                         : undefined,
@@ -654,11 +664,11 @@ function ReportPage() {
               title="Attack chain"
               description="Tactics and mapped ATT&CK techniques as summarised by the analysis. Step order is not a verified timeline; see Evidence for the order reported in the source and the supporting passages."
             >
-              {!analysis?.attackChain || analysis.attackChain.length === 0 ? (
+              {analysisChain.length === 0 ? (
                 <EmptyState title="No multi-stage attack chain observed" className="rounded-xl border border-border bg-bg-card" />
               ) : (
                 <ol className="divide-y divide-border rounded-xl border border-border bg-bg-card">
-                  {analysis.attackChain.map((step) => (
+                  {analysisChain.map((step) => (
                     <li key={step.order} className="flex gap-4 px-5 py-4">
                       <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-bg-subtle text-xs font-medium tabular-nums text-muted">
                         {step.order}
@@ -727,15 +737,33 @@ function ReportPage() {
         )}
 
         {tab === "iocs" && (
-          <Section title="Indicators of compromise" description={`${data.iocs.length} indicators extracted from the document.`}>
+          <Section title="Indicators of compromise" description={`${indicatorIocs.length} network and file indicators extracted from the document. ATT&CK techniques are under Attack chain.`}>
             <DataTable
-              data={data.iocs}
+              data={indicatorIocs}
               columns={iocColumns}
               getRowId={(i) => `${i.kind}:${i.value}`}
               dense
               caption="Indicators of compromise"
               empty={<EmptyState title="No IOCs found in this document" />}
             />
+            {cveIocs.length > 0 && (
+              <div className="mt-6">
+                <h3 className="mb-2 text-sm font-medium text-fg">Vulnerabilities named in the report</h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {cveIocs.map((c) => (
+                    <a
+                      key={c}
+                      href={`https://nvd.nist.gov/vuln/detail/${c}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-md border border-border bg-bg-elevated px-2 py-0.5 font-mono text-xs text-fg hover:border-border-strong"
+                    >
+                      {c}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
             {data.aiAnalysis && (
               <div className="mt-6">
                 <h3 className="mb-2 text-sm font-medium text-fg">Found by the AI analysis</h3>
