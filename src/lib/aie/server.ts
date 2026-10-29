@@ -35,7 +35,7 @@ import {
   sha256Hex,
   toIsoString,
 } from "./extract";
-import { buildPristineDocumentHtml, extractTextFromPdfBuffer } from "./pdf";
+import { buildPristineDocumentHtml, extractTextFromPdfBuffer, refreshProfileSection } from "./pdf";
 import { comparePublishedDesc, resolvePublicationDate } from "./published-date";
 import { slimForList } from "./list-view";
 import {
@@ -1045,7 +1045,10 @@ export const getReport = createServerFn({ method: "GET" }).middleware([analystMi
           }
 
           if (mongoReport.rawHtml) {
-            mongoReport.rawHtml = sanitizeDocumentHtml(mongoReport.rawHtml);
+            // The profile part always reflects the current analysis (display only, never saved).
+            mongoReport.rawHtml = sanitizeDocumentHtml(
+              refreshProfileSection(mongoReport.rawHtml, { iocs: mongoReport.iocs ?? [], analysis: mongoReport.analysis, aiAnalysis: mongoReport.aiAnalysis, text: mongoReport.extractedText }),
+            );
           }
 
           return withRegistryProvenance(mongoReport);
@@ -1099,7 +1102,7 @@ export const getReport = createServerFn({ method: "GET" }).middleware([analystMi
     return {
       ...toListItem(r),
       extractedText: cleanText,
-      rawHtml: sanitizeDocumentHtml(pristineHtml),
+      rawHtml: sanitizeDocumentHtml(refreshProfileSection(pristineHtml, { iocs: parseJson<IocHit[]>(r.iocs_json, []), analysis, text: cleanText })),
       pdfUrl: r.pdf_url || "",
       qualityReasons: parseJson<QualityReason[]>(r.quality_reasons, []),
       analysis,

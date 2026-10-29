@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
-import type { AttackStep, IntelAnalysis, IocHit } from "./types";
+import type { IntelAnalysis, IocHit } from "./types";
 import { decodeEntities } from "./extract";
+import { reportProfile, type ReportProfile } from "./report-profile";
+import type { ReportAiAnalysis } from "./report-ai-analysis";
 
 export type DocumentPrintMetadata = {
   id: string;
@@ -19,7 +21,89 @@ export type DocumentPrintMetadata = {
   wordCount: number;
   iocs: IocHit[];
   analysis?: IntelAnalysis | null;
+  /** Grounded AI analysis, preferred for the profile when present. */
+  aiAnalysis?: ReportAiAnalysis | null;
+  /** Report text the profile is checked against (./report-profile); defaults to the document text. */
+  text?: string | null;
 };
+
+const PROFILE_START = "<!--aie-profile-start-->";
+const PROFILE_END = "<!--aie-profile-end-->";
+
+const SOURCE_NOTE: Record<ReportProfile["source"], string> = {
+  ai: "From the AI analysis; every step is checked against a quote from the report, and every name, CVE and indicator appears in the report.",
+  evidence: "From the evidence-backed analysis; names, CVEs and indicators shown appear in the report.",
+  analysis: "From the automatic analysis; names, CVEs and indicators shown appear in the report. Run the AI analysis for quoted attack steps.",
+  none: "No adversary or attack-chain details were found in this report.",
+};
+
+/**
+ * The "Adversary & Attack Profile" part of the document (./report-profile): actors, malware and
+ * tools, vulnerabilities, the attack chain (with its supporting quotes) and indicators. Wrapped in
+ * markers so refreshProfileSection can update a stored document. Inline styles only, so documents
+ * stored with older styles still render it.
+ */
+export function renderProfileSection(meta: Pick<DocumentPrintMetadata, "iocs" | "analysis" | "aiAnalysis" | "text">): string {
+  const p = reportProfile({ extractedText: meta.text ?? "", analysis: meta.analysis, aiAnalysis: meta.aiAnalysis, iocs: meta.iocs });
+  const tags = (list: string[], cls: string, empty: string) =>
+    list.length ? list.map((v) => `<span class="tag ${cls}">${escapeHtml(v)}</span>`).join(" ") : `<span class="text-muted">${empty}</span>`;
+  const steps = p.chain
+    .map(
+      (s) => `
+        <div class="step-card">
+          <div class="step-num">${s.order}</div>
+          <div class="step-details">
+            <div class="step-tactic">${escapeHtml(s.tactic)}</div>
+            <div class="step-summary">${escapeHtml(s.summary)}</div>
+            <div class="step-techs">${s.techniques.map((t) => `<span class="tag tag-tech">${escapeHtml(t)}</span>`).join(" ")}</div>
+            ${s.quote ? `<div style="margin-top:6px;padding-left:8px;border-left:2px solid #cbd5e1;color:#475569;font-size:12px;font-style:italic">“${escapeHtml(s.quote)}”</div>` : ""}
+          </div>
+        </div>`,
+    )
+    .join("");
+  const rows = p.indicators
+    .slice(0, 60)
+    .map((i) => `<tr><td class="ioc-kind"><code>${escapeHtml(i.kind)}</code></td><td class="ioc-val"><code>${escapeHtml(i.value)}</code>${i.role ? ` <span style="color:#64748b;font-size:11px">(${escapeHtml(i.role)})</span>` : ""}</td></tr>`)
+    .join("");
+  return `${PROFILE_START}
+    <div class="section-title">Adversary & Attack Profile</div>
+    <p style="margin:-4px 0 12px;color:#64748b;font-size:12px">${escapeHtml(SOURCE_NOTE[p.source])}</p>
+    <div class="intel-summary">
+      <div class="intel-card">
+        <h4>Threat actors named in the report</h4>
+        <div>${tags(p.actors, "tag-actor", "Not attributed in the report")}</div>
+      </div>
+      <div class="intel-card">
+        <h4>Malware & tools</h4>
+        <div>${tags([...p.malware, ...p.tools], "tag-malware", "None named in the report")}</div>
+      </div>
+      ${p.vulnerabilities.length ? `<div class="intel-card"><h4>Vulnerabilities</h4><div>${tags(p.vulnerabilities, "tag-tech", "")}</div></div>` : ""}
+    </div>
+    ${p.chain.length ? `<div class="section-title">Attack Chain</div><div class="attack-chain-box">${steps}</div>` : ""}
+    ${
+      rows
+        ? `<div class="section-title">Indicators of Compromise</div>
+      <table class="ioc-table"><thead><tr><th>Type</th><th>Indicator</th></tr></thead><tbody>${rows}</tbody></table>`
+        : ""
+    }
+    ${PROFILE_END}`;
+}
+
+/**
+ * Replaces the profile part of a stored document with one built from the report's current analysis.
+ * Older documents (no markers) have the part between the profile title and the document body.
+ */
+export function refreshProfileSection(html: string, meta: Pick<DocumentPrintMetadata, "iocs" | "analysis" | "aiAnalysis" | "text">): string {
+  if (!html) return html;
+  const fresh = renderProfileSection(meta);
+  const a = html.indexOf(PROFILE_START);
+  const b = html.indexOf(PROFILE_END);
+  if (a >= 0 && b > a) return html.slice(0, a) + fresh + html.slice(b + PROFILE_END.length);
+  const start = html.search(/<!-- Threat Intelligence Profile Summary -->|<div class="section-title">Adversary &(?:amp;)? Attack Profile<\/div>/);
+  const end = html.search(/<!-- Preserved Primary Article Content -->|<div class="section-title">Extracted Document Body<\/div>/);
+  if (start >= 0 && end > start) return html.slice(0, start) + fresh + "\n    " + html.slice(end);
+  return html;
+}
 
 export function extractMainContentHtml(rawHtml: string, baseUrl?: string): string {
   if (!rawHtml || rawHtml.trim().length === 0) return "";
@@ -219,37 +303,7 @@ export function buildPristineDocumentHtml(
     }
   }
 
-  const iocRows = meta.iocs.slice(0, 30).map(
-    (ioc) => `
-      <tr>
-        <td class="ioc-kind"><code>${escapeHtml(ioc.kind)}</code></td>
-        <td class="ioc-val"><code>${escapeHtml(ioc.value)}</code></td>
-      </tr>
-    `,
-  ).join("");
-
-  const threatActors = meta.analysis?.threatActors?.length
-    ? meta.analysis.threatActors.map((a) => `<span class="tag tag-actor">${escapeHtml(a)}</span>`).join(" ")
-    : '<span class="text-muted">Unattributed / Not Specified</span>';
-
-  const malware = meta.analysis?.malware?.length
-    ? meta.analysis.malware.map((m) => `<span class="tag tag-malware">${escapeHtml(m)}</span>`).join(" ")
-    : '<span class="text-muted">None Identified</span>';
-
-  const attackSteps = meta.analysis?.attackChain?.length
-    ? meta.analysis.attackChain.map((s) => `
-        <div class="step-card">
-          <div class="step-num">${s.order}</div>
-          <div class="step-details">
-            <div class="step-tactic">${escapeHtml(s.tactic)}</div>
-            <div class="step-summary">${escapeHtml(s.summary)}</div>
-            <div class="step-techs">
-              ${s.techniques.map((t) => `<span class="tag tag-tech">${escapeHtml(t)}</span>`).join(" ")}
-            </div>
-          </div>
-        </div>
-      `).join("")
-    : "";
+  const profileHtml = renderProfileSection({ ...meta, text: meta.text ?? (isBinaryPdf ? "" : safeContent.replace(/<[^>]+>/g, " ")) });
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -615,42 +669,7 @@ export function buildPristineDocumentHtml(
       </div>
     </div>
 
-    <!-- Threat Intelligence Profile Summary -->
-    <div class="section-title">Adversary & Attack Profile</div>
-    <div class="intel-summary">
-      <div class="intel-card">
-        <h4>Attributed Adversary Groups / Threat Actors</h4>
-        <div>${threatActors}</div>
-      </div>
-      <div class="intel-card">
-        <h4>Malware Families & Offensive Toolsets</h4>
-        <div>${malware}</div>
-      </div>
-    </div>
-
-    <!-- Attack Chain Sequence (if reconstructed) -->
-    ${meta.analysis?.attackChain?.length ? `
-      <div class="section-title">Reconstructed Attack Chain Flow</div>
-      <div class="attack-chain-box">
-        ${attackSteps}
-      </div>
-    ` : ""}
-
-    <!-- Harvested IOCs Table (if present) -->
-    ${meta.iocs.length ? `
-      <div class="section-title">Indicators of Compromise (IOC Harvest)</div>
-      <table class="ioc-table">
-        <thead>
-          <tr>
-            <th>Type</th>
-            <th>Indicator Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${iocRows}
-        </tbody>
-      </table>
-    ` : ""}
+    ${profileHtml}
 
     <!-- Preserved Primary Article Content -->
     <div class="section-title">Extracted Document Body</div>
