@@ -146,6 +146,11 @@ export function firstStepCalls(question: string, history: Array<{ sender: "user"
   const q = String(question ?? "").trim();
   const ids = [...new Set((q.match(REPORT_ID_RE) ?? []).map((id) => (id.toLowerCase().startsWith("rpt_") ? id.toLowerCase() : id.toUpperCase())))].slice(0, 3);
   if (ids.length) return ids.map((id) => ({ name: "get_report", args: { id } }));
+  // Hand-offs from the app (components/agent-handoff): query the intelligence engine directly.
+  const link = q.match(/find_connection from "([^"]{1,200})" to "([^"]{1,200})"/);
+  if (link) return [{ name: "find_connection", args: { from: link[1], to: link[2] } }, { name: "entity_context", args: { ref: link[1] } }];
+  const entity = q.match(/entity_context for "([^"]{1,200})"/);
+  if (entity) return [{ name: "entity_context", args: { ref: entity[1] } }];
   if (isConversationalTurn(q)) return [];
   if (CONSOLE_RE.test(q) && !CTI_RE.test(q)) return [];
   let query = q;

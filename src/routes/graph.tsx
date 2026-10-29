@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Box, ChevronRight, Orbit, RefreshCw, SlidersHorizontal, Square, Waypoints } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { GraphCanvas } from "@/components/graph/graph-canvas";
-import { FilterPanel, Inspector, TIME_WINDOWS, TypeDot, type TimeWindow } from "@/components/graph/graph-panels";
+import { FilterPanel, GRAPH_DETAILS, Inspector, TIME_WINDOWS, TypeDot, type GraphDetail, type TimeWindow } from "@/components/graph/graph-panels";
 import { graphTheme, isDarkTheme } from "@/components/graph/graph-style";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { EmptyState } from "@/components/ui/primitives";
@@ -53,6 +53,7 @@ function IntelGraphPage() {
 
   const [filter, setFilter] = useState<GraphFilter>(DEFAULT_FILTER);
   const [windowValue, setWindowValue] = useState<TimeWindow>("all");
+  const [detail, setDetail] = useState<GraphDetail>("standard");
   const [selectedNode, setSelectedNode] = useState<string | null>(center);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [trail, setTrail] = useState<string[]>(center ? [center] : []);
@@ -66,8 +67,8 @@ function IntelGraphPage() {
   const view = useMemo(() => {
     if (!ix) return null;
     if (center && ix.node.has(center)) return focusView(ix, center, effective, { hops });
-    return overviewView(ix, effective);
-  }, [ix, center, effective, hops]);
+    return overviewView(ix, effective, GRAPH_DETAILS.find((d) => d.id === detail)?.nodes ?? 160);
+  }, [ix, center, effective, hops, detail]);
   const [dimension, setDimension] = useState<"2d" | "3d">("3d");
   useEffect(() => {
     try {
@@ -248,6 +249,8 @@ function IntelGraphPage() {
                   onFilter={setFilter}
                   windowValue={windowValue}
                   onWindow={setWindowValue}
+                  detail={detail}
+                  onDetail={setDetail}
                   onPick={(id) => {
                     setSelectedNode(id);
                     setSelectedEdge(null);

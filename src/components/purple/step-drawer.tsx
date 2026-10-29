@@ -124,7 +124,7 @@ export function StepDrawer({ step, sourceName, onClose }: { step: PurpleStep | n
                   {sim.requiredTelemetry.length ? (
                     <div className="flex flex-wrap gap-1.5">
                       {sim.requiredTelemetry.map((d) => (
-                        <EntityChip key={d} kind="ioc" title="ATT&CK data component">
+                        <EntityChip key={d} kind="ioc" title="ATT&CK data component" noContext>
                           {d}
                         </EntityChip>
                       ))}

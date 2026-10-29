@@ -429,7 +429,7 @@ function Home() {
                       </div>
                     </div>
                     <span className="shrink-0">
-                      <EntityChip kind={kind}>{actorTypeLabel(actor.badge)}</EntityChip>
+                      <EntityChip kind={kind} noContext>{actorTypeLabel(actor.badge)}</EntityChip>
                     </span>
                   </div>
 

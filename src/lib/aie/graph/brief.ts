@@ -20,6 +20,10 @@ export type BriefFacts = {
 
 export type BriefPoint = { text: string; refs: string[] };
 export type GraphBrief = {
+  /** "ai": written by the AI provider; "engine": the engine's own assessment (AI unavailable). */
+  source: "ai" | "engine";
+  /** Why the engine answered instead of the AI, when it did. */
+  note?: string;
   summary: string;
   points: BriefPoint[];
   hiddenLinks: BriefPoint[];
@@ -91,12 +95,40 @@ export function parseBrief(parsed: unknown, f: BriefFacts, provider: string, now
     return out;
   };
   return {
+    source: "ai",
     summary: str(o.summary, 700),
     points: points(o.points, 6),
     hiddenLinks: points(o.hiddenLinks, 3),
     gaps: (Array.isArray(o.gaps) ? o.gaps : []).map((g) => str(g, 240)).filter(Boolean).slice(0, 3),
     dropped,
     provider,
+    generatedAt: now.toISOString(),
+  };
+}
+
+/**
+ * The engine's own brief (no AI), from the correlation context (./correlate): the summary, its
+ * findings as points, unstated look-alikes as hidden links, and what the evidence lacks.
+ */
+export function engineBrief(ctx: import("./correlate.ts").EntityContext, note: string, now = new Date()): GraphBrief {
+  const gaps: string[] = [];
+  const single = ctx.links.reduce((n, g) => n + g.items.filter((l) => l.edge.weight === 1).length, 0);
+  const shown = ctx.links.reduce((n, g) => n + g.items.length, 0);
+  if (ctx.node.reportCount < 2) gaps.push("Only one report mentions it; corroborate with another source.");
+  if (shown && single / shown > 0.6) gaps.push("Most links rest on a single report.");
+  if (ctx.trend === "dormant") gaps.push("No recent reporting; the picture may be out of date.");
+  return {
+    source: "engine",
+    note,
+    summary: ctx.summary,
+    points: ctx.findings.filter((f) => f.kind !== "overlap" && f.refs.length).map((f) => ({ text: f.text, refs: f.refs })).slice(0, 6),
+    hiddenLinks: ctx.similar
+      .filter((s) => !s.linked)
+      .slice(0, 3)
+      .map((s) => ({ text: `${s.node.label} shares ${s.shared.length} rare traits (${s.shared.slice(0, 3).map((x) => x.label).join(", ")}) with no stated link.`, refs: [s.node.id, ...s.shared.slice(0, 3).map((x) => x.id)] })),
+    gaps: gaps.slice(0, 3),
+    dropped: 0,
+    provider: "AIE engine",
     generatedAt: now.toISOString(),
   };
 }

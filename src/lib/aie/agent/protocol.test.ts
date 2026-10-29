@@ -114,3 +114,11 @@ test("first step: named reports are read, console questions and greetings start 
   const follow = firstStepCalls("and APT29?", [{ sender: "user", text: "Which actors exploited Ivanti VPNs?" }]);
   assert.match(String(follow[0]?.args.query), /Ivanti/, "a short follow-up borrows the previous question");
 });
+
+test("hand-offs from the app go straight to the intelligence engine", () => {
+  assert.deepEqual(firstStepCalls('Investigate APT29 (threat actor): use entity_context for "actor:G0016" to pull everything'), [{ name: "entity_context", args: { ref: "actor:G0016" } }]);
+  assert.deepEqual(firstStepCalls('Explain the relationship "APT29 uses Cobalt Strike": use find_connection from "APT29" to "Cobalt Strike" and entity_context')[0], {
+    name: "find_connection",
+    args: { from: "APT29", to: "Cobalt Strike" },
+  });
+});
