@@ -8,19 +8,53 @@ import { pickResearchQueries, splitKeywordPhrases, type ResearchCategoryId, type
 export type SearchPlanItem = {
   query: string;
   /** Where the search comes from, shown with the reports it finds. */
-  origin: "targeted" | "keyword" | "research";
+  origin: "targeted" | "keyword" | "research" | "emulation";
   category?: ResearchCategoryId;
 };
 
 /** Keyword searches per run (rotating through the analyst's list). */
 const KEYWORD_QUERIES_PER_RUN = 2;
 
+/** Attack-chain hunt searches per run (rotating through EMULATION_HUNT_QUERIES). */
+const EMULATION_QUERIES_PER_RUN = 2;
+
+/**
+ * Searches for the reports an emulation team wants most: step-by-step infection chains, procedure
+ * walk-throughs and new tradecraft, written by research teams. Half are restricted to research
+ * publishers that write such walk-throughs, so news rewrites and patch notes are not what comes back.
+ */
+export const EMULATION_HUNT_QUERIES: readonly string[] = [
+  '"infection chain" DLL sideloading loader analysis',
+  '"multi-stage" infection chain PowerShell in-memory payload',
+  'ClickFix delivery chain payload analysis',
+  '"attack chain" "step" loader decrypts shellcode backdoor',
+  'novel technique threat actor abuses legitimate binary analysis',
+  'fileless malware registry PowerShell infection chain analysis',
+  'steganography payload delivery chain malware analysis',
+  'new backdoor campaign "execution flow" persistence C2 analysis',
+  'infostealer infection chain obfuscated script analysis',
+  'zero-day exploit chain threat actor post-exploitation analysis',
+  'site:labs.k7computing.com infection chain',
+  'site:securelist.com infection chain',
+  'site:sentinelone.com/labs attack chain',
+  'site:research.checkpoint.com infection chain',
+  'site:trellix.com/blogs/research infection chain',
+  'site:forescout.com/blog malware delivery',
+  'site:morphisec.com intrusion chain',
+  'site:blog.talosintelligence.com infection chain',
+  'site:unit42.paloaltonetworks.com infection chain',
+  'site:sophos.com/en-us/blog attack chain',
+  'site:lumen.com/blog black lotus labs',
+  'site:proofpoint.com threat-insight attack chain',
+];
+
 /**
  * The searches for one crawl run.
  *
  * - A targeted hunt searches its own query only.
- * - Otherwise: up to two of the analyst's keyword phrases (rotating by round) and, when enabled,
- *   `queriesPerRun` taxonomy queries, the thinnest categories first.
+ * - Otherwise: up to two of the analyst's keyword phrases (rotating by round) and, when research
+ *   discovery is enabled, two attack-chain hunt queries plus `queriesPerRun` taxonomy queries, the
+ *   thinnest categories first.
  */
 export function buildSearchPlan(opts: {
   targetedQuery?: string | null;
@@ -45,6 +79,12 @@ export function buildSearchPlan(opts: {
     const phrase = phrases[(round * KEYWORD_QUERIES_PER_RUN + i) % phrases.length];
     const query = `${phrase} threat intelligence technical analysis`;
     if (!plan.some((p) => p.query === query)) plan.push({ query, origin: "keyword" });
+  }
+  if (opts.research.enabled) {
+    for (let i = 0; i < EMULATION_QUERIES_PER_RUN; i++) {
+      const query = EMULATION_HUNT_QUERIES[(round * EMULATION_QUERIES_PER_RUN + i) % EMULATION_HUNT_QUERIES.length];
+      if (!plan.some((p) => p.query === query)) plan.push({ query, origin: "emulation" });
+    }
   }
   if (opts.research.enabled && opts.research.queriesPerRun > 0) {
     for (const r of pickResearchQueries({ round, count: opts.research.queriesPerRun, counts: opts.counts, includeBas: opts.research.bas })) {

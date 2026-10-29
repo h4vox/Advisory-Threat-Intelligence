@@ -43,6 +43,7 @@ import { TierDot } from "@/components/library/report-card";
 import { AttackCoverageStrip } from "@/components/library/attack-coverage";
 import { StructuredPanel } from "@/components/library/structured-panel";
 import { ReportEmulation } from "@/components/library/report-emulation";
+import { ReportEmulationValue } from "@/components/library/report-emulation-value";
 import { CollectionRecord } from "@/components/library/collection-record";
 import { ReportTelemetry, ResearchTypeChips } from "@/components/library/report-research";
 import { TIER_META, actorsOf, cvesOf, docTypesOf, malwareOf, techniquesOf, tierOf } from "@/components/library/intel-taxonomy";
@@ -567,6 +568,13 @@ function ReportPage() {
               ) : (
                 <p className="text-sm text-subtle">No ATT&CK techniques mapped for this report.</p>
               )}
+            </Section>
+
+            <Section
+              title="Emulation value"
+              description="What an attack emulation or simulation team can take from this report: the grade, why, and the infection chain retold from the report's own sentences."
+            >
+              <ReportEmulationValue report={data} />
             </Section>
 
             <Section

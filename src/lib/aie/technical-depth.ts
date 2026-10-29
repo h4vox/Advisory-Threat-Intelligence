@@ -207,8 +207,13 @@ function countIndicators(prose: string): number {
   }
   for (const m of prose.matchAll(/(?<![\w.])(\d{1,3}(?:\.|\[\.\])\d{1,3}(?:\.|\[\.\])\d{1,3}(?:\.|\[\.\])\d{1,3})(?![\w.])/g)) {
     const ip = m[1].replace(/\[\.\]/g, ".");
-    const before = prose.slice(Math.max(0, (m.index ?? 0) - 12), m.index).toLowerCase();
+    // Software versions look like addresses (ASA 9.18.4.47): skip numbers in version context.
+    const at = m.index ?? 0;
+    const before = prose.slice(Math.max(0, at - 40), at).toLowerCase();
+    const after = prose.slice(at + m[0].length, at + m[0].length + 24).toLowerCase();
     if (/(?:version|ver\.?|v|build|release|firmware)\s*$/.test(before)) continue;
+    if (/^\s*(?:and later|or later|or earlier|and earlier|and above|or newer|or older)\b/.test(after)) continue;
+    if (/\b(?:versions?|releases?|builds?|software|firmware|fixed in|upgrade|update|patch(?:ed)?|prior to|before|through|from|to|and|or)\b[^.\n]{0,24}$/.test(before) && /^\s*(?:,|and\b|or\b|through\b|and later|or later|or earlier|and earlier|\)|;|\.\s|$)/.test(after) && !/\b(?:ip|address|server|host|c2|connect|beacon|hxxp)/.test(before)) continue;
     if (isPublicIpv4(ip)) found.add(ip);
   }
   return found.size;
@@ -217,7 +222,7 @@ function countIndicators(prose: string): number {
 const COMMAND_RE =
   /(?:\bpowershell(?:\.exe)?\s+(?:-|\/)\w|\bcmd(?:\.exe)?\s+\/[ck]\s|\brundll32(?:\.exe)?\s+\S|\bregsvr32(?:\.exe)?\s+\/|\bmshta(?:\.exe)?\s+(?:https?|vbscript|javascript)|\bcertutil(?:\.exe)?\s+-\w|\bschtasks(?:\.exe)?\s+\/\w|\breg(?:\.exe)?\s+(?:add|query|save|delete)\s+\S|\bwmic\s+(?:\/\w|process|shadowcopy|os|computersystem)|\bbitsadmin\s+\/\w|\bvssadmin(?:\.exe)?\s+delete|\bnet1?\s+(?:user|group|localgroup)\s+\S|\bnltest\s+\/\w|\bwhoami\s+\/\w|\bcurl\s+(?:-[\w-]+\s+)*['"]?https?:|\bwget\s+(?:-[\w-]+\s+)*['"]?https?:|\bchmod\s+\+x\s|\b(?:ba)?sh\s+-c\s|\/bin\/(?:ba)?sh\b|\bbase64\s+(?:-d|--decode)|\bInvoke-(?:Expression|WebRequest|Mimikatz|Command|RestMethod)\b|\bIEX\s*\(|\bNew-Object\s+(?:System\.)?Net\.WebClient|\bnohup\s+\S|\bpython3?\s+-c\s|\bpsexec(?:64)?(?:\.exe)?\s+\\\\)/gi;
 
-function countCommands(prose: string): number {
+export function countCommands(prose: string): number {
   const lines = new Set<string>();
   for (const line of prose.split("\n")) {
     COMMAND_RE.lastIndex = 0;
@@ -291,6 +296,11 @@ const ADVISORY_PUBLISHER =
 
 const NEWS_PUBLISHER =
   /(^|\.)(?:cyberdaily\.au|bleepingcomputer\.com|thehackernews\.com|securityweek\.com|darkreading\.com|theregister\.com|zdnet\.com|techcrunch\.com|therecord\.media|infosecurity-magazine\.com|cybersecuritydive\.com|scmagazine\.com|helpnetsecurity\.com|csoonline\.com|itnews\.com\.au|itpro\.com|securityaffairs\.com|hackread\.com|cyberscoop\.com|wired\.com|arstechnica\.com|reuters\.com|bloomberg\.com|forbes\.com|cybernews\.com|gbhackers\.com|cybersecuritynews\.com|teiss\.co\.uk|computerweekly\.com|govinfosecurity\.com|bankinfosecurity\.com|databreaches\.net)$/i;
+
+/** CERT / government advisory publishers (their exploited-vulnerability advisories are kept as such). */
+export function isAdvisoryPublisher(url: string): boolean {
+  return ADVISORY_PUBLISHER.test(hostOf(url));
+}
 
 function hostOf(url: string): string {
   try {

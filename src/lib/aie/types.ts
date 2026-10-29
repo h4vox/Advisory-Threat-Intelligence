@@ -2,6 +2,7 @@ import type { ResearchDiscoveryConfig, ResearchLabels } from "./research-taxonom
 import type { TelemetryRefs } from "./telemetry-refs.ts";
 import type { PublishedDate } from "./published-date.ts";
 import type { ReportAiAnalysis } from "./report-ai-analysis.ts";
+import type { EmulationGrade, EmulationSummary } from "./emulation-value.ts";
 
 export type TrustLevel = "high" | "official" | "community" | "reputable" | "unverified";
 
@@ -394,6 +395,8 @@ export type ReportRecord = {
   simulationScore?: number;
   isEmergingTechnique?: boolean;
   noveltyRationale?: string;
+  /** Emulation value: attack chain / procedures / context / news, with the quoted evidence (./emulation-value). */
+  emulation?: EmulationSummary;
   canonicalReportId?: string;
   tags?: string[];
   aiVerified?: boolean;
@@ -642,6 +645,12 @@ export type CrawlConfig = {
   requireIocs: boolean;
   requireAttck: boolean;
   rejectMarketingNoise: boolean;
+  /**
+   * Lowest emulation value the crawler ingests (./emulation-value). "context" (default) skips news,
+   * patch notes and vulnerability notices without attacker procedures; "news" ingests everything
+   * that passes the other checks.
+   */
+  minEmulationGrade?: EmulationGrade;
   dedupMethod: DedupMethod;
   activeSources: string[];
   targetResourceTypes: ResourceKind[];

@@ -709,6 +709,7 @@ INSTRUCTIONS:
    - Dimension 5: IOC & Telemetry Verifiability (0 to 10 pts): Defanged network indicators (C2 IPs, domains), file hashes (SHA256), Windows Event IDs, Sysmon events.
    - Total Score = sum of the 5 dimensions (0 - 100).
    - recommendApproval: true if Total Score >= 50, false if < 50.
+   - Score only what the text shows. A patch note, vendor security update or vulnerability notice (CVE, CVSS, affected and fixed versions) without attacker procedures scores at most 25 and is not approved, even when it mentions ransomware or past exploitation. A report that walks through an infection chain step by step (files, paths, commands, tools, order) scores high on dimensions 1 and 2 even without IOCs.
 
 2. Assign exactly ONE Classification from this STRICT taxonomy:
    - "ADVERSARY_EMULATION", "ADVERSARY_SIMULATION", "ATTACK_CHAIN_REPORT", "INTRUSION_REPORT", "MALWARE_ANALYSIS", "THREAT_ACTOR_REPORT", "CAMPAIGN_REPORT", "VULNERABILITY_REPORT", "DETECTION_RESEARCH", "SECURITY_ADVISORY", "OTHER"

@@ -23,6 +23,12 @@ test("a scheduled run searches two keyword phrases (rotating) and the taxonomy, 
   const b = buildSearchPlan({ keywords: DEFAULT_KEYWORDS, research: DEFAULT_RESEARCH_DISCOVERY, round: 1 });
   assert.equal(a.filter((p) => p.origin === "keyword").length, 2);
   assert.equal(a.filter((p) => p.origin === "research").length, DEFAULT_RESEARCH_DISCOVERY.queriesPerRun);
+  assert.equal(a.filter((p) => p.origin === "emulation").length, 2);
+  assert.notDeepEqual(
+    a.filter((p) => p.origin === "emulation").map((p) => p.query),
+    b.filter((p) => p.origin === "emulation").map((p) => p.query),
+    "attack-chain hunt queries rotate between runs",
+  );
   assert.equal(a[0].query, "ransomware threat intelligence technical analysis");
   assert.equal(a[1].query, '"attack chain" threat intelligence technical analysis');
   assert.notDeepEqual(a.slice(0, 2), b.slice(0, 2), "keywords rotate between runs");

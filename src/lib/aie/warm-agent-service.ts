@@ -145,6 +145,7 @@ Evaluate the threat intelligence report candidate using the 5-dimensional rubric
 4. Emulation Utility (0-20 pts): Sigma/YARA rules, EDR/Sysmon queries, atomic test commands.
 5. IOC Verifiability (0-10 pts): C2 IPs, domains, SHA256 hashes, Windows/Sysmon event IDs.
 Total Score = sum(dimensions). recommendApproval = true if score >= 50.
+Score only what the text shows: a patch note or vulnerability notice (CVE, CVSS, fixed versions) without attacker procedures scores at most 25 and is not approved; a step-by-step infection chain (files, paths, commands, tools, order) scores high even without IOCs.
 
 Taxonomy:
 - Classification: ADVERSARY_EMULATION, INTRUSION_REPORT, ATTACK_CHAIN_REPORT, MALWARE_ANALYSIS, THREAT_ACTOR_REPORT, CAMPAIGN_REPORT, VULNERABILITY_REPORT, DETECTION_RESEARCH, SECURITY_ADVISORY, OTHER.

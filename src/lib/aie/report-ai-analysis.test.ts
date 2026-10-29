@@ -155,3 +155,37 @@ test("a non-object answer is an error, not an empty analysis", () => {
   assert.throws(() => groundReportAnalysis("text", REPORT, opts));
   assert.throws(() => groundReportAnalysis([1], REPORT, opts));
 });
+
+test("emulation assessment: quotes are verified and an unsupported 'attack chain' grade is lowered", () => {
+  const r = groundReportAnalysis(
+    {
+      emulation: {
+        grade: "chain",
+        reproducible: "yes",
+        steps: [
+          { text: "Macro launches PowerShell to fetch QakBot", quote: "The macro launched PowerShell to fetch the QakBot loader from hxxp://update-check[.]example[.]net/a.bin." },
+          { text: "QakBot beacons over HTTPS", quote: "QakBot beaconed to 185.220.101[.]4 over HTTPS for command and control." },
+          { text: "Invented step", quote: "The loader then injected itself into explorer.exe." },
+        ],
+        novel: [{ text: "New loader", quote: "A completely new loader never seen before." }],
+        missing: ["How the Excel lure reached staff in detail"],
+        note: "Initial access and C2 are described; execution details are thin.",
+      },
+    },
+    REPORT,
+    opts,
+  );
+  const e = r.emulation!;
+  assert.equal(e.claimedGrade, "chain");
+  assert.equal(e.grade, "procedures", "two verified steps support procedures, not a chain");
+  assert.equal(e.steps.length, 2);
+  assert.equal(e.novel.length, 0, "a novelty claim without a quote from the text is dropped");
+  assert.equal(e.reproducible, "partly");
+  assert.match(e.gradeNote ?? "", /only 2 procedure steps/);
+  assert.deepEqual(e.missing, ["How the Excel lure reached staff in detail"]);
+});
+
+test("emulation assessment: a news grade stays news, a missing block is null", () => {
+  assert.equal(groundReportAnalysis({ emulation: { grade: "news", reproducible: "yes", steps: [] } }, REPORT, opts).emulation?.reproducible, "no");
+  assert.equal(groundReportAnalysis({}, REPORT, opts).emulation, null);
+});

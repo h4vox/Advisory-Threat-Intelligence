@@ -174,6 +174,15 @@ export async function mongoAnalyseAndReviewReport(id: string, opts: { signal?: A
   };
   const update = reviewUpdate(doc, review);
   update.$set.aiAnalysis = analysis;
+  // The AI's grounded emulation grade sits beside the rules' grade (the Library prefers it).
+  if (analysis.emulation) {
+    update.$set["emulation.ai"] = {
+      grade: analysis.emulation.grade,
+      reproducible: analysis.emulation.reproducible,
+      verifiedSteps: analysis.emulation.steps.length,
+      at: analysis.analysedAt,
+    };
+  }
   // A date line the AI located and AIE verified in the text fills a missing publication date only.
   if (!doc.publishedAt && analysis.publishedDate) {
     const publishedDate: PublishedDate = {
