@@ -168,3 +168,141 @@ export function forceLayout(view: GraphView, iterations = 260): GraphLayout {
   view.nodes.forEach((v, i) => pos.set(v.id, { x: x[i] * scale, y: y[i] * scale }));
   return { pos, sectors, rings: [] };
 }
+
+// ---------------------------------------------------------------------------
+// 3D
+// ---------------------------------------------------------------------------
+
+export type Point3 = { x: number; y: number; z: number };
+export type GraphLayout3 = { pos: Map<string, Point3>; anchors: Array<{ type: GraphNodeType; at: Point3; count: number }> };
+
+/** Evenly spread directions on a sphere (Fibonacci lattice). */
+function sphereDirections(n: number): Point3[] {
+  const out: Point3[] = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = n === 1 ? 0 : 1 - (i / (n - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    const t = golden * i;
+    out.push({ x: Math.cos(t) * r, y, z: Math.sin(t) * r });
+  }
+  return out;
+}
+
+/**
+ * 3D positions (unit sphere). Each entity type gets an anchor direction; in focus mode the centre
+ * entity is at the origin, its links on a shell around it (grouped by type around their anchor),
+ * second-hop entities on an outer shell next to the entity they hang off. Overview mode is a
+ * clustered force layout in 3D. Deterministic.
+ */
+export function layout3d(view: GraphView, iterations = 220): GraphLayout3 {
+  const counts = new Map<GraphNodeType, number>();
+  for (const v of view.nodes) if (v.id !== view.center) counts.set(v.type, (counts.get(v.type) ?? 0) + 1);
+  const types = TYPE_ORDER.filter((t) => counts.has(t));
+  const dirs = sphereDirections(Math.max(types.length, 2));
+  const anchor = new Map<GraphNodeType, Point3>(types.map((t, i) => [t, dirs[i]]));
+  const anchors = types.map((t) => ({ type: t, at: anchor.get(t)!, count: counts.get(t)! }));
+  const rand = rng(view.nodes.length * 104729 + view.edges.length);
+  const n = view.nodes.length;
+  const idx = new Map(view.nodes.map((v, i) => [v.id, i]));
+  const x = new Float64Array(n);
+  const y = new Float64Array(n);
+  const z = new Float64Array(n);
+  const ringOf = (id: string) => (view.mode === "focus" ? (view.ring?.get(id) ?? 1) : 1);
+  const target = (id: string) => (view.mode === "focus" ? [0, 0.5, 0.95][ringOf(id)] : 0);
+
+  // Start around the type anchor (focus: second ring around the parent's direction).
+  view.nodes.forEach((v, i) => {
+    if (v.id === view.center) return;
+    const parent = view.parent?.get(v.id);
+    const p = parent && idx.has(parent) ? { x: x[idx.get(parent)!], y: y[idx.get(parent)!], z: z[idx.get(parent)!] } : null;
+    const a = anchor.get(v.type) ?? { x: 0, y: 1, z: 0 };
+    const base = p && ringOf(v.id) === 2 ? p : a;
+    const j = 0.35;
+    const dx = base.x + (rand() - 0.5) * j;
+    const dy = base.y + (rand() - 0.5) * j;
+    const dz = base.z + (rand() - 0.5) * j;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const r = view.mode === "focus" ? target(v.id) : 0.6;
+    x[i] = (dx / len) * r;
+    y[i] = (dy / len) * r;
+    z[i] = (dz / len) * r;
+  });
+
+  const links = view.edges.map((e) => ({ s: idx.get(e.source)!, t: idx.get(e.target)! })).filter((l) => l.s !== undefined && l.t !== undefined);
+  const k = 0.75 / Math.cbrt(Math.max(1, n));
+  const dx = new Float64Array(n);
+  const dy = new Float64Array(n);
+  const dz = new Float64Array(n);
+  const centerIdx = view.center ? idx.get(view.center) : undefined;
+  for (let it = 0; it < iterations; it++) {
+    const temp = 0.05 * (1 - it / iterations) + 0.003;
+    dx.fill(0);
+    dy.fill(0);
+    dz.fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let ex = x[i] - x[j];
+        let ey = y[i] - y[j];
+        let ez = z[i] - z[j];
+        let d2 = ex * ex + ey * ey + ez * ez;
+        if (d2 < 1e-6) {
+          ex = (rand() - 0.5) * 1e-3;
+          ey = (rand() - 0.5) * 1e-3;
+          ez = (rand() - 0.5) * 1e-3;
+          d2 = 1e-6;
+        }
+        const f = (k * k) / d2;
+        dx[i] += ex * f;
+        dy[i] += ey * f;
+        dz[i] += ez * f;
+        dx[j] -= ex * f;
+        dy[j] -= ey * f;
+        dz[j] -= ez * f;
+      }
+    }
+    if (view.mode === "overview") {
+      for (const l of links) {
+        const ex = x[l.s] - x[l.t];
+        const ey = y[l.s] - y[l.t];
+        const ez = z[l.s] - z[l.t];
+        const d = Math.hypot(ex, ey, ez) || 1e-3;
+        const f = ((d * d) / k) * 0.3;
+        dx[l.s] -= (ex / d) * f;
+        dy[l.s] -= (ey / d) * f;
+        dz[l.s] -= (ez / d) * f;
+        dx[l.t] += (ex / d) * f;
+        dy[l.t] += (ey / d) * f;
+        dz[l.t] += (ez / d) * f;
+      }
+    }
+    view.nodes.forEach((v, i) => {
+      if (i === centerIdx) return;
+      const a = anchor.get(v.type)!;
+      if (view.mode === "overview") {
+        dx[i] += (a.x * 0.6 - x[i]) * 0.8;
+        dy[i] += (a.y * 0.6 - y[i]) * 0.8;
+        dz[i] += (a.z * 0.6 - z[i]) * 0.8;
+      }
+      const d = Math.hypot(dx[i], dy[i], dz[i]) || 1;
+      const step = Math.min(d, temp);
+      x[i] += (dx[i] / d) * step;
+      y[i] += (dy[i] / d) * step;
+      z[i] += (dz[i] / d) * step;
+      if (view.mode === "focus") {
+        // Stay on the node's shell.
+        const len = Math.hypot(x[i], y[i], z[i]) || 1;
+        const r = target(v.id);
+        x[i] = (x[i] / len) * r;
+        y[i] = (y[i] / len) * r;
+        z[i] = (z[i] / len) * r;
+      }
+    });
+  }
+  let max = 0;
+  for (let i = 0; i < n; i++) max = Math.max(max, Math.hypot(x[i], y[i], z[i]));
+  const scale = max > 0 ? 1 / max : 1;
+  const pos = new Map<string, Point3>();
+  view.nodes.forEach((v, i) => pos.set(v.id, i === centerIdx ? { x: 0, y: 0, z: 0 } : { x: x[i] * scale, y: y[i] * scale, z: z[i] * scale }));
+  return { pos, anchors };
+}

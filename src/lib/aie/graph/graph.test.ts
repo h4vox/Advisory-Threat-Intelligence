@@ -160,3 +160,17 @@ test("AI brief keeps only points citing known IDs", () => {
   assert.equal(b.hiddenLinks[0].refs[0], "actor:x-storm-9999");
   assert.equal(b.dropped, 2);
 });
+
+test("3D layout: deterministic, centre at the origin, rings on their shells", async () => {
+  const { layout3d } = await import("./layout.ts");
+  const ix = indexGraph(buildIntelGraph(reports));
+  const f = focusView(ix, `actor:${apt29.id}`, DEFAULT_FILTER, { hops: 2 });
+  const a = layout3d(f, 40);
+  const b = layout3d(f, 40);
+  assert.deepEqual([...a.pos.entries()], [...b.pos.entries()]);
+  assert.deepEqual(a.pos.get(`actor:${apt29.id}`), { x: 0, y: 0, z: 0 });
+  const r = (id: string) => Math.hypot(a.pos.get(id)!.x, a.pos.get(id)!.y, a.pos.get(id)!.z);
+  assert.ok(r("technique:T1566") < r("actor:x-storm-9999"), "first ring inside the second");
+  const o = layout3d(overviewView(ix, DEFAULT_FILTER, 50), 40);
+  for (const p of o.pos.values()) assert.ok(Math.hypot(p.x, p.y, p.z) <= 1.0001);
+});
