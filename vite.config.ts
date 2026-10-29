@@ -127,11 +127,16 @@ function requestLoggerPlugin(): Plugin {
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
-/** Public host names the dev and preview servers answer to (AIE_ALLOWED_HOSTS, comma-separated). */
+/**
+ * Public host names the dev and preview servers answer to (AIE_ALLOWED_HOSTS, comma-separated).
+ * Each name also covers its subdomains ("havox.site" allows "aie.havox.site"); a full URL is
+ * reduced to its host name.
+ */
 const allowedHosts = (process.env.AIE_ALLOWED_HOSTS ?? "")
   .split(",")
-  .map((h) => h.trim())
-  .filter(Boolean);
+  .map((h) => h.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/[/:].*$/, "").replace(/^\.+/, ""))
+  .filter(Boolean)
+  .map((h) => `.${h}`);
 
 export default defineConfig(({ command, isPreview }) => ({
   server: {
