@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ActorsRouteImport } from './routes/actors'
 import { Route as AdvisoriesRouteImport } from './routes/advisories'
+import { Route as GraphRouteImport } from './routes/graph'
 import { Route as IngestRouteImport } from './routes/ingest'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as LoginRouteImport } from './routes/login'
@@ -41,6 +42,11 @@ const ActorsRoute = ActorsRouteImport.update({
 const AdvisoriesRoute = AdvisoriesRouteImport.update({
   id: '/advisories',
   path: '/advisories',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GraphRoute = GraphRouteImport.update({
+  id: '/graph',
+  path: '/graph',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IngestRoute = IngestRouteImport.update({
@@ -123,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRoute
   '/advisories': typeof AdvisoriesRoute
+  '/graph': typeof GraphRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
@@ -143,6 +150,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRoute
   '/advisories': typeof AdvisoriesRoute
+  '/graph': typeof GraphRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
@@ -164,6 +172,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRoute
   '/advisories': typeof AdvisoriesRoute
+  '/graph': typeof GraphRoute
   '/ingest': typeof IngestRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
@@ -186,6 +195,7 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/advisories'
+    | '/graph'
     | '/ingest'
     | '/library'
     | '/login'
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/advisories'
+    | '/graph'
     | '/ingest'
     | '/library'
     | '/login'
@@ -226,6 +237,7 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/advisories'
+    | '/graph'
     | '/ingest'
     | '/library'
     | '/login'
@@ -247,6 +259,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActorsRoute: typeof ActorsRoute
   AdvisoriesRoute: typeof AdvisoriesRoute
+  GraphRoute: typeof GraphRoute
   IngestRoute: typeof IngestRoute
   LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
@@ -285,6 +298,13 @@ declare module '@tanstack/react-router' {
       path: '/advisories'
       fullPath: '/advisories'
       preLoaderRoute: typeof AdvisoriesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/graph': {
+      id: '/graph'
+      path: '/graph'
+      fullPath: '/graph'
+      preLoaderRoute: typeof GraphRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ingest': {
@@ -399,6 +419,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActorsRoute: ActorsRoute,
   AdvisoriesRoute: AdvisoriesRoute,
+  GraphRoute: GraphRoute,
   IngestRoute: IngestRoute,
   LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,

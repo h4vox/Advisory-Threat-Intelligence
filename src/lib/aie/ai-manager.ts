@@ -977,6 +977,38 @@ export async function runUnifiedReportAnalysis(
   });
 }
 
+/**
+ * One JSON task for the active AI provider (API first, then the sandbox agent): returns the parsed
+ * object and who answered. The caller validates the shape and grounds the content.
+ */
+export async function runUnifiedJsonTask(params: { system: string; prompt: string; maxTokens?: number; timeoutSeconds?: number; allowSandboxFallback?: boolean }): Promise<{ parsed: unknown; provider: string }> {
+  const active = await getActiveAIProvider();
+  const { restModel, agyModel } = resolveProviderModels(active);
+  const timeoutMs = Math.max(params.timeoutSeconds || active.timeoutSeconds, 45) * 1000;
+  const adapter = active.isRest && active.apiKey ? getProviderAdapter(active.providerId) : undefined;
+  let text = "";
+  let provider = active.providerName;
+  let error = "";
+  if (adapter) {
+    const res = await adapter.generate({ prompt: params.prompt, systemInstruction: params.system, model: restModel, apiKey: active.apiKey, endpointUrl: active.endpointUrl, timeoutMs, temperature: 0.2, maxTokens: params.maxTokens ?? 2048, responseFormat: "json" });
+    if (res.success && res.text) text = res.text;
+    else error = res.error || "the AI provider returned no answer";
+  }
+  if (!text && params.allowSandboxFallback !== false) {
+    const res = await backgroundAgentService.executePrompt(`${params.system}\n\n${params.prompt}`, { model: agyModel, timeoutMs });
+    if (res.success && res.text) {
+      text = res.text;
+      provider = active.isRest ? "Antigravity Agent (AGY)" : active.providerName;
+    } else error ||= res.error || "the sandbox agent returned no answer";
+  }
+  if (!text) throw new Error(error || "no AI provider is available");
+  try {
+    return { parsed: extractJsonFromLlmText(text), provider };
+  } catch {
+    throw new Error("the AI answer was not valid JSON");
+  }
+}
+
 /** Providers whose API can search the web while answering (LLMGenerateOptions.webSearch). */
 const WEB_SEARCH_PROVIDERS = new Set(["gemini_api", "claude_api"]);
 
