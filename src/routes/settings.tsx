@@ -620,12 +620,19 @@ function SettingsPage() {
                         {currentCrawl.lastRunAt ? new Date(currentCrawl.lastRunAt).toLocaleString() : "Never run"}
                       </span>
                     </span>
-                    <span>
-                      Next scheduled run:{" "}
-                      <span className="font-medium text-fg">
-                        {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
+                    {currentCrawl.realTime ? (
+                      <span>
+                        Next crawl:{" "}
+                        <span className="font-medium text-fg">{currentCrawl.realTimePauseMinutes ?? 2} min after the current run ends</span>
                       </span>
-                    </span>
+                    ) : (
+                      <span>
+                        Next scheduled run:{" "}
+                        <span className="font-medium text-fg">
+                          {currentCrawl.nextRunAt ? new Date(currentCrawl.nextRunAt).toLocaleString() : "Pending schedule"}
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <Button
@@ -690,7 +697,11 @@ function SettingsPage() {
                       className="w-48 accent-accent"
                     />
                     <span className="tabular-nums text-fg">{currentCrawl.realTimePauseMinutes ?? 2} min</span>
-                    <span>Each run is still bounded by the run time limit. The master scheduler switch must be on.</span>
+                    <span>
+                      The limits below (time, resources, per-domain cap, depth) apply to each run, so no single run hammers a site; real time repeats runs
+                      and walks each source&apos;s archive 6 pages deeper every run, so it keeps finding reports the library does not have. The crawl
+                      interval is not used.
+                    </span>
                   </div>
                 )}
               </div>
