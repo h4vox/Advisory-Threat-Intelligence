@@ -37,7 +37,9 @@ import {
 import { AGENT_TOOLS, findTool, isActionTool } from "./tools.server";
 
 const MAX_TOOL_ROUNDS = 4;
+/** Default wait for one model answer; the provider's timeout setting raises it (up to the max). */
 const MODEL_TIMEOUT_MS = 90_000;
+const MODEL_TIMEOUT_MAX_MS = 240_000;
 /** A whole turn, tools and retries included. Past it the model is asked to answer with what it has. */
 const TURN_BUDGET_MS = 5 * 60_000;
 /** Tool results kept in a checkpoint, per result (a resumed turn re-reads them as evidence). */
@@ -58,9 +60,15 @@ export async function activeModelInfo(): Promise<ActiveModelInfo> {
 
 type ModelAnswer = { ok: boolean; text: string; error?: string; ms: number; tokens?: number; cancelled?: boolean };
 
-async function callModel(system: string, prompt: string, sessionKey: string, signal?: AbortSignal): Promise<ModelAnswer> {
+/** With an engine answer ready, the AI gets this long before the engine's answer is shown. */
+const MODEL_TIMEOUT_WITH_FALLBACK_MS = 45_000;
+
+async function callModel(system: string, prompt: string, sessionKey: string, signal?: AbortSignal, opts: { capMs?: number } = {}): Promise<ModelAnswer> {
   const t0 = Date.now();
   const active = await getActiveAIProvider();
+  // Slow, high-reasoning models need longer than the default: follow the provider's own setting.
+  const configured = Math.min(MODEL_TIMEOUT_MAX_MS, Math.max(MODEL_TIMEOUT_MS, (active.timeoutSeconds || 0) * 1000));
+  const timeoutMs = opts.capMs ? Math.min(configured, opts.capMs) : configured;
   const { restModel, agyModel } = resolveProviderModels(active, undefined);
   const adapter = active.isRest && active.apiKey ? getProviderAdapter(active.providerId) : undefined;
   if (active.isRest && !adapter) {
@@ -73,7 +81,7 @@ async function callModel(system: string, prompt: string, sessionKey: string, sig
       model: restModel,
       apiKey: active.apiKey,
       endpointUrl: active.endpointUrl,
-      timeoutMs: MODEL_TIMEOUT_MS,
+      timeoutMs,
       temperature: 0.2,
       maxTokens: 4096,
       signal,
@@ -87,7 +95,7 @@ async function callModel(system: string, prompt: string, sessionKey: string, sig
       cancelled: Boolean(signal?.aborted),
     };
   }
-  const res = await chatAgentFor(sessionKey).executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs: MODEL_TIMEOUT_MS, priority: "high", signal });
+  const res = await chatAgentFor(sessionKey).executePrompt(`${system}\n\n${prompt}`, { model: agyModel, timeoutMs, priority: "high", signal });
   return {
     ok: res.success && Boolean(res.text?.trim()),
     text: res.text ?? "",
@@ -102,7 +110,7 @@ async function callModel(system: string, prompt: string, sessionKey: string, sig
 const NOT_RETRYABLE = /api key|quota|unauthori[sz]ed|forbidden|\b40[13]\b|invalid|not configured|not signed in|sign in|subscription|billing/i;
 
 /** The finished tool rounds of a turn, so a retry continues from them. */
-export type TurnCheckpoint = { rounds: ToolRound[]; evidence: EvidenceItem[] };
+export type TurnCheckpoint = { rounds: ToolRound[]; evidence: EvidenceItem[]; /** Engine answers from the finished tools. */ answers?: string[] };
 
 export type AgentTurnResult = {
   success: boolean;
@@ -157,6 +165,8 @@ export async function runAgentTurn(opts: {
   const system = buildSystemPrompt({ now, timeZone: opts.timeZone, analyst: opts.analyst, page: opts.page, catalog: renderToolCatalog(AGENT_TOOLS) });
   const rounds: ToolRound[] = [];
   const actions: AgentActionRecord[] = [];
+  /** Ready answers the engine tools wrote from their results (used if the AI does not answer). */
+  const engineAnswers: string[] = [];
   let tokens = 0;
 
   const runCalls = async (calls: ToolCall[]): Promise<string[]> =>
@@ -184,6 +194,7 @@ export async function runAgentTurn(opts: {
         try {
           const out = await tool.run(parsed.data, { book, now });
           finish(i, { label: out.summary, ms: Date.now() - s0, ok: true });
+          if (out.answer) engineAnswers.push(out.answer);
           return out.text.length > 9000 ? `${out.text.slice(0, 9000)}\n…(truncated)` : out.text;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -198,6 +209,7 @@ export async function runAgentTurn(opts: {
       ? {
           rounds: rounds.map((r) => ({ calls: r.calls, results: r.results.map((x) => (x.length > CHECKPOINT_RESULT_CHARS ? `${x.slice(0, CHECKPOINT_RESULT_CHARS)}\n…(truncated)` : x)) })),
           evidence: book.all(),
+          ...(engineAnswers.length ? { answers: engineAnswers.slice(-4) } : {}),
         }
       : undefined;
   const stoppedResult = (): AgentTurnResult => ({
@@ -220,6 +232,7 @@ export async function runAgentTurn(opts: {
   if (opts.resume?.rounds?.length) {
     for (const { id: _id, ...e } of opts.resume.evidence ?? []) book.add(e);
     rounds.push(...opts.resume.rounds);
+    engineAnswers.push(...(opts.resume.answers ?? []));
     activity.push({ kind: "info", label: `Continuing from ${opts.resume.rounds.length} finished step${opts.resume.rounds.length === 1 ? "" : "s"}`, ok: true });
     emit();
   } else {
@@ -237,14 +250,15 @@ export async function runAgentTurn(opts: {
     const prompt = buildTurnPrompt({ question: opts.question, history: opts.history, rounds, finalRound });
     const detail = `${model.providerName} · ${model.modelLabel}`;
     let i = begin({ kind: "model", label: round === 0 && rounds.length === 0 ? "Thinking" : "Reading the results", detail });
-    let ans = await callModel(system, prompt, opts.sessionKey, signal);
+    let ans = await callModel(system, prompt, opts.sessionKey, signal, { capMs: engineAnswers.length ? MODEL_TIMEOUT_WITH_FALLBACK_MS : undefined });
     tokens += ans.tokens ?? 0;
     if (ans.cancelled || signal?.aborted) {
       finish(i, { ms: ans.ms, ok: false, label: "Stopped" });
       return stoppedResult();
     }
-    // One more try for a timeout or an empty answer: these are usually transient.
-    if (!ans.ok && !NOT_RETRYABLE.test(ans.error ?? "") && Date.now() - t0 < TURN_BUDGET_MS - MODEL_TIMEOUT_MS / 2) {
+    // One more try for a timeout or an empty answer: these are usually transient. Not when the
+    // engine already has an answer: the analyst gets it now instead of waiting again.
+    if (!ans.ok && !engineAnswers.length && !NOT_RETRYABLE.test(ans.error ?? "") && Date.now() - t0 < TURN_BUDGET_MS - MODEL_TIMEOUT_MS / 2) {
       finish(i, { ms: ans.ms, ok: false, detail: `${detail} · ${ans.error ?? "no answer"}` });
       i = begin({ kind: "model", label: "No answer yet, asking again", detail });
       ans = await callModel(system, `${prompt}\n\nReply now: either the tool_calls JSON object or your answer as plain text.`, opts.sessionKey, signal);
@@ -266,6 +280,27 @@ export async function runAgentTurn(opts: {
     }
     rounds.push({ calls, results: await runCalls(calls) });
     if (signal?.aborted) return stoppedResult();
+  }
+
+  // The AI did not answer, but the engine tools did: answer with the engine's own result.
+  if ((failure || !reply) && engineAnswers.length) {
+    const why = failure ?? "the model did not produce an answer";
+    const engineReply = `${engineAnswers.join("\n\n---\n\n")}\n\n_The AI did not answer (${why}); this answer comes from the AIE engine's own analysis of the library. Ask again for the AI's write-up._`;
+    activity.push({ kind: "info", label: "Answered by the AIE engine (the AI did not answer)", ok: true });
+    emit();
+    const cited = parseCitations(engineReply, book.ids()).used;
+    return {
+      success: true,
+      reply: engineReply,
+      sources: cited.map((id) => book.get(id)).filter((e): e is EvidenceItem => Boolean(e)),
+      uncitedClaims: false,
+      actions,
+      activity,
+      model,
+      latencyMs: Date.now() - t0,
+      tokens: tokens || undefined,
+      evidenceCount: book.ids().length,
+    };
   }
 
   if (failure || !reply) {

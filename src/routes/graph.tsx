@@ -5,6 +5,9 @@ import { z } from "zod";
 import { Box, ChevronRight, Orbit, RefreshCw, SlidersHorizontal, Square, Waypoints } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { openEntityContext } from "@/components/agent-handoff";
+import { ExitFocusDialog, GuideButton, Hint, SaveViewDialog, SavedViewsMenu, TrailBar, useSavedViews } from "@/components/graph/graph-navigation";
+import { EMPTY_TRAIL, back, currentStep, forward, jump, restore, visit, type Trail } from "@/lib/aie/graph/trail";
+import type { SavedView, SavedViewState } from "@/lib/aie/server-graph-views";
 import { GraphCanvas } from "@/components/graph/graph-canvas";
 import { FilterPanel, GRAPH_DETAILS, Inspector, TIME_WINDOWS, TypeDot, type GraphDetail, type TimeWindow } from "@/components/graph/graph-panels";
 import { graphTheme, isDarkTheme } from "@/components/graph/graph-style";
@@ -14,7 +17,7 @@ import { DEFAULT_FILTER, focusView, indexGraph, overviewView, type GraphFilter }
 import { forceLayout, layout3d, radialLayout, type GraphLayout3 } from "@/lib/aie/graph/layout";
 import { withEdgeIds } from "@/lib/aie/graph/client";
 import type { IntelGraph } from "@/lib/aie/graph/types";
-import { getIntelGraph } from "@/lib/aie/server-graph";
+import { getGraphVersion, getIntelGraph } from "@/lib/aie/server-graph";
 import { cn } from "@/lib/cn";
 
 const searchSchema = z.object({
@@ -125,7 +128,11 @@ function IntelGraphPage() {
   const dark = useDarkTheme();
   const theme = useMemo(() => graphTheme(dark), [dark]);
 
-  const query = useQuery({ queryKey: ["intel-graph"], queryFn: async () => withEdgeIds(JSON.parse(await getIntelGraph()) as IntelGraph), staleTime: 60_000 });
+  const query = useQuery({ queryKey: ["intel-graph"], queryFn: async () => withEdgeIds(JSON.parse(await getIntelGraph()) as IntelGraph), staleTime: 60_000, retry: 1 });
+  // New ingestion and re-analysis: the server rebuilds in the background; the open page offers the
+  // newer graph instead of changing the view under the analyst.
+  const version = useQuery({ queryKey: ["intel-graph-version"], queryFn: () => getGraphVersion(), refetchInterval: 20_000, enabled: query.isSuccess });
+  const newer = query.data && version.data?.builtAt && version.data.builtAt !== query.data.stats.builtAt ? version.data : null;
   const ix = useMemo(() => (query.data ? indexGraph(query.data) : null), [query.data]);
 
   const [filter, setFilter] = useState<GraphFilter>(DEFAULT_FILTER);
@@ -133,7 +140,12 @@ function IntelGraphPage() {
   const [detail, setDetail] = useState<GraphDetail>("standard");
   const [selectedNode, setSelectedNode] = useState<string | null>(center);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
-  const [trail, setTrail] = useState<string[]>(center ? [center] : []);
+  // The investigation trail (./graph/trail): steps focused in order, and where the analyst is.
+  const [trail, setTrail] = useState<Trail>(() => (center ? restore([center], 0) : EMPTY_TRAIL));
+  const [exitOpen, setExitOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [leaveAfterSave, setLeaveAfterSave] = useState(false);
+  const saved = useSavedViews();
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   const effective = useMemo<GraphFilter>(() => {
@@ -179,11 +191,57 @@ function IntelGraphPage() {
   const layout = useMemo(() => (view && dimension === "2d" ? (view.mode === "focus" ? radialLayout(view) : forceLayout(view)) : null), [view, dimension]);
   const layout3 = useMemo(() => (view && dimension === "3d" ? layout3d(view) : null), [view, dimension]);
 
-  const focus = (id: string | null) => {
-    navigate({ search: (s) => ({ ...s, focus: id ?? undefined }), replace: false });
+  /** Moves to a trail position: the URL follows (so a link to the page opens the same entity). */
+  const goTo = (t: Trail) => {
+    const id = currentStep(t);
+    setTrail(t);
+    navigate({ search: (s) => ({ ...s, focus: id ?? undefined }), replace: true });
     setSelectedNode(id);
     setSelectedEdge(null);
-    if (id) setTrail((t) => [...t.filter((x) => x !== id), id].slice(-8));
+  };
+  /** Focus an entity (a new step in the trail). Leaving focus goes through the confirmation. */
+  const focus = (id: string | null) => {
+    if (!id) {
+      if (center) setExitOpen(true);
+      return;
+    }
+    goTo(visit(trail, id));
+  };
+  const leaveFocus = () => {
+    setExitOpen(false);
+    setTrail(EMPTY_TRAIL);
+    navigate({ search: (s) => ({ ...s, focus: undefined }), replace: true });
+    setSelectedNode(null);
+    setSelectedEdge(null);
+  };
+  // Opened with ?focus=… from elsewhere (context panel, a shared link): add it to the trail.
+  useEffect(() => {
+    if (center && currentStep(trail) !== center) setTrail((t) => visit(t, center));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the URL only
+  }, [center]);
+
+  const labelOf = (id: string) => ix?.node.get(id)?.label ?? id.split(":").slice(1).join(":");
+  const viewState = (): SavedViewState => ({
+    trail: trail.steps,
+    pos: Math.max(0, trail.pos),
+    hops,
+    dimension,
+    detail,
+    windowValue,
+    filter: { ...filter, since: null },
+    labels: trail.steps.map(labelOf),
+  });
+  const openSaved = (v: SavedView) => {
+    const st = v.state;
+    setFilter({ ...DEFAULT_FILTER, ...st.filter, types: st.filter.types as GraphFilter["types"], since: null });
+    setWindowValue(st.windowValue);
+    setDetail(st.detail);
+    changeDimension(st.dimension === "3d" && no3d ? "2d" : st.dimension);
+    const t = restore(st.trail, st.pos);
+    setTrail(t);
+    navigate({ search: (s) => ({ ...s, focus: currentStep(t) ?? undefined, hops: st.hops === 2 ? 2 : undefined }), replace: true });
+    setSelectedNode(currentStep(t));
+    setSelectedEdge(null);
   };
   const setHops = (h: 1 | 2) => navigate({ search: (s) => ({ ...s, hops: h === 1 ? undefined : h }), replace: true });
 
@@ -223,6 +281,7 @@ function IntelGraphPage() {
               role="tab"
               aria-selected={!center}
               onClick={() => focus(null)}
+              title={center ? "Leave focus and return to the overview (asks first)" : "The most-reported entities of each type"}
               className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium", !center ? "bg-bg-subtle text-fg" : "text-muted hover:text-fg")}
             >
               <Orbit className="size-3.5" /> Overview
@@ -239,6 +298,10 @@ function IntelGraphPage() {
               Focus
             </button>
           </div>
+          <Hint label="About Overview and Focus">
+            <b>Overview</b> shows the most-reported entities of each type and the links among them (Detail sets how many). <b>Focus</b> puts one entity in the centre with everything linked to it around
+            it: select an entity and press Focus, or double-click it. Each focus is added to the trail under the graph.
+          </Hint>
           <div role="radiogroup" aria-label="Dimensions" className="inline-flex rounded-lg border border-border bg-bg-elevated p-0.5">
             {(["3d", "2d"] as const).map((d) => (
               <button
@@ -256,6 +319,9 @@ function IntelGraphPage() {
               </button>
             ))}
           </div>
+          <Hint label="About 3D and 2D">
+            <b>3D</b>: drag to rotate, scroll to zoom, right-drag to pan; it turns slowly until you touch it. <b>2D</b>: a flat map, drag to pan, scroll to zoom. Both show the same entities and links.
+          </Hint>
           {center && (
             <div role="radiogroup" aria-label="Depth" className="inline-flex rounded-lg border border-border bg-bg-elevated p-0.5">
               {([1, 2] as const).map((h) => (
@@ -272,6 +338,13 @@ function IntelGraphPage() {
               ))}
             </div>
           )}
+          {center && (
+            <Hint label="About Direct links and 2 hops">
+              <b>Direct links</b>: only what is linked to the centre entity (its tools, techniques, targets…). <b>2 hops</b>: also the strongest links of those entities, e.g. who else uses the same
+              tools. Busier; use it to find indirect connections.
+            </Hint>
+          )}
+          <GuideButton />
 
           <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted">
             {stats && (
@@ -309,6 +382,20 @@ function IntelGraphPage() {
         </div>
 
         {no3d && <div className="border-b border-border bg-bg-elevated px-4 py-1.5 text-xs text-muted md:px-6">{no3d}</div>}
+        {newer && query.data && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-bg-elevated px-4 py-1.5 text-xs md:px-6" role="status">
+            <span className="inline-block size-1.5 rounded-full" style={{ backgroundColor: "var(--color-primary)" }} />
+            <span className="text-fg">New intelligence available</span>
+            <span className="text-muted">
+              {(newer.reports - query.data.stats.reports >= 0 ? "+" : "") + (newer.reports - query.data.stats.reports).toLocaleString()} reports ·{" "}
+              {(newer.nodes - query.data.stats.nodes >= 0 ? "+" : "") + (newer.nodes - query.data.stats.nodes).toLocaleString()} entities ·{" "}
+              {(newer.edges - query.data.stats.edges >= 0 ? "+" : "") + (newer.edges - query.data.stats.edges).toLocaleString()} links
+            </span>
+            <button type="button" onClick={() => query.refetch()} className="ml-auto inline-flex h-6 items-center gap-1 rounded-md px-2 font-medium hover:bg-bg-subtle" style={{ color: "var(--color-primary)" }}>
+              <RefreshCw className={cn("size-3", query.isFetching && "motion-safe:animate-spin")} /> Update the graph
+            </button>
+          </div>
+        )}
         {query.isPending ? (
           <div className="grid flex-1 place-items-center p-10">
             <div className="flex items-center gap-3 text-sm text-muted">
@@ -390,33 +477,17 @@ function IntelGraphPage() {
               ) : (
                 <div className="grid flex-1 place-items-center p-8 text-center text-sm text-muted">No entity passes the current filters. Widen the filters on the left.</div>
               )}
-              {(trail.length > 0 || centerNode) && (
-                <nav aria-label="Visited entities" className="absolute bottom-3 left-3 right-16 flex flex-wrap items-center gap-1">
-                  <button type="button" onClick={() => focus(null)} className="rounded-md border border-border bg-bg-elevated/90 px-2 py-1 text-[11px] text-muted backdrop-blur hover:text-fg">
-                    Overview
-                  </button>
-                  {trail.map((id) => {
-                    const n = ix.node.get(id);
-                    if (!n) return null;
-                    return (
-                      <span key={id} className="flex items-center gap-1">
-                        <ChevronRight className="size-3 text-subtle" />
-                        <button
-                          type="button"
-                          onClick={() => focus(id)}
-                          className={cn(
-                            "inline-flex max-w-[11rem] items-center gap-1.5 rounded-md border bg-bg-elevated/90 px-2 py-1 text-[11px] backdrop-blur",
-                            id === center ? "border-primary text-fg" : "border-border text-muted hover:text-fg",
-                          )}
-                        >
-                          <TypeDot type={n.type} theme={theme} size={6} />
-                          <span className="truncate">{n.label}</span>
-                        </button>
-                      </span>
-                    );
-                  })}
-                </nav>
-              )}
+              <TrailBar
+                trail={trail}
+                nodeOf={(id) => ix.node.get(id)}
+                theme={theme}
+                onJump={(k) => goTo(jump(trail, k))}
+                onBack={() => goTo(back(trail))}
+                onForward={() => goTo(forward(trail))}
+                onExit={() => setExitOpen(true)}
+                onSave={() => setSaveOpen(true)}
+                saved={<SavedViewsMenu views={saved.views} onServer={saved.onServer} onOpen={openSaved} onDelete={(v) => saved.remove.mutate(v.id)} />}
+              />
             </section>
 
             {/* Right: details of the selection, or insights. */}
@@ -443,6 +514,42 @@ function IntelGraphPage() {
           </div>
         )}
       </div>
+      <ExitFocusDialog
+        open={exitOpen}
+        onOpenChange={setExitOpen}
+        labels={trail.steps.map(labelOf)}
+        onLeave={leaveFocus}
+        onSaveFirst={() => {
+          setExitOpen(false);
+          setLeaveAfterSave(true);
+          setSaveOpen(true);
+        }}
+      />
+      <SaveViewDialog
+        key={saveOpen ? "open" : "closed"}
+        open={saveOpen}
+        onOpenChange={(o) => {
+          setSaveOpen(o);
+          if (!o) setLeaveAfterSave(false);
+        }}
+        labels={trail.steps.map(labelOf)}
+        busy={saved.save.isPending}
+        error={saved.save.error instanceof Error ? saved.save.error.message : null}
+        onSave={(name, note) =>
+          saved.save.mutate(
+            { name, note, state: viewState() },
+            {
+              onSuccess: () => {
+                setSaveOpen(false);
+                if (leaveAfterSave) {
+                  setLeaveAfterSave(false);
+                  leaveFocus();
+                }
+              },
+            },
+          )
+        }
+      />
     </AppShell>
   );
 }
