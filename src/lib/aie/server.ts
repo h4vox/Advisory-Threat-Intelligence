@@ -1011,6 +1011,8 @@ export const getReport = createServerFn({ method: "GET" }).middleware([analystMi
             mongoReport.rawHtml.includes("&lt;img") ||
             mongoReport.rawHtml.includes("&lt;p&gt;") ||
             mongoReport.rawHtml.includes("%PDF-") ||
+            // Rendered from text by the old paragraph-only renderer: code fences shown as text.
+            /<p>[^<]*```/.test(mongoReport.rawHtml) ||
             (mongoReport.contentType?.includes("pdf") && mongoReport.rawHtml.includes("stream")) ||
             (mongoReport.wordCount > 300 && htmlWordCount < mongoReport.wordCount * 0.35);
 
@@ -2021,6 +2023,7 @@ export const updateCrawlerConfig = createServerFn({ method: "POST" }).middleware
       requireIocs: z.boolean().optional(),
       requireAttck: z.boolean().optional(),
       rejectMarketingNoise: z.boolean().optional(),
+      minEmulationGrade: z.enum(["chain", "procedures", "context", "news"]).optional(),
       dedupMethod: z.enum(["canonical_url", "content_hash", "both", "smart_hybrid"]).optional(),
       activeSources: z.array(z.string()).optional(),
       targetResourceTypes: z.array(z.string()).optional(),
@@ -2249,6 +2252,7 @@ export const getReportPdf = createServerFn({ method: "GET" }).middleware([analys
           rawHtml.includes("&lt;img") ||
           rawHtml.includes("&lt;p&gt;") ||
           rawHtml.includes("%PDF-") ||
+          /<p>[^<]*```/.test(rawHtml) ||
           (doc.contentType?.includes("pdf") && rawHtml.includes("stream")) ||
           (doc.wordCount > 300 && htmlWordCount < doc.wordCount * 0.35);
 

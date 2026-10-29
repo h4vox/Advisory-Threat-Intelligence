@@ -94,6 +94,7 @@ const INTRUSION_TERMS: Array<[RegExp, string]> = [
   [/\bmalware analysis report\b|\bmar\b|\btechnical (?:analysis|report)\b|\bthreat (?:report|intelligence report)\b|\bincident report\b/i, "technical threat report"],
   [/\bkill[- ]chain\b|\battack[- ]chain\b|\bexecution chain\b|\binfection chain\b|\bmitre att&?ck\b/i, "attack chain / ATT&CK"],
   [/\bdetection (?:rule|logic|signatures?|content)\b|\bhunting (?:quer(?:y|ies)|hypothes[ei]s)\b|\bsnort\b|\bsuricata\b|\bsigma rule\b|\byara rule\b/i, "detection content"],
+  [/\bmulti[- ]stage\b|\bdelivery (?:chain|platform|framework)\b|\bstep[- ]by[- ]step\b|\bclickfix\b|\bsteganograph\w*|\bfileless\b|\bin[- ]memory (?:execution|payload|loader)\b|\bsideload\w*/i, "chain / delivery tradecraft"],
 ];
 
 const NEGATIVE_TERMS: Array<[RegExp, string, number]> = [
@@ -121,12 +122,15 @@ const NEGATIVE_TERMS: Array<[RegExp, string, number]> = [
   [/\bultimate guide\b|\bcomplete guide\b|\beverything you need to know\b|\btop \d+ (?:tools|vendors|solutions|tips|ways|reasons)\b|\bbest \d+ (?:tools|vendors|solutions|antivirus|vpns?)\b|\bbuyer'?s guide\b|\bmagic quadrant\b|\bforrester waves? report\b/i, "buyer's guide / comparison", 0.3],
   [/\bstate of (?:[a-z ]+ )?(?:security|ransomware|threats?|the [a-z]+) (?:report )?20\d\d\b|\bannual (?:threat )?report 20\d\d\b|\btrends to watch\b|\bpredictions for 20\d\d\b|\byear in review\b/i, "vendor trend / predictions report", 0.22],
   [/\bop-?ed\b|\bcommentary\b|\bmy take\b|\bhot take\b/i, "opinion / commentary", 0.2],
+  // Vendor patch / update notices: a CVE in the title still fetches them, the emulation-value floor decides.
+  [/\b(?:patch(?:es|ed)? (?:released|available|now)|(?:releases?|issues?|ships?) (?:a )?(?:patch|fix|security update)s?|security updates? (?:for|address)|update now|patch tuesday|fixes (?:critical|high|\d+)|patched (?:in|by)|hotfix)\b/i, "patch / update notice", 0.26],
   [/\bdata privacy day\b|\bcyber(?:security)? awareness month\b|\bworld (?:password|backup) day\b|\bstay safe online\b|\bpassword (?:hygiene|tips)\b/i, "awareness campaign", 0.3],
 ];
 
 const URL_NEGATIVE: Array<[RegExp, string]> = [
   [/\/(?:webinars?|webcasts?|podcasts?|events?|press(?:-releases?)?|news-?releases?|newsroom|careers?|jobs|awards?|customers?|customer-stories|partners?|pricing|demo|trial|resources\/(?:webinars?|ebooks?|datasheets?))(?:\/|$)/i, "non-research URL section"],
   [/\/(?:company|about|investor|ir|culture|life-at)(?:\/|$)/i, "corporate URL section"],
+  [/\/(?:security-news|cyber-news|news-digest|daily-news|weekly-news)(?:\/|$)/i, "news section URL"],
 ];
 const URL_POSITIVE: Array<[RegExp, string]> = [
   [/\/(?:threat-?intel(?:ligence)?|threat-research|research|labs|advisor(?:y|ies)|reports?|dfir|incident-response|security-research|threats?|malware|apt|unit42|talos)(?:\/|$)/i, "research URL section"],

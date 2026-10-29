@@ -20,16 +20,20 @@
  *  4. Topic: the relevance pre-score (title, summary, URL) finds only off-topic signals — webinars,
  *     podcasts, product launches, earnings, hiring, marketing, events — and nothing adversarial.
  *  5. Stub: under 120 words (when the count is known) with no technical content at all.
+ *  6. Low emulation value (text at hand): news, patch notes and vulnerability notices that describe
+ *     no attacker procedures (./emulation-value grade "news"). Not applied to CERT / government
+ *     advisories, tier-1 sources, structured records or an analyst's Restore.
  *
  * SERVER ONLY (the topic rule uses the bundled ATT&CK knowledge through scoreRelevance).
  */
 import { RELEVANCE_SKIP_THRESHOLD, scoreRelevance } from "./collector/relevance.ts";
-import { assessTechnicalDepth } from "./technical-depth.ts";
+import { assessTechnicalDepth, isAdvisoryPublisher } from "./technical-depth.ts";
+import { assessEmulationValue, type EmulationValue } from "./emulation-value.ts";
 
 /** Bump when the rules change so stored reports are checked again. */
-export const LIBRARY_GATE_VERSION = 3;
+export const LIBRARY_GATE_VERSION = 4;
 
-export type GateRule = "page_type" | "content" | "topic" | "stub";
+export type GateRule = "page_type" | "content" | "topic" | "stub" | "low_value";
 
 export type GateInput = {
   title: string;
@@ -62,6 +66,8 @@ export type GateVerdict = {
   protectedBy: string[];
   /** Relevance pre-score when the topic rule ran (0–1). */
   relevance: number | null;
+  /** Emulation value of the text, when the text was at hand. */
+  emulation?: EmulationValue | null;
 };
 
 const NON_CTI_HOSTS = [/^(?:www\.)?(?:uscis|ice|e-verify)\.gov$/i, /^edit\.dhs\.gov$/i];
@@ -103,6 +109,26 @@ function pageTypeReason(url: string, title: string): string | null {
 }
 
 export function evaluateLibraryReport(input: GateInput): GateVerdict {
+  const v = evaluateRules(input);
+  const text = input.text ?? "";
+  const emulation = text.length >= 300 ? assessEmulationValue({ title: input.title ?? "", text }) : null;
+  if (v.verdict === "reject" || !emulation) return { ...v, emulation };
+  // Rule 6: low emulation value. Hard evidence of an advisory, a trusted tier or an analyst decides otherwise.
+  const exempt = input.keep || input.structured || input.sourceTier === 1 || isAdvisoryPublisher(input.url ?? "");
+  if (emulation.grade === "news" && !exempt) {
+    return {
+      verdict: "reject",
+      rule: "low_value",
+      reasons: [emulation.signals[0] ?? "No attacker procedures", "Nothing an emulation team can replay: no procedure steps, artifacts or techniques"],
+      protectedBy: [],
+      relevance: v.relevance,
+      emulation,
+    };
+  }
+  return { ...v, emulation };
+}
+
+function evaluateRules(input: GateInput): GateVerdict {
   const title = input.title ?? "";
   const url = input.url ?? "";
   // The text decides when we have it; stored counts can come from page chrome (a footer link to
@@ -164,6 +190,7 @@ export function evaluateLibraryReport(input: GateInput): GateVerdict {
 
 /** One line for the report card / table ("Hidden as unrelated: …"). */
 export function gateReasonLine(v: Pick<GateVerdict, "reasons"> & { rule?: GateRule | string | null }): string {
-  const what = v.rule === "content" ? "Hidden as not technical threat intelligence" : "Hidden as unrelated";
+  const what =
+    v.rule === "content" ? "Hidden as not technical threat intelligence" : v.rule === "low_value" ? "Hidden as low emulation value" : "Hidden as unrelated";
   return `${what}: ${v.reasons.join(" · ")}`;
 }

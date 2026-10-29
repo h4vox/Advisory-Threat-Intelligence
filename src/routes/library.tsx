@@ -40,6 +40,7 @@ import { researchCategory } from "@/lib/aie/research-taxonomy";
 import { DataSourceNotice } from "@/components/layout/data-source-notice";
 import { cn } from "@/lib/cn";
 import type { DocType, ReportListItem, SourceTier } from "@/lib/aie/types";
+import { EMULATION_GRADE_META, effectiveGrade, type EmulationGrade } from "@/lib/aie/emulation-value";
 import { ReportEvidenceDialog } from "@/components/evidence/report-evidence-dialog";
 import { ActionButton, PageHeader, SegmentedTabs } from "@/components/layout/page";
 import { Pagination } from "@/components/templates/page-templates";
@@ -73,7 +74,7 @@ const librarySearchSchema = z.object({
   tag: z.string().optional(),
   /** A research category id (research-taxonomy), e.g. from the coverage view. */
   research: z.string().optional(),
-  sort: z.enum(["published", "newest", "quality", "iocs", "words", "rejected"]).optional(),
+  sort: z.enum(["published", "newest", "emulation", "quality", "iocs", "words", "rejected"]).optional(),
   /** Publication window, e.g. from the dashboard's "latest" links. */
   published: z.enum(["any", "7d", "30d", "90d", "365d"]).optional(),
 });
@@ -83,6 +84,9 @@ export const Route = createFileRoute("/library")({
   component: LibraryPage,
 });
 
+/** The Library loads every report, in pages of this size (up to LIST_MAX_PAGES pages). */
+const LIST_PAGE = 500;
+const LIST_MAX_PAGES = 40;
 const PAGE_SIZES = [20, 40, 60, 100, "all"] as const;
 type PageSize = (typeof PAGE_SIZES)[number];
 
@@ -90,7 +94,13 @@ const TEXT_SORTS: ReportSortKey[] = ["title", "publisher", "type"];
 
 type ViewMode = "cards" | "table" | "list";
 const VIEW_KEY = "aie_library_view";
-type OrderBy = "relevance" | "newest" | "published" | "quality" | "iocs" | "techniques" | "words";
+type OrderBy = "relevance" | "newest" | "published" | "emulation" | "quality" | "iocs" | "techniques" | "words";
+
+const GRADE_ORDER: Array<EmulationGrade | "ungraded"> = ["chain", "procedures", "context", "news", "ungraded"];
+const gradeRank = (r: ReportListItem) => {
+  const g = effectiveGrade(r.emulation);
+  return g ? EMULATION_GRADE_META[g].rank : -1;
+};
 /** The default order: the latest research first, by the date the source published it. */
 const DEFAULT_ORDER: OrderBy = "published";
 
@@ -115,6 +125,8 @@ type Derived = {
   techniques: string[];
   cves: string[];
   emulation: boolean;
+  /** Emulation value grade (./emulation-value), "ungraded" until the library check has run. */
+  grade: EmulationGrade | "ungraded";
   published: number;
   research: string[];
 };
@@ -130,6 +142,7 @@ function derive(r: ReportListItem): Derived {
     techniques: techniquesOf(r).map((t) => t.id),
     cves: cvesOf(r),
     emulation: hasEmulationContent(r),
+    grade: effectiveGrade(r.emulation) ?? "ungraded",
     published: dateValue(r.publishedAt),
     research: (r.research?.labels ?? []).map((l) => l.id),
   };
@@ -177,6 +190,7 @@ function LibraryPage() {
   const [selMalware, setSelMalware] = useState<string[]>([]);
   const [selTactics, setSelTactics] = useState<string[]>([]);
   const [selTags, setSelTags] = useState<string[]>(searchParams.tag ? [searchParams.tag] : []);
+  const [selEmulation, setSelEmulation] = useState<string[]>([]);
   const [selResearch, setSelResearch] = useState<string[]>(searchParams.research && researchCategory(searchParams.research) ? [searchParams.research] : []);
   // A link to /library?research=… while the Library is already open selects that category too.
   useEffect(() => {
@@ -292,9 +306,18 @@ function LibraryPage() {
     error: reportsError,
     refetch: refetchReports,
   } = useQuery({
-    // The server returns the first 500 in this order, so a large library still shows the latest research.
+    // The whole library, fetched in pages of 500 (newest first), so tabs, facets and counts cover
+    // every report rather than the latest 500.
     queryKey: ["reports-all", serverOrder],
-    queryFn: () => listReports({ data: { limit: 500, order: serverOrder, view: "list" } }),
+    queryFn: async () => {
+      const out: ReportListItem[] = [];
+      for (let page = 0; page < LIST_MAX_PAGES; page++) {
+        const batch = await listReports({ data: { limit: LIST_PAGE, offset: page * LIST_PAGE, order: serverOrder, view: "list" } });
+        out.push(...batch);
+        if (batch.length < LIST_PAGE) break;
+      }
+      return out;
+    },
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
   });
@@ -643,6 +666,17 @@ function LibraryPage() {
         label: <span style={{ color: "var(--color-cat-malware)" }}>{o.value}</span>,
       })),
       tactics: countBy(basePool.map((r) => d(r).tactics)),
+      emulation: countBy(basePool.map((r) => [d(r).grade]))
+        .sort((a, b) => GRADE_ORDER.indexOf(a.value as EmulationGrade) - GRADE_ORDER.indexOf(b.value as EmulationGrade))
+        .map((o) =>
+          o.value === "ungraded"
+            ? { ...o, label: <span className="text-subtle">Not graded yet</span>, text: "Not graded yet" }
+            : {
+                ...o,
+                label: <span title={EMULATION_GRADE_META[o.value as EmulationGrade].description}>{EMULATION_GRADE_META[o.value as EmulationGrade].label}</span>,
+                text: EMULATION_GRADE_META[o.value as EmulationGrade].label,
+              },
+        ),
       research: countBy(basePool.map((r) => d(r).research)).map((o) => {
         const c = researchCategory(o.value);
         return { ...o, label: <span title={c?.label}>{c?.short ?? o.value}{c?.scope === "bas" ? <span className="text-subtle"> · BAS</span> : null}</span>, text: c?.short ?? o.value };
@@ -693,6 +727,7 @@ function LibraryPage() {
       if (!anyMatch(selTactics, x.tactics)) return false;
       if (!anyMatch(selTags, r.tags ?? [])) return false;
       if (!anyMatch(selResearch, x.research)) return false;
+      if (!anyMatch(selEmulation, [x.grade])) return false;
       if (fromTs !== null && (!x.published || x.published < fromTs)) return false;
       if (toTs !== null && (!x.published || x.published > toTs)) return false;
       if (minQuality > 0 && r.qualityScore < minQuality) return false;
@@ -709,6 +744,8 @@ function LibraryPage() {
         case "published":
           // Undated reports (0) sort last; ingest time orders reports published the same day.
           return d(b).published - d(a).published || dateValue(b.ingestedAt) - dateValue(a.ingestedAt);
+        case "emulation":
+          return gradeRank(b) - gradeRank(a) || (b.emulation?.score ?? 0) - (a.emulation?.score ?? 0) || d(b).published - d(a).published;
         case "quality":
           return b.qualityScore - a.qualityScore;
         case "iocs":
@@ -737,6 +774,7 @@ function LibraryPage() {
     selTactics,
     selTags,
     selResearch,
+    selEmulation,
     fromTs,
     toTs,
     minQuality,
@@ -770,6 +808,10 @@ function LibraryPage() {
     ...selMalware.map((v) => ({ label: `Malware: ${v}`, clear: () => setSelMalware((s) => s.filter((x) => x !== v)) })),
     ...selTactics.map((v) => ({ label: `Tactic: ${v}`, clear: () => setSelTactics((s) => s.filter((x) => x !== v)) })),
     ...selTags.map((v) => ({ label: `Tag: ${v}`, clear: () => setSelTags((s) => s.filter((x) => x !== v)) })),
+    ...selEmulation.map((v) => ({
+      label: `Emulation: ${v === "ungraded" ? "not graded" : EMULATION_GRADE_META[v as EmulationGrade].label}`,
+      clear: () => setSelEmulation((s) => s.filter((x) => x !== v)),
+    })),
     ...selResearch.map((v) => ({ label: `Research: ${researchCategory(v)?.short ?? v}`, clear: () => setSelResearch((s) => s.filter((x) => x !== v)) })),
     ...(windowDays ? [{ label: `Published: ${PUBLISHED_WINDOWS.find((w) => w.value === publishedWindow)?.label.toLowerCase()}`, clear: () => setPublishedWindow("any") }] : []),
     ...(publishedWindow === "custom" && dateFrom ? [{ label: `From ${dateFrom}`, clear: () => setDateFrom("") }] : []),
@@ -795,6 +837,7 @@ function LibraryPage() {
     selTactics,
     selTags,
     selResearch,
+    selEmulation,
     publishedWindow,
     dateFrom,
     dateTo,
@@ -862,6 +905,7 @@ function LibraryPage() {
     setSelTactics([]);
     setSelTags([]);
     setSelResearch([]);
+    setSelEmulation([]);
     setPublishedWindow("any");
     setDateFrom("");
     setDateTo("");
@@ -908,13 +952,8 @@ function LibraryPage() {
 
   // ---------------------------------------------------------------- KPIs
   const kpis = useMemo<LibraryKpi[]>(() => {
-    const typeCount = (types: DocType[]) => {
-      if (coverage && Object.keys(coverage.byDocType).length > 0) {
-        return types.reduce((n, t) => n + (coverage.byDocType[t] ?? 0), 0);
-      }
-      return acceptedReports.filter((r) => d(r).types.some((t) => types.includes(t))).length;
-    };
-    const src = coverage && Object.keys(coverage.byDocType).length > 0 ? "Coverage index" : "Loaded reports";
+    // Each tile counts exactly what its tab lists (same document types, same reports).
+    const typeCount = (tabId: string) => tabCounts[tabId] ?? 0;
     let atomic: number | null = coverage?.atomicTechniques ?? null;
     let atomicHint: string = "Coverage index";
     if (atomic === null && emulationOptions) {
@@ -926,27 +965,27 @@ function LibraryPage() {
       {
         id: "reports",
         label: "Reports",
-        value: coverage?.total ?? acceptedReports.length,
+        value: acceptedReports.length,
         kind: "source",
         icon: FileText,
-        hint: rejectedCount > 0 ? `${rejectedCount} hidden` : src,
+        hint: rejectedCount > 0 ? `${rejectedCount} hidden` : "In the library",
         onClick: () => setDocTab("ALL"),
         active: docTab === "ALL",
       },
       {
         id: "advisories",
         label: "Advisories",
-        value: typeCount(["THREAT_ADVISORY", "VULNERABILITY_ADVISORY", "KEV_ENTRY"]),
+        value: typeCount("advisory"),
         kind: "advisory",
         icon: Megaphone,
-        hint: "Threat, vulnerability & KEV",
+        hint: "Threat advisories",
         onClick: () => setDocTab("advisory"),
         active: docTab === "advisory",
       },
       {
         id: "emulation",
         label: "Emulation plans",
-        value: typeCount(["ADVERSARY_EMULATION_PLAN", "MICRO_EMULATION_PLAN"]),
+        value: typeCount("emulation"),
         kind: "emulation",
         icon: Swords,
         hint: "Full & micro plans",
@@ -956,7 +995,7 @@ function LibraryPage() {
       {
         id: "flows",
         label: "Attack flows",
-        value: typeCount(["ATTACK_FLOW"]),
+        value: typeCount("flow"),
         kind: "flow",
         icon: GitBranch,
         hint: "CTID Attack Flow",
@@ -980,11 +1019,18 @@ function LibraryPage() {
         hint: atomicHint,
       },
     ];
-  }, [coverage, acceptedReports, rejectedCount, d, emulationOptions, libraryTechniques, docTab]);
+  }, [coverage, acceptedReports, rejectedCount, tabCounts, emulationOptions, libraryTechniques, docTab]);
 
   // ---------------------------------------------------------------- sidebar
   const sidebar = (
     <FacetPanel activeCount={activeFiltersCount} onClearAll={resetFilters}>
+      <FacetGroup
+        title="Emulation value"
+        options={facets.emulation}
+        selected={selEmulation}
+        onToggle={(v) => setSelEmulation((s) => toggle(s, v))}
+        onClear={() => setSelEmulation([])}
+      />
       <FacetGroup
         title="Document type"
         options={facets.docTypes}
@@ -1346,6 +1392,7 @@ function LibraryPage() {
                   >
                     {isDeepSearchActive && <option value="relevance">Relevance</option>}
                     <option value="newest">Newest ingested</option>
+                    <option value="emulation">Emulation value</option>
                     <option value="published">Newest published</option>
                     <option value="quality">Quality score</option>
                     <option value="techniques">Most techniques</option>

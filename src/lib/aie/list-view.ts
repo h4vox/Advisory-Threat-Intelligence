@@ -35,6 +35,9 @@ export function slimForList<T extends object>(item: T): T {
     if (next.evidence && typeof next.evidence === "object") next.evidence = { ...next.evidence, excluded: [], sections: [] };
     (out as { analysis?: unknown }).analysis = next;
   }
+  const emulation = (item as { emulation?: { steps?: unknown } }).emulation;
+  // The list shows the grade and its reasons; the quoted steps are for the report page.
+  if (emulation && typeof emulation === "object") (out as { emulation?: unknown }).emulation = { ...emulation, steps: [] };
   if (Array.isArray(src.iocs)) {
     (out as { iocs?: unknown }).iocs = (src.iocs as Array<Record<string, Json>>).map((i) => {
       const { evidence: _evidence, original: _original, ...rest } = i ?? {};

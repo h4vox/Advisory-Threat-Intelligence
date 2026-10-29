@@ -128,6 +128,8 @@ import {
   supersedeWithCanonical,
 } from "../mongodb/collector-repo.server";
 import type { TextSection } from "./extract";
+import { EMULATION_GRADE_META, assessEmulationValue, summarizeEmulation } from "./emulation-value";
+import { isAdvisoryPublisher } from "./technical-depth";
 import { resolvePublicationDate, type PublishedDate } from "./published-date";
 import { mongoAnalyseNewlyIngested } from "../mongodb/library-review-repo.server";
 import type { ReportAttachment, ReportMirror } from "./types";
@@ -421,6 +423,7 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
     requireIocs: false,
     requireAttck: false,
     rejectMarketingNoise: true,
+    minEmulationGrade: "context",
     dedupMethod: "smart_hybrid",
     activeSources: [],
     targetResourceTypes: [
@@ -2645,6 +2648,8 @@ export async function executeCrawlJob(
         // 4.4 Heuristic Qualification Baseline & 5-Dimensional AI Agent Validation
         const isFeedEntry = current.discoveryMethod === "rss_feed";
         const qual = qualifyContent(textContent, docTitle, current.canonicalUrl, config, isFeedEntry);
+        // What an emulation team gets out of it: attack chain / procedures / context / news.
+        const emulation = assessEmulationValue({ title: docTitle, text: textContent });
 
         let agentResult: AgentEvaluationResult | null = null;
 
@@ -2741,6 +2746,23 @@ export async function executeCrawlJob(
             logger.agent("FAILSAFE", `evaluateResourceWithAgent non-blocking fallback: ${(agentErr as Error).message}`);
             noteAiEvalFailure((agentErr as Error).message);
             agentResult = null;
+          }
+        }
+
+        // Emulation value floor (Settings → crawler, default "context"): news, patch notes and
+        // vulnerability notices without attacker procedures stay out, even when they name a CVE.
+        // CERT / government advisories and tier-1 sources are exempt; so is a report in which the AI
+        // reviewer found real procedures and attack progression that the rules missed.
+        if (qual.qualified) {
+          const minGrade = config.minEmulationGrade ?? "context";
+          const below = EMULATION_GRADE_META[emulation.grade].rank < EMULATION_GRADE_META[minGrade].rank;
+          const exempt = isAdvisoryPublisher(current.canonicalUrl) || registryEntry(current.sourceId ?? "")?.tier === 1;
+          const aiSawProcedures =
+            !!agentResult?.scoreBreakdown && agentResult.scoreBreakdown.proceduralDepth >= 15 && agentResult.scoreBreakdown.attackProgression >= 10;
+          if (below && !exempt && !aiSawProcedures) {
+            qual.qualified = false;
+            qual.rejectionReason = `REJECTED: Emulation value "${EMULATION_GRADE_META[emulation.grade].label}" is below the minimum "${EMULATION_GRADE_META[minGrade].label}": ${emulation.signals[0] ?? "no attacker procedures"}`;
+            logger.qualification(current.canonicalUrl, "REJECT", qual.score, qual.rejectionReason);
           }
         }
 
@@ -3056,8 +3078,9 @@ export async function executeCrawlJob(
                 analysis: intelAnalysis,
                 discoveryPath: current.discoveryPath,
                 simulationScore: qual.simulationScore,
-                isEmergingTechnique: qual.isEmergingTechnique,
-                noveltyRationale: qual.noveltyRationale,
+                isEmergingTechnique: qual.isEmergingTechnique || emulation.novelty.length > 0,
+                noveltyRationale: qual.noveltyRationale ?? emulation.novelty[0],
+                emulation: summarizeEmulation(emulation),
                 aiVerified: isAiVerified,
                 aiQualityScore: aiScore,
                 aiAuditReason: aiReason,

@@ -975,7 +975,7 @@ function SettingsPage() {
                 Heuristic qualification & quality gate
               </h3>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
                     <label htmlFor="crawl-strictness-mode" className="font-medium text-fg">Strictness mode</label>
@@ -991,6 +991,24 @@ function SettingsPage() {
                     <option value="balanced">Balanced (Recommended standard)</option>
                     <option value="strict">Strict (High TTP & IOC density required)</option>
                   </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-sm">
+                    <label htmlFor="crawl-min-emulation" className="font-medium text-fg">Min emulation value</label>
+                  </div>
+                  <Select
+                    id="crawl-min-emulation"
+                    value={currentCrawl.minEmulationGrade || "context"}
+                    onValueChange={(v) => updateCrawlField("minEmulationGrade", v as "chain" | "procedures" | "context" | "news")}
+                    className="w-full"
+                  >
+                    <option value="news">Everything (news and patch notes too)</option>
+                    <option value="context">Context or better (skip news / patch notes)</option>
+                    <option value="procedures">Procedures or better</option>
+                    <option value="chain">Attack chains only</option>
+                  </Select>
+                  <p className="text-[11px] text-muted">CERT / government advisories are always kept.</p>
                 </div>
 
                 <div className="space-y-1.5">

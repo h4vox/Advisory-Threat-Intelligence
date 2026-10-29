@@ -4,6 +4,7 @@ import type { IntelAnalysis, IocHit } from "./types";
 import { decodeEntities } from "./extract";
 import { reportProfile, type ReportProfile } from "./report-profile";
 import type { ReportAiAnalysis } from "./report-ai-analysis";
+import { plainTextToHtml } from "./plain-text-html";
 
 export type DocumentPrintMetadata = {
   id: string;
@@ -124,15 +125,10 @@ export function extractMainContentHtml(rawHtml: string, baseUrl?: string): strin
   );
 
   if (!isHtml) {
-    // Plain text: decode entities and wrap as styled paragraphs
+    // Plain text (the stored extraction): code fences, headings and line breaks kept.
     return `
       <div class="content-body">
-        ${decodeEntities(rawHtml)
-          .split(/\n\n+/)
-          .map((p) => p.trim())
-          .filter((p) => p.length > 0)
-          .map((p) => `<p>${escapeHtml(p)}</p>`)
-          .join("\n")}
+        ${plainTextToHtml(decodeEntities(rawHtml))}
       </div>
     `;
   }

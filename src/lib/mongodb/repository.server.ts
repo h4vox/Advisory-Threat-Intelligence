@@ -30,6 +30,7 @@ import type {
 } from "../aie/types";
 import { DEFAULT_APP_SETTINGS } from "../aie/types";
 import type { ResearchLabels } from "../aie/research-taxonomy";
+import { isEmulationGrade, storedEmulation } from "../aie/emulation-value";
 import { comparePublishedDesc, type PublishedDate } from "../aie/published-date";
 import type { ReportAiAnalysis } from "../aie/report-ai-analysis";
 import type { TelemetryRefs } from "../aie/telemetry-refs";
@@ -375,6 +376,7 @@ export async function mongoGetReportById(id: string): Promise<ReportRecord | nul
     analysis: (doc.analysis as IntelAnalysis) || null,
     scoreBreakdown: doc.scoreBreakdown,
     simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+      emulation: storedEmulation(doc.emulation),
     isEmergingTechnique: Boolean(doc.isEmergingTechnique),
     noveltyRationale: (doc.noveltyRationale as string) || undefined,
     tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
@@ -796,6 +798,7 @@ export async function mongoListReports(params?: {
     version: 1,
     analysis: 1,
     simulationScore: 1,
+    emulation: 1,
     isEmergingTechnique: 1,
     noveltyRationale: 1,
     tags: 1,
@@ -944,6 +947,7 @@ export async function mongoListReports(params?: {
       pdfBase64: "",
       analysis: (doc.analysis as IntelAnalysis) || null,
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+      emulation: storedEmulation(doc.emulation),
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
       noveltyRationale: (doc.noveltyRationale as string) || undefined,
       tags: Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : deriveReportTags(doc as any),
@@ -1365,6 +1369,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   requireIocs: false,
   requireAttck: false,
   rejectMarketingNoise: true,
+  minEmulationGrade: "context",
   dedupMethod: "smart_hybrid",
   activeSources: [],
   targetResourceTypes: [
@@ -1440,6 +1445,7 @@ export async function mongoGetCrawlConfig(): Promise<CrawlConfig> {
       requireIocs: Boolean(doc.requireIocs ?? false),
       requireAttck: Boolean(doc.requireAttck ?? false),
       rejectMarketingNoise: Boolean(doc.rejectMarketingNoise ?? true),
+      minEmulationGrade: isEmulationGrade(doc.minEmulationGrade) ? doc.minEmulationGrade : "context",
       dedupMethod: doc.dedupMethod || "smart_hybrid",
       activeSources: (doc.activeSources as string[]) || [],
       targetResourceTypes: (doc.targetResourceTypes as ResourceKind[]) || DEFAULT_CRAWL_CONFIG.targetResourceTypes,
@@ -2685,6 +2691,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       classification: 1,
       resourceKind: 1,
       simulationScore: 1,
+    emulation: 1,
       isEmergingTechnique: 1,
       noveltyRationale: 1,
       excerpt: 1,
@@ -2722,6 +2729,7 @@ export async function mongoListRecentReports(limit = 6): Promise<ReportListItem[
       classification: doc.classification || "THREAT_REPORT",
       resourceKind: (doc.resourceKind as ResourceKind) || "CAMPAIGN_INTEL",
       simulationScore: typeof doc.simulationScore === "number" ? doc.simulationScore : undefined,
+      emulation: storedEmulation(doc.emulation),
       isEmergingTechnique: Boolean(doc.isEmergingTechnique),
       noveltyRationale: (doc.noveltyRationale as string) || undefined,
       version: Number(doc.version ?? 1),
