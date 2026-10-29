@@ -96,5 +96,5 @@ export type IntelGraph = {
   edges: GraphEdge[];
   /** Every report referenced by a node or edge. */
   reports: Record<string, GraphReportRef>;
-  stats: { reports: number; nodes: number; edges: number; stated: number; builtAt: string };
+  stats: { reports: number; nodes: number; edges: number; stated: number; /** Reports skipped because their stored data was malformed. */ skipped?: number; builtAt: string };
 };

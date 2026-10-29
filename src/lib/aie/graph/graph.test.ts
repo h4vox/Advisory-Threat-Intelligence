@@ -174,3 +174,14 @@ test("3D layout: deterministic, centre at the origin, rings on their shells", as
   const o = layout3d(overviewView(ix, DEFAULT_FILTER, 50), 40);
   for (const p of o.pos.values()) assert.ok(Math.hypot(p.x, p.y, p.z) <= 1.0001);
 });
+
+test("malformed stored reports never break the graph", () => {
+  const broken = [
+    { id: "b1", title: null, status: "acquired", publishedAt: null, iocs: [{ kind: "cve", value: null }, null, { kind: "domain", value: null }], analysis: { threatActors: [null, "APT29"], malware: null, ttps: [null, "T1566"], vulnerabilities: [null], attackChain: null, evidence: { techniques: [{ id: null, label: "observed" }, null], actors: [{ value: null, label: "observed" }], malware: null, targeting: [{ kind: "sector", value: null, status: "targeted" }], relationships: [null, { subject: null, object: null, label: "observed" }] } } },
+    { id: "b2", title: "x", extractedEntities: { attackRefs: [{ kind: "group", id: null, name: null }], techniques: [{ id: null }], cves: [null], threatActors: null, malwareFamilies: [null] }, aiAnalysis: { adversary: { name: null, malware: [null], tools: null, sectors: [null], regions: null }, attackChain: [null, { technique: { id: null } }] } },
+    null,
+  ] as unknown as GraphSourceReport[];
+  const g = buildIntelGraph([...broken, ...reports]);
+  assert.ok(g.nodes.some((n) => n.id === `actor:${apt29.id}`));
+  assert.ok(g.stats.reports >= 3);
+});

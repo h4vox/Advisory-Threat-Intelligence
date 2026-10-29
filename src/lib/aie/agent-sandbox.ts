@@ -16,7 +16,7 @@ export type LogLevel =
   | "AUTH"
   | "AUDIT";
 
-export type LogCategory = "sandbox" | "install" | "auth" | "agent" | "system" | "network";
+export type LogCategory = "sandbox" | "install" | "auth" | "agent" | "system" | "network" | "intel";
 
 export interface SandboxLogEntry {
   id: string;
