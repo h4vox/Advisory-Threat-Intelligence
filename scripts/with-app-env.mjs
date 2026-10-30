@@ -21,7 +21,7 @@
  */
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { constants as osConstants } from "node:os";
+import { constants as osConstants, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,6 +81,18 @@ export function readDotEnv(root) {
   } catch {
     return {};
   }
+}
+
+/**
+ * NODE_OPTIONS with a heap limit sized to the machine (half of RAM, 2–6 GB) unless one is set.
+ * Node's default limit is small for a server that holds the whole library and the Intel Graph in
+ * memory; running out of it ends the process.
+ */
+export function withHeapLimit(nodeOptions, totalBytes = totalmem()) {
+  const current = nodeOptions || "";
+  if (/--max-old-space-size/.test(current)) return current;
+  const mb = Math.max(2048, Math.min(6144, Math.floor(totalBytes / 1048576 / 2)));
+  return `${current} --max-old-space-size=${mb}`.trim();
 }
 
 /** File values under the process environment: an explicit override wins. */
@@ -143,6 +155,7 @@ function main(argv) {
     PATH: `${nodeBin}${pathSep}${existingPath}`,
     Path: `${nodeBin}${pathSep}${existingPath}`,
   });
+  env.NODE_OPTIONS = withHeapLimit(env.NODE_OPTIONS);
   const child = spawn(command, args, {
     stdio: "inherit",
     env,
@@ -157,6 +170,10 @@ function main(argv) {
     process.exit(127);
   });
   child.on("exit", (code, signal) => {
+    // Say why the server stopped: a silent exit looked like the app "stopping by itself".
+    if (signal === "SIGKILL") console.error("[with-app-env] the server was killed (SIGKILL): usually the system ran out of memory (check `dmesg`).");
+    else if (code === 134) console.error("[with-app-env] the server ran out of JavaScript heap memory (NODE_OPTIONS max-old-space-size).");
+    else if (code && !signal) console.error(`[with-app-env] the server exited with code ${code}.`);
     process.exit(exitStatusFromChild(code, signal));
   });
 }

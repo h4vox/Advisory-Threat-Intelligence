@@ -14,6 +14,19 @@ export function installProcessGuards(): void {
   if (typeof window !== "undefined" || typeof process === "undefined" || typeof process.on !== "function" || g.__aieProcessGuards__) return;
   g.__aieProcessGuards__ = true;
   process.on("unhandledRejection", (reason) => {
+    // A browser that gives up on a slow request ("aborted", ECONNRESET) is not a server fault.
+    if (isClientAbort(reason)) return;
     console.error("[server] unhandled promise rejection; the server keeps running:", reason);
   });
+  // A synchronous throw in a timer or callback (background jobs, daemons) would otherwise end the
+  // process and take the whole app down; log it and keep serving.
+  process.on("uncaughtException", (err) => {
+    if (isClientAbort(err)) return;
+    console.error("[server] uncaught exception; the server keeps running:", err);
+  });
+}
+
+function isClientAbort(e: unknown): boolean {
+  const o = e as { message?: unknown; code?: unknown; cause?: { code?: unknown } } | null;
+  return !!o && (o.code === "ECONNRESET" || o.cause?.code === "ECONNRESET") && /aborted/i.test(String(o.message ?? ""));
 }

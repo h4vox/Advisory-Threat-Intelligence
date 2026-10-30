@@ -135,14 +135,13 @@ async function readLibraryVersion(): Promise<string | null> {
             ing: { $max: "$ingestedAt" },
             ai: { $max: "$aiAnalysis.analysedAt" },
             rev: { $max: "$review.reviewedAt" },
-            ref: { $max: "$intelRefresh.at" },
           },
         },
       ])
       .toArray();
-    // Re-extracted intel (mongodb/intel-refresh-repo) counts in 10-minute steps, so a background
-    // refresh of the whole library rebuilds the graph a few times, not after every batch.
-    return v ? `${v.n}|${v.ing ?? ""}|${v.ai ?? ""}|${v.rev ?? ""}|${String(v.ref ?? "").slice(0, 15)}` : "0";
+    // Re-extracted intel (mongodb/intel-refresh-repo) reaches the graph with the regular rebuild
+    // (MAX_AGE_MS): a full rebuild takes seconds of CPU and must not follow every refresh batch.
+    return v ? `${v.n}|${v.ing ?? ""}|${v.ai ?? ""}|${v.rev ?? ""}` : "0";
   } catch {
     return null;
   }
