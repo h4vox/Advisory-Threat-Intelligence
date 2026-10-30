@@ -18,7 +18,8 @@ Kept in the repo so work can stop at any time and resume on "continue".
 ## Next (not started)
 1. Verify real time on a live install: compare `JOB-RT-` "found"/"ingested" with manual runs
    after a few runs; check `[ARCHIVE]` log lines and that cursors advance.
-2. Sources without `paginationPattern` and without a "next page" link get no archive walk:
-   add sitemap-based deep walk for them (cursor by sitemap date window).
+2. ~~Sitemap deep walk for sources without page numbers~~ — done: each real-time run reads the
+   next 60-day slice of the source's sitemap, going back up to three years, then starts over
+   (`sitemapUntil` on the archive cursor). Not yet verified against live sites.
 3. Older backlog: security audit items 3–6, DB migration phase 2, AGY persistent session,
    inference gateway.

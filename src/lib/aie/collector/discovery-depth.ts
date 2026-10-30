@@ -61,12 +61,14 @@ export function parseSitemapXml(xml: string, maxEntries = 50_000): ParsedSitemap
 /** Entries modified on/after `sinceIso` (entries without lastmod are kept only when keepUndated). */
 export function filterSitemapEntries(
   entries: SitemapEntry[],
-  opts: { sinceIso?: string | null; keepUndated?: boolean; limit?: number },
+  opts: { sinceIso?: string | null; untilIso?: string | null; keepUndated?: boolean; limit?: number },
 ): SitemapEntry[] {
   const since = opts.sinceIso ? Date.parse(opts.sinceIso) : NaN;
+  const until = opts.untilIso ? Date.parse(opts.untilIso) : NaN;
   const kept = entries.filter((e) => {
     if (!e.lastmod) return opts.keepUndated ?? false;
-    return !Number.isFinite(since) || Date.parse(e.lastmod) >= since;
+    const t = Date.parse(e.lastmod);
+    return (!Number.isFinite(since) || t >= since) && (!Number.isFinite(until) || t < until);
   });
   kept.sort((a, b) => (b.lastmod ?? "").localeCompare(a.lastmod ?? ""));
   return opts.limit ? kept.slice(0, opts.limit) : kept;
@@ -374,4 +376,25 @@ export function planBackfill(months: BackfillWindowMonths, now = Date.now()): Ba
     hostSpacingMs: 1500,
     maxRunMinutes: Math.round(10 * scale),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Real-time sitemap walk
+// ---------------------------------------------------------------------------
+
+/** Days of sitemap entries one real-time run reads per source. */
+export const REALTIME_SITEMAP_WINDOW_DAYS = 60;
+/** How far back the walk goes before it starts over from today. */
+export const REALTIME_SITEMAP_MAX_DAYS = 3 * 365;
+
+/**
+ * The sitemap date window for the next real-time run of a source: the 60 days before where the
+ * previous run stopped (`cursorUntil`), starting from now; past three years it starts over. Each
+ * run therefore reads an older slice of the archive than the last.
+ */
+export function realtimeSitemapWindow(cursorUntil: string | null | undefined, now = Date.now()): { sinceIso: string; untilIso: string } {
+  const day = 86_400_000;
+  let until = cursorUntil ? Date.parse(cursorUntil) : NaN;
+  if (!Number.isFinite(until) || until > now || until < now - REALTIME_SITEMAP_MAX_DAYS * day) until = now + day;
+  return { sinceIso: new Date(until - REALTIME_SITEMAP_WINDOW_DAYS * day).toISOString(), untilIso: new Date(until).toISOString() };
 }
