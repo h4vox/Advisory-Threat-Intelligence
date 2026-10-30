@@ -30,8 +30,11 @@ import { logger } from "../aie/logger";
 export const INTEL_REFRESH_VERSION = 1;
 export const AI_BACKFILL_DEFAULT_PER_HOUR = 30;
 
-const RULES_BATCH = 150;
-const RULES_EVERY_MS = 30_000;
+// Small batches, spaced out: the server stays responsive while the library is re-extracted.
+const RULES_BATCH = 40;
+const RULES_EVERY_MS = 45_000;
+/** The Library's report list is rebuilt at most this often while a refresh runs. */
+const LIST_INVALIDATE_EVERY_MS = 10 * 60_000;
 const AI_EVERY_MS = 60_000;
 const AI_RETRY_AFTER_MS = 24 * 3600_000;
 const AI_PAUSE_AFTER_FAILURES_MS = 30 * 60_000;
@@ -45,7 +48,47 @@ const g = globalThis as typeof globalThis & {
   __intelAiLastRun__?: number;
   __intelAiBudget__?: number;
   __intelRulesLastRun__?: number;
+  __intelListInvalidatedAt__?: number;
+  __intelPendingInvalidate__?: boolean;
+  __intelMemLogAt__?: number;
 };
+
+/**
+ * Refreshed reports reach the Library's cached report list here. Clearing that cache after every
+ * batch made each Library visit reload the whole library from the database (seconds of work, a
+ * lot of memory) while a refresh ran: the server slowed down until requests failed. Now at most
+ * every 10 minutes, and once when the refresh finishes.
+ */
+function noteListChanged(done: boolean): void {
+  g.__intelPendingInvalidate__ = true;
+  const now = Date.now();
+  if (done || now - (g.__intelListInvalidatedAt__ ?? 0) >= LIST_INVALIDATE_EVERY_MS) {
+    g.__intelListInvalidatedAt__ = now;
+    g.__intelPendingInvalidate__ = false;
+    invalidateReportsCache();
+  }
+}
+
+/** True while a crawl job runs: the background jobs wait so the crawler and the pages keep the CPU. */
+async function crawlRunning(): Promise<boolean> {
+  try {
+    const col = await getThreatIntelCollection();
+    return (await col.countDocuments({ docType: "crawl_job", status: "running" }, { limit: 1 })) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Logs heap use every 5 minutes when it is high, so a memory problem shows up in the log. */
+function logMemory(): void {
+  const now = Date.now();
+  if (now - (g.__intelMemLogAt__ ?? 0) < 5 * 60_000) return;
+  g.__intelMemLogAt__ = now;
+  const m = process.memoryUsage();
+  const limit = (globalThis as { __v8HeapLimit__?: number }).__v8HeapLimit__;
+  const mb = (n: number) => Math.round(n / 1048576);
+  if (!limit || m.heapUsed / limit > 0.6) console.log(`[memory] heap ${mb(m.heapUsed)} MB used${limit ? ` of ${mb(limit)} MB` : ""}, rss ${mb(m.rss)} MB`);
+}
 
 const REPORT = { docType: "report", status: { $ne: "duplicate" }, discoveryMethod: { $ne: "structured_sync" } };
 
@@ -101,11 +144,9 @@ export async function mongoRefreshReportIntel(batch = RULES_BATCH): Promise<{ re
     }
     ops.push({ updateOne: { filter: { docType: "report", id: d.id }, update: { $set } } });
   }
-  if (ops.length) {
-    await col.bulkWrite(ops, { ordered: false });
-    invalidateReportsCache();
-  }
+  if (ops.length) await col.bulkWrite(ops, { ordered: false });
   const remaining = docs.length < batch ? 0 : await col.countDocuments(staleFilter());
+  if (ops.length || (remaining === 0 && g.__intelPendingInvalidate__)) noteListChanged(remaining === 0);
   if (ops.length) logger.intel("REFRESH", `Re-extracted intelligence for ${ops.length} report${ops.length === 1 ? "" : "s"} (current rules)`, { remaining });
   return { refreshed: ops.length, remaining };
 }
@@ -176,6 +217,9 @@ export async function intelCoverage(): Promise<IntelCoverageStatus> {
 
 async function tick(): Promise<void> {
   if (!isMongoConfigured()) return;
+  logMemory();
+  // A running crawl has priority: both jobs wait for it to finish.
+  if (await crawlRunning()) return;
   const now = Date.now();
   if (!g.__intelRefreshBusy__ && now - (g.__intelRulesLastRun__ ?? 0) >= RULES_EVERY_MS) {
     g.__intelRefreshBusy__ = true;

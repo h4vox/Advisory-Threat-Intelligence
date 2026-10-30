@@ -35,7 +35,8 @@ export type GraphSourceReport = {
 
 const ACTIVITY: ReadonlySet<EvidenceLabel> = new Set(["observed", "inferred"]);
 const INDICATOR_KINDS = new Set(["ipv4", "domain", "url", "sha256", "sha1", "md5", "email"]);
-const MAX_INDICATORS_PER_REPORT = 150;
+/** Indicators kept per report: more made the graph (and its rebuild) too heavy for the server. */
+const MAX_INDICATORS_PER_REPORT = 60;
 const MAX_NODE_REPORTS = 60;
 const MAX_EDGE_REPORTS = 25;
 
