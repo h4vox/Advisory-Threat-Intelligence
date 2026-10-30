@@ -115,6 +115,7 @@ import {
   planBackfill,
   rankChildSitemaps,
   titleFromSlug,
+  realtimeSitemapWindow,
 } from "./collector/discovery-depth";
 import { appendPdfText, enrichAttackEntities, findFullReportPdfLinks, withAttackRefs } from "./collector/enrich";
 import type { RelevanceResult } from "./collector/relevance";
@@ -486,12 +487,18 @@ export async function getOrCreateCrawlConfig(): Promise<CrawlConfig> {
 
 /** Pages a real-time run walks further into each source's archive. */
 const REALTIME_ARCHIVE_PAGES = 6;
-type ArchiveCursor = { page: number; nextUrl: string | null };
+/** Per-source archive cursor: listing page walk, and (sources without page numbers) sitemap date walk. */
+type ArchiveCursor = { page: number; nextUrl: string | null; sitemapUntil?: string | null };
 
 async function loadArchiveCursors(): Promise<Map<string, ArchiveCursor>> {
   const col = await getThreatIntelCollection();
-  const docs = await col.find({ docType: "archive_cursor" }, { projection: { _id: 0, sourceId: 1, page: 1, nextUrl: 1 } }).toArray();
-  return new Map(docs.map((d) => [String(d.sourceId), { page: Number(d.page) || 1, nextUrl: typeof d.nextUrl === "string" ? d.nextUrl : null }]));
+  const docs = await col.find({ docType: "archive_cursor" }, { projection: { _id: 0, sourceId: 1, page: 1, nextUrl: 1, sitemapUntil: 1 } }).toArray();
+  return new Map(
+    docs.map((d) => [
+      String(d.sourceId),
+      { page: Number(d.page) || 1, nextUrl: typeof d.nextUrl === "string" ? d.nextUrl : null, sitemapUntil: typeof d.sitemapUntil === "string" ? d.sitemapUntil : null },
+    ]),
+  );
 }
 
 async function saveArchiveCursors(updates: Map<string, ArchiveCursor>): Promise<void> {
@@ -499,7 +506,7 @@ async function saveArchiveCursors(updates: Map<string, ArchiveCursor>): Promise<
   const at = new Date().toISOString();
   await col.bulkWrite(
     [...updates].map(([sourceId, c]) => ({
-      updateOne: { filter: { docType: "archive_cursor", sourceId }, update: { $set: { docType: "archive_cursor", sourceId, page: c.page, nextUrl: c.nextUrl, updatedAt: at } }, upsert: true },
+      updateOne: { filter: { docType: "archive_cursor", sourceId }, update: { $set: { docType: "archive_cursor", sourceId, page: c.page, nextUrl: c.nextUrl, sitemapUntil: c.sitemapUntil ?? null, updatedAt: at } }, upsert: true },
     })),
     { ordered: false },
   );
@@ -1164,6 +1171,8 @@ export async function executeCrawlJob(
     const sitemapSources = sources.filter((source) => {
       if (!source.enabled) return false;
       if (backfillPlan) return source.id === backfillPlan.sourceId;
+      // Real time: sources without page numbers walk their archive through the sitemap instead.
+      if (deepWalk && !source.paginationPattern) return true;
       if (!source.sitemapUrl) return false;
       const fo = feedOutcome.get(source.id);
       return breadth === "wide" || !fo || fo.status === "error" || (fo.status === "ok" && fo.items < SHORT_FEED_ITEMS);
@@ -1172,12 +1181,21 @@ export async function executeCrawlJob(
       sitemapSources.map(async (source) => {
         if (jobControl.cancel) return;
         const roots = source.sitemapUrl ? [source.sitemapUrl] : await collector.robotsSitemaps(source.homepageUrl);
-        if (roots.length === 0 && backfillPlan) roots.push(`${new URL(source.homepageUrl).origin}/sitemap.xml`);
+        const walkSitemap = deepWalk && !backfillPlan && !source.paginationPattern;
+        if (roots.length === 0 && (backfillPlan || walkSitemap)) roots.push(`${new URL(source.homepageUrl).origin}/sitemap.xml`);
+        const window = walkSitemap ? realtimeSitemapWindow(archiveCursors.get(source.id)?.sitemapUntil) : null;
         const sinceIso =
           backfillPlan?.sinceIso ??
+          window?.sinceIso ??
           (collector.lastCrawledAt(source.id) || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-        const perSourceCap = backfillPlan ? backfillPlan.maxArticles : 25;
-        const maxChildren = backfillPlan ? backfillPlan.maxChildSitemaps : 2;
+        const untilIso = window?.untilIso ?? null;
+        const perSourceCap = backfillPlan ? backfillPlan.maxArticles : walkSitemap ? 40 : 25;
+        const maxChildren = backfillPlan ? backfillPlan.maxChildSitemaps : walkSitemap ? 4 : 2;
+        if (window) {
+          // The next run reads the slice before this one.
+          const prev = archiveCursorUpdates.get(source.id) ?? archiveCursors.get(source.id) ?? { page: 1, nextUrl: null };
+          archiveCursorUpdates.set(source.id, { ...prev, sitemapUntil: window.sinceIso });
+        }
         let added = 0;
         for (const root of roots.slice(0, 2)) {
           if (added >= perSourceCap) break;
@@ -1195,7 +1213,7 @@ export async function executeCrawlJob(
             if (cr.status === "ok") entrySets.push(parseSitemapXml(cr.body).entries);
           }
           for (const entries of entrySets) {
-            for (const e of filterSitemapEntries(entries, { sinceIso, limit: perSourceCap - added })) {
+            for (const e of filterSitemapEntries(entries, { sinceIso, untilIso, limit: perSourceCap - added })) {
               try {
                 const canonical = canonicalizeUrl(e.loc);
                 const ok = enqueue({
@@ -1478,7 +1496,11 @@ export async function executeCrawlJob(
                 }
                 if (deepWalk && !backfillPlan) {
                   const restart = archiveEnded || lastPage < startPage;
-                  archiveCursorUpdates.set(source.id, restart ? { page: 1, nextUrl: null } : { page: lastPage, nextUrl: source.paginationPattern ? null : pageUrl });
+                  const prev = archiveCursorUpdates.get(source.id) ?? archiveCursors.get(source.id);
+                  archiveCursorUpdates.set(source.id, {
+                    ...prev,
+                    ...(restart ? { page: 1, nextUrl: null } : { page: lastPage, nextUrl: source.paginationPattern ? null : pageUrl }),
+                  });
                 }
               }
             }
@@ -1487,10 +1509,11 @@ export async function executeCrawlJob(
           }
         }),
       ), Math.max(30_000, discoveryTimeLeft()));
-      if (archiveCursorUpdates.size && isMongo) {
-        await saveArchiveCursors(archiveCursorUpdates).catch((err) => console.warn("[crawler] archive cursors not saved:", err));
-        logger.crawler("ARCHIVE", `Real time: archive walk advanced for ${archiveCursorUpdates.size} source${archiveCursorUpdates.size === 1 ? "" : "s"}`, { jobId });
-      }
+    }
+    // Real time: remember how far each source's archive (pages / sitemap dates) was walked.
+    if (archiveCursorUpdates.size && isMongo) {
+      await saveArchiveCursors(archiveCursorUpdates).catch((err) => console.warn("[crawler] archive cursors not saved:", err));
+      logger.crawler("ARCHIVE", `Real time: archive walk advanced for ${archiveCursorUpdates.size} source${archiveCursorUpdates.size === 1 ? "" : "s"}`, { jobId });
     }
 
     // Phase C: web search. A targeted hunt searches its own query; otherwise the analyst's keyword
